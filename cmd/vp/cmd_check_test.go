@@ -787,23 +787,16 @@ func TestCheckResumeRefsNoVault(t *testing.T) {
 // non-empty and [summarization] is not configured — an expected backlog, not
 // a stuck queue.
 func TestCheckFullSuiteEmitsSummarizationQueueRow(t *testing.T) {
-	e := healthyCheckEnv(t)
+	healthyCheckEnv(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	vault := storage.NewVault(e.Vault)
-	cfgPath, err := vault.ProjectConfigFile("checktest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("[summarization]\nenabled = false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Pin [summarization] off in the host global config — its only tier —
+	// appended to the one healthyCheckEnv wrote under its per-test XDG so
+	// the vault_path survives.
+	appendHostConfig(t, "[summarization]\nenabled = false\n")
 
 	queueDir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
 	if err := os.MkdirAll(queueDir, 0o755); err != nil {

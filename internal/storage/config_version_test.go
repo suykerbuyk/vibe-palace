@@ -18,10 +18,9 @@ import (
 // ~/.config/vibe-palace/config.toml during tests.
 func hermeticTestVault(t *testing.T) *Vault {
 	t.Helper()
-	// os.UserConfigDir honors XDG_CONFIG_HOME on Linux.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// On macOS, os.UserConfigDir uses HOME/Library/Application Support.
-	t.Setenv("HOME", t.TempDir())
+	// XDG_CONFIG_HOME, HOME and APPDATA together cover os.UserConfigDir on
+	// Linux, macOS and Windows; isolateHostConfig sets all three and proves it.
+	isolateHostConfig(t)
 	return bornCurrentVault(t, t.TempDir())
 }
 
@@ -29,13 +28,26 @@ func resetMissingMetaWarnOnce() {
 	missingMetaWarnOnce = sync.Map{}
 }
 
-func TestLoadConfig_NoMeta_LoadsWithZeroVersion(t *testing.T) {
-	v := hermeticTestVault(t)
-	projDir := filepath.Join(v.Root, "Projects", "proj")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+// writeGlobalConfigForTest writes the host global config under the XDG dir
+// hermeticTestVault redirected. [meta] is validated on that file only, since
+// the vault's per-project config is no longer read.
+func writeGlobalConfigForTest(t *testing.T, content string) {
+	t.Helper()
+	p, err := VaultConfigFilePath()
+	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`log_level = "warn"`+"\n"), 0o644)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadConfig_NoMeta_LoadsWithZeroVersion(t *testing.T) {
+	v := hermeticTestVault(t)
+	writeGlobalConfigForTest(t, `log_level = "warn"`+"\n")
 
 	resetMissingMetaWarnOnce()
 	cfg, err := v.LoadConfig("proj")
@@ -52,14 +64,12 @@ func TestLoadConfig_NoMeta_LoadsWithZeroVersion(t *testing.T) {
 
 func TestLoadConfig_VersionMatch_LoadsClean(t *testing.T) {
 	v := hermeticTestVault(t)
-	projDir := filepath.Join(v.Root, "Projects", "proj")
-	os.MkdirAll(projDir, 0o755)
-	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+	writeGlobalConfigForTest(t, `
 [meta]
 version_major = 1
 version_minor = 0
-kind = "vault-project"
-`), 0o644)
+kind = "global"
+`)
 
 	cfg, err := v.LoadConfig("proj")
 	if err != nil {
@@ -68,21 +78,19 @@ kind = "vault-project"
 	if cfg.MetaVersionMajor != 1 || cfg.MetaVersionMinor != 0 {
 		t.Errorf("version = %d.%d, want 1.0", cfg.MetaVersionMajor, cfg.MetaVersionMinor)
 	}
-	if cfg.MetaKind != "vault-project" {
-		t.Errorf("kind = %q, want vault-project", cfg.MetaKind)
+	if cfg.MetaKind != MetaKindGlobal {
+		t.Errorf("kind = %q, want %q", cfg.MetaKind, MetaKindGlobal)
 	}
 }
 
 func TestLoadConfig_MajorTooNew_Rejected(t *testing.T) {
 	v := hermeticTestVault(t)
-	projDir := filepath.Join(v.Root, "Projects", "proj")
-	os.MkdirAll(projDir, 0o755)
-	os.WriteFile(filepath.Join(projDir, "config.toml"), []byte(`
+	writeGlobalConfigForTest(t, `
 [meta]
 version_major = 999
 version_minor = 0
-kind = "vault-project"
-`), 0o644)
+kind = "global"
+`)
 
 	_, err := v.LoadConfig("proj")
 	if err == nil {
@@ -95,14 +103,12 @@ kind = "vault-project"
 
 func TestLoadConfig_MinorForwardCompat(t *testing.T) {
 	v := hermeticTestVault(t)
-	projDir := filepath.Join(v.Root, "Projects", "proj")
-	os.MkdirAll(projDir, 0o755)
-	os.WriteFile(filepath.Join(projDir, "config.toml"), fmt.Appendf(nil, `
+	writeGlobalConfigForTest(t, fmt.Sprintf(`
 [meta]
 version_major = %d
 version_minor = 99
-kind = "vault-project"
-`, CurrentVersionMajor), 0o644)
+kind = "global"
+`, CurrentVersionMajor))
 
 	cfg, err := v.LoadConfig("proj")
 	if err != nil {

@@ -38,8 +38,8 @@ const (
 	MetaKindGlobal     = "global"
 	MetaKindCwdProject = "cwd-project"
 	// MetaKindHostProject is the host-local per-project file written by
-	// WriteHostScoringConfig: the same shape as a vault project file, but
-	// outside every vault and never shared between machines.
+	// WriteHostScoringConfig: outside every vault and never shared between
+	// machines.
 	MetaKindHostProject = "host-project"
 )
 
@@ -240,14 +240,14 @@ type tomlScoringConfig struct {
 // Meta is decoded and NOT acted on: the file carries a [meta] block so a later
 // release has a schema version to gate on, and decoding it here is what keeps
 // the version keys out of the ignored-key warning. checkConfigVersion is not
-// run on this layer (see LoadConfig's Layer 4).
+// run on this layer (see LoadConfig's host-local layer).
 type hostProjectLayer struct {
 	Meta   tomlMeta `toml:"meta"`
 	Palace struct {
 		Scoring struct {
 			// MinScore is a POINTER so an absent key is distinguishable from an
 			// explicit 0. A plain float64 would let a file that never mentions
-			// min_score overwrite the vault's value with zero.
+			// min_score overwrite a lower layer's value with zero.
 			MinScore *float64                   `toml:"min_score"`
 			Rooms    map[string]tomlRoomScoring `toml:"rooms"`
 		} `toml:"scoring"`
@@ -351,16 +351,22 @@ func flattenScoringRooms(rooms map[string]tomlRoomScoring) map[string]ScoringRoo
 	return m
 }
 
-// LoadConfig loads configuration with precedence: embedded < vault < project.
-// Missing config files at any level are silently skipped.
+// LoadConfig loads configuration with precedence: embedded defaults < host
+// global config < host-local per-project file. Missing config files at any
+// level are silently skipped.
 //
-// After each on-disk layer decode, the resulting [meta] block is validated:
+// The per-project config that used to sit between the last two, the vault's
+// Projects/<slug>/config.toml, is no longer read (task
+// move-per-project-config-out-of-the-shared-vault). The one per-project tier
+// that remains is host-local, and it carries palace.scoring only.
+//
+// After the host global config is decoded, its [meta] block is validated:
 //   - version_major > CurrentVersionMajor is a hard error (binary is too old).
 //   - version_major == 0 (missing [meta]) triggers one slog.Warn per path,
 //     recommending `vp config upgrade`.
 //
-// Decodes use per-layer tomlConfig instances so layer-2's version check sees
-// layer-2's values, not the embedded defaults.
+// Meta is zeroed before the host global decode so its version check sees that
+// file's values, not the embedded defaults.
 func (v *Vault) LoadConfig(project string) (Config, error) {
 	var tc tomlConfig
 
@@ -374,8 +380,8 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 	// Meta is file-local, not inherited: zero it before each on-disk decode
 	// so Config.Meta* reflects the actual on-disk file (or zero if absent).
 	//
-	// 🔴 THE BARE os.Stat GATE HERE AND AT LAYER 3 IS TWO DIFFERENT THINGS AT
-	// ONCE, AND NEITHER MAY BE COPIED INTO ANYTHING THAT WRITES.
+	// 🔴 THE BARE os.Stat GATE HERE IS TWO DIFFERENT THINGS AT ONCE, AND
+	// NEITHER MAY BE COPIED INTO ANYTHING THAT WRITES.
 	//
 	// Its ENOENT half is deliberate: an absent config file is an answer, and
 	// skipping the layer is the right one.
@@ -420,36 +426,13 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 		}
 	}
 
-	// Layer 3: the per-project config in the vault. Being retired: vaultfs
-	// refuses to write this path (IsVaultProjectConfigPath), and R4 deletes
-	// this decode. Layer 4 below is where per-project settings are written.
-	//
-	// Same os.Stat gate as Layer 2 — same deliberate ENOENT half, same
-	// defective remainder, same prohibition on copying it. See there.
-	if project != "" {
-		projPath, err := v.ProjectConfigFile(project)
-		if err != nil {
-			return Config{}, err
-		}
-		if _, err := os.Stat(projPath); err == nil {
-			tc.Meta = tomlMeta{}
-			if _, err := toml.DecodeFile(projPath, &tc); err != nil {
-				return Config{}, fmt.Errorf("decode project config %s: %w", projPath, err)
-			}
-			if err := checkConfigVersion(projPath, tc.Meta); err != nil {
-				return Config{}, err
-			}
-		}
-	}
-
-	// Layer 4: the HOST-LOCAL per-project file, ranked above the vault's.
+	// Top layer: the HOST-LOCAL per-project file.
 	//
 	// 🔴 IT IS HOST-LOCAL, WHICH IS THE WHOLE POINT. The vault is shared across
 	// machines, so a tuning run on one host must not become every host's
-	// classifier (task move-per-project-config-out-of-the-shared-vault). Layer 3
-	// stays until R4 of that task deletes it, so no override that exists today
-	// stops applying before the delete command can print a transcript of what it
-	// is dropping.
+	// classifier (task move-per-project-config-out-of-the-shared-vault). The
+	// vault's per-project file that once sat below this one is no longer read;
+	// its overrides are reported by the one-shot migration that deletes it.
 	//
 	// checkConfigVersion is NOT run here. The file carries a [meta] block so a
 	// later release has a version to gate on, but nothing gates on it yet: a
@@ -480,10 +463,11 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 //
 // Rooms merge by WHOLE-ROOM REPLACEMENT: a room the host-local file names
 // replaces that room's three tiers entirely, so a host-local room carrying only
-// `high` resolves with Medium and Low empty. That is how layers 2 and 3 already
-// compose — BurntSushi replaces the map entry for a key it decodes — and it is
-// what makes a host-local room a statement about the whole room rather than a
-// patch whose result depends on what the vault happened to say.
+// `high` resolves with Medium and Low empty. That is how a decode over the
+// embedded defaults already composes — BurntSushi replaces the map entry for a
+// key it decodes — and it is what makes a host-local room a statement about the
+// whole room rather than a patch whose result depends on what a lower layer
+// happened to say.
 func applyHostProjectLayer(tc *tomlConfig, hl hostProjectLayer) {
 	if v := hl.Palace.Scoring.MinScore; v != nil {
 		tc.Palace.Scoring.MinScore = *v
@@ -672,49 +656,35 @@ func configFilePresent(what, path string) (bool, error) {
 }
 
 // hostProjectConfigPresent is configFilePresent for the host-local per-project
-// file, shared by LoadConfig's Layer 4 and by ProjectConfigSources so the
-// reader and the reporter cannot drift apart.
+// file, shared by LoadConfig's host-local layer and by ProjectConfigSources so
+// the reader and the reporter cannot drift apart.
 func hostProjectConfigPresent(path string) (bool, error) {
 	return configFilePresent("host-local project config", path)
 }
 
 // ProjectConfigSources lists the per-project config files that EXIST for a
-// project, highest-precedence first: the host-local file, then the vault's.
+// project. Since the vault's per-project file stopped being read, there is at
+// most one: the host-local file.
 //
 // It exists so a caller can report which files a LoadConfig actually read
 // without doing any path arithmetic of its own — the "resolve, don't recall"
-// rule applied to config sources. An empty result means neither file is there
-// and the project inherits the host global config alone.
+// rule applied to config sources. An empty result means there is no host-local
+// file and the project inherits the host global config alone. It uses the
+// same presence predicate as the layer that reads the file, so it reports
+// exactly what LoadConfig decodes: a dangling symlink is present-and-broken.
 func (v *Vault) ProjectConfigSources(project string) ([]string, error) {
 	hostPath, err := HostProjectConfigPath(project)
 	if err != nil {
 		return nil, err
 	}
-	vaultPath, err := v.ProjectConfigFile(project)
-	if err != nil {
-		return nil, err
-	}
-	// 🔴 EACH ENTRY USES THE PREDICATE OF THE LAYER THAT READS IT, so this
-	// function reports exactly the files LoadConfig would decode — no more, no
-	// less. Layer 4 tests the host-local file with Lstat (a dangling symlink is
-	// present-and-broken); Layer 3 tests the vault file with os.Stat. Using one
-	// predicate for both would re-create the divergence in the other direction.
-	var out []string
 	present, err := hostProjectConfigPresent(hostPath)
 	if err != nil {
 		return nil, err
 	}
-	if present {
-		out = append(out, hostPath)
+	if !present {
+		return nil, nil
 	}
-	switch _, serr := os.Stat(vaultPath); {
-	case serr == nil:
-		out = append(out, vaultPath)
-	case os.IsNotExist(serr):
-	default:
-		return nil, fmt.Errorf("stat project config %s: %w", vaultPath, serr)
-	}
-	return out, nil
+	return []string{hostPath}, nil
 }
 
 // scoringRoomsOnly is the narrow view used to attribute a scoring room to the
@@ -727,22 +697,23 @@ type scoringRoomsOnly struct {
 	} `toml:"palace"`
 }
 
-// scoringRoomsBelowHost resolves a project's scoring rooms through every layer
-// BELOW the host-local file, and reports which file set each room.
+// scoringRoomsBelowHost resolves the scoring rooms of every layer BELOW the
+// host-local file, and reports which file set each room.
 //
-// It walks the same three sources as LoadConfig's layers 1-3, in the same
-// order, applying the same whole-room replacement. It is a separate walk
-// because attribution costs a second decode per layer and LoadConfig is hot;
+// It walks the same two sources as LoadConfig's layers below the host-local
+// file — the embedded defaults and the host global config — in the same order,
+// applying the same whole-room replacement. It is a separate walk because
+// attribution costs a second decode per layer and LoadConfig is hot;
 // TestScoringRoomsBelowHostMatchesLoadConfig pins the two together and reds if
 // they drift.
 //
 // 🔴 IT DIVERGES FROM LoadConfig IN ONE WAY, DELIBERATELY: AN UNREADABLE LAYER
-// FAILS. LoadConfig tests layers 2 and 3 with a bare `os.Stat(p) == nil` and so
-// fails OPEN — an unreadable file is skipped and the caller gets an answer
-// missing that layer. That is survivable for a read: one wrong answer, and the
-// file is still on disk. It is not survivable here. What this resolution feeds
-// is a WRITE of the host-local file, which outranks the vault and replaces the
-// room WHOLE, so a silently skipped layer means the room is written without the
+// FAILS. LoadConfig tests the host global config with a bare `os.Stat(p) ==
+// nil` and so fails OPEN — an unreadable file is skipped and the caller gets an
+// answer missing that layer. That is survivable for a read: one wrong answer,
+// and the file is still on disk. It is not survivable here. What this
+// resolution feeds is a WRITE of the host-local file, which replaces the room
+// WHOLE, so a silently skipped layer means the room is written without the
 // tiers that layer held — the exact data loss the widening exists to prevent,
 // reached through an unreadable file instead of an absent tier. Losing a layer
 // on a read is recoverable; losing it on this write is not. So every layer here
@@ -751,11 +722,10 @@ type scoringRoomsOnly struct {
 // The parity the test pins is the RESOLUTION on layers that can be read, not
 // the disposition when one cannot.
 //
-// 🔴 DELETE WITH THE VAULT LAYER. This exists so the writer can carry the vault
-// project file's rooms forward before R4 removes that layer. After R4 the only
-// layer below the host-local file is the host global config, and what remains
-// of this can shrink to match.
-func (v *Vault) scoringRoomsBelowHost(project string) (map[string]tomlRoomScoring, map[string]string, error) {
+// It walked a third source, the vault's Projects/<slug>/config.toml, until
+// that file stopped being read; the carry from the host global config is why
+// this and completeRoomsFromBelow outlived it.
+func scoringRoomsBelowHost() (map[string]tomlRoomScoring, map[string]string, error) {
 	rooms := map[string]tomlRoomScoring{}
 	source := map[string]string{}
 
@@ -797,25 +767,6 @@ func (v *Vault) scoringRoomsBelowHost(project string) (map[string]tomlRoomScorin
 		apply(globalPath, l2.Palace.Scoring.Rooms)
 	}
 
-	// Layer 3: the vault project file.
-	if project != "" {
-		projPath, perr := v.ProjectConfigFile(project)
-		if perr != nil {
-			return nil, nil, perr
-		}
-		present, serr := configFilePresent("project config", projPath)
-		if serr != nil {
-			return nil, nil, serr
-		}
-		if present {
-			var l3 scoringRoomsOnly
-			if _, derr := toml.DecodeFile(projPath, &l3); derr != nil {
-				return nil, nil, fmt.Errorf("decode project config %s: %w", projPath, derr)
-			}
-			apply(projPath, l3.Palace.Scoring.Rooms)
-		}
-	}
-
 	return rooms, source, nil
 }
 
@@ -842,12 +793,12 @@ func hostRoomsAlreadyWritten(hostPath string) (map[string]tomlRoomScoring, error
 // completeRoomsFromBelow widens each proposed room so the host-local file
 // carries the WHOLE room, and returns a transcript of what it carried in.
 //
-// 🔴 THIS IS WHAT KEEPS A TUNING RUN FROM DELETING THE VAULT'S OVERRIDES.
-// Every layer in this stack replaces a scoring room WHOLE — layer 3 nils out a
-// tier layer 2 set, and layer 4 does the same to layer 3 (measured; it is the
-// idiom, not an accident). A proposal names only the tiers it changed, so
-// writing it verbatim into the host-local file would publish a partial room
-// that then erases every tier the vault file held for that room. Completing the
+// 🔴 THIS IS WHAT KEEPS A TUNING RUN FROM ERASING A LOWER LAYER'S TIERS.
+// Every layer in this stack replaces a scoring room WHOLE — the host-local
+// file nils out a tier the host global config set (measured; it is the idiom,
+// not an accident). A proposal names only the tiers it changed, so writing it
+// verbatim into the host-local file would publish a partial room that then
+// erases every tier the host global config held for that room. Completing the
 // room from the layers below restores the invariant the stack depends on: no
 // layer ever holds a partial room for a room a lower layer also has.
 //
@@ -855,7 +806,8 @@ func hostRoomsAlreadyWritten(hostPath string) (map[string]tomlRoomScoring, error
 // whose values are carried in for the first time gets a transcript line naming
 // the tiers, the keywords and the file they came from.
 //
-// 🔴 DELETE WITH THE VAULT LAYER at R4, along with its transcript.
+// It outlived the vault's per-project layer, whose rooms it also carried: the
+// host global config below the host-local file replaces rooms whole too.
 func completeRoomsFromBelow(
 	proposed map[string]ScoringRoomOverride,
 	below map[string]tomlRoomScoring,
@@ -952,13 +904,13 @@ func containsKeyword(list []string, s string) bool {
 //
 // 🔴 IT WRITES THE WHOLE ROOM, NOT THE PROPOSAL. Every layer of this config
 // stack replaces a scoring room whole, so a host-local room that names only the
-// tiers a tuning run changed would erase every other tier the vault file held
-// for that room. Each room is therefore completed from the layers below before
-// it is written, and what that copies is reported rather than done silently.
-// See completeRoomsFromBelow.
+// tiers a tuning run changed would erase every other tier the host global
+// config held for that room. Each room is therefore completed from the layers
+// below before it is written, and what that copies is reported rather than done
+// silently. See completeRoomsFromBelow.
 //
-// It is a method because completing a room needs the vault: the layer directly
-// below the host-local file is the vault's own Projects/<slug>/config.toml.
+// It reads nothing from the vault. It stays a method so its callers, which
+// already hold one, keep a single spelling.
 func (v *Vault) WriteHostScoringConfig(project string, rooms map[string]ScoringRoomOverride, minScore float64) (string, []string, error) {
 	cfgPath, err := HostProjectConfigPath(project)
 	if err != nil {
@@ -967,7 +919,7 @@ func (v *Vault) WriteHostScoringConfig(project string, rooms map[string]ScoringR
 
 	var transcript []string
 	if len(rooms) > 0 {
-		below, source, berr := v.scoringRoomsBelowHost(project)
+		below, source, berr := scoringRoomsBelowHost()
 		if berr != nil {
 			return "", nil, berr
 		}
@@ -995,8 +947,7 @@ func renderConfigMetaHeader(kind string) string {
 	return fmt.Sprintf(`# Host-local per-project config for vibe-palace.
 #
 # It is NOT in the vault and is NOT shared between machines: it holds what this
-# host has learned about this project, and it outranks the vault's own
-# Projects/<slug>/config.toml.
+# host has learned about this project, and it outranks the host global config.
 #
 # Only palace.scoring keys are read from this file. Anything else is reported
 # once as "not a per-project key; ignored" and has no effect.
@@ -1029,10 +980,10 @@ func HostProjectConfigPath(project string) (string, error) {
 	return filepath.Join(filepath.Dir(p), "projects", project+".toml"), nil
 }
 
-// writeScoringConfigAt merges scoring overrides into a config file. It is the
-// one implementation behind both destinations: the vault project file (until
-// R4 of task move-per-project-config-out-of-the-shared-vault deletes it) and
-// the host-local per-project file.
+// writeScoringConfigAt merges scoring overrides into a config file. Its one
+// production destination is the host-local per-project file
+// (WriteHostScoringConfig); the vault per-project file it also wrote is no
+// longer read or written.
 //
 // 🔴 THE THREE ROOTS ARE SEPARATE ARGUMENTS BECAUSE THEY ARE SEPARATE FACTS.
 // cfgPath is the file. lockRoot is where vaultlock puts its sidecar
@@ -1098,8 +1049,7 @@ func writeScoringConfigAt(cfgPath, lockRoot, stampRoot, metaKind string, rooms m
 	// A file this writer CREATES is seeded with a [meta] block, so it carries a
 	// schema version a later release can gate on; one that already exists keeps
 	// its own text, because the splice below owns the scoring subtree and
-	// nothing else. metaKind is empty for the vault project file, whose [meta]
-	// comes from its template.
+	// nothing else. An empty metaKind seeds no header.
 	if len(existing) == 0 && metaKind != "" {
 		existing = []byte(renderConfigMetaHeader(metaKind))
 	}
@@ -1340,9 +1290,10 @@ func renderScoringSections(scoring map[string]any) (string, error) {
 // [search] defaults, to record a learned keyword. Measured across the live
 // vault when this was written: every project config carrying a real
 // [palace.scoring block had lost its comments, and every config without one
-// still had them, with no exceptions in either direction. Re-derive with
-//
-//	for f in $(grep -L 'Per-project overrides' Projects/*/config.toml); do grep -qE '^( *)\[palace\.scoring' "$f" && echo "$f"; done
+// still had them, with no exceptions in either direction. (That census was of
+// the vault per-project files, since retired. Its recorded grep under-reported
+// by one file — a template splice that kept the marker line — which is why any
+// census of these files reads them with a TOML parser, never a line grep.)
 //
 // Only the scoring subtree is machine-owned, so only the scoring subtree is
 // re-rendered. Everything else survives because it is never parsed.

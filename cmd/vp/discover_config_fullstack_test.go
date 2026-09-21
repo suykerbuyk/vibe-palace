@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestRunDiscoverRooms_ApplyPreservesInheritedConfig is the genuine
@@ -22,15 +23,17 @@ import (
 // it drives the ACTUAL `vp discover rooms --apply` code path
 // (runDiscoverRooms, the function cmdDiscoverRooms's Run closure calls) end
 // to end against a real global config file and a real "mostly absent"
-// project config file — the same shape vault_project_template.toml
-// documents and the same shape that broke in production — with a fake LLM
+// per-project override file — the host-local
+// <XDG>/vibe-palace/projects/<slug>.toml, the one per-project tier left and
+// the file --apply writes — seeded [meta]-only, the shape that broke in
+// production when it lived in the vault — with a fake LLM
 // HTTP server standing in for the real endpoint so no network call happens.
 //
 // Unlike TestRunDiscoverRooms_Apply (cmd_discover_test.go), which hands
 // runDiscoverRooms a storage.Config built by hand, this test loads cfg via
 // the real v.LoadConfig("proj") call cmdDiscoverRooms itself makes
 // (cmd_discover.go:72) before invoking the apply path, and then reloads
-// after the apply to prove the on-disk project file — not just the
+// after the apply to prove the on-disk host-local file — not just the
 // in-memory Config the command already held — still resolves the global
 // [palace.llm] block and every other inherited field. This is the level of
 // test that would have caught the original bug: a mock-Config-based test
@@ -60,6 +63,7 @@ func TestRunDiscoverRooms_ApplyPreservesInheritedConfig(t *testing.T) {
 	// accidental zeroing by WriteScoringConfig is unambiguous.
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
+	testutil.RequireResolvedUnder(t, configDir, storage.VaultConfigFilePath)
 	t.Setenv("VP_FULLSTACK_TEST_API_KEY", "fake-key-value")
 
 	globalVaultPath := filepath.Join(configDir, "global-tier-vault")
@@ -81,16 +85,20 @@ max_tokens = 2048
 		t.Fatal(err)
 	}
 
-	// Real vault the discover command actually operates on. Its project
-	// config starts in the normal, documented "mostly absent" state — the
-	// exact vault_project_template.toml shape (only [meta]; every
-	// overridable key commented out / never written).
+	// Real vault the discover command actually operates on, and the
+	// project's per-project override file. That file is the host-local
+	// <XDG>/vibe-palace/projects/proj.toml (the vault's
+	// Projects/<slug>/config.toml is no longer read or written), and it starts
+	// in the "mostly absent" state: only [meta], every overridable key never
+	// written.
 	v := storage.NewVault(t.TempDir())
-	projDir := filepath.Join(v.Root, "Projects", "proj")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	cfgPath, err := storage.HostProjectConfigPath("proj")
+	if err != nil {
 		t.Fatal(err)
 	}
-	cfgPath := filepath.Join(projDir, "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(cfgPath, []byte("[meta]\nversion_major = 1\nversion_minor = 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -165,14 +173,22 @@ max_tokens = 2048
 		t.Error("expected scoring overrides to have been applied")
 	}
 
-	// Belt-and-suspenders: the project file on disk itself must not have
-	// gained these keys — proving the fix, not just that LoadConfig happens
-	// to still resolve correctly some other way.
+	// Belt-and-suspenders: the host-local override file on disk itself must
+	// have gained the scoring block and nothing else — proving the fix, not
+	// just that LoadConfig happens to still resolve correctly some other way.
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read host-local project config: %v", err)
 	}
 	content := string(data)
+	if !strings.Contains(content, "palace.scoring") {
+		t.Errorf("host-local project config %s did not receive the applied scoring:\n%s", cfgPath, content)
+	}
+	// And the retired vault project config was never created.
+	vaultCfg := filepath.Join(v.Root, "Projects", "proj", "config.toml")
+	if _, err := os.Stat(vaultCfg); !os.IsNotExist(err) {
+		t.Errorf("--apply wrote the retired vault project config %s (stat err=%v)", vaultCfg, err)
+	}
 	for _, forbidden := range []string{"git_enabled", "http_port", "vault_path", "[palace.llm]"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("project config file unexpectedly contains %q after --apply:\n%s", forbidden, content)

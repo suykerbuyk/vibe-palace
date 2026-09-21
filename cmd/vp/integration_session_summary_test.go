@@ -95,13 +95,8 @@ func TestCaptureThenDrain_SessionSummaryEndToEnd(t *testing.T) {
 	}
 
 	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile(slug)
-	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatalf("mkdir project config dir: %v", err)
-	}
+	// [summarization] lives in the host global config (per-test XDG): it is
+	// the only tier that carries it.
 	summCfg := "[summarization]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -110,9 +105,7 @@ func TestCaptureThenDrain_SessionSummaryEndToEnd(t *testing.T) {
 		"base_url = \"" + srv.URL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(cfgPath, []byte(summCfg), 0o644); err != nil {
-		t.Fatalf("write summarization config: %v", err)
-	}
+	writeIsolatedHostConfig(t, summCfg)
 
 	// Step 1: the REAL enqueue path. vp_capture_session's Handler is an
 	// mcp.Tool.Handler (func(context.Context, json.RawMessage) (any, error))

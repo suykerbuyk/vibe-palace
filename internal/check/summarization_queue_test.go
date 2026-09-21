@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/jobqueue"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 const checkSummQueueSlug = "proj"
@@ -27,23 +28,28 @@ func newCheckSummQueueVault(t *testing.T) *storage.Vault {
 	return storage.NewVault(t.TempDir())
 }
 
-// writeSummarizationProjectConfig writes a Projects/<slug>/config.toml
-// carrying the given [summarization] body, mirroring the exact pattern
-// cmd/vp/cmd_drain_test.go's
-// TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob and
-// internal/itersummary's own tests use to enable/disable summarization for a
-// project.
-func writeSummarizationProjectConfig(t *testing.T, v *storage.Vault, slug, body string) {
+// writeSummarizationHostConfig isolates XDG_CONFIG_HOME to a fresh temp dir
+// for this test and writes the given [summarization] body into the HOST
+// GLOBAL config there (storage.VaultConfigFilePath). The host global config is
+// the only tier that can carry [summarization]: the vault
+// Projects/<slug>/config.toml is no longer read, and the host-local
+// per-project file carries only palace.scoring. The isolation is asserted
+// with testutil.RequireResolvedUnder so the write can never reach the
+// developer's real host config or the hermetic read-only fixture.
+func writeSummarizationHostConfig(t *testing.T, body string) {
 	t.Helper()
-	cfgPath, err := v.ProjectConfigFile(slug)
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	testutil.RequireResolvedUnder(t, xdg, storage.VaultConfigFilePath)
+	cfgPath, err := storage.VaultConfigFilePath()
 	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
+		t.Fatalf("VaultConfigFilePath: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatalf("mkdir project config dir: %v", err)
+		t.Fatalf("mkdir host config dir: %v", err)
 	}
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
-		t.Fatalf("write project config: %v", err)
+		t.Fatalf("write host config: %v", err)
 	}
 }
 
@@ -112,7 +118,7 @@ func TestCheckSummarizationQueue_ExistingEmptyDirIsPass(t *testing.T) {
 func TestCheckSummarizationQueue_DisabledConfigIsInfoWithExpectedBacklogWording(t *testing.T) {
 	v := newCheckSummQueueVault(t)
 	projectPath := t.TempDir()
-	writeSummarizationProjectConfig(t, v, checkSummQueueSlug, "[summarization]\nenabled = false\n")
+	writeSummarizationHostConfig(t, "[summarization]\nenabled = false\n")
 	writeQueueFile(t, projectPath, "iteration-00001.json", iterItem(1))
 	writeQueueFile(t, projectPath, "iteration-00002.json", iterItem(2))
 
@@ -122,6 +128,15 @@ func TestCheckSummarizationQueue_DisabledConfigIsInfoWithExpectedBacklogWording(
 	}
 	if !strings.Contains(r.Summary, "not configured") {
 		t.Errorf("Summary = %q, want it to contain %q", r.Summary, "not configured")
+	}
+	// It must send the operator to the one tier that can set [summarization]:
+	// the host config, named by its resolved path — never "this project".
+	hostPath, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Summary, hostPath) || strings.Contains(r.Summary, "for this project") {
+		t.Errorf("Summary = %q, want it to name the host config %s and no per-project config", r.Summary, hostPath)
 	}
 	if strings.Contains(r.Summary, "enabled but unresolvable") || strings.Contains(r.Summary, "investigate why drain isn't keeping up") {
 		t.Errorf("Summary = %q, unexpectedly contains case-3/case-4 wording", r.Summary)
@@ -141,7 +156,7 @@ func TestCheckSummarizationQueue_EnabledUnresolvableNamesUnderlyingError(t *test
 	// return this exact error text.
 	const envName = "VP_TEST_CHECK_SUMMQUEUE_UNSET_KEY"
 	t.Setenv(envName, "")
-	writeSummarizationProjectConfig(t, v, checkSummQueueSlug, fmt.Sprintf(
+	writeSummarizationHostConfig(t, fmt.Sprintf(
 		"[summarization]\nenabled = true\nprovider = \"anthropic\"\nmodel = \"claude-test\"\napi_key_env = %q\n", envName))
 	writeQueueFile(t, projectPath, "iteration-00001.json", iterItem(1))
 
@@ -176,7 +191,7 @@ func TestCheckSummarizationQueue_EnabledResolvingOverThresholdEscalates(t *testi
 	// internal/llm/anthropic.go's newAnthropicClient — endpoint defaults at
 	// call time, not construction time), matching
 	// internal/itersummary's own TestNewIterationSummarizerFromConfig_Resolvable.
-	writeSummarizationProjectConfig(t, v, checkSummQueueSlug, fmt.Sprintf(
+	writeSummarizationHostConfig(t, fmt.Sprintf(
 		"[summarization]\nenabled = true\nprovider = \"anthropic\"\nmodel = \"claude-test\"\napi_key_env = %q\ntimeout_seconds = 5\n", envName))
 
 	for i := 1; i <= summarizationQueuePendingEscalationThreshold+1; i++ {
@@ -223,7 +238,7 @@ func TestCheckSummarizationQueue_DeadLetterAloneSurfacesDistinctly(t *testing.T)
 func TestCheckSummarizationQueue_DeadLetterIsAdditiveAlongsidePendingClause(t *testing.T) {
 	v := newCheckSummQueueVault(t)
 	projectPath := t.TempDir()
-	writeSummarizationProjectConfig(t, v, checkSummQueueSlug, "[summarization]\nenabled = false\n")
+	writeSummarizationHostConfig(t, "[summarization]\nenabled = false\n")
 	writeQueueFile(t, projectPath, "iteration-00001.json", iterItem(1))
 	writeQueueFile(t, projectPath, "iteration-00002.json.failed", iterItem(2))
 	writeQueueFile(t, projectPath, "iteration-00003.json.failed", iterItem(3))

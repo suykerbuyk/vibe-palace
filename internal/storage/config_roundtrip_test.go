@@ -5,37 +5,51 @@ package storage
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// seedRealTemplate writes the REAL shipped vault-project template as a project's
-// config and returns its path.
+// operatorPastedBlock is commented text an operator pastes into the host-local
+// file: notes and disabled examples the writer never parses.
+const operatorPastedBlock = `
+# operator notes — pasted by hand, never parsed by the writer.
+# Scoring for this project was last reviewed on this host by hand.
+#
+# [palace.scoring.rooms.graphics]
+# high = ["segfault"]
+#
+# [search]
+# default_limit = 25
+`
+
+// seedRealTemplate writes the REAL shipped host-local header, followed by an
+// operator-pasted commented block, as a project's host-local config, and returns
+// its path. It isolates XDG first, so nothing lands in the read-only fixture.
 //
-// 🔴 THE SPECIMEN IS THE SHIPPED TEMPLATE, NOT A HAND-WRITTEN FIXTURE, and that
-// is the whole point of this file. VaultProjectTemplateContent() is byte for byte
-// what the retired vault-project writer wrote, so it is what every project
-// config in a real vault was born from. A fixture invented here would only ever contain what
-// the test author remembered to put in it — and the defect these tests exist for
-// is a writer that discarded what it never read, which a fixture cannot model
-// because the author would have to think of the thing being discarded first.
-func seedRealTemplate(t *testing.T, v *Vault, project string) string {
+// 🔴 THE SPECIMEN IS THE SHIPPED HEADER, NOT A HAND-WRITTEN FIXTURE, and that
+// is the whole point of this file. renderConfigMetaHeader(MetaKindHostProject)
+// is byte for byte what WriteHostScoringConfig seeds a new file with, so it is
+// what every host-local config is born from. A fixture invented here would only
+// ever contain what the test author remembered to put in it — and the defect
+// these tests exist for is a writer that discarded what it never read, which a
+// fixture cannot model because the author would have to think of the thing
+// being discarded first. The pasted block adds the other text a real file
+// carries: comments the operator wrote.
+func seedRealTemplate(t *testing.T, project string) (*Vault, string) {
 	t.Helper()
-	cfgPath, err := v.ProjectConfigFile(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte(VaultProjectTemplateContent()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return cfgPath
+	v, cfgPath := hostLocalEnv(t, project, "")
+	writeFileAt(t, cfgPath, renderConfigMetaHeader(MetaKindHostProject)+operatorPastedBlock)
+	return v, cfgPath
 }
 
-// TestWriteScoringConfig_RoundTripPreservesTheRealTemplate is the regression this
+func writeRoundTrip(t *testing.T, v *Vault, rooms map[string]ScoringRoomOverride) {
+	t.Helper()
+	if _, _, err := v.WriteHostScoringConfig("proj", rooms, 0); err != nil {
+		t.Fatalf("WriteHostScoringConfig: %v", err)
+	}
+}
+
+// TestWriteHostScoringConfig_RoundTripPreservesTheRealTemplate is the regression this
 // change exists for, and it is a ROUND TRIP rather than an expected-bytes
 // assertion: it asserts that every line of the ORIGINAL survives the write,
 // whatever those lines happen to be.
@@ -54,21 +68,18 @@ func seedRealTemplate(t *testing.T, v *Vault, project string) string {
 //	toml.NewEncoder(&buf).Encode(m)
 //	atomicfile.Write(v.Root, cfgPath, buf.Bytes())
 //
-// Every commented line in the template disappears and this test names the first
+// Every commented line in the specimen disappears and this test names the first
 // one it cannot find.
-func TestWriteScoringConfig_RoundTripPreservesTheRealTemplate(t *testing.T) {
-	v := NewVault(t.TempDir())
-	cfgPath := seedRealTemplate(t, v, "proj")
+func TestWriteHostScoringConfig_RoundTripPreservesTheRealTemplate(t *testing.T) {
+	v, cfgPath := seedRealTemplate(t, "proj")
 	original, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{
+	writeRoundTrip(t, v, map[string]ScoringRoomOverride{
 		"debugging": {High: []string{"undefined: strings"}, Low: []string{"local main"}},
-	}, 0); err != nil {
-		t.Fatalf("WriteScoringConfig: %v", err)
-	}
+	})
 
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -76,10 +87,10 @@ func TestWriteScoringConfig_RoundTripPreservesTheRealTemplate(t *testing.T) {
 	}
 	got := string(after)
 
-	// THE ROUND TRIP. The template carries no ACTIVE [palace.scoring] section —
+	// THE ROUND TRIP. The specimen carries no ACTIVE [palace.scoring] section —
 	// its scoring example is commented out — so every single line of the original
 	// must still be present. No allowance, no exceptions: the assertion is over
-	// whatever the template contains, not over a list this test maintains.
+	// whatever the specimen contains, not over a list this test maintains.
 	for i, line := range strings.Split(strings.TrimRight(string(original), "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -110,30 +121,25 @@ func TestWriteScoringConfig_RoundTripPreservesTheRealTemplate(t *testing.T) {
 	}
 }
 
-// TestWriteScoringConfig_RoundTripReplacesOnlyTheScoringSection covers the case
-// the template cannot: a file that ALREADY has an active scoring block. The old
+// TestWriteHostScoringConfig_RoundTripReplacesOnlyTheScoringSection covers the case
+// the specimen cannot: a file that ALREADY has an active scoring block. The old
 // block must be replaced rather than appended beside, and every line outside it
 // must survive.
 //
 // Break it: make spliceScoringSections append unconditionally instead of
 // dropping the matched ranges. The file then carries two
 // [palace.scoring.rooms.debugging] tables and TOML decoding fails outright.
-func TestWriteScoringConfig_RoundTripReplacesOnlyTheScoringSection(t *testing.T) {
-	v := NewVault(t.TempDir())
-	cfgPath := seedRealTemplate(t, v, "proj")
+func TestWriteHostScoringConfig_RoundTripReplacesOnlyTheScoringSection(t *testing.T) {
+	v, cfgPath := seedRealTemplate(t, "proj")
 
 	// First write creates the active scoring section.
-	if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{
+	writeRoundTrip(t, v, map[string]ScoringRoomOverride{
 		"debugging": {High: []string{"first"}},
-	}, 0); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
+	})
 	// Second write merges a different room.
-	if err := v.WriteScoringConfig("proj", map[string]ScoringRoomOverride{
+	writeRoundTrip(t, v, map[string]ScoringRoomOverride{
 		"testing": {Medium: []string{"second"}},
-	}, 0); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
+	})
 
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -141,11 +147,11 @@ func TestWriteScoringConfig_RoundTripReplacesOnlyTheScoringSection(t *testing.T)
 	}
 	got := string(after)
 
-	// The template's own comments are still there after TWO writes.
+	// The header's and the operator's comments are still there after TWO writes.
 	for _, want := range []string{
-		"# Per-project overrides for this vault project.",
-		"# kind identifies this schema — do not change.",
-		"# [palace.llm]",
+		"# Host-local per-project config for vibe-palace.",
+		`kind = "host-project"`,
+		"# operator notes — pasted by hand, never parsed by the writer.",
 		"# [search]",
 	} {
 		if !strings.Contains(got, want) {
@@ -164,21 +170,18 @@ func TestWriteScoringConfig_RoundTripReplacesOnlyTheScoringSection(t *testing.T)
 	}
 }
 
-// TestWriteScoringConfig_NoOpLeavesTheFileByteIdentical: a write whose merged
-// result equals what is on disk must not touch the file at all. On a tracked
-// vault file an mtime bump is dirt a human then has to explain, and the whole
-// reason this defect was noticed is a config showing up as blocking vault dirt.
+// TestWriteHostScoringConfig_NoOpLeavesTheFileByteIdentical: a write whose merged
+// result equals what is on disk must not touch the file at all. An mtime bump
+// for no change is churn a human then has to explain; this defect was first
+// noticed as a (then vault-resident) config showing up as blocking vault dirt.
 //
 // Break it: drop the `merged == string(existing)` guard before atomicfile.Write.
 // The bytes stay equal but the file is rewritten, and the mtime assertion fails.
-func TestWriteScoringConfig_NoOpLeavesTheFileByteIdentical(t *testing.T) {
-	v := NewVault(t.TempDir())
-	cfgPath := seedRealTemplate(t, v, "proj")
+func TestWriteHostScoringConfig_NoOpLeavesTheFileByteIdentical(t *testing.T) {
+	v, cfgPath := seedRealTemplate(t, "proj")
 	rooms := map[string]ScoringRoomOverride{"debugging": {High: []string{"once"}}}
 
-	if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
+	writeRoundTrip(t, v, rooms)
 	before, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -188,9 +191,7 @@ func TestWriteScoringConfig_NoOpLeavesTheFileByteIdentical(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := v.WriteScoringConfig("proj", rooms, 0); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
+	writeRoundTrip(t, v, rooms)
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +205,7 @@ func TestWriteScoringConfig_NoOpLeavesTheFileByteIdentical(t *testing.T) {
 		t.Errorf("an idempotent write changed the bytes:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 	if !st1.ModTime().Equal(st2.ModTime()) {
-		t.Errorf("a no-op write rewrote the file (mtime %v -> %v) — that is vault dirt for no change",
+		t.Errorf("a no-op write rewrote the file (mtime %v -> %v) — that is churn for no change",
 			st1.ModTime(), st2.ModTime())
 	}
 }

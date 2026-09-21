@@ -185,17 +185,6 @@ func TestWriteCwdProjectConfig_WritesThenRefusesOverwrite(t *testing.T) {
 	}
 }
 
-func TestVaultProjectTemplate_ParsesAsTOML(t *testing.T) {
-	var raw map[string]any
-	if _, err := toml.Decode(VaultProjectTemplateContent(), &raw); err != nil {
-		t.Fatalf("vault-project template is not valid TOML: %v", err)
-	}
-	meta, _ := raw["meta"].(map[string]any)
-	if meta["version_major"] != int64(1) {
-		t.Errorf("meta.version_major = %v, want 1", meta["version_major"])
-	}
-}
-
 func TestCwdProjectTemplate_SentinelUnused(t *testing.T) {
 	// The __VP_NAME__ sentinel must not leak into generated output
 	// when a name is provided.

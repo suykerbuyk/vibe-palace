@@ -269,7 +269,7 @@ func runDrainSummaries(projectPath string, max int, out io.Writer) int {
 	}
 
 	// drained now genuinely reflects real work once [summarization] is
-	// enabled and resolvable in this project's config: dispatcher above is a
+	// enabled and resolvable in the host config: dispatcher above is a
 	// real, config-driven DispatchSummarizer, not a documented no-op stand-in.
 	// It stays 0 only when the queue is empty, or when summarization is
 	// disabled/unresolvable (see the warn-log above) so every claimed

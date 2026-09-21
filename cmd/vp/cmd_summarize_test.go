@@ -16,12 +16,72 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
+
+// writeIsolatedHostConfig points XDG_CONFIG_HOME at a fresh per-test temp dir
+// and writes body as the HOST GLOBAL config there (storage.VaultConfigFilePath).
+// It is for tests that set no other host-config isolation (they pin the vault
+// through a .vibe-palace.toml marker instead). The host global config is the
+// only tier that carries [summarization] / [enrichment] / [palace.llm]: the
+// vault Projects/<slug>/config.toml is no longer read, and the host-local
+// per-project file carries only palace.scoring. RequireResolvedUnder proves
+// the write cannot reach the real host config or the hermetic fixture.
+func writeIsolatedHostConfig(t *testing.T, body string) {
+	t.Helper()
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	testutil.RequireResolvedUnder(t, xdg, storage.VaultConfigFilePath)
+	cfgPath, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatalf("VaultConfigFilePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir host config dir: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write host config: %v", err)
+	}
+}
+
+// appendHostConfig appends body to the HOST GLOBAL config a helper such as
+// setupTestVaultEnv / initTestEnv / healthyCheckEnv already wrote under its own
+// per-test XDG_CONFIG_HOME. It appends rather than overwrites so the helper's
+// vault_path survives. It fails if XDG_CONFIG_HOME is still the hermetic
+// read-only fixture (the caller forgot the isolating helper), if the host
+// config does not resolve under the current XDG_CONFIG_HOME, or if the file is
+// missing the helper's vault_path.
+func appendHostConfig(t *testing.T, body string) {
+	t.Helper()
+	if testutil.XDGIsFixture() {
+		t.Fatalf("XDG_CONFIG_HOME is the hermetic fixture: call an isolating helper (setupTestVaultEnv, healthyCheckEnv) before appendHostConfig")
+	}
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg == "" {
+		t.Fatalf("XDG_CONFIG_HOME is unset: the test's host-config isolation is missing")
+	}
+	testutil.RequireResolvedUnder(t, xdg, storage.VaultConfigFilePath)
+	cfgPath, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatalf("VaultConfigFilePath: %v", err)
+	}
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read isolated host config: %v", err)
+	}
+	if !strings.Contains(string(existing), "vault_path") {
+		t.Fatalf("host config %s carries no vault_path: not the isolating helper's file", cfgPath)
+	}
+	if err := os.WriteFile(cfgPath, append(existing, []byte("\n"+body)...), 0o644); err != nil {
+		t.Fatalf("append host config: %v", err)
+	}
+}
 
 // summarizeTestFixture bundles everything runSummarizeIterations needs: a
 // hermetic project directory (own .vibe-palace.toml vault_path + [project]
 // name override, exactly like cmd_drain_test.go's setupDrainProject/
-// bracketed-path test), a project config with [summarization] enabled and
+// bracketed-path test), a host global config (per-test XDG) with
+// [summarization] enabled and
 // pointed at an httptest server, and an atomic request counter that server
 // increments on every call — the "call-counting stub" this file's tests use
 // in place of injecting a stub llm.Completer directly: itersummary.
@@ -65,13 +125,6 @@ func newSummarizeTestFixture(t *testing.T) *summarizeTestFixture {
 	}
 
 	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile(slug)
-	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatalf("mkdir project config dir: %v", err)
-	}
 	summCfg := "[summarization]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -80,9 +133,7 @@ func newSummarizeTestFixture(t *testing.T) *summarizeTestFixture {
 		"base_url = \"" + srv.URL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(cfgPath, []byte(summCfg), 0o644); err != nil {
-		t.Fatalf("write summarization config: %v", err)
-	}
+	writeIsolatedHostConfig(t, summCfg)
 
 	return &summarizeTestFixture{
 		projectPath: projectPath,
@@ -368,6 +419,11 @@ func TestRunSummarizeIterations_DisabledSummarizationIsUserError(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "not enabled") {
 		t.Errorf("expected a not-enabled message, got: %s", buf.String())
+	}
+	// [summarization] has no per-project tier: the message must name the host
+	// config, not "this project's config".
+	if !strings.Contains(buf.String(), "host config") || strings.Contains(buf.String(), "this project's config") {
+		t.Errorf("message must send the operator to the host config, got: %s", buf.String())
 	}
 }
 
