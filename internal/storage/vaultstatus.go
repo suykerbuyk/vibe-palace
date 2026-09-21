@@ -67,11 +67,29 @@ type RemoteStatus struct {
 // text as if it were a branch name.
 //
 // On a genuinely DETACHED (not unborn) HEAD, symbolic-ref fails too (HEAD
-// names a commit directly, not a branch) and this returns "main" — a
-// deliberate, accepted behavior change from the old rev-parse --abbrev-ref
-// HEAD, which succeeded there and returned the literal string "HEAD".
-func currentBranch(vaultPath string) string {
-	if b, err := gitCmd(vaultPath, 10*time.Second, "symbolic-ref", "--short", "HEAD"); err == nil && b != "" {
+// names a commit directly, not a branch), and so does any HEAD git cannot
+// resolve. Both return an ERROR, never a branch name. This used to fall back
+// to "main" internally, which let a caller read the wrong remote ref without
+// knowing it had been guessed for. The callers that want that default now
+// apply it themselves, at the call site, where it is visible; a caller that
+// must not guess (the project-config retirement's "HEAD is on a named branch"
+// precondition) refuses on the error instead.
+func currentBranch(vaultPath string) (string, error) {
+	b, err := gitCmd(vaultPath, 10*time.Second, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("HEAD is not on a named branch (detached or unresolvable): %w", err)
+	}
+	if b == "" {
+		return "", fmt.Errorf("HEAD is not on a named branch: symbolic-ref printed nothing")
+	}
+	return b, nil
+}
+
+// branchOrMain is currentBranch with the historical "main" default for a
+// detached or unresolvable HEAD. Each caller that wants that default names it
+// by calling this, rather than inheriting it silently from currentBranch.
+func branchOrMain(vaultPath string) string {
+	if b, err := currentBranch(vaultPath); err == nil {
 		return b
 	}
 	return "main"
@@ -147,7 +165,7 @@ func aheadFromTip(vaultPath, tip string) (int, bool) {
 // fetch that succeeded yet whose tracking ref still will not resolve.
 func GetRemoteStatus(vaultPath, remote, branch string, fetch bool) (RemoteStatus, error) {
 	if branch == "" {
-		branch = currentBranch(vaultPath)
+		branch = branchOrMain(vaultPath)
 	}
 	st := RemoteStatus{Remote: remote}
 	ref := remote + "/" + branch
@@ -321,7 +339,7 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 	if err := RefuseIfGitDisabled(vaultPath, "report vault status"); err != nil {
 		return StatusReport{}, err
 	}
-	branch := currentBranch(vaultPath)
+	branch := branchOrMain(vaultPath)
 
 	remotes, err := ListRemotes(vaultPath)
 	if err != nil {
@@ -392,7 +410,7 @@ func VaultFetchAge(vaultPath string) (age time.Duration, fetchedAt time.Time, kn
 	if slices.Contains(remotes, "origin") {
 		remote = "origin"
 	}
-	branch := currentBranch(vaultPath) // local `git rev-parse`, no network
+	branch := branchOrMain(vaultPath) // local `git rev-parse`, no network
 	fetchedAt = lastFetched(vaultPath, remote, branch)
 	if fetchedAt.IsZero() {
 		return 0, time.Time{}, false

@@ -223,6 +223,8 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdMigrateTaskSections()))
 	reg.Register(mutates(cmdMigrateTaskHeaderShape()))
 	reg.Register(mutates(cmdMigrateTaskBoardFields()))
+	// ONE-SHOT: deleted with cmd_migrate_project_configs.go.
+	reg.Register(mutates(cmdMigrateProjectConfigs()))
 	reg.Register(mutates(cmdMigrateTaskHeaderBlock()))
 	reg.RegisterHelp()
 }
