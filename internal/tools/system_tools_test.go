@@ -526,8 +526,8 @@ func TestInitProjectAlreadyExists(t *testing.T) {
 		}
 	}
 	// The vault scaffold the old refusal made unreachable.
-	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "test", "config.toml")); err != nil {
-		t.Errorf("vault project config still missing after re-init: %v", err)
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "test", "commands", "README.md")); err != nil {
+		t.Errorf("vault project scaffold still missing after re-init: %v", err)
 	}
 }
 
@@ -1018,14 +1018,19 @@ func TestVpInit_MCP_ProducesFullVaultScaffold(t *testing.T) {
 
 	root := filepath.Join(vaultDir, "Projects", "scaffolded")
 	for _, rel := range []string{
-		"config.toml",
-		filepath.Join("tasks", "done"),
-		filepath.Join("tasks", "cancelled"),
 		filepath.Join("commands", "README.md"),
 		filepath.Join("skills", "README.md"),
 	} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
 			t.Errorf("vault scaffold missing Projects/scaffolded/%s: %v", rel, err)
+		}
+	}
+	// Not the retired per-project vault config, and not the task archive
+	// directories that were written beside it: the task mover creates those
+	// on first use.
+	for _, rel := range []string{"config.toml", filepath.Join("tasks", "done"), filepath.Join("tasks", "cancelled")} {
+		if _, err := os.Lstat(filepath.Join(root, rel)); !os.IsNotExist(err) {
+			t.Errorf("vp_init created Projects/scaffolded/%s (lstat err: %v); it no longer writes it", rel, err)
 		}
 	}
 }
@@ -1075,7 +1080,7 @@ func TestVpInit_DoesNotCreateProjectDir(t *testing.T) {
 		t.Errorf("handler created %s on the server's disk (stat err = %v)", projDir, err)
 	}
 	// The vault side still ran.
-	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "never-created", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "never-created", "commands", "README.md")); err != nil {
 		t.Errorf("vault side did not run: %v", err)
 	}
 	// And EVERY working-tree step is accounted for as an omission.
@@ -1238,7 +1243,7 @@ func TestVpInit_VaultOnly_ReportsIncomplete(t *testing.T) {
 				}
 			}
 			// The vault side still ran and produced its artifacts.
-			if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "x", "config.toml")); err != nil {
+			if _, err := os.Stat(filepath.Join(vaultDir, "Projects", "x", "commands", "README.md")); err != nil {
 				t.Errorf("vault side did not run: %v", err)
 			}
 		})
@@ -1403,8 +1408,9 @@ func TestInitProject_FailureIsVisibleAtTopLevel(t *testing.T) {
 	healthy := callInit(t, InitProjectTool(storage.NewVault(healthyVault)),
 		initParams{Path: projDir, Name: "verdict"})
 
-	// A vault whose Projects/ is a regular FILE: the vault-project write fails
-	// for a reason the server cannot paper over, and nothing lands under
+	// A vault whose Projects/ is a regular FILE: the project scaffold — the
+	// first vault-side step since the vault-project step retired — fails for a
+	// reason the server cannot paper over, and nothing lands under
 	// Projects/<slug>/ at all.
 	brokenVault := t.TempDir()
 	if err := os.WriteFile(filepath.Join(brokenVault, "Projects"), []byte("not a directory\n"), 0o644); err != nil {
@@ -1416,12 +1422,12 @@ func TestInitProject_FailureIsVisibleAtTopLevel(t *testing.T) {
 	// The fixture has to actually break, or the test proves nothing.
 	sawFail := false
 	for _, row := range broken.Steps {
-		if row.Step == "vault-project" && row.Status == "fail" {
+		if row.Step == "project-scaffold" && row.Status == "fail" {
 			sawFail = true
 		}
 	}
 	if !sawFail {
-		t.Fatalf("fixture did not fail vault-project; steps = %+v", broken.Steps)
+		t.Fatalf("fixture did not fail project-scaffold; steps = %+v", broken.Steps)
 	}
 	// Nothing landed under Projects/<slug>/ — the whole subtree is unreachable
 	// through a regular file, so the stat fails with ENOTDIR rather than
@@ -1442,8 +1448,8 @@ func TestInitProject_FailureIsVisibleAtTopLevel(t *testing.T) {
 	if broken.OK {
 		t.Error("broken run reports ok = true")
 	}
-	if !slices.Contains(broken.Failed, "vault-project") {
-		t.Errorf("broken run failed = %v, want it to name vault-project", broken.Failed)
+	if !slices.Contains(broken.Failed, "project-scaffold") {
+		t.Errorf("broken run failed = %v, want it to name project-scaffold", broken.Failed)
 	}
 
 	// And the fields the Description now tells callers NOT to key off are
@@ -1476,8 +1482,8 @@ func TestInitProject_StepsCarryCreated(t *testing.T) {
 			firstCreated = append(firstCreated, row.Step)
 		}
 	}
-	if !slices.Contains(firstCreated, "vault-project") {
-		t.Errorf("fresh run created = %v, want it to include vault-project", firstCreated)
+	if !slices.Contains(firstCreated, "project-scaffold") {
+		t.Errorf("fresh run created = %v, want it to include project-scaffold", firstCreated)
 	}
 
 	second := callInit(t, tool, initParams{Path: projDir, Name: "createdness"})

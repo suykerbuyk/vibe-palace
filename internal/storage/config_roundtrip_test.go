@@ -15,8 +15,8 @@ import (
 //
 // 🔴 THE SPECIMEN IS THE SHIPPED TEMPLATE, NOT A HAND-WRITTEN FIXTURE, and that
 // is the whole point of this file. VaultProjectTemplateContent() is byte for byte
-// what WriteVaultProjectConfig writes, so it is what every project config in a
-// real vault is born from. A fixture invented here would only ever contain what
+// what the retired vault-project writer wrote, so it is what every project
+// config in a real vault was born from. A fixture invented here would only ever contain what
 // the test author remembered to put in it — and the defect these tests exist for
 // is a writer that discarded what it never read, which a fixture cannot model
 // because the author would have to think of the thing being discarded first.

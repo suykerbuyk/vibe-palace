@@ -39,7 +39,7 @@ log_level = "info"
 version_major = 1
 version_minor = 1
 # kind identifies which schema this file follows ("global", "cwd-project",
-# or "vault-project"). Do not change for an existing file.
+# or "host-project"). Do not change for an existing file.
 # kind = "global"
 
 # Embedding model for semantic search.

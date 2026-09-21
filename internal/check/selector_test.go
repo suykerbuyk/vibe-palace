@@ -287,11 +287,11 @@ func TestStrayScaffoldsProducer(t *testing.T) {
 
 	t.Run("finds_a_scaffold_only_project", func(t *testing.T) {
 		root := t.TempDir()
-		dir := filepath.Join(root, "Projects", "ghost")
+		dir := filepath.Join(root, "Projects", "ghost", "commands")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 
@@ -305,6 +305,33 @@ func TestStrayScaffoldsProducer(t *testing.T) {
 		joined := strings.Join(append([]string{rs[0].Summary}, rs[0].Details...), "\n")
 		if !strings.Contains(joined, "ghost") {
 			t.Errorf("the stray project must be NAMED, not just counted:\n%s", joined)
+		}
+	})
+
+	// A directory holding ONLY the retired Projects/<slug>/config.toml was a
+	// scaffold-only project while config.toml was an init marker. It is Phantom
+	// now — not an initialised project, so not a stray scaffold; the
+	// vault-project-config row reports the file itself.
+	t.Run("does_not_flag_a_config_only_directory", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "Projects", "leftover")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		rs, err := RunSelected(root, "stray-scaffolds")
+		if err != nil {
+			t.Fatalf("RunSelected: %v", err)
+		}
+		if rs[0].Status != Pass {
+			t.Fatalf("status = %v, want Pass (a config-only directory is not a scaffold): %+v", rs[0].Status, rs[0])
+		}
+		joined := strings.Join(append([]string{rs[0].Summary}, rs[0].Details...), "\n")
+		if strings.Contains(joined, "leftover") {
+			t.Errorf("a config-only directory was named as a stray scaffold:\n%s", joined)
 		}
 	})
 

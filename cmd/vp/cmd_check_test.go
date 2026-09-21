@@ -92,15 +92,22 @@ func TestCheckParityWithConfigSyncDryRun(t *testing.T) {
 	}
 }
 
-// TestCheckEmitsVaultProjectRow verifies the new row added in Phase 4: vp
-// check now reports on vault-project state via the VaultProject reconciler.
-func TestCheckEmitsVaultProjectRow(t *testing.T) {
+// TestCheckReportsTheRetiredVaultProjectConfig: the "Vault project" row the
+// retired VaultProject reconciler emitted is gone, and in its place the full
+// suite carries the "Vault project config" survivor row. The two names share a
+// prefix, so the assertion keys on the rendered "<name>:" — a bare substring
+// match on "Vault project" would be satisfied by the new row alone and pin
+// nothing.
+func TestCheckReportsTheRetiredVaultProjectConfig(t *testing.T) {
 	healthyCheckEnv(t)
 
 	fv, _ := cli.ParseFlags(checkFlags, nil)
 	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
-	if !strings.Contains(out, "Vault project") {
-		t.Errorf("expected Vault project row in vp check output:\n%s", out)
+	if strings.Contains(out, "] Vault project:") {
+		t.Errorf("vp check still emits the retired Vault project row:\n%s", out)
+	}
+	if !strings.Contains(out, "] Vault project config:") {
+		t.Errorf("expected the Vault project config survivor row in vp check output:\n%s", out)
 	}
 	// The row names the project the cwd's .vibe-palace.toml declares, which
 	// proves the fixture's [project] table is what detection read — a

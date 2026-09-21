@@ -46,16 +46,16 @@ func writeAbsorbFixture(t *testing.T) string {
 	return dir
 }
 
-// seedVaultProject writes the minimal Projects/{slug}/config.toml the absorb
-// writer's guard requires.
+// seedVaultProject writes the minimal init-scaffold marker
+// (Projects/{slug}/commands/README.md) the absorb writer's guard requires. It
+// seeded config.toml until that file stopped being a scaffold marker.
 func seedVaultProject(t *testing.T, vaultRoot, slug string) {
 	t.Helper()
-	projDir := filepath.Join(vaultRoot, "Projects", slug)
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	cmdDir := filepath.Join(vaultRoot, "Projects", slug, "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, "config.toml"),
-		[]byte("[project]\nname = \""+slug+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cmdDir, "README.md"), []byte("stub\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

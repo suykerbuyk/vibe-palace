@@ -321,7 +321,10 @@ func newMockLLMServer(t *testing.T, initialContent string) *mockLLMServer {
 }
 
 // writeProjectLLMConfig appends a [palace.llm] stanza to the project's vault
-// config.toml, port of test/e2e/lib.sh's write_project_llm_config. The
+// config.toml, port of test/e2e/lib.sh's write_project_llm_config. It creates
+// the file when absent: vp init no longer writes it, but LoadConfig still
+// decodes it until that layer is deleted, and the helper moves to a tier that
+// is still read in the same change. The
 // internal/llm client treats Endpoint as a BASE URL and appends
 // "/chat/completions" itself, so the base URL is written as-is. Returns the
 // env var assignment the caller must add to its RunCLI env
@@ -329,7 +332,7 @@ func newMockLLMServer(t *testing.T, initialContent string) *mockLLMServer {
 func writeProjectLLMConfig(t *testing.T, vaultRoot, project, url string) string {
 	t.Helper()
 	cfg := projectConfigPath(t, vaultRoot, project)
-	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		t.Fatalf("open %s for append: %v", cfg, err)
 	}

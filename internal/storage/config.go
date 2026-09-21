@@ -35,9 +35,8 @@ const (
 
 // MetaKind values identify which config-file schema a [meta] block belongs to.
 const (
-	MetaKindGlobal       = "global"
-	MetaKindCwdProject   = "cwd-project"
-	MetaKindVaultProject = "vault-project"
+	MetaKindGlobal     = "global"
+	MetaKindCwdProject = "cwd-project"
 	// MetaKindHostProject is the host-local per-project file written by
 	// WriteHostScoringConfig: the same shape as a vault project file, but
 	// outside every vault and never shared between machines.

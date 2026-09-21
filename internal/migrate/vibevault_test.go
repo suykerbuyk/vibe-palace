@@ -675,12 +675,13 @@ func TestImportVibeVault_UnreadableFile(t *testing.T) {
 	}
 }
 
-// TestImportVibeVault_VaultProjectReconcilerSideEffects asserts that
-// migrate delegates vault-project config creation to
-// reconcile.VaultProject, observable via the tasks/done and tasks/cancelled
-// directories the reconciler creates (which the old direct
-// WriteVaultProjectConfig call did NOT create).
-func TestImportVibeVault_VaultProjectReconcilerSideEffects(t *testing.T) {
+// TestImportVibeVault_ScaffoldsProjectAndWritesNoVaultConfig asserts that
+// migrate initialises the destination project with the init scaffold
+// (Projects/<slug>/{commands,skills}/README.md) and writes no
+// Projects/<slug>/config.toml. The retired vault-project reconciler used to
+// write that file, and tasks/{done,cancelled} beside it; the task archive
+// directories are now created on first use by the task mover.
+func TestImportVibeVault_ScaffoldsProjectAndWritesNoVaultConfig(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
 	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
@@ -688,29 +689,21 @@ func TestImportVibeVault_VaultProjectReconcilerSideEffects(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfgPath := filepath.Join(vault.Root, "Projects", "test-project", "config.toml")
-	if _, err := os.Stat(cfgPath); err != nil {
-		t.Errorf("expected vault-project config.toml at %s: %v", cfgPath, err)
+	proj := filepath.Join(vault.Root, "Projects", "test-project")
+	if _, err := os.Lstat(filepath.Join(proj, "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("migrate created Projects/test-project/config.toml (lstat err: %v); nothing may write the retired vault config", err)
 	}
-
-	// Reconciler side-effects: tasks/done and tasks/cancelled dirs.
-	for _, sub := range []string{"done", "cancelled"} {
-		p := filepath.Join(vault.Root, "Projects", "test-project", "tasks", sub)
-		fi, err := os.Stat(p)
-		if err != nil {
-			t.Errorf("expected tasks/%s dir created by reconciler at %s: %v", sub, p, err)
-			continue
-		}
-		if !fi.IsDir() {
-			t.Errorf("tasks/%s should be a directory", sub)
+	for _, rel := range []string{"commands/README.md", "skills/README.md"} {
+		if _, err := os.Stat(filepath.Join(proj, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("expected %s scaffolded by migrate: %v", rel, err)
 		}
 	}
 }
 
-// TestImportVibeVault_VaultProjectIdempotent verifies that re-running
-// migrate when config.toml already exists does not error and produces
-// a clean reconciler plan (Unchanged) on the second pass.
-func TestImportVibeVault_VaultProjectIdempotent(t *testing.T) {
+// TestImportVibeVault_ScaffoldIdempotent verifies that re-running migrate over
+// an already-scaffolded project does not error and leaves the scaffold
+// byte-identical.
+func TestImportVibeVault_ScaffoldIdempotent(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 	ctx := context.Background()
 
@@ -718,28 +711,28 @@ func TestImportVibeVault_VaultProjectIdempotent(t *testing.T) {
 		t.Fatalf("first import: %v", err)
 	}
 
-	cfgPath := filepath.Join(vault.Root, "Projects", "test-project", "config.toml")
-	before, err := os.ReadFile(cfgPath)
+	readme := filepath.Join(vault.Root, "Projects", "test-project", "commands", "README.md")
+	before, err := os.ReadFile(readme)
 	if err != nil {
-		t.Fatalf("read config.toml: %v", err)
+		t.Fatalf("read scaffold README: %v", err)
 	}
 
 	if _, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{}); err != nil {
 		t.Fatalf("second import: %v", err)
 	}
 
-	after, err := os.ReadFile(cfgPath)
+	after, err := os.ReadFile(readme)
 	if err != nil {
-		t.Fatalf("read config.toml after second run: %v", err)
+		t.Fatalf("read scaffold README after second run: %v", err)
 	}
 	if string(before) != string(after) {
-		t.Error("config.toml changed between idempotent migrate runs")
+		t.Error("scaffold README changed between idempotent migrate runs")
 	}
 }
 
-// TestReconcileVaultProject_DryRunSkipped verifies dry-run does not
-// invoke the reconciler (no config.toml and no tasks subdirs created).
-func TestImportVibeVault_DryRunSkipsReconciler(t *testing.T) {
+// TestImportVibeVault_DryRunSkipsScaffold verifies dry-run does not scaffold
+// the destination project.
+func TestImportVibeVault_DryRunSkipsScaffold(t *testing.T) {
 	vault, engine, emb, cfg := setupTestVault(t)
 
 	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{DryRun: true})
@@ -747,14 +740,10 @@ func TestImportVibeVault_DryRunSkipsReconciler(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfgPath := filepath.Join(vault.Root, "Projects", "test-project", "config.toml")
-	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
-		t.Errorf("config.toml should not exist after dry-run, stat err=%v", err)
-	}
-	for _, sub := range []string{"done", "cancelled"} {
-		p := filepath.Join(vault.Root, "Projects", "test-project", "tasks", sub)
+	for _, rel := range []string{"config.toml", "commands/README.md", "skills/README.md"} {
+		p := filepath.Join(vault.Root, "Projects", "test-project", filepath.FromSlash(rel))
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("tasks/%s should not exist after dry-run, stat err=%v", sub, err)
+			t.Errorf("%s should not exist after dry-run, stat err=%v", rel, err)
 		}
 	}
 }

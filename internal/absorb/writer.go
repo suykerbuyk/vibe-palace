@@ -24,7 +24,8 @@ type WriteOptions struct {
 	// Vault is the vault the writer will append into.
 	Vault *storage.Vault
 	// Project is the palace-project slug. The writer requires
-	// Projects/{Project}/config.toml to exist before writing anything.
+	// Projects/{Project}/ to be an initialised project (requireVaultProject)
+	// before writing anything.
 	Project string
 	// ProjectRoot is the on-disk repo root containing the source files.
 	ProjectRoot string
@@ -201,8 +202,9 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 // project — one carrying an init-scaffold marker or real history — as
 // storage.ClassifyProjectDir judges it. Bare directory existence is not
 // sufficient: a phantom directory (only .surface, memory/, transcripts/ or
-// empty subdirs) is refused. A project with history but no config.toml is
-// accepted; the earlier config.toml-must-exist predicate refused those.
+// empty subdirs) is refused, and so is a directory holding only the retired
+// Projects/{slug}/config.toml, which is no longer an init marker. A project
+// with history but no config.toml is accepted.
 // A symlinked Projects/{slug} is refused too, by the classifier's own rule.
 func requireVaultProject(v *storage.Vault, project string) error {
 	state, err := storage.ClassifyProjectDir(v.Root, project)

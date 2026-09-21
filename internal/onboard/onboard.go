@@ -6,10 +6,10 @@
 //
 // # Why a package rather than a helper in cmd/vp
 //
-// `vp init` grew eight distinct writes across three SURFACES that do not belong
+// `vp init` grew distinct writes across three SURFACES that do not belong
 // to the same machine:
 //
-//   - the VAULT (Projects/<slug>/config.toml, the scaffold tree),
+//   - the VAULT (the Projects/<slug>/ scaffold tree),
 //   - the WORKING TREE (.vibe-palace.toml, AGENTS.md, .claude/commands/,
 //     .gitignore, .git/hooks/post-commit),
 //   - the RUNNING HOST'S GLOBALS (~/.claude/settings.json).

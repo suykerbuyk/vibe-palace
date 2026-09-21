@@ -123,13 +123,14 @@ func TestIntegrationWireAllOrchestratorConvergence(t *testing.T) {
 	}
 	vaultRoot := t.TempDir()
 	vault := storage.NewVault(vaultRoot)
-	projDir := filepath.Join(vaultRoot, "Projects", "convergence")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	// The init-scaffold marker absorb's guard requires (config.toml is no
+	// longer one).
+	cmdDir := filepath.Join(vaultRoot, "Projects", "convergence", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
 		t.Fatalf("mkdir vault proj: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, "config.toml"),
-		[]byte("[project]\nname = \"convergence\"\n"), 0o644); err != nil {
-		t.Fatalf("seed vault config: %v", err)
+	if err := os.WriteFile(filepath.Join(cmdDir, "README.md"), []byte("stub\n"), 0o644); err != nil {
+		t.Fatalf("seed vault scaffold marker: %v", err)
 	}
 	if _, err := absorb.Apply(plan, absorb.WriteOptions{
 		Vault:       vault,
