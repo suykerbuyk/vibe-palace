@@ -19,6 +19,7 @@ import (
 
 var vaultDryRunFlag = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print git commands without executing"},
+	vaultRootFlag,
 }
 
 // vaultSyncFlags is dedicated to `vault sync`: it carries --no-tidy in addition
@@ -26,6 +27,7 @@ var vaultDryRunFlag = []cli.FlagDef{
 var vaultSyncFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Print git commands without executing"},
 	{Name: "--no-tidy", Help: "Skip the implicit capture-artifact tidy; raw pull+push (refuses on any dirt)"},
+	vaultRootFlag,
 }
 
 func cmdVault() *cli.Command {
@@ -39,7 +41,7 @@ func cmdVault() *cli.Command {
 func cmdVaultPull() *cli.Command {
 	return &cli.Command{
 		Name:        "vault pull",
-		Synopsis:    "vp vault pull [--dry-run]",
+		Synopsis:    "vp vault pull [--dry-run] [--vault PATH]",
 		Description: "Pull from all configured vault remotes.",
 		Flags:       vaultDryRunFlag,
 		Examples: []cli.Example{
@@ -53,13 +55,9 @@ func cmdVaultPull() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "pull")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault pull", fv.Get("--vault"), "pull", false)
+			if code != cli.ExitOK {
+				return code
 			}
 			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
 			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
@@ -80,7 +78,7 @@ func cmdVaultPull() *cli.Command {
 func cmdVaultPush() *cli.Command {
 	return &cli.Command{
 		Name:        "vault push",
-		Synopsis:    "vp vault push [--dry-run]",
+		Synopsis:    "vp vault push [--dry-run] [--vault PATH]",
 		Description: "Push to all configured vault remotes. Requires clean vault state.",
 		Flags:       vaultDryRunFlag,
 		Examples: []cli.Example{
@@ -94,13 +92,9 @@ func cmdVaultPush() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "push")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault push: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault push", fv.Get("--vault"), "push", false)
+			if code != cli.ExitOK {
+				return code
 			}
 			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
 			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
@@ -121,7 +115,7 @@ func cmdVaultPush() *cli.Command {
 func cmdVaultSync() *cli.Command {
 	return &cli.Command{
 		Name:     "vault sync",
-		Synopsis: "vp vault sync [--dry-run] [--no-tidy]",
+		Synopsis: "vp vault sync [--dry-run] [--no-tidy] [--vault PATH]",
 		Description: "Tidy capture artifacts, then pull and push all configured vault " +
 			"remotes. By default sync classifies the working tree, commits ONLY " +
 			"capture artifacts (never git add -A), then pulls and pushes — refusing " +
@@ -140,13 +134,9 @@ func cmdVaultSync() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "sync")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault sync", fv.Get("--vault"), "sync", false)
+			if code != cli.ExitOK {
+				return code
 			}
 			// storage.ListRemotes reports an empty repo as `(nil, nil)`. Refuse it
 			// here: pullAll/pushAll iterate the slice, so zero remotes would exit OK
@@ -236,12 +226,13 @@ var vaultCommitFlags = []cli.FlagDef{
 	{Name: "--paths", Arg: "LIST", Help: "Comma-separated vault-relative paths to stage and commit (required)"},
 	{Name: "--message", Arg: "MSG", Help: "Commit message (required)"},
 	{Name: "--push", Help: "Push to all configured remotes after committing"},
+	vaultRootFlag,
 }
 
 func cmdVaultCommit() *cli.Command {
 	return &cli.Command{
 		Name:        "vault commit",
-		Synopsis:    "vp vault commit --paths <p1,p2,...> --message <msg> [--push]",
+		Synopsis:    "vp vault commit --paths <p1,p2,...> --message <msg> [--push] [--vault PATH]",
 		Description: "Stage and commit ONLY the named vault-relative paths (never git add -A), with a hostname-stamped message. Other dirty files are left untouched. Pass --push to also push to all configured remotes.",
 		Flags:       vaultCommitFlags,
 		Examples: []cli.Example{
@@ -270,13 +261,9 @@ func cmdVaultCommit() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "commit")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault commit: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault commit", fv.Get("--vault"), "commit", true)
+			if code != cli.ExitOK {
+				return code
 			}
 			push := fv.Bool("--push")
 			res, err := storage.CommitAndPushPaths(root, message, paths, push)
@@ -323,6 +310,7 @@ func cmdVaultCommit() *cli.Command {
 var vaultTidyFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Classify dirt and print what would be swept, without committing anything"},
 	{Name: "--no-push", Help: "Commit the swept artifacts locally without pushing to remotes"},
+	vaultRootFlag,
 }
 
 // printVaultRoot renders the vault a command acted on, above the paths it
@@ -385,7 +373,7 @@ func printTidyReported(res *storage.TidyResult) {
 func cmdVaultTidy() *cli.Command {
 	return &cli.Command{
 		Name:     "vault tidy",
-		Synopsis: "vp vault tidy [--dry-run] [--no-push]",
+		Synopsis: "vp vault tidy [--dry-run] [--no-push] [--vault PATH]",
 		Description: "Scan the whole vault and commit ONLY classified capture artifacts " +
 			"(session summaries, transcript archives, knowledge-graph entities/triples, " +
 			"drawers, and tracked .surface stamps) with a hostname-stamped message. " +
@@ -398,6 +386,7 @@ func cmdVaultTidy() *cli.Command {
 			{Cmd: "vp vault tidy --dry-run", Comment: "Preview the sweep/report split without committing"},
 			{Cmd: "vp vault tidy --no-push", Comment: "Commit swept artifacts locally only"},
 			{Cmd: "vp vault tidy", Comment: "Commit swept artifacts and push to all remotes"},
+			{Cmd: "vp vault tidy --no-push --vault ~/scratch/vault-copy", Comment: "Rehearse against a throwaway copy without redirecting config"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(vaultTidyFlags, args)
@@ -406,13 +395,9 @@ func cmdVaultTidy() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "tidy")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault tidy", fv.Get("--vault"), "tidy", true)
+			if code != cli.ExitOK {
+				return code
 			}
 
 			// Printed once, BEFORE the dry-run/apply split, so it is the first
@@ -489,6 +474,7 @@ func cmdVaultTidy() *cli.Command {
 var vaultStatusFlags = []cli.FlagDef{
 	{Name: "--json", Help: "Output the versioned status report as JSON"},
 	{Name: "--no-fetch", Help: "Skip the per-remote git fetch (fast cached path); behind counts are reported as unknown"},
+	vaultRootFlag,
 }
 
 // humanAge renders a coarse, readable age for a fetch timestamp (e.g. "3h ago").
@@ -568,7 +554,7 @@ func printVaultRemoteLine(st storage.RemoteStatusJSON) {
 func cmdVaultStatus() *cli.Command {
 	return &cli.Command{
 		Name:     "vault status",
-		Synopsis: "vp vault status [--json] [--no-fetch]",
+		Synopsis: "vp vault status [--json] [--no-fetch] [--vault PATH]",
 		Description: "Report the vault's sync state against every configured remote " +
 			"(ahead/unpushed, behind, diverged, reachable) plus working-tree dirt " +
 			"(the tidy sweep/report split). Read-only: never commits, pushes, or " +
@@ -588,13 +574,9 @@ func cmdVaultStatus() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, err := vaultRoot()
-			if err == nil {
-				err = storage.RefuseIfGitDisabled(root, "report vault status")
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp vault status: %v\n", err)
-				return cli.ExitUser
+			root, code := vaultRootFor("vp vault status", fv.Get("--vault"), "report vault status", false)
+			if code != cli.ExitOK {
+				return code
 			}
 			fetch := !fv.Bool("--no-fetch")
 

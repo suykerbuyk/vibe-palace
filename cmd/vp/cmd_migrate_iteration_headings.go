@@ -92,28 +92,6 @@ func cmdMigrateIterationHeadings() *cli.Command {
 	}
 }
 
-// resolveMigrationVaultRoot returns the vault root a migration will operate on:
-// the --vault value when given (tilde-expanded and made absolute), otherwise the
-// configured vault.
-//
-// --vault exists so the repair can be rehearsed against a THROWAWAY COPY of the
-// archives before it is pointed at the real ones. That rehearsal is the only way
-// to prove "heading-only diff" on real data, and a command that can only ever
-// address the live vault cannot be rehearsed at all.
-func resolveMigrationVaultRoot(flagValue string) (string, error) {
-	if strings.TrimSpace(flagValue) != "" {
-		return expandAndAbsPath(flagValue)
-	}
-	vault, err := openProjectVault()
-	if err != nil {
-		return "", fmt.Errorf("open vault: %w", err)
-	}
-	if vault.Root == "" {
-		return "", fmt.Errorf("no vault configured; pass --vault PATH")
-	}
-	return vault.Root, nil
-}
-
 // refusedHeading is one refusal with the archive it came from, so the closing
 // action list can be read on its own without scrolling back to find which
 // project a line number belongs to.
