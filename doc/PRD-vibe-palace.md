@@ -1042,10 +1042,12 @@ Configuration continues to use TOML files in the existing precedence chain:
 
 - **Embedded defaults:** compiled into the binary
 - **Host-level:** `~/.config/vibe-palace/config.toml`
-- **Project-level, in the vault:** `Projects/{project}/config.toml` — being
-  retired; still read, but no longer writable through `vaultfs`
 - **Project-level, host-local:** `~/.config/vibe-palace/projects/{project}.toml`
-  — where per-project settings are edited (`palace.scoring` subtree)
+  — the only per-project tier, and it carries the `palace.scoring` subtree only
+
+The vault's `Projects/{project}/config.toml` was a per-project tier until
+v7.2.0. It is retired: nothing reads or writes it, and `vaultfs` refuses to
+create it.
 
 No database table needed.
 
@@ -1184,7 +1186,7 @@ func (r *PrecedenceResolver) Resolve(resource string, project string) string {
 | resume.md template | Yes | Templates/resume.md | Projects/{p}/resume.md |
 | commands/* | Yes | Templates/commands/* | Projects/{p}/commands/* |
 | skills/* | Yes | Templates/skills/* | Projects/{p}/skills/* |
-| config values | Yes (code defaults) | Global config.toml | `~/.config/vibe-palace/projects/{p}.toml` (host-local; Projects/{p}/config.toml is the retiring tier below it) |
+| config values | Yes (code defaults) | Global config.toml | `~/.config/vibe-palace/projects/{p}.toml` (host-local, `palace.scoring` only; the vault's Projects/{p}/config.toml is retired as of v7.2.0) |
 
 ### 8.3 Precedence for First-Time Projects
 

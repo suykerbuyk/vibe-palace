@@ -167,8 +167,10 @@ The **destination** is always the configured `vault_path` from
 `~/.config/vibe-palace/config.toml`. Everything the migration writes —
 palace data (drawers, KG), per-project idempotency markers
 (`palace/*/.local/imported-sessions.jsonl`), the embed cache, the ONNX
-model cache, and per-project `Projects/<slug>/config.toml` scaffolds —
-lands in the destination, never in the source.
+model cache, and the per-project `Projects/<slug>/{commands,skills}/`
+init scaffold — lands in the destination, never in the source. (Before
+v7.2.0 it also wrote a `Projects/<slug>/config.toml`; that per-project vault
+config is retired and nothing writes it now.)
 
 When `--vault-path` is omitted, source and destination are the same
 configured vault — the original single-vault, in-place behavior.
