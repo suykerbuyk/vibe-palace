@@ -278,10 +278,9 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 		if _, err := os.Stat(hostPath); err != nil {
 			t.Errorf("host-local config not written: %v", err)
 		}
-		vaultPath, err := v.ProjectConfigFile("proj")
-		if err != nil {
-			t.Fatal(err)
-		}
+		// The retired vault project config, built by hand: nothing may
+		// write it any more.
+		vaultPath := filepath.Join(v.Root, "Projects", "proj", "config.toml")
 		if _, err := os.Stat(vaultPath); !os.IsNotExist(err) {
 			t.Errorf("--apply wrote the vault project config %s (stat err=%v)", vaultPath, err)
 		}

@@ -43,10 +43,11 @@ func assertRefused(t *testing.T, op string, err error) {
 	if !strings.Contains(err.Error(), "vp tune rooms --apply") {
 		t.Errorf("%s refusal must name the writer, got %q", op, err)
 	}
-	// ...and it must NOT claim the file is dead: it is still read, and vp init
-	// still creates it, until the file is retired outright.
-	if !strings.Contains(err.Error(), "not dead yet") {
-		t.Errorf("%s refusal must not overclaim; it must say the file still applies, got %q", op, err)
+	// ...and it must say the file is read by nothing, which has been true since
+	// LoadConfig stopped decoding it. A message saying an override there still
+	// applies would send an operator to edit a file with no effect.
+	if !strings.Contains(err.Error(), "nothing reads it") || strings.Contains(err.Error(), "still applies") {
+		t.Errorf("%s refusal must say nothing reads the file, got %q", op, err)
 	}
 	if !strings.Contains(err.Error(), "vp status") {
 		t.Errorf("%s refusal must point at vp status, got %q", op, err)

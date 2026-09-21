@@ -61,6 +61,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -1310,11 +1311,17 @@ var toolCoverageFixtures = map[string]toolFixture{
 			build: func(t *testing.T, h *testHarness) any {
 				const project = "cov-checksummqueue"
 				projDir := t.TempDir()
-				// [summarization] left disabled: the fixture proves the
+				// [summarization] pinned disabled: the fixture proves the
 				// read-only diagnostic reports an EXPECTED-backlog verdict
 				// (never Fail) for a pending, unconfigured queue,
-				// distinguishing it from an actually-stuck one.
-				cfgPath, err := h.Vault.ProjectConfigFile(project)
+				// distinguishing it from an actually-stuck one. The pin
+				// lives in the host global config — the only tier that
+				// carries [summarization] — under a per-test isolated
+				// XDG_CONFIG_HOME (testinfra.IsolateEnv; package
+				// integration may not t.Setenv it directly).
+				env := testinfra.IsolateEnv(t)
+				testutil.RequireResolvedUnder(t, env.XDGConfigHome, storage.VaultConfigFilePath)
+				cfgPath, err := storage.VaultConfigFilePath()
 				if err != nil {
 					t.Fatal(err)
 				}

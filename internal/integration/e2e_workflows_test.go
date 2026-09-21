@@ -131,7 +131,7 @@ func TestIntegrationE2EWorkflowsTuneRoomsLoop(t *testing.T) {
 	// against ids that actually match is what makes the run disagree with the
 	// classifier and propose the weight changes `--apply` then writes.
 	mock.responder = reflectAllTo("testing")
-	mockKeyEnv := writeProjectLLMConfig(t, filepath.Join(env.Home, "vibe-palace-vault"), "proj", mock.URL)
+	mockKeyEnv := writeHostLLMConfig(t, env, mock.URL)
 	tuneEnv := env.Environ(mockKeyEnv)
 
 	metrics := newMetricEmitter(t, filepath.Join(workflowsMetricsDir(t), "metrics.jsonl"))

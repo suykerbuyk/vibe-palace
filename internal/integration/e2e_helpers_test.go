@@ -38,6 +38,8 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // gitInit runs a real `git init -q` in dir, failing the test on error. Every
@@ -131,10 +133,6 @@ func requireFileNotContains(t *testing.T, path, substr string) {
 	requireNotContains(t, string(data), substr)
 }
 
-// projectConfigPath mirrors test/e2e/lib.sh's vault_project_config_path, but
-// goes through the real storage.Vault.ProjectConfigFile accessor instead of
-// re-deriving the "{vault}/Projects/{project}/config.toml" layout by hand —
-// a Go test can just call the production code that owns that path.
 // hostProjectConfigPath is the HOST-LOCAL per-project config file, which is
 // where `tune rooms --apply` and `discover rooms --apply` write after R2 of
 // task move-per-project-config-out-of-the-shared-vault.
@@ -157,13 +155,14 @@ func hostProjectConfigPath(t *testing.T, project string) string {
 	return p
 }
 
+// projectConfigPath names the RETIRED vault per-project config,
+// {vault}/Projects/{project}/config.toml (test/e2e/lib.sh's
+// vault_project_config_path). No production code reads or writes it any more
+// and its accessor is gone, so the layout is built by hand here; callers use
+// it only to assert the file stays absent or untouched.
 func projectConfigPath(t *testing.T, vaultRoot, project string) string {
 	t.Helper()
-	p, err := storage.NewVault(vaultRoot).ProjectConfigFile(project)
-	if err != nil {
-		t.Fatalf("ProjectConfigFile(%q): %v", project, err)
-	}
-	return p
+	return filepath.Join(vaultRoot, "Projects", project, "config.toml")
 }
 
 // seedDrawer inlines test/e2e/internal/seeddrawer/main.go's entire body as a
@@ -320,18 +319,30 @@ func newMockLLMServer(t *testing.T, initialContent string) *mockLLMServer {
 	return m
 }
 
-// writeProjectLLMConfig appends a [palace.llm] stanza to the project's vault
-// config.toml, port of test/e2e/lib.sh's write_project_llm_config. It creates
-// the file when absent: vp init no longer writes it, but LoadConfig still
-// decodes it until that layer is deleted, and the helper moves to a tier that
-// is still read in the same change. The
+// writeHostLLMConfig appends a [palace.llm] stanza to the HOST GLOBAL
+// config of the isolated env the CLI subprocess runs with
+// (<env.XDGConfigHome>/vibe-palace/config.toml), the port of test/e2e/lib.sh's
+// write_project_llm_config. The host global config is the only tier that
+// carries [palace.llm]: the vault Projects/<slug>/config.toml is no longer
+// read, and the host-local per-project file carries only palace.scoring. It
+// appends (creating the file when absent) so the vault_path `vp init` wrote
+// survives. RequireResolvedUnder proves the file this test process resolves —
+// the same XDG_CONFIG_HOME env.Environ() hands the subprocess — lies inside
+// the isolated env, never the real host config or the hermetic fixture. The
 // internal/llm client treats Endpoint as a BASE URL and appends
 // "/chat/completions" itself, so the base URL is written as-is. Returns the
 // env var assignment the caller must add to its RunCLI env
 // ("VP_MOCK_KEY=mock-key") for api_key_env resolution.
-func writeProjectLLMConfig(t *testing.T, vaultRoot, project, url string) string {
+func writeHostLLMConfig(t *testing.T, env *testinfra.Env, url string) string {
 	t.Helper()
-	cfg := projectConfigPath(t, vaultRoot, project)
+	testutil.RequireResolvedUnder(t, env.XDGConfigHome, storage.VaultConfigFilePath)
+	cfg, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatalf("VaultConfigFilePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(cfg), err)
+	}
 	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		t.Fatalf("open %s for append: %v", cfg, err)

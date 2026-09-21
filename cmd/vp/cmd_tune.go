@@ -223,7 +223,7 @@ func runTuneRooms(vault *storage.Vault, proj string, cfg storage.Config,
 		// rather than copied to `vp discover rooms --apply`, which never carried
 		// it. The asymmetry was real — two writers of one fact, one of them
 		// disclosing the damage and one silent — but the resolution is that the
-		// claim is no longer true: storage.WriteScoringConfig merges into the
+		// claim is no longer true: the scoring writer merges into the
 		// existing text instead of re-encoding a parsed map, so comments survive.
 		// A warning kept past the defect it described teaches a reader to expect
 		// damage that no longer happens, and the next person to read it has no way

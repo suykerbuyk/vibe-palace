@@ -294,7 +294,7 @@ func TestRunDrainSummaries_LockAcquireIOErrorIsSystemError(t *testing.T) {
 // always builds a real, config-driven summarize.DispatchSummarizer itself
 // (see cmd_drain.go). So, to force the real Claim/Requeue/Done path to run
 // instead of short-circuiting on a disabled summarizer, this test enables
-// [summarization] in the project's own config and points base_url at an
+// [summarization] in the host global config (per-test XDG) and points base_url at an
 // httptest server returning a canned OpenAI-compatible completion — the same
 // pattern internal/hook/hook_test.go's
 // TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath uses to
@@ -326,13 +326,8 @@ func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) 
 	}
 
 	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile(slug)
-	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatalf("mkdir project config dir: %v", err)
-	}
+	// [summarization] lives in the host global config (per-test XDG): it is
+	// the only tier that carries it.
 	summCfg := "[summarization]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -341,9 +336,7 @@ func TestRunDrainSummaries_BracketedProjectPathProcessesQueuedJob(t *testing.T) 
 		"base_url = \"" + srv.URL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(cfgPath, []byte(summCfg), 0o644); err != nil {
-		t.Fatalf("write summarization config: %v", err)
-	}
+	writeIsolatedHostConfig(t, summCfg)
 
 	// Seed the iterations.md entry the queued job (N=7) resolves against.
 	itersPath, err := vault.IterationsFile(slug)

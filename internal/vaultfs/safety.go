@@ -299,13 +299,13 @@ func taskPathRefusal(relPath string) error {
 // blocks history sync for everything else in the vault. The replacement is
 // <config-dir>/vibe-palace/projects/<slug>.toml, which no vault ever sees.
 //
-// No binary writes it any longer: its writers (the vault-project reconciler
-// behind `vp init`, `vp config sync` and `vp migrate`) are gone. This refusal
-// is therefore permanent, not transitional: it closes the GENERIC route —
-// vp_vault_write / vp vault write and their siblings — the one way an agent or
-// an operator could still put settings back into the shared vault by hand.
-// Re-derive that nothing else writes the path with
-// `grep -rn 'ProjectConfigFile(' --include=*.go . | grep -v _test.go`.
+// No binary reads or writes it any longer: its writers (the vault-project
+// reconciler behind `vp init`, `vp config sync` and `vp migrate`) are gone,
+// and LoadConfig no longer decodes it. This refusal is therefore permanent,
+// not transitional: it closes the GENERIC route — vp_vault_write /
+// vp vault write and their siblings — the one way an agent or an operator
+// could still put a file back that looks like it configures something and
+// does not.
 //
 // Scope, and why this is a THIRD predicate rather than a case in either
 // existing one:
@@ -342,16 +342,13 @@ func IsVaultProjectConfigPath(p string) bool {
 // route rather than only saying no, and for the same reason: a refusal that
 // does not say what to do instead gets worked around.
 //
-// It deliberately does NOT say the file is dead. Nothing creates it any
-// longer, but it is still read, and a message claiming otherwise would be false
-// until the read is removed — at which point the reader would have learned to
-// distrust the next refusal too.
+// It says exactly what the file is now: read by nothing. A refusal that
+// understated that would send an operator to edit a file that has no effect.
 func vaultProjectConfigRefusal(relPath string) error {
-	return fmt.Errorf("%w: %s is the vault's per-project config, which is being retired — "+
-		"the generic vault file tools no longer write it. Per-project config is host-local: "+
+	return fmt.Errorf("%w: %s is the vault's retired per-project config — nothing reads it, and "+
+		"the generic vault file tools do not write it. Per-project config is host-local: "+
 		"edit <config-dir>/vibe-palace/projects/<slug>.toml, which `vp tune rooms --apply` and "+
-		"`vp discover rooms --apply` write. This file is not dead yet — nothing creates it any longer, "+
-		"but it is still read, below the host-local one — so an override here still applies "+
-		"until it is removed. `vp status` names every per-project config file this project reads",
+		"`vp discover rooms --apply` write. `vp status` names the per-project config file this "+
+		"project reads, and `vp check --check vault-project-config` lists any retired file still on disk",
 		ErrRefusedPath, relPath)
 }

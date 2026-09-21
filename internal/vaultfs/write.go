@@ -47,7 +47,8 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	if IsTaskFilePath(relPath) {
 		return WriteResult{}, taskPathRefusal(relPath)
 	}
-	// The vault's per-project config is being retired and has moved host-local.
+	// The vault's per-project config is retired — nothing reads it — and
+	// per-project config lives host-local.
 	// Gated HERE for the same reason as task files: the CLI and the MCP tools
 	// are two call sites of this one function, and a guard only an agent can
 	// trip is not a guard.
