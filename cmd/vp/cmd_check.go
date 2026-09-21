@@ -44,7 +44,7 @@ func cmdCheck(info cli.BuildInfo) *cli.Command {
 		// typed out: a hand-written copy is a second registry of check names,
 		// and this one had already gone stale once by omitting checks the
 		// registry accepted.
-		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (vault filesystem, stray scaffolds, resume.md size/row caps, host-local plan refs, host-rooted absolute paths, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: " + strings.Join(check.ProducerOrder, ", ") + ".",
+		Description: "Verify installation, config, vault, embedder, surface compatibility, project detection, and vault hygiene (vault filesystem, stray scaffolds, retired per-project vault configs, resume.md size/row caps, host-local plan refs, host-rooted absolute paths, inviolable-core size floor, resume pin-marker coverage). Reports pass/fail status for each component. With --check, runs only the named check(s) via selective execution — skipping the expensive embedder load and tool-registry build — for fast scripting / AI preflights. Selectable names: " + strings.Join(check.ProducerOrder, ", ") + ".",
 		Flags:       checkFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp check", Comment: "Run all installation checks"},
@@ -257,6 +257,10 @@ func gatherCheckResults() []check.Result {
 				// nothing outside machine-local .local/ — what a pulled
 				// deletion leaves behind. Report-only, never Fail.
 				results = append(results, check.CheckPalaceLocalOnly(vault))
+
+				// Vault-wide: list every retired Projects/<slug>/config.toml
+				// still on disk, committed or not. Report-only, never Fail.
+				results = append(results, check.CheckVaultProjectConfig(vaultPath))
 
 				// Vault-wide: fail a .gitattributes naming the deleted
 				// vp-surface merge driver. git emits NO diagnostic for an

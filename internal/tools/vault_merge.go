@@ -165,7 +165,8 @@ func VaultMergeTool(vault *storage.Vault) mcp.Tool {
 			"the allow-listed palace/<slug> and Projects/<slug> trees in the " +
 			"source, refuses any non-regular file it finds there rather than " +
 			"skipping or following it, hashes what would travel minus " +
-			"{.surface, **/.local, .vp-locks, commit-log.anchor}, records the " +
+			"{.surface, **/.local, .vp-locks, commit-log.anchor, " +
+			"Projects/*/config.toml}, records the " +
 			"destination state the merge must not disturb, and returns a " +
 			"manifest_sha256; it writes nothing. \"apply\" re-binds that digest, " +
 			"refuses unless the destination's git remotes match " +
