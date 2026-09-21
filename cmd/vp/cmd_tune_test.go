@@ -309,9 +309,9 @@ func TestRunTuneRooms_Apply(t *testing.T) {
 	if _, err := os.Stat(hostPath); err != nil {
 		t.Errorf("host-local config not written: %v", err)
 	}
-	if vaultPath, perr := v.ProjectConfigFile("proj"); perr != nil {
-		t.Fatal(perr)
-	} else if _, serr := os.Stat(vaultPath); !os.IsNotExist(serr) {
+	// The retired vault project config, built by hand: nothing may write it.
+	vaultPath := filepath.Join(v.Root, "Projects", "proj", "config.toml")
+	if _, serr := os.Stat(vaultPath); !os.IsNotExist(serr) {
 		t.Errorf("--apply wrote the vault project config %s (stat err=%v)", vaultPath, serr)
 	}
 

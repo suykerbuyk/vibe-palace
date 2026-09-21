@@ -278,7 +278,8 @@ func CheckSummarizationQueueTool(vault *storage.Vault) mcp.Tool {
 			"queue (<project_path>/.vibe-palace/summarization-queue/): reports the " +
 			"pending/claimed/dead-lettered file-count breakdown, the oldest pending " +
 			"job's age, and — when jobs are pending — whether that backlog is expected " +
-			"(the project's [summarization] config is not enabled), actually broken " +
+			"([summarization] is not enabled in the host config, a host-level setting " +
+			"with no per-project tier), actually broken " +
 			"(enabled but its config fails to resolve to a working summarizer), or " +
 			"resolving normally but not being drained fast enough. Wraps " +
 			"check.CheckSummarizationQueue directly — never drains, claims, or mutates " +

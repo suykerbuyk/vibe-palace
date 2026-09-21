@@ -179,9 +179,14 @@ the request context. We touched internal/auth/middleware.go for this.
 		t.Errorf("expected destination marker file %s: %v", markerFile, err)
 	}
 
-	cfgFile := filepath.Join(dstDir, "Projects", slugName, "config.toml")
-	if _, err := os.Stat(cfgFile); err != nil {
-		t.Errorf("expected destination config.toml %s: %v", cfgFile, err)
+	// The destination project is initialised with the init scaffold, not the
+	// retired per-project vault config.
+	readme := filepath.Join(dstDir, "Projects", slugName, "commands", "README.md")
+	if _, err := os.Stat(readme); err != nil {
+		t.Errorf("expected destination scaffold %s: %v", readme, err)
+	}
+	if cfgFile := filepath.Join(dstDir, "Projects", slugName, "config.toml"); fileExistsLstat(cfgFile) {
+		t.Errorf("migrate wrote the retired %s into the destination", cfgFile)
 	}
 
 	// (b) SOURCE is byte-for-byte stable.

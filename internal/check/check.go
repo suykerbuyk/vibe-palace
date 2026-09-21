@@ -500,7 +500,7 @@ func hasNonWhitespace(data []byte) bool {
 
 // CheckStrayScaffolds scans <vault>/Projects/* for scaffold-only orphan
 // projects: directories storage.ClassifyProjectDir judges ProjectScaffoldOnly —
-// an init-scaffold marker (either README, or config.toml) and no real content:
+// an init-scaffold marker (either README) and no real content:
 // no resume.md, no iterations.md, and no files under sessions/ or tasks/.
 // These are typically the residue of a stray `vp init` against the wrong vault
 // or an un-isolated test (the recurring `Projects/p/`). A directory the

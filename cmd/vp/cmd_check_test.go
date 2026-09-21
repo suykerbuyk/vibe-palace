@@ -92,15 +92,22 @@ func TestCheckParityWithConfigSyncDryRun(t *testing.T) {
 	}
 }
 
-// TestCheckEmitsVaultProjectRow verifies the new row added in Phase 4: vp
-// check now reports on vault-project state via the VaultProject reconciler.
-func TestCheckEmitsVaultProjectRow(t *testing.T) {
+// TestCheckReportsTheRetiredVaultProjectConfig: the "Vault project" row the
+// retired VaultProject reconciler emitted is gone, and in its place the full
+// suite carries the "Vault project config" survivor row. The two names share a
+// prefix, so the assertion keys on the rendered "<name>:" — a bare substring
+// match on "Vault project" would be satisfied by the new row alone and pin
+// nothing.
+func TestCheckReportsTheRetiredVaultProjectConfig(t *testing.T) {
 	healthyCheckEnv(t)
 
 	fv, _ := cli.ParseFlags(checkFlags, nil)
 	out := captureStdout(t, func() { runCheck(cli.BuildInfo{Version: "test"}, fv) })
-	if !strings.Contains(out, "Vault project") {
-		t.Errorf("expected Vault project row in vp check output:\n%s", out)
+	if strings.Contains(out, "] Vault project:") {
+		t.Errorf("vp check still emits the retired Vault project row:\n%s", out)
+	}
+	if !strings.Contains(out, "] Vault project config:") {
+		t.Errorf("expected the Vault project config survivor row in vp check output:\n%s", out)
 	}
 	// The row names the project the cwd's .vibe-palace.toml declares, which
 	// proves the fixture's [project] table is what detection read — a
@@ -780,23 +787,16 @@ func TestCheckResumeRefsNoVault(t *testing.T) {
 // non-empty and [summarization] is not configured — an expected backlog, not
 // a stuck queue.
 func TestCheckFullSuiteEmitsSummarizationQueueRow(t *testing.T) {
-	e := healthyCheckEnv(t)
+	healthyCheckEnv(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	vault := storage.NewVault(e.Vault)
-	cfgPath, err := vault.ProjectConfigFile("checktest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("[summarization]\nenabled = false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Pin [summarization] off in the host global config — its only tier —
+	// appended to the one healthyCheckEnv wrote under its per-test XDG so
+	// the vault_path survives.
+	appendHostConfig(t, "[summarization]\nenabled = false\n")
 
 	queueDir := filepath.Join(cwd, ".vibe-palace", "summarization-queue")
 	if err := os.MkdirAll(queueDir, 0o755); err != nil {

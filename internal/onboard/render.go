@@ -21,7 +21,6 @@ import (
 // fallback, and the name every Omission renders under.
 var rowName = map[string]string{
 	"cwd-project":          "Project config",
-	"vault-project":        "Vault project",
 	"project-scaffold":     "Project templates",
 	"agent-wiring":         "Agent wiring",
 	"command-shims":        "Slash-command shims",
@@ -120,8 +119,6 @@ func stepArtifact(step, dir string) string {
 	switch step {
 	case "cwd-project":
 		return filepath.Join(dir, ".vibe-palace.toml")
-	case "vault-project":
-		return "Projects/<slug>/config.toml in the vault"
 	case "project-scaffold":
 		return "Projects/<slug>/{commands,skills}/ in the vault"
 	case "agent-wiring":

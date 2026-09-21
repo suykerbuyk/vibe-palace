@@ -9,22 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
-	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 //go:embed config/cwd_project_template.toml
 var cwdProjectTemplate string
 
-//go:embed config/vault_project_template.toml
-var vaultProjectTemplate string
-
 // CwdProjectTemplateContent returns the embedded cwd-project template.
 func CwdProjectTemplateContent() string { return cwdProjectTemplate }
-
-// VaultProjectTemplateContent returns the embedded vault-project template.
-func VaultProjectTemplateContent() string { return vaultProjectTemplate }
 
 // GenerateConfigTOML produces a commented config file from the embedded
 // template.toml, substituting vault_path and git_enabled with the provided
@@ -102,46 +93,6 @@ func WriteCwdProjectConfig(dir, name, domain string, tags []string, vaultPath st
 		return "", fmt.Errorf("rename: %w", err)
 	}
 	return configPath, nil
-}
-
-// WriteVaultProjectConfig writes {vault}/Projects/{slug}/config.toml
-// from the embedded vault-project template. Refuses to overwrite an
-// existing file. Returns (path, wrote, err) where wrote=false and
-// err=nil if the file already existed. Uses atomic temp+rename.
-//
-// The "already exists" stat runs INSIDE the per-path advisory lock. Outside it
-// the check is a TOCTOU: two concurrent callers both see "not there", both
-// report wrote=true, and one silently overwrites the other — breaking the
-// refuse-to-overwrite contract callers rely on. This is character for character
-// the CreateTask defect recorded in ADR-003 ("CreateTask TOCTOU"), fixed the
-// same way.
-//
-// Because the lock is already held here, the write is a raw atomicfile.Write
-// and must stay one: v.lockedWrite would re-acquire this same per-path lock,
-// and vaultlock.Acquire is a blocking LOCK_EX with no timeout, so that is a
-// permanent self-deadlock rather than an error.
-func (v *Vault) WriteVaultProjectConfig(slug string) (string, bool, error) {
-	cfgPath, err := v.ProjectConfigFile(slug)
-	if err != nil {
-		return "", false, err
-	}
-
-	release, err := vaultlock.Acquire(v.Root, cfgPath)
-	if err != nil {
-		return "", false, fmt.Errorf("storage: lock %s: %w", cfgPath, err)
-	}
-	defer release()
-
-	if _, err := os.Stat(cfgPath); err == nil {
-		return cfgPath, false, nil
-	} else if !os.IsNotExist(err) {
-		return "", false, fmt.Errorf("stat config: %w", err)
-	}
-
-	if err := atomicfile.Write(v.Root, cfgPath, []byte(vaultProjectTemplate)); err != nil {
-		return "", false, fmt.Errorf("write vault project config: %w", err)
-	}
-	return cfgPath, true, nil
 }
 
 // WriteGlobalConfig creates the global vibe-palace config file at the

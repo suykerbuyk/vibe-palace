@@ -82,10 +82,10 @@ type statusResult struct {
 	Sessions        int                 `json:"recent_sessions"`
 	KG              *storage.KGStats    `json:"knowledge_graph,omitempty"`
 	// ProjectConfigSources are the per-project config files that exist for
-	// this project, highest-precedence first: the host-local file, then the
-	// vault's. Empty means the project inherits the host global config alone.
-	// Which file a tuning run wrote is otherwise invisible, and after task
-	// move-per-project-config-out-of-the-shared-vault there are two candidates.
+	// this project: at most the host-local file, since the vault's per-project
+	// file stopped being read (task
+	// move-per-project-config-out-of-the-shared-vault). Empty means the project
+	// inherits the host global config alone.
 	ProjectConfigSources []string `json:"project_config_sources,omitempty"`
 }
 

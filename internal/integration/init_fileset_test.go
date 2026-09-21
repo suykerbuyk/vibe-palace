@@ -15,12 +15,13 @@ import (
 )
 
 // TestIntegrationInitFullFileset proves end-to-end that after a clean
-// vp init the full three-file fileset is in place:
+// vp init the full config fileset is in place:
 //  1. Global config.toml under XDG (with [meta] v1).
 //  2. Cwd .vibe-palace.toml with [meta] and [project].name.
-//  3. Vault-project {vault}/Projects/{slug}/config.toml with [meta].
 //
-// Every file must parse as valid TOML.
+// Every file must parse as valid TOML. The third file this used to assert, the
+// per-project vault config {vault}/Projects/{slug}/config.toml, is retired and
+// no longer written (task move-per-project-config-out-of-the-shared-vault).
 func TestIntegrationInitFullFileset(t *testing.T) {
 	env := testinfra.IsolateEnv(t)
 
@@ -31,19 +32,12 @@ func TestIntegrationInitFullFileset(t *testing.T) {
 	}
 
 	// Use the public storage API to reproduce what `vp init` does:
-	// WriteGlobalConfig + WriteCwdProjectConfig + WriteVaultProjectConfig.
+	// WriteGlobalConfig + WriteCwdProjectConfig.
 	if _, err := storage.WriteGlobalConfig(vaultDir, false); err != nil {
 		t.Fatalf("WriteGlobalConfig: %v", err)
 	}
 	if _, err := storage.WriteCwdProjectConfig(projectDir, "alpha", "work", []string{"go"}, ""); err != nil {
 		t.Fatalf("WriteCwdProjectConfig: %v", err)
-	}
-	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	v := storage.NewVault(vaultDir)
-	if _, _, err := v.WriteVaultProjectConfig("alpha"); err != nil {
-		t.Fatalf("WriteVaultProjectConfig: %v", err)
 	}
 
 	// 1. Global config.
@@ -61,10 +55,6 @@ func TestIntegrationInitFullFileset(t *testing.T) {
 	if !strings.Contains(string(cwdData), `domain = "work"`) {
 		t.Errorf("cwd file missing active domain: %s", cwdData)
 	}
-
-	// 3. Vault-project config.
-	vaultCfg := filepath.Join(vaultDir, "Projects", "alpha", "config.toml")
-	assertTOMLWithMeta(t, vaultCfg, "vault-project", "")
 }
 
 // assertTOMLWithMeta reads path, parses as TOML, asserts [meta] exists

@@ -49,8 +49,7 @@ func assertStamped(t *testing.T, stampDir string) {
 // callers, deleted) were removed:
 //
 //   - atomicfile.Write called directly under a held lock: WriteResume (with the
-//     assert-absent "" guard, its only create path), and WriteVaultProjectConfig
-//     (which took the lock itself when its already-exists stat moved inside it).
+//     assert-absent "" guard, its only create path).
 //   - v.lockedWrite → atomicfile.Write: WriteSession, UpdateTaskStatus,
 //     RetireTask.
 //   - v.appendUnderLock (family F4, which owns the stamp): AppendIterationOwned,
@@ -133,12 +132,6 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 			}
 			writeFileDirect(t, p, []byte("# T1\n\n**Status:** pending\n"))
 			if err := v.RetireTask(proj, "t1"); err != nil {
-				t.Fatal(err)
-			}
-			return projectsRoot(vault)
-		}},
-		{"WriteVaultProjectConfig", func(t *testing.T, v *Vault, vault string) string {
-			if _, _, err := v.WriteVaultProjectConfig(proj); err != nil {
 				t.Fatal(err)
 			}
 			return projectsRoot(vault)

@@ -13,6 +13,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/itersummary"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
@@ -136,7 +137,7 @@ func runSummarizeIterations(projectPath string, force bool, out io.Writer) int {
 		return cli.ExitUser
 	}
 	if summarizer == nil {
-		fmt.Fprintf(out, "vp summarize iterations: project=%s: [summarization] is not enabled in this project's config — nothing to do\n", slug)
+		fmt.Fprintf(out, "vp summarize iterations: project=%s: [summarization] is not enabled in the host config (%s) — it is a host-level setting with no per-project tier; nothing to do\n", slug, hostConfigForMessage())
 		return cli.ExitUser
 	}
 
@@ -217,4 +218,14 @@ func runSummarizeIterations(projectPath string, force bool, out io.Writer) int {
 
 	fmt.Fprintf(out, "vp summarize iterations: project=%s summarized=%d skipped=%d\n", slug, summarized, skipped)
 	return cli.ExitOK
+}
+
+// hostConfigForMessage names the host config file [summarization] is read from,
+// for an operator-facing message: it is the only tier that can set it. A path
+// that cannot be resolved is named generically rather than guessed.
+func hostConfigForMessage() string {
+	if p, err := storage.VaultConfigFilePath(); err == nil {
+		return p
+	}
+	return "<config dir>/vibe-palace/config.toml"
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func testSessionVault(t *testing.T) *storage.Vault {
@@ -368,17 +369,34 @@ func TestCaptureSessionResult(t *testing.T) {
 	}
 }
 
-// writeEnrichmentProjectConfig writes a project-level config.toml enabling
-// [enrichment] for the given project, pointing base_url at the test server.
-func writeEnrichmentProjectConfig(t *testing.T, vault *storage.Vault, project, baseURL, keyEnv string) {
+// writeEnrichmentHostConfig isolates XDG_CONFIG_HOME to a fresh temp dir for
+// this test and writes body into the HOST GLOBAL config there
+// (storage.VaultConfigFilePath). That is the only tier that can carry
+// [enrichment]: the vault Projects/<slug>/config.toml is no longer read, and
+// the host-local per-project file carries only palace.scoring.
+// RequireResolvedUnder proves the write lands in the test's own temp dir, never
+// the developer's real host config or the hermetic read-only fixture.
+func writeEnrichmentHostConfig(t *testing.T, body string) {
 	t.Helper()
-	path, err := vault.ProjectConfigFile(project)
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	testutil.RequireResolvedUnder(t, xdg, storage.VaultConfigFilePath)
+	path, err := storage.VaultConfigFilePath()
 	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
+		t.Fatalf("VaultConfigFilePath: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeEnrichmentEnabledHostConfig writes a host global config enabling
+// [enrichment], pointing base_url at the test server.
+func writeEnrichmentEnabledHostConfig(t *testing.T, baseURL, keyEnv string) {
+	t.Helper()
 	body := "[enrichment]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -387,9 +405,7 @@ func writeEnrichmentProjectConfig(t *testing.T, vault *storage.Vault, project, b
 		"base_url = \"" + baseURL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeEnrichmentHostConfig(t, body)
 }
 
 // TestCaptureSessionEnrichDefaultPlain verifies that without enrich (default
@@ -442,21 +458,11 @@ func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 func TestCaptureSessionEnrichDisabledConfig(t *testing.T) {
 	vault := testSessionVault(t)
 
-	// Write a project config that explicitly disables enrichment. This
-	// overrides any global ~/.config/vibe-palace/config.toml that may have
-	// [enrichment] enabled (as on developer machines), ensuring the test
-	// verifies the "enrich requested but config disabled" path.
-	path, err := vault.ProjectConfigFile("test-proj")
-	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "[enrichment]\nenabled = false\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Write a host global config that explicitly disables enrichment, under
+	// a per-test XDG_CONFIG_HOME. The host global config is the only tier
+	// [enrichment] has, so this pins the "enrich requested but config
+	// disabled" path regardless of what the hermetic fixture carries.
+	writeEnrichmentHostConfig(t, "[enrichment]\nenabled = false\n")
 
 	tool := CaptureSessionTool(vault, nil)
 
@@ -499,7 +505,7 @@ func TestCaptureSessionEnrichLive(t *testing.T) {
 	t.Setenv("VP_TEST_ENRICH_KEY", "sk-test-live")
 
 	vault := testSessionVault(t)
-	writeEnrichmentProjectConfig(t, vault, "test-proj", srv.URL, "VP_TEST_ENRICH_KEY")
+	writeEnrichmentEnabledHostConfig(t, srv.URL, "VP_TEST_ENRICH_KEY")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{

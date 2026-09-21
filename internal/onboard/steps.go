@@ -35,18 +35,13 @@ var stepTable = []Step{
 		Run:  stepCwdProject,
 	},
 	{
-		Name: "vault-project",
+		// The first vault-side step, and since the vault-project step retired
+		// (task move-per-project-config-out-of-the-shared-vault) the one that
+		// initialises Projects/<slug>/: its README markers are what
+		// storage.ClassifyProjectDir reads as an initialised project.
+		Name: "project-scaffold",
 		Side: SideVault,
-		Run:  stepVaultProject,
-	},
-	{
-		// Needs is not decoration. Without it, a run whose config.toml write
-		// just failed would go on to scaffold Projects/<slug>/{commands,skills}
-		// into a project that does not exist.
-		Name:  "project-scaffold",
-		Side:  SideVault,
-		Needs: []string{"vault-project"},
-		Run:   stepProjectScaffold,
+		Run:  stepProjectScaffold,
 	},
 	{
 		Name: "agent-wiring",
@@ -194,46 +189,12 @@ func decodeTOMLFile(path string) error {
 	return err
 }
 
-// stepVaultProject writes {vault}/Projects/{slug}/config.toml plus the
-// tasks/{done,cancelled} directories.
-//
-// It is its OWN row now. It used to be a Details line appended to the Project
-// config row, which meant a vault-project failure rendered as a footnote under
-// a [pass] — and, worse, was invisible to any caller reading rows rather than
-// prose. A step that a surface can be forbidden from running needs an identity
-// of its own regardless.
-func stepVaultProject(ctx context.Context, req Request) []Outcome {
-	vault, err := req.OpenVault()
-	if err != nil {
-		return []Outcome{{Status: Fail, Summary: "open vault: " + err.Error()}}
-	}
-	vp := reconcile.NewVaultProject(vault, req.Slug)
-	plan, perr := vp.Plan(ctx)
-	if perr != nil {
-		slog.Error("vault-project plan", "project", req.Slug, "err", perr)
-		return []Outcome{{Status: Fail, Summary: "vault-project config write failed: " + perr.Error()}}
-	}
-	rep, aerr := vp.Apply(ctx, plan)
-	if aerr != nil {
-		slog.Error("vault-project apply", "project", req.Slug, "err", aerr)
-		return []Outcome{{Status: Fail, Summary: "vault-project config write failed: " + aerr.Error()}}
-	}
-	if len(rep.Errors) > 0 {
-		for _, e := range rep.Errors {
-			slog.Error("vault-project apply error", "project", req.Slug, "err", e)
-		}
-		return []Outcome{{Status: Fail, Summary: "vault-project config write failed: " + rep.Errors[0].Error()}}
-	}
-	summary := "Projects/" + req.Slug + "/config.toml"
-	if cfgPath, cerr := vault.ProjectConfigFile(req.Slug); cerr == nil {
-		summary = cfgPath
-	}
-	return []Outcome{{Status: Pass, Summary: summary, Created: rep.Created > 0}}
-}
-
 // stepProjectScaffold creates Projects/<slug>/{commands,skills}/ with README
-// stubs. Best-effort: a scaffold failure is an Info row, never a Fail, because
-// the project config it hangs off already landed and the operator can re-run.
+// stubs. A scaffold failure is a Fail row: these stubs are the marker that
+// makes Projects/<slug>/ an initialised project, so a run that could not write
+// them has not initialised the project, and nothing earlier in the table landed
+// anything vault-side for the failure to hang off. It was an Info row while the
+// retired vault-project step wrote Projects/<slug>/config.toml ahead of it.
 func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 	vault, err := req.OpenVault()
 	if err != nil {
@@ -245,16 +206,16 @@ func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 	plan, err := tt.Plan(ctx)
 	if err != nil {
 		slog.Error("project scaffold plan", "project", req.Slug, "err", err)
-		return []Outcome{{Status: Info, Summary: fmt.Sprintf("scaffold plan failed: %v", err)}}
+		return []Outcome{{Status: Fail, Summary: fmt.Sprintf("scaffold plan failed: %v", err)}}
 	}
 	rep, err := tt.Apply(ctx, plan)
 	switch {
 	case err != nil:
 		slog.Error("project scaffold apply", "project", req.Slug, "err", err)
-		return []Outcome{{Status: Info, Summary: fmt.Sprintf("scaffold apply failed: %v", err)}}
+		return []Outcome{{Status: Fail, Summary: fmt.Sprintf("scaffold apply failed: %v", err)}}
 	case len(rep.Errors) > 0:
 		slog.Error("project scaffold apply error", "project", req.Slug, "err", rep.Errors[0])
-		return []Outcome{{Status: Info, Summary: fmt.Sprintf("scaffold apply error: %v", rep.Errors[0])}}
+		return []Outcome{{Status: Fail, Summary: fmt.Sprintf("scaffold apply error: %v", rep.Errors[0])}}
 	}
 	// The row must not out-claim the report. "scaffolded" was printed
 	// unconditionally, so a converged re-init — every action Unchanged,

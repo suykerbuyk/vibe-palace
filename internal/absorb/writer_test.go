@@ -13,18 +13,20 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// seedVaultProject creates a minimal palace-project vault directory with a
-// config.toml so Apply's guard passes. Returns the vault.
+// seedVaultProject creates a minimal initialised palace-project vault
+// directory — the commands/README.md init-scaffold marker — so Apply's guard
+// passes. Returns the vault. It seeded config.toml until that file stopped
+// being a scaffold marker; Apply's refusal was deliberately NOT relaxed to keep
+// the old seed working (TestApply_RefusesConfigOnlyProject pins that).
 func seedVaultProject(t *testing.T, slug string) *storage.Vault {
 	t.Helper()
 	vroot := t.TempDir()
 	v := storage.NewVault(vroot)
-	projDir := filepath.Join(vroot, "Projects", slug)
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	cmdDir := filepath.Join(vroot, "Projects", slug, "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, "config.toml"),
-		[]byte("[project]\nname = \""+slug+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cmdDir, "README.md"), []byte("stub\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return v
@@ -249,6 +251,31 @@ func TestApply_RefusesPhantomProject(t *testing.T) {
 		t.Fatal("Apply accepted a phantom project directory")
 	}
 	for _, want := range []string{"phantom", "vp init", "Projects/ghost/"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// TestApply_RefusesConfigOnlyProject: a directory holding only the retired
+// Projects/<slug>/config.toml is Phantom — the file is no longer an init
+// marker — so absorb refuses it and says to run vp init.
+func TestApply_RefusesConfigOnlyProject(t *testing.T) {
+	vroot := t.TempDir()
+	v := storage.NewVault(vroot)
+	if err := os.MkdirAll(filepath.Join(vroot, "Projects", "leftover"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vroot, "Projects", "leftover", "config.toml"),
+		[]byte("[palace.scoring.rooms.general]\nhigh = [\"x\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, repo := absorbRepo(t)
+	_, err := Apply(plan, WriteOptions{Vault: v, Project: "leftover", ProjectRoot: repo})
+	if err == nil {
+		t.Fatal("Apply accepted a directory whose only file is the retired config.toml")
+	}
+	for _, want := range []string{"phantom", "vp init", "Projects/leftover/"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not say %q: %v", want, err)
 		}

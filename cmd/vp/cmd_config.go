@@ -36,7 +36,7 @@ func cmdConfig() *cli.Command {
 var configUpgradeFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Show what would be added without writing"},
 	{Name: "--cwd", Arg: "DIR", Help: "Upgrade the cwd project config (default: current directory). Mutually exclusive with --project."},
-	{Name: "--project", Arg: "SLUG", Help: "Upgrade the vault-project config for SLUG. Mutually exclusive with --cwd."},
+	{Name: "--project", Arg: "SLUG", Help: "Retired: the vault-project config it upgraded is no longer read or written. Refuses; use `vp config sync --tier project --project SLUG` to scaffold a project."},
 }
 
 // cmdConfigUpgrade is a thin alias for `vp config sync`. The original
@@ -50,14 +50,13 @@ var configUpgradeFlags = []cli.FlagDef{
 func cmdConfigUpgrade() *cli.Command {
 	return &cli.Command{
 		Name:        "config upgrade",
-		Synopsis:    "vp config upgrade [--dry-run] [--cwd [DIR] | --project SLUG]",
-		Description: "Alias for `vp config sync` scoped to a single config tier. Translates --cwd / --project into the equivalent sync addressing flags and delegates to the reconciler.",
+		Synopsis:    "vp config upgrade [--dry-run] [--cwd [DIR]]",
+		Description: "Alias for `vp config sync` scoped to a single config tier. Translates --cwd into the equivalent sync addressing flags and delegates to the reconciler. --project is retired and refuses: the per-project vault config it upgraded is no longer read or written.",
 		Flags:       configUpgradeFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp config sync", Comment: "Preferred form (reconciles all tiers)"},
 			{Cmd: "vp config upgrade", Comment: "Global-tier alias — same as `vp config sync --tier global --yes`"},
 			{Cmd: "vp config upgrade --cwd", Comment: "Project-tier alias for the current cwd"},
-			{Cmd: "vp config upgrade --project myapp", Comment: "Project-tier alias addressed by slug"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(configUpgradeFlags, args)
@@ -86,11 +85,17 @@ func aliasUpgradeToSync(fv *cli.FlagValues) int {
 	args := []string{}
 	switch {
 	case projectFlag != "":
-		if err := slug.Validate(projectFlag); err != nil {
-			fmt.Fprintf(os.Stderr, "vp config upgrade: invalid --project slug %q: %v\n", projectFlag, err)
-			return cli.ExitUser
-		}
-		args = append(args, "--tier", "project", "--project", projectFlag)
+		// Retired, and refused rather than re-aimed. The one thing this form
+		// addressed — the vault's Projects/<slug>/config.toml — is no longer
+		// read or written. Translated to sync it would scaffold <slug> and also
+		// upgrade whatever .vibe-palace.toml sits in the CURRENT directory
+		// (CwdProject is built on the cwd, not on the slug), both under the
+		// implied --yes below: a write the caller never asked for.
+		fmt.Fprintln(os.Stderr, "vp config upgrade: --project is retired — the per-project vault config "+
+			"(Projects/<slug>/config.toml) is no longer read or written; per-project scoring lives in the "+
+			"host-local <config dir>/vibe-palace/projects/<slug>.toml. To scaffold a project in the vault, "+
+			"run: vp config sync --tier project --project <slug>")
+		return cli.ExitUser
 	case cwdSet:
 		args = append(args, "--tier", "project")
 		if cwdFlag != "" {
@@ -202,12 +207,10 @@ func runConfigSync(args []string) int {
 		}
 	}
 
-	// projectDirInsideVault gates BOTH creation paths that can originate a
-	// Projects/<slug>/ directory: VaultProjectReconciler's config.toml/tasks
-	// Create, and Phase 4's explicit-addressing TemplateTree scaffold below.
-	// Computed once so the two paths cannot disagree.
+	// projectDirInsideVault gates the creation path that can originate a
+	// Projects/<slug>/ directory: Phase 4's explicit-addressing TemplateTree
+	// scaffold below. (The retired vault-project reconciler was the second.)
 	var projectDirInsideVault bool
-	vaultProject := reconcile.NewVaultProject(vault, projectSlug)
 	if vault != nil {
 		if err := vaultfs.RefuseDestinationInsideVault(vault.Root, projectDir); err != nil {
 			// Fail CLOSED on ANY non-nil error here, not just
@@ -219,12 +222,9 @@ func runConfigSync(args []string) int {
 			// and creating Projects/<slug>/ on an unverified answer is
 			// exactly the phantom this floor exists to stop.
 			projectDirInsideVault = true
-			reason := fmt.Sprintf("the project directory resolves inside the vault at %s — not a project", vault.Root)
 			if !errors.Is(err, vaultfs.ErrDestinationInsideVault) {
 				slog.Error("check project directory against vault root", "err", err, "projectDir", projectDir, "vaultRoot", vault.Root)
-				reason = fmt.Sprintf("cannot verify whether the project directory is inside the vault (%v) — refusing to create", err)
 			}
-			vaultProject = vaultProject.WithSkipReason(reason, projectDir)
 		}
 	}
 
@@ -233,7 +233,6 @@ func runConfigSync(args []string) int {
 		"Vault":         reconcile.NewVault(absRoot, reconcile.VaultSeed{}),
 		"VaultSettings": reconcile.NewVaultSettings(vault),
 		"CwdProject":    reconcile.NewCwdProject(projectDir, reconcile.CwdProjectSeed{}),
-		"VaultProject":  vaultProject,
 	}
 	// Phase 3: TemplateTree is vault-tier and requires an open vault.
 	// When vault isn't resolvable (global-only scope, no vault yet) we
@@ -312,10 +311,8 @@ func runConfigSync(args []string) int {
 	var projectScaffolds []reconcile.Reconciler
 	if vaultPathForTemplates != "" {
 		if projectSlug != "" && (cwdSet || projectFlag != "") {
-			// Same gate as VaultProjectReconciler above: an explicit
-			// --cwd/--project addressing the vault itself (or a path inside
-			// it) must not scaffold Projects/<slug>/ either — this is the
-			// second, independent creation path the floor also has to close.
+			// An explicit --cwd/--project addressing the vault itself (or a
+			// path inside it) must not scaffold Projects/<slug>/.
 			if !projectDirInsideVault {
 				projectScaffolds = append(projectScaffolds,
 					reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+projectSlug,
@@ -341,7 +338,7 @@ func runConfigSync(args []string) int {
 	case "all":
 		order = []reconcile.Reconciler{all["GlobalConfig"], all["Vault"], all["VaultSettings"]}
 		order = appendIfPresent(order, "Templates")
-		order = append(order, all["CwdProject"], all["VaultProject"])
+		order = append(order, all["CwdProject"])
 		order = append(order, projectScaffolds...)
 	case "global":
 		order = []reconcile.Reconciler{all["GlobalConfig"]}
@@ -349,7 +346,7 @@ func runConfigSync(args []string) int {
 		order = []reconcile.Reconciler{all["Vault"], all["VaultSettings"]}
 		order = appendIfPresent(order, "Templates")
 	case "project":
-		order = []reconcile.Reconciler{all["CwdProject"], all["VaultProject"]}
+		order = []reconcile.Reconciler{all["CwdProject"]}
 		order = append(order, projectScaffolds...)
 	}
 

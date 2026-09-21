@@ -365,23 +365,6 @@ func TestTaskCancelledDir(t *testing.T) {
 	}
 }
 
-func TestProjectConfigFile(t *testing.T) {
-	v := NewVault("/vault")
-	got, err := v.ProjectConfigFile("recmeet")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := filepath.Join("/vault", "Projects", "recmeet", "config.toml")
-	if got != want {
-		t.Errorf("ProjectConfigFile = %q, want %q", got, want)
-	}
-
-	_, err = v.ProjectConfigFile("BAD")
-	if err == nil {
-		t.Error("ProjectConfigFile with invalid project should return error")
-	}
-}
-
 func TestEncodeTripleComponent(t *testing.T) {
 	hash8 := func(s string) string {
 		sum := sha256.Sum256([]byte(s))

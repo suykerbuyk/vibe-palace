@@ -60,6 +60,16 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return []Result{CheckPalaceLocalOnly(storage.NewVault(vaultRoot))}
 	},
+	// vault-project-config lists every retired Projects/<slug>/config.toml still
+	// on disk. Like palace-local-only it is deliberately absent from the
+	// delivery check lists — see CheckVaultProjectConfig and
+	// CheckPalaceLocalOnly for why.
+	"vault-project-config": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Vault project config", Status: Skip, Summary: "no vault configured"}}
+		}
+		return []Result{CheckVaultProjectConfig(vaultRoot)}
+	},
 	// surface-merge-driver scans the vault tree for a .gitattributes naming the
 	// deleted vp-surface driver. It never reads git config — see the file's
 	// scope note for why a host-local answer would be worse than none.
@@ -139,6 +149,7 @@ var ProducerOrder = []string{
 	"vault-filesystem",
 	"stray-scaffolds",
 	"palace-local-only",
+	"vault-project-config",
 	"surface-merge-driver",
 	"resume-caps",
 	"resume-refs",

@@ -10,21 +10,46 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
-// These pin Layer 4 of LoadConfig: the host-local per-project file at
-// <XDG>/vibe-palace/projects/<slug>.toml, which outranks the vault's
-// Projects/<slug>/config.toml and may set only the scoring keys.
+// These pin the top layer of LoadConfig: the host-local per-project file at
+// <XDG>/vibe-palace/projects/<slug>.toml, which outranks the host global config
+// and may set only the scoring keys. The vault's Projects/<slug>/config.toml is
+// no longer read at all.
 //
 // Every test isolates XDG_CONFIG_HOME, so none of them reads or writes the
 // host's real config directory.
 
+// isolateHostConfig redirects every root os.UserConfigDir consults —
+// XDG_CONFIG_HOME (Linux), HOME (macOS: ~/Library/Application Support) and
+// APPDATA (Windows) — under one fresh temp dir, and REQUIRES the host config to
+// resolve inside it before any test writes there. Setting XDG_CONFIG_HOME alone
+// isolates Linux only; on another OS a write to VaultConfigFilePath() would
+// land in the developer's real config directory. RequireResolvedUnder fails
+// (never skips) if the resolution escapes, so such a machine reds instead of
+// being written to. It returns the XDG_CONFIG_HOME directory.
+func isolateHostConfig(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	xdg := filepath.Join(root, "xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("APPDATA", filepath.Join(root, "appdata"))
+	testutil.RequireResolvedUnder(t, root, VaultConfigFilePath)
+	return xdg
+}
+
 // hostLocalEnv isolates XDG, seeds the host global config, and returns the
 // vault plus the host-local path for project. Nothing here touches the real
-// user config directory.
+// user config directory: isolateHostConfig proves the path first.
 func hostLocalEnv(t *testing.T, project, globalConfig string) (*Vault, string) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateHostConfig(t)
 	globalPath, err := VaultConfigFilePath()
 	if err != nil {
 		t.Fatal(err)
@@ -52,21 +77,9 @@ func writeFileAt(t *testing.T, path, content string) {
 	}
 }
 
-// writeVaultProjectConfig writes the vault's Projects/<slug>/config.toml — the
-// layer this one outranks.
-func writeVaultProjectConfig(t *testing.T, v *Vault, project, content string) {
-	t.Helper()
-	p, err := v.ProjectConfigFile(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFileAt(t, p, content)
-}
-
-// The host-local room wins over the vault's and the global one.
+// The host-local room wins over the global one.
 func TestLoadConfigHostLocalRoomWins(t *testing.T) {
 	v, hostPath := hostLocalEnv(t, "proj", "[palace.scoring.rooms.general]\nhigh = [\"global-high\"]\n")
-	writeVaultProjectConfig(t, v, "proj", "[palace.scoring.rooms.general]\nhigh = [\"vault-high\"]\n")
 	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"host-high\"]\n")
 
 	cfg, err := v.LoadConfig("proj")
@@ -79,11 +92,10 @@ func TestLoadConfigHostLocalRoomWins(t *testing.T) {
 }
 
 // A host-local room replaces the whole room, not tier by tier: naming only
-// `high` leaves Medium and Low empty, over a vault room that set all three.
+// `high` leaves Medium and Low empty, over a global room that set all three.
 func TestLoadConfigHostLocalReplacesWholeRoom(t *testing.T) {
-	v, hostPath := hostLocalEnv(t, "proj", "")
-	writeVaultProjectConfig(t, v, "proj",
-		"[palace.scoring.rooms.general]\nhigh = [\"vault-high\"]\nmedium = [\"vault-medium\"]\nlow = [\"vault-low\"]\n")
+	v, hostPath := hostLocalEnv(t, "proj",
+		"[palace.scoring.rooms.general]\nhigh = [\"global-high\"]\nmedium = [\"global-medium\"]\nlow = [\"global-low\"]\n")
 	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"host-high\"]\n")
 
 	cfg, err := v.LoadConfig("proj")
@@ -102,25 +114,23 @@ func TestLoadConfigHostLocalReplacesWholeRoom(t *testing.T) {
 
 // A room the host-local file does not name is left to the layers below.
 func TestLoadConfigHostLocalLeavesOtherRoomsAlone(t *testing.T) {
-	v, hostPath := hostLocalEnv(t, "proj", "")
-	writeVaultProjectConfig(t, v, "proj",
-		"[palace.scoring.rooms.general]\nhigh = [\"vault-general\"]\n\n[palace.scoring.rooms.other]\nhigh = [\"vault-other\"]\n")
+	v, hostPath := hostLocalEnv(t, "proj",
+		"[palace.scoring.rooms.general]\nhigh = [\"global-general\"]\n\n[palace.scoring.rooms.other]\nhigh = [\"global-other\"]\n")
 	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"host-general\"]\n")
 
 	cfg, err := v.LoadConfig("proj")
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if got := cfg.PalaceScoringOverrides["other"].High; len(got) != 1 || got[0] != "vault-other" {
-		t.Errorf("other.high = %v, want [vault-other]: an unnamed room is not touched", got)
+	if got := cfg.PalaceScoringOverrides["other"].High; len(got) != 1 || got[0] != "global-other" {
+		t.Errorf("other.high = %v, want [global-other]: an unnamed room is not touched", got)
 	}
 }
 
 // min_score is in the allow-list, and absent must not read as zero.
 func TestLoadConfigHostLocalMinScore(t *testing.T) {
 	t.Run("host-local value wins", func(t *testing.T) {
-		v, hostPath := hostLocalEnv(t, "proj", "")
-		writeVaultProjectConfig(t, v, "proj", "[palace.scoring]\nmin_score = 4.5\n")
+		v, hostPath := hostLocalEnv(t, "proj", "[palace.scoring]\nmin_score = 4.5\n")
 		writeFileAt(t, hostPath, "[palace.scoring]\nmin_score = 9.5\n")
 		cfg, err := v.LoadConfig("proj")
 		if err != nil {
@@ -130,9 +140,8 @@ func TestLoadConfigHostLocalMinScore(t *testing.T) {
 			t.Errorf("min_score = %v, want 9.5", cfg.PalaceMinScore)
 		}
 	})
-	t.Run("absent leaves the vault's value alone", func(t *testing.T) {
-		v, hostPath := hostLocalEnv(t, "proj", "")
-		writeVaultProjectConfig(t, v, "proj", "[palace.scoring]\nmin_score = 4.5\n")
+	t.Run("absent leaves the global value alone", func(t *testing.T) {
+		v, hostPath := hostLocalEnv(t, "proj", "[palace.scoring]\nmin_score = 4.5\n")
 		// The host-local file exists and sets a room, but names no min_score.
 		writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"host-high\"]\n")
 		cfg, err := v.LoadConfig("proj")
@@ -231,10 +240,12 @@ func TestLoadConfigHostLocalMetaIsNotReportedAsIgnored(t *testing.T) {
 	}
 }
 
-// Layer 3 still applies: R2 must not do R4's job early.
-func TestLoadConfigVaultProjectStillAppliesWithoutHostLocal(t *testing.T) {
+// The vault's Projects/<slug>/config.toml is no longer a config layer: a
+// scoring override left there changes nothing.
+func TestVaultProjectConfigNoLongerApplies(t *testing.T) {
 	v, hostPath := hostLocalEnv(t, "proj", "")
-	writeVaultProjectConfig(t, v, "proj", "[palace.scoring.rooms.general]\nhigh = [\"vault-high\"]\n")
+	writeFileAt(t, filepath.Join(v.Root, "Projects", "proj", "config.toml"),
+		"[palace.scoring.rooms.general]\nhigh = [\"vault-high\"]\n")
 	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
 		t.Fatalf("the host-local file must not exist for this test (stat err=%v)", err)
 	}
@@ -242,15 +253,14 @@ func TestLoadConfigVaultProjectStillAppliesWithoutHostLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if got := cfg.PalaceScoringOverrides["general"].High; len(got) != 1 || got[0] != "vault-high" {
-		t.Errorf("general.high = %v, want [vault-high]: the vault layer still applies until R4", got)
+	if got := cfg.PalaceScoringOverrides["general"].High; len(got) != 0 {
+		t.Errorf("general.high = %v, want []: the vault's per-project config is no longer read", got)
 	}
 }
 
 // The path: beside the global config, under projects/, and refusing a bad slug.
 func TestHostProjectConfigPath(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
+	xdg := isolateHostConfig(t)
 
 	got, err := HostProjectConfigPath("proj")
 	if err != nil {
@@ -316,13 +326,24 @@ func TestProjectConfigSourcesAgreesWithLoadConfigOnADanglingSymlink(t *testing.T
 	}
 }
 
-// The vault entry keeps Layer 3's own predicate, so the reporter still mirrors
-// the reader on that side too: a vault file that is simply absent is omitted.
-func TestProjectConfigSourcesOmitsAnAbsentVaultFile(t *testing.T) {
+// The vault's Projects/<slug>/config.toml is not read, so the reporter never
+// names it — even when it is present — whether or not a host-local file is.
+func TestProjectConfigSourcesNeverListsTheVaultFile(t *testing.T) {
 	v, hostPath := hostLocalEnv(t, "proj", "")
-	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"h\"]\n")
+	writeFileAt(t, filepath.Join(v.Root, "Projects", "proj", "config.toml"),
+		"[palace.scoring.rooms.general]\nhigh = [\"vault-high\"]\n")
 
 	srcs, err := v.ProjectConfigSources("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcs) != 0 {
+		t.Errorf("ProjectConfigSources = %v with only a vault file present, want none", srcs)
+	}
+
+	writeFileAt(t, hostPath, "[palace.scoring.rooms.general]\nhigh = [\"h\"]\n")
+
+	srcs, err = v.ProjectConfigSources("proj")
 	if err != nil {
 		t.Fatal(err)
 	}

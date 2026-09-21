@@ -28,6 +28,29 @@ import (
 // checked-in host-config fixture, never the developer's real host config.
 func TestMain(m *testing.M) { os.Exit(testutil.RunHermetic(m)) }
 
+// writeHostConfig points XDG_CONFIG_HOME at a fresh per-test temp dir and
+// writes body into the HOST GLOBAL config there (storage.VaultConfigFilePath).
+// The host global config is the only tier that carries [enrichment]: the
+// vault Projects/<slug>/config.toml is no longer read, and the host-local
+// per-project file carries only palace.scoring. RequireResolvedUnder proves
+// the write cannot reach the real host config or the read-only fixture.
+func writeHostConfig(t *testing.T, body string) {
+	t.Helper()
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	testutil.RequireResolvedUnder(t, xdg, storage.VaultConfigFilePath)
+	cfgPath, err := storage.VaultConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fakeTranscript is a minimal Claude Code JSONL transcript.
 const fakeTranscript = `{"type":"permission-mode","permissionMode":"default","sessionId":"test-session"}
 {"type":"user","message":{"role":"user","content":"hello"}}
@@ -298,15 +321,7 @@ func TestRun_EnrichmentEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Project config enabling enrichment against the test server.
-	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile("test-project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Host global config enabling enrichment against the test server.
 	cfgBody := "[enrichment]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -315,9 +330,7 @@ func TestRun_EnrichmentEnabled(t *testing.T) {
 		"base_url = \"" + srv.URL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeHostConfig(t, cfgBody)
 
 	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
 	if err := os.WriteFile(transcriptPath, []byte(fakeTranscript), 0o644); err != nil {
@@ -420,16 +433,9 @@ func TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath(t *testing
 	const project = "test-project"
 	const date = "2026-06-21"
 
-	// Project config enabling enrichment against the test server — same
+	// Host global config enabling enrichment against the test server — same
 	// pattern as TestRun_EnrichmentEnabled, reused rather than reinvented.
 	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	cfgBody := "[enrichment]\n" +
 		"enabled = true\n" +
 		"provider = \"openai\"\n" +
@@ -438,9 +444,7 @@ func TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath(t *testing
 		"base_url = \"" + srv.URL + "\"\n" +
 		"max_tokens = 512\n" +
 		"timeout_seconds = 10\n"
-	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeHostConfig(t, cfgBody)
 
 	// Seed a plain (un-enriched) session note directly, then queue a real
 	// enrichment job for it via capture's own enqueue path — mirroring
@@ -688,20 +692,11 @@ func TestRun_StopAutoCaptureHonestAndUnscored(t *testing.T) {
 	if err := os.MkdirAll(claimDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Pin enrichment OFF at the project layer: LoadConfig merges the operator's
-	// vault-level config (which may enable a live enricher), and this test
-	// asserts the raw auto-capture write — not a post-hoc LLM rewrite.
-	vault := storage.NewVault(vaultRoot)
-	cfgPath, err := vault.ProjectConfigFile("test-project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("[enrichment]\nenabled = false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Pin enrichment OFF in the host global config (the only tier
+	// [enrichment] has) under a per-test XDG: the operator's host config may
+	// enable a live enricher, and this test asserts the raw auto-capture
+	// write — not a post-hoc LLM rewrite.
+	writeHostConfig(t, "[enrichment]\nenabled = false\n")
 
 	initGitRepoMulti(t, cwd, []string{
 		"fix revert wrong undo never mind",

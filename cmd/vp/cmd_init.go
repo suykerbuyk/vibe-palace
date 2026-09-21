@@ -162,13 +162,42 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	// When the global config already exists, treat it as authoritative —
 	// skip the vault re-check and emit two [info] rows. Matches prior init
 	// behavior so users see the same "already configured" message.
+	//
+	// One exception: an explicit --vault-path naming a directory that does not
+	// exist yet. That is the operator asking for a new vault, so it gets the
+	// same vault the first-install path creates (initVault), not an error and
+	// not a bare directory. Only the explicit flag triggers this. A CONFIGURED
+	// vault_path that has gone missing may be a deleted or unmounted vault,
+	// and init does not recreate an empty one in its place.
 	if _, err := os.Stat(configPath); err == nil {
 		results = append(results, check.Result{
 			Name: "Global config", Status: check.Info,
 			Summary: configPath + " (already exists, skipped)",
 		})
-		results = append(results, check.Result{Name: "Vault", Status: check.Info, Summary: "already configured"})
-		return results, cli.ExitOK
+		newVault, nerr := requestedNewVault(fv.Get("--vault-path"))
+		if nerr != nil {
+			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: "resolve --vault-path: " + nerr.Error()})
+			return results, cli.ExitUser
+		}
+		if newVault == "" {
+			results = append(results, check.Result{Name: "Vault", Status: check.Info, Summary: "already configured"})
+			return results, cli.ExitOK
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: err.Error()})
+			return results, cli.ExitSystem
+		}
+		gitEnabled, gitNote, gerr := existingInstallGitChoice(newVault, !fv.Bool("--no-git"))
+		if gerr != nil {
+			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: gerr.Error()})
+			return results, cli.ExitSystem
+		}
+		vaultResults, code := initVault(cwd, newVault, gitEnabled)
+		if gitNote != "" && len(vaultResults) > 0 {
+			vaultResults[0].Details = append(vaultResults[0].Details, gitNote)
+		}
+		return append(results, vaultResults...), code
 	}
 
 	// Resolved exactly as initProject resolves it: expanded and absolute. A
@@ -223,6 +252,20 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	results = append(results, check.Result{Name: "Global config", Status: check.Pass, Summary: configPath})
 
 	// --- Vault reconciler ---
+	vaultResults, code := initVault(cwd, vaultPath, gitEnabled)
+	return append(results, vaultResults...), code
+}
+
+// initVault runs the Vault reconciler in init's create mode — mkdir, git init
+// (when gitEnabled), the canonical .gitignore and the data-format stamp — and
+// renders its one Vault row. It is the ONE vault creator `vp init` has: the
+// first-install path calls it after writing the global config, and the
+// existing-install path calls it for an explicit --vault-path that does not
+// exist yet, so both produce the same fully formed vault.
+func initVault(cwd, vaultPath string, gitEnabled bool) ([]check.Result, int) {
+	var results []check.Result
+	ctx := context.Background()
+
 	vaultRow := check.Result{Name: "Vault", Status: check.Pass, Summary: vaultPath}
 
 	gitWanted := gitEnabled
@@ -271,6 +314,50 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 	}
 	results = append(results, vaultRow)
 	return results, cli.ExitOK
+}
+
+// requestedNewVault returns the absolute --vault-path when the flag names a
+// path that does not exist, and "" when the flag is empty or the path exists
+// (in any form — what is there is onboarding's to judge, not a reason to
+// create). Only ENOENT means "create"; any other stat error is returned rather
+// than read as absent.
+func requestedNewVault(flag string) (string, error) {
+	if flag == "" {
+		return "", nil
+	}
+	abs, err := expandAndAbsPath(flag)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(abs); err == nil {
+		return "", nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return abs, nil
+}
+
+// existingInstallGitChoice decides whether a vault created on an EXISTING
+// install gets a git repository. The first-install path records --no-git into
+// the global config it writes, so its choice and the host policy agree by
+// construction. Here the host config already exists and its git_enabled is the
+// operator's policy for this machine: --no-git can only narrow it, never widen
+// it. The policy is read through storage.RefuseIfGitDisabled, its one reader;
+// git_enabled = false yields a vault without a repository and a note saying so,
+// and an unreadable policy fails closed.
+func existingInstallGitChoice(vaultPath string, wanted bool) (bool, string, error) {
+	if !wanted {
+		return false, "", nil
+	}
+	err := storage.RefuseIfGitDisabled(vaultPath, "initialise the new vault's git repository")
+	switch {
+	case err == nil:
+		return true, "", nil
+	case errors.Is(err, storage.ErrGitDisabled):
+		return false, "git_enabled = false in the host config — vault created without a git repository", nil
+	default:
+		return false, "", err
+	}
 }
 
 // vaultStepOutcome is initGlobal's reading of the Vault reconciler's Plan and
@@ -349,9 +436,9 @@ func errOrFirst(err error, errs []error) string {
 // whether onboarding may run there at all, resolves identity, and builds the
 // onboard.Request the step table is driven with.
 //
-// It performs NO writes of its own: cwd-project, vault-project and
-// project-scaffold are steps in internal/onboard, alongside the five wiring
-// steps that used to be phases 2-6 below.
+// It performs NO writes of its own: cwd-project and project-scaffold are
+// steps in internal/onboard, alongside the five wiring steps that used to be
+// phases 2-6 below.
 //
 // # There used to be a SECOND gate here, and deleting it is the point
 //
@@ -360,8 +447,8 @@ func errOrFirst(err error, errs []error) string {
 // onboarded. That premise was false for every project the MCP vp_init tool
 // touched: it wrote a two-line marker and two task directories and nothing
 // else, and the marker it wrote then told `vp init` there was nothing left to
-// do. A CLI run against such a project was a permanent no-op, so the vault
-// config.toml and the commands/skills scaffold could never appear.
+// do. A CLI run against such a project was a permanent no-op, so the vault's
+// commands/skills scaffold could never appear.
 //
 // The DetectSignal gate below is a different gate and stays. It answers "is
 // this a project directory at all", which is a question about the directory,
@@ -456,8 +543,8 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 //
 //   - cwd-project, because the project marker is what `vp init` fundamentally
 //     exists to write, and this has always been the exit code's meaning.
-//   - any SideVault step, because a failed vault-project or project-scaffold
-//     means the vault was NOT written — and before this change that failure
+//   - any SideVault step, because a failed project-scaffold means the vault
+//     was NOT written — and before this change that failure
 //     rendered as a Details line under a [pass] row, so nothing surfaced it at
 //     all. Promoting it to a [FAIL] row while still exiting 0 would leave the
 //     table saying FAIL, the summary counting a FAIL, and `vp init && ...`

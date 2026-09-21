@@ -270,15 +270,6 @@ func (v *Vault) TaskCancelledDir(project string) (string, error) {
 	return filepath.Join(v.Root, "Projects", project, "tasks", "cancelled"), nil
 }
 
-// ProjectConfigFile returns the path to a project's config file:
-// {vault}/Projects/{project}/config.toml
-func (v *Vault) ProjectConfigFile(project string) (string, error) {
-	if err := slug.Validate(project); err != nil {
-		return "", fmt.Errorf("project: %w", err)
-	}
-	return filepath.Join(v.Root, "Projects", project, "config.toml"), nil
-}
-
 // ResumeFile returns the path to a project's resume file:
 // {vault}/Projects/{project}/resume.md
 func (v *Vault) ResumeFile(project string) (string, error) {

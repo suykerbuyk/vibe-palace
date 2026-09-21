@@ -109,16 +109,15 @@ func ImportVibeVault(
 			Project: projSlug,
 		})
 
-		// Seed the vault-project config.toml (and its tasks/ subdirs) via
-		// the VaultProject reconciler — the sole orchestrator for this
-		// artifact. Check → Plan → Apply preserves write-only-if-absent
-		// semantics (a present file becomes Unchanged or Update, never
-		// clobbered) while adding drift-detection parity with `vp init`.
-		// Skipped in dry-run. Non-fatal on error — session import
+		// Initialise the destination project the way `vp init` does: the
+		// Projects/<slug>/{commands,skills}/ README scaffold, which is the
+		// marker storage.ClassifyProjectDir reads as an initialised project.
+		// Write-only-if-absent: a present README is Unchanged, never
+		// clobbered. Skipped in dry-run. Non-fatal on error — session import
 		// continues.
 		if !opts.DryRun {
-			if err := reconcileVaultProject(ctx, destination, projSlug); err != nil {
-				log.Printf("migrate: reconcile vault-project config %s: %v", projSlug, err)
+			if err := scaffoldProject(ctx, destination, projSlug); err != nil {
+				log.Printf("migrate: scaffold project %s: %v", projSlug, err)
 			}
 		}
 
@@ -331,15 +330,20 @@ func ImportVibeVault(
 	return result, nil
 }
 
-// reconcileVaultProject delegates vault-project config.toml creation to
-// the VaultProject reconciler (Check → Plan → Apply). This is the sole
-// orchestration path for `<vault>/Projects/<slug>/config.toml`; migrate
-// no longer calls storage.WriteVaultProjectConfig directly.
+// scaffoldProject lays down Projects/<slug>/{commands,skills}/ with README
+// stubs through the same TemplateTree scaffold `vp init`'s project-scaffold
+// step and `vp config sync` use, so the three cannot disagree about what an
+// initialised project is. It replaced the retired vault-project reconciler,
+// which wrote Projects/<slug>/config.toml and tasks/{done,cancelled}: the
+// config is no longer written by anything, and the task archive directories
+// are created on first use by the task mover.
 //
 // No reconciler prompts; migrate runs non-interactively.
 // Returns the first error encountered in Apply's Report, if any.
-func reconcileVaultProject(ctx context.Context, vault *storage.Vault, projSlug string) error {
-	r := reconcile.NewVaultProject(vault, projSlug)
+func scaffoldProject(ctx context.Context, vault *storage.Vault, projSlug string) error {
+	r := reconcile.NewTemplateTree(vault.Root, "Projects/"+projSlug, reconcile.TemplateTreeSeed{
+		Mode: reconcile.TemplateModeScaffold,
+	})
 	plan, err := r.Plan(ctx)
 	if err != nil {
 		return fmt.Errorf("plan: %w", err)
