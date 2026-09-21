@@ -77,10 +77,14 @@ can gate on it.
 
 ## Safety
 
-- Vault-project existence predicate is `Projects/{slug}/config.toml`.
-  Absorb bails with a clear message directing the user to `vp init` when
-  it's missing. Bare directory existence is not sufficient because
-  `vp init` also creates empty `tasks/done` subdirs.
+- Absorb writes only into an initialised project: `Projects/{slug}/` must
+  hold an init-scaffold marker (`commands/README.md` or `skills/README.md`)
+  or real history (`resume.md`, `iterations.md`, or any file under
+  `sessions/` or `tasks/`), as `storage.ClassifyProjectDir` judges it.
+  Absorb bails with a clear message directing the user to `vp init`
+  otherwise. Bare directory existence is not sufficient, and neither is a
+  lone `Projects/{slug}/config.toml`: that per-project vault config is
+  retired (v7.2.0) and is no longer an init marker.
 - Content-hash dedup: every appended block carries an
   `<!-- absorb-hash: ... -->` marker so re-running absorb against the
   same (or byte-identical) input produces no duplicate subheadings.
