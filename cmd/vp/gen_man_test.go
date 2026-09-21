@@ -14,7 +14,7 @@ import (
 
 // manPageDate is the date stamped into every generated page; bump it when
 // regenerating after a CLI-facing change so pages carry the generation date.
-const manPageDate = "2026-09-11"
+const manPageDate = "2026-09-20"
 
 // TestGenerateManPages generates man pages from command metadata.
 // By default it writes to t.TempDir() to validate formatting.
@@ -95,7 +95,7 @@ func knownCommands() []string {
 		"migrate", "migrate mempalace", "migrate vibevault",
 		"search", "sessions",
 		"skills", "skills list", "skills show", "skills upgrade", "skills reset",
-		"status", "tasks", "tasks epics", "tasks edit",
+		"status", "tasks", "tasks epics", "tasks edit", "tasks read",
 		"vault", "vault pull", "vault push", "vault status", "vault sync", "vault tidy",
 		"version",
 		"worktree", "worktree create", "worktree remove", "worktree list",

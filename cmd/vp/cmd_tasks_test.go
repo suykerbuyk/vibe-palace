@@ -5,7 +5,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -726,5 +729,659 @@ func TestRenderGroupsPriorityWidthOnlyWidens(t *testing.T) {
 	j := strings.Index(row, "[blocked by:")
 	if got, want := j-i-2, groupsPriorityWidth; got != want {
 		t.Errorf("renderGroups priority column = %d, want %d (the literal it replaced): %q", got, want, row)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tasks read
+// ---------------------------------------------------------------------------
+
+// readStub writes a stub editor that records the path it was handed into
+// argvFile and then runs body (raw sh, with "$1" as the handed path).
+func readStub(t *testing.T, dir, argvFile, body string) string {
+	t.Helper()
+	return writeStubEditor(t, dir, "printf '%s' \"$1\" > \""+argvFile+"\"\n"+body)
+}
+
+// handedPath returns the temp path the stub editor recorded, failing the test
+// if the stub never ran.
+func handedPath(t *testing.T, argvFile string) string {
+	t.Helper()
+	b, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("stub editor did not record argv (did it run?): %v", err)
+	}
+	return string(b)
+}
+
+// assertTempCopyClaimIsHonest pins the wording of the message that tells the
+// reader where their typing went.
+//
+// 🔴 vp COMMITS TO NOTHING ABOUT THIS FILE'S LIFETIME, IN EITHER DIRECTION.
+// The copy is a temp file under $TMPDIR. The first wording said "preserved",
+// which promised durability a tmpfs never agreed to; the replacement said "may
+// not survive a reboot", which still discussed a lifetime vp has no standing to
+// discuss. The bar is now: state that the vault was not changed, state where
+// the file is, and stop. Every word below has appeared in a real draft of this
+// message, which is why the list is a list and not a principle.
+func assertTempCopyClaimIsHonest(t *testing.T, stderr string) {
+	t.Helper()
+	for _, banned := range []string{
+		"preserved", "preserve",
+		"kept", "keep",
+		"saved", "safe",
+		"survive", "durable",
+		"recover", "backup",
+	} {
+		if strings.Contains(strings.ToLower(stderr), banned) {
+			t.Errorf("message says %q — vp makes no claim about a temp file's lifetime, in either direction:\n%s", banned, stderr)
+		}
+	}
+	if !strings.Contains(stderr, "neither manages nor tracks") {
+		t.Errorf("the message must disclaim the file rather than characterise its lifetime, got %q", stderr)
+	}
+}
+
+func TestShortSlugForTempName(t *testing.T) {
+	long := strings.Repeat("a", readTempSlugBudget+20)
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"short is unchanged", "fix-login-bug", "fix-login-bug"},
+		{"exactly the budget is unchanged", strings.Repeat("b", readTempSlugBudget), strings.Repeat("b", readTempSlugBudget)},
+		{"over the budget keeps the leading bytes", long, strings.Repeat("a", readTempSlugBudget)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shortSlugForTempName(tc.in); got != tc.want {
+				t.Errorf("shortSlugForTempName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// assertReadOpens is the shared body of the state-coverage tests: whatever
+// directory the task resolved from, the editor is handed a READ-ONLY-named .md
+// temp file holding the task's exact bytes.
+func assertReadOpens(t *testing.T, v *storage.Vault, proj, slug string) {
+	t.Helper()
+	_, want, err := v.GetTask(proj, slug)
+	if err != nil {
+		t.Fatalf("GetTask %s: %v", slug, err)
+	}
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	// Copy the handed file aside so its contents survive the command's cleanup.
+	copyFile := filepath.Join(dir, "handed-copy.md")
+	stub := readStub(t, dir, argvFile, "cat \"$1\" > \""+copyFile+"\"\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, proj, slug, &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+
+	handed := handedPath(t, argvFile)
+	if !strings.HasSuffix(handed, ".md") {
+		t.Errorf("editor was handed %q, want a .md temp path", handed)
+	}
+	if !strings.Contains(filepath.Base(handed), "READONLY") {
+		t.Errorf("temp basename %q must carry READONLY — it is the half of the warning that survives an alternate-screen editor", filepath.Base(handed))
+	}
+	got, err := os.ReadFile(copyFile)
+	if err != nil {
+		t.Fatalf("stub did not copy the handed file: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("editor was handed different bytes than the vault holds:\n--- handed ---\n%s\n--- vault ---\n%s", got, want)
+	}
+}
+
+func TestRunTasksReadOpensAnActiveTask(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "still-open", "")
+	assertReadOpens(t, v, "test-proj", "still-open")
+}
+
+func TestRunTasksReadOpensADoneTask(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "finished", "")
+	if err := v.RetireTask("test-proj", "finished"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	assertReadOpens(t, v, "test-proj", "finished")
+}
+
+func TestRunTasksReadOpensACancelledTask(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "abandoned", "")
+	if err := v.CancelTask("test-proj", "abandoned", ""); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	assertReadOpens(t, v, "test-proj", "abandoned")
+}
+
+func TestRunTasksReadOpensAnEpic(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "epic-a", "")
+	// An epic is a task something names as its parent, so the child must exist
+	// for epic-a to BE one.
+	mkTask(t, v, "test-proj", "child-of-epic", "epic-a")
+	assertReadOpens(t, v, "test-proj", "epic-a")
+}
+
+func TestRunTasksReadLeavesAModifiedTempInPlace(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "scribbled", "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	// The `:w!` route: a forcing editor chmods the file and writes it.
+	stub := readStub(t, dir, argvFile, "chmod u+w \"$1\"\nprintf '\\nReader notes.\\n' >> \"$1\"\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "scribbled", &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+	es := errOut.String()
+	if !strings.Contains(es, "NOT written") {
+		t.Errorf("stderr must say plainly that the vault was not changed, got %q", es)
+	}
+	assertTempCopyClaimIsHonest(t, es)
+
+	kept := handedPath(t, argvFile)
+	body, err := os.ReadFile(kept)
+	if err != nil {
+		t.Fatalf("modified copy was deleted: %v", err)
+	}
+	if !strings.Contains(string(body), "Reader notes.") {
+		t.Errorf("the kept copy lost the reader's edit:\n%s", body)
+	}
+	if !strings.Contains(es, kept) {
+		t.Errorf("stderr must name the path that was kept (%q), got %q", kept, es)
+	}
+	_ = os.Remove(kept)
+}
+
+func TestRunTasksReadRemovesAnUnmodifiedTemp(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "untouched-read", "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	stub := readStub(t, dir, argvFile, "exit 0\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "untouched-read", &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+	gone := handedPath(t, argvFile)
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		_ = os.Remove(gone)
+		t.Errorf("an untouched copy must be removed silently; os.Stat(%q) err = %v", gone, err)
+	}
+	if strings.Contains(errOut.String(), gone) {
+		t.Errorf("nothing was kept, so no temp path should be printed, got %q", errOut.String())
+	}
+}
+
+// TestRunTasksReadAbortLeavesAModifiedTempInPlace pins the deliberate divergence
+// from `vp tasks edit`, whose abort path deletes the temp unconditionally.
+//
+// Do not "restore symmetry" by making this path delete. In `edit` a non-zero
+// exit means "cancel my save" and dropping the copy honours it; in `read` there
+// is no save to cancel, so a non-zero exit says nothing about the reader's
+// typing — and that typing is the only artifact this command can lose.
+func TestRunTasksReadAbortLeavesAModifiedTempInPlace(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "aborted-scribble", "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	// The write-and-rename route: the editor replaces the PATH with a fresh
+	// file at default permissions and never touches the read-only original.
+	stub := readStub(t, dir, argvFile, "cat \"$1\" > \"$1.new\"\nprintf '\\nNotes before the crash.\\n' >> \"$1.new\"\nmv \"$1.new\" \"$1\"\nexit 1\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "aborted-scribble", &errOut); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser; stderr=%q", code, errOut.String())
+	}
+	es := errOut.String()
+	if !strings.Contains(es, "editor exited abnormally") {
+		t.Errorf("expected the abort to be reported, got %q", es)
+	}
+	kept := handedPath(t, argvFile)
+	if !strings.Contains(es, kept) {
+		t.Errorf("an aborted editor must NOT cost the reader their notes; stderr did not name %q: %s", kept, es)
+	}
+	assertTempCopyClaimIsHonest(t, es)
+	body, err := os.ReadFile(kept)
+	if err != nil {
+		t.Fatalf("modified copy was deleted on the abort path: %v", err)
+	}
+	if !strings.Contains(string(body), "Notes before the crash.") {
+		t.Errorf("the kept copy lost the reader's edit:\n%s", body)
+	}
+	_ = os.Remove(kept)
+}
+
+func TestRunTasksReadAbortRemovesAnUnmodifiedTemp(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "aborted-clean", "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	stub := readStub(t, dir, argvFile, "exit 1\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "aborted-clean", &errOut); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "editor exited abnormally") {
+		t.Errorf("expected the abort to be reported, got %q", errOut.String())
+	}
+	gone := handedPath(t, argvFile)
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		_ = os.Remove(gone)
+		t.Errorf("an untouched copy must be removed even on the abort path; os.Stat(%q) err = %v", gone, err)
+	}
+}
+
+// TestRunTasksReadNoEditorSet asserts the precondition at THIS surface, not
+// only in TestResolveEditor, because the ordering is the point: `vp tasks edit`
+// refuses an archived task BEFORE it resolves an editor, and the read path must
+// have no such guard left to fire.
+func TestRunTasksReadNoEditorSet(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "no-editor", "")
+	if err := v.RetireTask("test-proj", "no-editor"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", "")
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "no-editor", &errOut); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser", code)
+	}
+	es := errOut.String()
+	if !strings.Contains(es, "VISUAL") || !strings.Contains(es, "EDITOR") {
+		t.Errorf("refusal must name $VISUAL and $EDITOR, got %q", es)
+	}
+	if strings.Contains(es, "refusing to edit") {
+		t.Errorf("an archived task must NOT be refused by vp tasks read, got %q", es)
+	}
+}
+
+// TestRunTasksReadDoesNotSendAnArchivedReaderAtARefusal pins the other half of
+// the notice: `vp tasks edit` guards on meta.Done, so naming it to someone
+// reading a done or cancelled task hands them a command that will refuse.
+func TestRunTasksReadDoesNotSendAnArchivedReaderAtARefusal(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "archived-reader", "")
+	if err := v.RetireTask("test-proj", "archived-reader"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	dir := t.TempDir()
+	stub := writeStubEditor(t, dir, "exit 0\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "archived-reader", &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+	es := errOut.String()
+	if strings.Contains(es, "vp tasks edit") {
+		t.Errorf("an archived reader must not be pointed at `vp tasks edit`, which refuses them: %q", es)
+	}
+	if !strings.Contains(es, "is discarded") {
+		t.Errorf("the discard notice must still be given, got %q", es)
+	}
+	if !strings.Contains(es, "archived") {
+		t.Errorf("the notice should say why there is no edit command to offer, got %q", es)
+	}
+}
+
+func TestRunTasksReadNoSuchTask(t *testing.T) {
+	v := testVault(t)
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "nope", &errOut); code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser", code)
+	}
+	if !strings.Contains(errOut.String(), "no such task: nope") {
+		t.Errorf("expected no-such-task error, got %q", errOut.String())
+	}
+}
+
+func TestRunTasksReadCannotDetectProject(t *testing.T) {
+	// Detection is hard to defeat: project.DetectProject falls back to the
+	// directory BASENAME, so almost any cwd yields something. A basename with no
+	// alphanumerics slugifies to the empty string, which is one of the few ways
+	// to reach the refusal at all — worth knowing, because it means this branch
+	// is rare rather than dead.
+	dir := filepath.Join(t.TempDir(), "!!!")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(dir)
+	var code int
+	errs := captureStderr(t, func() { code = cmdTasksRead().Run([]string{"some-slug"}) })
+	if code != cli.ExitUser {
+		t.Errorf("exit = %d, want ExitUser", code)
+	}
+	if !strings.Contains(errs, "--project") {
+		t.Errorf("refusal must name --project, got %q", errs)
+	}
+}
+
+// TestRunTasksReadAnnouncesDiscardBeforeTheEditorRuns proves the ORDER, not
+// merely that the notice exists.
+//
+// Both the notice and the stub editor's own marker are routed to the process
+// stderr, so they land in one captured stream and their relative position is
+// observable. Printing the notice after the editor exits would be worthless —
+// by then the reader has already typed into a file they believed was live.
+func TestRunTasksReadAnnouncesDiscardBeforeTheEditorRuns(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "announced", "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	stub := readStub(t, dir, argvFile, "printf 'STUB-EDITOR-RAN\\n' >&2\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var code int
+	stream := captureStderr(t, func() { code = runTasksRead(v, "test-proj", "announced", os.Stderr) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, stream)
+	}
+
+	notice := strings.Index(stream, "READ-ONLY")
+	discard := strings.Index(stream, "is discarded")
+	ran := strings.Index(stream, "STUB-EDITOR-RAN")
+	if notice < 0 || discard < 0 {
+		t.Fatalf("the read-only notice is missing from stderr:\n%s", stream)
+	}
+	if ran < 0 {
+		t.Fatalf("the stub editor never ran:\n%s", stream)
+	}
+	if notice > ran || discard > ran {
+		t.Errorf("the discard notice must be printed BEFORE the editor starts:\n%s", stream)
+	}
+
+	handed := handedPath(t, argvFile)
+	if !strings.Contains(filepath.Base(handed), "READONLY") {
+		t.Errorf("temp basename %q must carry the warning too — a printed line is wiped by any alternate-screen editor", filepath.Base(handed))
+	}
+}
+
+// TestRunTasksReadBoundsAPathologicalSlug pins the temp-name budget.
+//
+// slug.Validate caps a slug at 64 bytes today, so this is not currently a
+// route to ENAMETOOLONG — that cap lives in another package and is exactly the
+// kind of premise that expires silently. The bound here holds regardless, and
+// the reason it exists at all is legibility: the slug is in the filename to be
+// readable in an editor's status line, which a 64-byte slug defeats.
+func TestRunTasksReadBoundsAPathologicalSlug(t *testing.T) {
+	const prefix = "pathological-read-slug-"
+	slug := prefix + strings.Repeat("x", 64-len(prefix)) // the longest slug storage will accept
+	if len(slug) != 64 {
+		t.Fatalf("fixture slug is %d bytes, want 64", len(slug))
+	}
+
+	v := testVault(t)
+	mkTask(t, v, "test-proj", slug, "")
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	stub := readStub(t, dir, argvFile, "exit 0\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", slug, &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+
+	base := filepath.Base(handedPath(t, argvFile))
+	if !strings.Contains(base, "READONLY") {
+		t.Errorf("temp basename %q lost the READONLY marker", base)
+	}
+	if !strings.Contains(base, slug[:readTempSlugBudget]) {
+		t.Errorf("temp basename %q must keep the slug's leading %d bytes so it stays recognisable", base, readTempSlugBudget)
+	}
+	if strings.Contains(base, slug) {
+		t.Errorf("temp basename %q embeds the whole 64-byte slug; it was supposed to be bounded", base)
+	}
+	if len(base) > 80 {
+		t.Errorf("temp basename %q is %d bytes; the budget is supposed to keep it well under NAME_MAX", base, len(base))
+	}
+}
+
+// vaultDigest returns relpath -> sha256 of every regular file under root.
+//
+// 🔴 THE DIGEST IS OVER BYTES, VIA sha256 — never over len(). A byte-diff
+// procedure that records character counts reports clean while measuring
+// something else, which has bitten this project more than once.
+func vaultDigest(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		out[rel] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk vault: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("vault digest is empty; the snapshot examined nothing")
+	}
+	return out
+}
+
+// TestRunTasksReadLeavesTheVaultBytesUnchanged is the containment proof: the
+// ABSENCE of write-back is demonstrated on bytes, not assumed from the absence
+// of a call.
+//
+// It snapshots the WHOLE vault tree rather than re-reading the one task,
+// because a write to a different file — the active copy, a sibling, a lock, an
+// index — is precisely the failure a single-file assertion reports as clean.
+//
+// The stub rewrites the temp file wholesale, INCLUDING the `# Title` and
+// `**Status:**` header lines, so a write routed through the header-rewriting
+// escape hatch (OverwriteTaskFileRewritingHeader) would be caught too, not only
+// a plain OverwriteTaskFile.
+func TestRunTasksReadLeavesTheVaultBytesUnchanged(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "epic-root", "")
+	mkTask(t, v, "test-proj", "active-one", "epic-root")
+	mkTask(t, v, "test-proj", "done-one", "")
+	mkTask(t, v, "test-proj", "cancelled-one", "")
+	if err := v.RetireTask("test-proj", "done-one"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if err := v.CancelTask("test-proj", "cancelled-one", ""); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	before := vaultDigest(t, v.Root)
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	stub := readStub(t, dir, argvFile, `chmod u+w "$1"
+cat > "$1" <<'EOF'
+# Smuggled Title
+
+**Status:** in_progress
+**Priority:** critical
+
+## Smuggled Section
+
+The reader rewrote every byte, header block included.
+EOF
+`)
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	if code := runTasksRead(v, "test-proj", "done-one", &errOut); code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+
+	after := vaultDigest(t, v.Root)
+
+	for rel, sum := range before {
+		got, ok := after[rel]
+		if !ok {
+			t.Errorf("vp tasks read REMOVED a vault file: %s", rel)
+			continue
+		}
+		if got != sum {
+			t.Errorf("vp tasks read CHANGED vault bytes at %s\n  before sha256 %s\n  after  sha256 %s", rel, sum, got)
+		}
+	}
+	for rel := range after {
+		if _, ok := before[rel]; !ok {
+			t.Errorf("vp tasks read ADDED a vault file: %s", rel)
+		}
+	}
+
+	// The rewritten copy is kept, per the disposition rule; clean it up.
+	_ = os.Remove(handedPath(t, argvFile))
+}
+
+// TestCreateReadOnlyTempCopyClearsTheWriteBit asserts the guard the operator
+// asked for, and the cleanup property that guard could have broken, on the
+// real artifact rather than on a stand-in.
+//
+// 🔴 IT ASSERTS THE WRITE BIT IS CLEAR, NOT THAT THE MODE IS 0400.
+// Windows Stat reports 0444 for a read-only file and 0666 otherwise
+// (os/types_windows.go), so `mode == 0400` would pass here and fail there —
+// and this repo ships Windows build tags, so "here" is not the whole story.
+func TestCreateReadOnlyTempCopyClearsTheWriteBit(t *testing.T) {
+	const body = "# A Task\n\nSome body bytes.\n"
+	path, err := createReadOnlyTempCopy("some-slug", body)
+	if err != nil {
+		t.Fatalf("createReadOnlyTempCopy: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm()&0o200 != 0 {
+		t.Errorf("temp copy mode is %v; the owner write bit must be clear so editors surface it as read-only", info.Mode().Perm())
+	}
+	if !strings.Contains(filepath.Base(path), "READONLY") {
+		t.Errorf("the filename must keep its READONLY marker too, got %q", filepath.Base(path))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read-only must still mean READABLE: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("temp copy holds %q, want %q", got, body)
+	}
+}
+
+// TestReadOnlyTempCopyIsStillRemovable is the cross-platform hazard, pinned.
+//
+// The worry was that making the copy read-only would break the cleanup and turn
+// a warning into a leak on every successful read. It does not, and the reason
+// differs per platform — which is why this is one test rather than a Linux-only
+// assertion that would no-op where the risk actually lives:
+//
+//   - POSIX: os.Remove needs write permission on the DIRECTORY, not on the
+//     file, so the mode is simply not consulted.
+//   - Windows: os.Chmod without S_IWRITE sets FILE_ATTRIBUTE_READONLY and
+//     DeleteFile refuses it — but os.Remove re-reads the attributes, clears
+//     that bit with SetFileAttributes and retries (os/file_windows.go).
+//
+// Either way this must pass. If it ever fails on some platform, that platform
+// needs an explicit chmod before the remove, and this test is where that gets
+// discovered rather than in a $TMPDIR filling up with task bodies.
+func TestReadOnlyTempCopyIsStillRemovable(t *testing.T) {
+	path, err := createReadOnlyTempCopy("removable", "# A Task\n\nbody\n")
+	if err != nil {
+		t.Fatalf("createReadOnlyTempCopy: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("a read-only temp copy must still be removable, else every clean read leaks a file: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("after os.Remove, os.Stat(%q) err = %v, want IsNotExist", path, err)
+	}
+}
+
+// TestRunTasksReadReadOnlyCopyRefusesAPlainEditorWrite is the guard working
+// end to end: a stub that writes in place WITHOUT forcing gets EACCES, so the
+// bytes come back unchanged and the copy is removed like any untouched read.
+//
+// The two tests above it cover the routes that DO get through — `:w!` chmods,
+// and write-and-rename replaces the path — which is why the disposition branch
+// is still load-bearing and was not deleted when the mode was added.
+func TestRunTasksReadReadOnlyCopyRefusesAPlainEditorWrite(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "mode-guarded", "")
+	_, before, err := v.GetTask("test-proj", "mode-guarded")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	// No chmod, no rename: exactly what a naive editor does on save.
+	stub := readStub(t, dir, argvFile, "printf 'clobbered\\n' >> \"$1\"\n")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", stub)
+
+	var errOut bytes.Buffer
+	code := runTasksRead(v, "test-proj", "mode-guarded", &errOut)
+
+	handed := handedPath(t, argvFile)
+	if _, err := os.Stat(handed); err == nil {
+		_ = os.Remove(handed)
+		t.Errorf("the write was refused, so the copy was unchanged and should have been removed: %s", handed)
+	}
+	// The shell reports the failed redirect, so this lands on the abort path.
+	if code != cli.ExitUser {
+		t.Errorf("exit = %d, want ExitUser (the stub's write failed); stderr=%q", code, errOut.String())
+	}
+	_, after, err := v.GetTask("test-proj", "mode-guarded")
+	if err != nil {
+		t.Fatalf("GetTask after: %v", err)
+	}
+	if after != before {
+		t.Errorf("the vault changed during a read")
 	}
 }
