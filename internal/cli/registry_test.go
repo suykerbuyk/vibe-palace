@@ -669,3 +669,75 @@ func TestDerivedSubcommandsKeepAParentOutOfTheLeafPath(t *testing.T) {
 		t.Errorf("parent help does not list its derived child:\n%s", out.String())
 	}
 }
+
+func TestAliasReachesParentChildAndHelp(t *testing.T) {
+	reg, out, _ := newTestRegistry()
+	var parentArgs, childArgs []string
+	reg.Register(&Command{Name: "tasks", Aliases: []string{"task"}, BareInvocation: true,
+		Run: func(args []string) int { parentArgs = args; return ExitOK }})
+	reg.Register(&Command{Name: "tasks read", Synopsis: "vp tasks read <slug>",
+		Run: func(args []string) int { childArgs = args; return ExitOK }})
+
+	if code := reg.Dispatch([]string{"task", "--flat"}); code != ExitOK || !slices.Equal(parentArgs, []string{"--flat"}) {
+		t.Errorf("vp task --flat: code=%d args=%v", code, parentArgs)
+	}
+	if code := reg.Dispatch([]string{"task", "read", "x"}); code != ExitOK || !slices.Equal(childArgs, []string{"x"}) {
+		t.Errorf("vp task read x: code=%d args=%v", code, childArgs)
+	}
+	if code := reg.Dispatch([]string{"task", "read", "--help"}); code != ExitOK || !strings.Contains(out.String(), "Usage: vp tasks read <slug>") {
+		t.Errorf("vp task read --help: code=%d out=%q", code, out.String())
+	}
+}
+
+func TestAliasDoesNotMutateCallerArgs(t *testing.T) {
+	reg, _, _ := newTestRegistry()
+	reg.Register(&Command{Name: "tasks", Aliases: []string{"task"}, Run: func([]string) int { return ExitOK }})
+	args := []string{"task"}
+	reg.Dispatch(args)
+	if args[0] != "task" {
+		t.Errorf("Dispatch rewrote the caller's slice: %v", args)
+	}
+}
+
+func TestAliasIsNotListedAsACommand(t *testing.T) {
+	reg, _, _ := newTestRegistry()
+	reg.Register(&Command{Name: "tasks", Aliases: []string{"task"}, Description: "List tasks."})
+	if _, ok := reg.Lookup("task"); ok {
+		t.Error("an alias must not be a registered command")
+	}
+	if got := len(reg.All()); got != 1 {
+		t.Errorf("All() = %d commands, want 1", got)
+	}
+	if help := FormatHelp(reg.All()[0]); !strings.Contains(help, "Alias: vp task") {
+		t.Errorf("help does not advertise the alias:\n%s", help)
+	}
+	if page := FormatManPage(reg.All()[0], nil, 1, "d", "v"); !strings.Contains(page, ".SH ALIASES") {
+		t.Errorf("man page does not advertise the alias:\n%s", page)
+	}
+}
+
+func TestAliasCollisionsPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first *Command
+		then  *Command
+	}{
+		{"alias shadows a command", &Command{Name: "task"}, &Command{Name: "tasks", Aliases: []string{"task"}}},
+		{"command shadows an alias", &Command{Name: "tasks", Aliases: []string{"task"}}, &Command{Name: "task"}},
+		{"alias claimed twice", &Command{Name: "tasks", Aliases: []string{"t"}}, &Command{Name: "tune", Aliases: []string{"t"}}},
+		{"alias shadows a multi-word command's first word", &Command{Name: "task foo"}, &Command{Name: "tasks", Aliases: []string{"task"}}},
+		{"multi-word command starts with an alias", &Command{Name: "tasks", Aliases: []string{"task"}}, &Command{Name: "task foo"}},
+		{"alias on a two-word command", &Command{Name: "tasks"}, &Command{Name: "tasks read", Aliases: []string{"tr"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, _, _ := newTestRegistry()
+			reg.Register(tc.first)
+			defer func() {
+				if recover() == nil {
+					t.Error("Register did not panic")
+				}
+			}()
+			reg.Register(tc.then)
+		})
+	}
+}
