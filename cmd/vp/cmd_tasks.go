@@ -708,3 +708,275 @@ func runTasksEdit(vault *storage.Vault, proj, slug string, out, errOut io.Writer
 	fmt.Fprintf(out, "updated %s\n", slug)
 	return cli.ExitOK
 }
+
+// ---------------------------------------------------------------------------
+// tasks read — open a task body in $VISUAL/$EDITOR for READING, discarding edits.
+// ---------------------------------------------------------------------------
+
+var tasksReadFlags = []cli.FlagDef{
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project name (default: auto-detect)"},
+}
+
+func cmdTasksRead() *cli.Command {
+	return &cli.Command{
+		Name:     "tasks read",
+		Synopsis: "vp tasks read <slug> [--project P]",
+		Description: "Open a task's whole file in $VISUAL (else $EDITOR) for READING. Works on any " +
+			"task in any state — active, iceboxed, done, cancelled, epic or story — because an " +
+			"archived body is exactly the record you most often want to look at. This command " +
+			"NEVER writes the vault: you are handed a throwaway copy, and anything you type in it " +
+			"is discarded. If you did change the copy it is kept and its path is printed, so your " +
+			"notes are not lost; an untouched copy is removed. To CHANGE an active task, use " +
+			"`vp tasks edit`.",
+		Flags: tasksReadFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp tasks read fix-login-bug", Comment: "Read a task body in your editor; edits are discarded"},
+			{Cmd: "vp tasks read old-retired-plan", Comment: "Works on done and cancelled tasks, which `vp tasks edit` refuses"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(tasksReadFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp tasks read: %v\n", err)
+				return cli.ExitUser
+			}
+			pos := fv.Args()
+			if len(pos) == 0 {
+				fmt.Fprintln(os.Stderr, "vp tasks read: <slug> argument required")
+				return cli.ExitUser
+			}
+			proj := detectTasksProject(fv)
+			if proj == "" {
+				fmt.Fprintln(os.Stderr, "vp tasks read: could not detect project (use --project)")
+				return cli.ExitUser
+			}
+			vault, err := openProjectVault()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp tasks read: %v\n", err)
+				return cli.ExitUser
+			}
+			return runTasksRead(vault, proj, pos[0], os.Stderr)
+		},
+	}
+}
+
+// readTempSlugBudget caps the slug component of the read temp file's name.
+//
+// The slug is in that name for ONE reason: it is what makes the file
+// recognisable in an editor's status line, window title and `:f`, which is the
+// half of "this is read-only" that survives an editor switching to the
+// alternate screen buffer and wiping whatever was printed before it started.
+// A 64-character slug defeats that by crowding the status line with the part a
+// reader does not need, so the leading characters are kept and the rest cut.
+//
+// It is ALSO a bound that does not depend on another package's constant.
+// storage.GetTask validates the slug (slug.Validate, currently max 64 bytes)
+// before this code is reached, so a slug arriving here is already short enough
+// that NAME_MAX is not in play today — the ENAMETOOLONG this was asked to
+// prevent is not currently reachable. That is a fact about a cap in
+// internal/slug, not about this function, and it is exactly the kind of
+// premise that expires silently when somebody raises it.
+const readTempSlugBudget = 32
+
+// shortSlugForTempName returns slug bounded to readTempSlugBudget bytes.
+//
+// Byte truncation is safe here rather than merely convenient: slug.Validate
+// admits `[a-z0-9]` and `-` only, so every slug reaching this function is
+// single-byte ASCII and there is no multi-byte rune for a byte cut to split.
+func shortSlugForTempName(slug string) string {
+	if len(slug) <= readTempSlugBudget {
+		return slug
+	}
+	return slug[:readTempSlugBudget]
+}
+
+// taskStateWord renders a task's state for the read notice.
+//
+// meta.Status is preferred because it is the only thing that distinguishes
+// done from cancelled: storage.GetTask collapses both archive directories into
+// a single meta.Done, so the directory a task resolved from is not recoverable
+// here. The fallbacks cover a task file written before the Status field
+// existed, which the header migrations have not necessarily reached.
+func taskStateWord(meta storage.TaskMeta) string {
+	if meta.Status != "" {
+		return meta.Status
+	}
+	if meta.Done {
+		return "archived"
+	}
+	return "active"
+}
+
+// createReadOnlyTempCopy writes content to a fresh temp file and takes the
+// write bit off it before anybody opens it.
+//
+// The mode is the guard the FILENAME cannot be: vim, emacs, nano and VS Code
+// all surface a read-only file in their own status line, natively, without the
+// reader having to notice a naming convention. The name keeps its READONLY
+// marker anyway, for an editor that surfaces the mode less clearly — the two
+// cost nothing together.
+//
+// 0400, not 0444: os.CreateTemp makes the file 0600, owner-only, and this
+// narrows that rather than widening it.
+//
+// 🔴 IT DOES NOT REPLACE THE DISPOSITION LOGIC, AND MUST NOT BE TAKEN TO.
+// A read-only file is still reachable: `:w!` in vim chmods and writes, and an
+// editor that saves by write-and-rename replaces the path with a FRESH file
+// carrying default permissions and never touches the mode at all. So the
+// changed/unchanged branch downstream stays exactly as it was.
+//
+// # Cleanup is unaffected, on POSIX and on Windows alike
+//
+// POSIX: os.Remove needs write permission on the DIRECTORY, not on the file,
+// so a 0400 file in a writable $TMPDIR deletes normally.
+//
+// Windows: os.Chmod maps a mode without S_IWRITE onto FILE_ATTRIBUTE_READONLY
+// (syscall/syscall_windows.go, Chmod), and DeleteFile refuses a file carrying
+// it — but os.Remove ALREADY handles exactly that: on failure it re-reads the
+// attributes, clears FILE_ATTRIBUTE_READONLY with SetFileAttributes, and
+// retries the delete (os/file_windows.go, Remove). So no manual chmod-before-
+// remove is needed, and adding one would be dead code on every platform.
+// Verified against the Go 1.27.1 source in GOROOT, not from memory.
+//
+// Note for a future reader: Windows Stat reports 0444 for a read-only file and
+// 0666 otherwise (os/types_windows.go), so a test asserting mode == 0400 would
+// pass on Linux and fail on Windows. Assert that the owner-write bit is CLEAR.
+func createReadOnlyTempCopy(slug, content string) (string, error) {
+	tmp, err := os.CreateTemp("", "vp-task-READONLY-"+shortSlugForTempName(slug)+"-*.md")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	path := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+	// Last, after the handle is closed: a guard applied while the file is still
+	// open is a guard applied to nothing on some platforms.
+	if err := os.Chmod(path, 0o400); err != nil {
+		// Deliberately fatal. Carrying on would hand the reader a writable file
+		// that claims read-only in its NAME and nowhere else — a guard that
+		// silently did not apply is the failure mode this project keeps logging.
+		os.Remove(path)
+		return "", fmt.Errorf("make the temp copy read-only: %w", err)
+	}
+	return path, nil
+}
+
+// printTempCopyLocation reports where the copy is, and commits to nothing else
+// about it.
+//
+// 🔴 vp MAKES NO DURABILITY CLAIM ABOUT THIS FILE, IN EITHER DIRECTION.
+// It is a temp file under $TMPDIR; on this host /tmp is a tmpfs, but that is a
+// fact about one host and not something a message printed on every host may
+// assert. The earlier wording said "preserved", then said "may not survive a
+// reboot" — the first overclaimed and the second still discussed a lifetime vp
+// has no standing to discuss. State two facts and stop: the vault was not
+// changed, and the copy is at this path. Anything a reader could take as a
+// promise that the file will be there later is a defect in this function.
+func printTempCopyLocation(errOut io.Writer, tmpPath string) {
+	fmt.Fprintf(errOut, "  %s\n", tmpPath)
+	fmt.Fprintln(errOut, "vp tasks read: vp neither manages nor tracks that file from here.")
+}
+
+// runTasksRead opens a task body in the user's editor for READING and discards
+// whatever comes back. It is runTasksEdit minus two things, and the two
+// omissions are the whole feature:
+//
+//   - No archived guard. storage.GetTask already resolves active, done/ and
+//     cancelled/ alike, so every state opens. `vp tasks edit` refuses an
+//     archived task because editing one would silently rewrite history; reading
+//     one rewrites nothing, and a completed task's body is the record most
+//     worth reading.
+//   - No write-back. There is no OverwriteTaskFile call, and no other vault
+//     writer, on any path through this function. That is not a claim resting on
+//     this comment: the command is registered UNWRAPPED in commands.go, and
+//     internal/sourceaudit's derived gate reports a divergence if this function
+//     ever reaches a vault-write funnel sink through any number of hops.
+//
+// It deliberately takes no `out` writer, unlike runTasksEdit. runTasksEdit has
+// outcomes to report on stdout ("updated <slug>", "no changes"); this command
+// has none — everything it emits is a notice or a refusal, and those go to
+// stderr. Carrying an unused parameter for the sake of looking like its sibling
+// would be a small untruth about the function's interface.
+func runTasksRead(vault *storage.Vault, proj, slug string, errOut io.Writer) int {
+	meta, content, err := vault.GetTask(proj, slug)
+	if err != nil {
+		fmt.Fprintf(errOut, "vp tasks read: no such task: %s\n", slug)
+		return cli.ExitUser
+	}
+
+	bin, editorArgs, err := resolveEditor()
+	if err != nil {
+		fmt.Fprintf(errOut, "vp tasks read: %v\n", err)
+		return cli.ExitUser
+	}
+
+	tmpPath, err := createReadOnlyTempCopy(slug, content)
+	if err != nil {
+		fmt.Fprintf(errOut, "vp tasks read: %v\n", err)
+		return cli.ExitSystem
+	}
+
+	// Told BEFORE the editor opens, on stderr: stdout carries outcomes, and a
+	// caller redirecting stdout still needs to see this. Most editors switch to
+	// the alternate screen buffer and wipe it immediately, which is why the temp
+	// FILENAME carries the same warning for the whole session.
+	fmt.Fprintf(errOut, "vp tasks read: opening %s (%s) READ-ONLY — this command never writes the vault\n",
+		slug, taskStateWord(meta))
+	if meta.Done {
+		// Pointing an archived reader at `vp tasks edit` would point them at a
+		// refusal: that command guards on meta.Done. The state is already
+		// rendered on the line above, so say the true thing instead.
+		fmt.Fprintln(errOut, "vp tasks read: anything you type here is discarded; this task is archived, so no command will change its body — it is history")
+	} else {
+		fmt.Fprintf(errOut, "vp tasks read: anything you type here is discarded; use `vp tasks edit %s` to change it\n", slug)
+	}
+
+	cmd := exec.Command(bin, append(editorArgs, tmpPath)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	editorErr := cmd.Run()
+
+	// DISPOSITION, one rule for every exit: bytes changed -> keep the copy and
+	// print its path; bytes identical -> remove it silently.
+	//
+	// 🔴 THIS DELIBERATELY DIVERGES FROM `vp tasks edit`, WHICH DELETES THE TEMP
+	// ON AN EDITOR ABORT (see runTasksEdit). Do not "restore symmetry" here.
+	// There, a non-zero exit is the user saying "cancel my save", and dropping
+	// the copy honours it. Here there is no save to cancel — nothing was ever
+	// going to be written — so a non-zero exit says nothing about their typing,
+	// and that typing is the ONLY artifact this command is capable of losing.
+	if editorErr != nil {
+		fmt.Fprintf(errOut, "vp tasks read: editor exited abnormally (%v); the task was not changed\n", editorErr)
+	}
+
+	edited, readErr := os.ReadFile(tmpPath)
+	if readErr != nil {
+		// The copy is NOT removed on this path either: it could not be read, so
+		// whether it holds the user's work is unknown, and removing it would
+		// resolve that unknown in the only direction that loses something.
+		fmt.Fprintf(errOut, "vp tasks read: re-read temp file: %v\n", readErr)
+		fmt.Fprintln(errOut, "vp tasks read: the vault was NOT changed. The temp file was not removed, because whether it holds your edits is now unknown:")
+		printTempCopyLocation(errOut, tmpPath)
+		return cli.ExitSystem
+	}
+
+	if string(edited) == content {
+		os.Remove(tmpPath)
+	} else {
+		fmt.Fprintln(errOut, "vp tasks read: your edits were NOT written to the vault — `vp tasks read` never writes it")
+		fmt.Fprintln(errOut, "vp tasks read: they went to a temp file instead:")
+		printTempCopyLocation(errOut, tmpPath)
+	}
+
+	if editorErr != nil {
+		return cli.ExitUser
+	}
+	return cli.ExitOK
+}
