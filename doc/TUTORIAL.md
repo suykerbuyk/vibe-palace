@@ -722,7 +722,8 @@ vp tasks --done             # include completed and cancelled tasks
 vp tasks --epic <slug>      # just the subtree under an epic (or story), re-rooted
 vp tasks --standalone       # only the tasks that belong to no epic
 vp tasks epics              # roll-up of every epic: open/total, priority, status
-vp tasks edit <slug>        # open a task file in $EDITOR
+vp tasks edit <slug>        # open an ACTIVE task file in $EDITOR and save it back
+vp tasks read <slug>        # open ANY task file in $EDITOR to READ; edits are discarded
 ```
 
 The `--epic`, `--standalone`, and `epics` views are epic-aware: the epic tree
@@ -731,9 +732,17 @@ and each task's role (epic / story / task) are **derived server-side** from the
 derived views are reachable from the `/vpc-tasks-epics`, `/vpc-tasks-epic`,
 `/vpc-tasks-standalone`, and `/vpc-tasks-read` slash commands, which call
 `vp_list_tasks` (now accepting `epic`, `standalone`, and `epics_only`) and
-`vp_get_task`. There is no `vp tasks read` CLI command — reading a raw task
-body is `/vpc-tasks-read` (or `vp_get_task`) and `vp tasks edit` opens it for
-editing.
+`vp_get_task`.
+
+Two CLI verbs open a task body in your editor, and the difference is which way
+the bytes flow. `vp tasks edit` writes the result back, validated as a whole,
+and refuses a done or cancelled task because an archived body is a record of
+what happened. `vp tasks read` writes nothing, ever, and therefore works on
+*any* task in any state — it hands you a throwaway copy named
+`vp-task-READONLY-…`, tells you before the editor opens that your edits are
+discarded, and keeps that copy with its path printed if you did type something,
+so notes are not lost. For a raw body in an agent's context rather than your
+editor, `/vpc-tasks-read` and `vp_get_task` are still the route.
 
 ### Search
 
