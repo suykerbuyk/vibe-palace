@@ -219,155 +219,6 @@ func TestCwdProject_SyncModeMissingIsSkip(t *testing.T) {
 	}
 }
 
-func TestVaultProject_CreateThenUnchanged(t *testing.T) {
-	tmp := t.TempDir()
-	v := newVaultAt(t, tmp)
-	r := NewVaultProject(v, "testproj")
-
-	p1, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	created := 0
-	for _, a := range p1.Actions {
-		if a.Kind == ActionCreate {
-			created++
-		}
-	}
-	if created < 3 {
-		// config + tasks/done + tasks/cancelled
-		t.Fatalf("expected at least 3 Create actions, got %d: %+v", created, p1.Actions)
-	}
-	if _, err := r.Apply(context.Background(), p1); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	tasksDir, _ := v.TasksDir("testproj")
-	for _, sub := range []string{"done", "cancelled"} {
-		if _, err := os.Stat(filepath.Join(tasksDir, sub)); err != nil {
-			t.Errorf("tasks/%s not created: %v", sub, err)
-		}
-	}
-	p2, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan #2: %v", err)
-	}
-	for _, a := range p2.Actions {
-		if a.Kind == ActionCreate {
-			t.Errorf("expected no Create after Apply, got %+v", a)
-		}
-	}
-}
-
-// TestVaultProject_UpdateDriftedConfig covers the ActionUpdate branch of
-// Apply: an existing config.toml that is missing canonical keys is
-// patched in place (rather than created or left Unchanged).
-// TestVaultProject_ApplyNilVault exercises the defensive Skip/Unchanged
-// tally Apply runs when the reconciler has no vault bound.
-func TestVaultProject_ApplyNilVault(t *testing.T) {
-	r := NewVaultProject(nil, "x")
-	p := Plan{Actions: []Action{
-		{Kind: ActionSkip, Summary: "skip"},
-		{Kind: ActionUnchanged, Summary: "nop"},
-	}}
-	rep, err := r.Apply(context.Background(), p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if rep.Skipped != 1 || rep.Unchanged != 1 {
-		t.Errorf("tally = %+v, want Skipped=1 Unchanged=1", rep)
-	}
-}
-
-// TestVaultProject_ApplyTasksDirMkdir covers the Apply branch that
-// creates a tasks/* subdirectory separately from the config.toml path.
-func TestVaultProject_ApplyTasksDirMkdir(t *testing.T) {
-	tmp := t.TempDir()
-	v := newVaultAt(t, tmp)
-	r := NewVaultProject(v, "tproj")
-
-	// Pre-create the config.toml so the plan only emits Create actions
-	// for the tasks/ subdirectories — isolating that Apply branch.
-	cfgPath, _ := v.ProjectConfigFile("tproj")
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := v.WriteVaultProjectConfig("tproj"); err != nil {
-		t.Fatalf("seed config: %v", err)
-	}
-
-	p, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	rep, err := r.Apply(context.Background(), p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if rep.Created < 2 {
-		t.Errorf("expected >=2 Created for tasks/done + tasks/cancelled, got %d", rep.Created)
-	}
-	tasksDir, _ := v.TasksDir("tproj")
-	for _, sub := range []string{"done", "cancelled"} {
-		if _, err := os.Stat(filepath.Join(tasksDir, sub)); err != nil {
-			t.Errorf("tasks/%s not created: %v", sub, err)
-		}
-	}
-}
-
-func TestVaultProject_UpdateDriftedConfig(t *testing.T) {
-	tmp := t.TempDir()
-	v := newVaultAt(t, tmp)
-	r := NewVaultProject(v, "drifted")
-
-	// Seed a minimal, drifted config.toml (missing canonical keys).
-	cfgPath, err := v.ProjectConfigFile("drifted")
-	if err != nil {
-		t.Fatalf("ProjectConfigFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("# drifted stub\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	p, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	sawUpdate := false
-	for _, a := range p.Actions {
-		if a.Kind == ActionUpdate && a.Target == cfgPath {
-			sawUpdate = true
-		}
-	}
-	if !sawUpdate {
-		t.Fatalf("expected an ActionUpdate for drifted config, got: %+v", p.Actions)
-	}
-
-	rep, err := r.Apply(context.Background(), p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if rep.Updated < 1 {
-		t.Errorf("expected rep.Updated >= 1, got %d", rep.Updated)
-	}
-	if len(rep.Errors) != 0 {
-		t.Errorf("unexpected errors: %v", rep.Errors)
-	}
-
-	// After update, Plan should report Unchanged for the config.
-	p2, err := r.Plan(context.Background())
-	if err != nil {
-		t.Fatalf("Plan #2: %v", err)
-	}
-	for _, a := range p2.Actions {
-		if a.Target == cfgPath && a.Kind != ActionUnchanged {
-			t.Errorf("expected config Unchanged after Update, got %+v", a)
-		}
-	}
-}
-
 func TestGlobalConfig_CheckRows(t *testing.T) {
 	cfgPath := xdgTempHome(t)
 	tmp := filepath.Dir(filepath.Dir(cfgPath))
@@ -485,39 +336,6 @@ func TestCwdProject_DriftUpdate(t *testing.T) {
 	}
 }
 
-func TestVaultProject_NilVaultSkip(t *testing.T) {
-	r := NewVaultProject(nil, "x")
-	rows := r.Check(context.Background())
-	if len(rows) != 1 || rows[0].Status != check.Skip {
-		t.Fatalf("expected Skip row, got %+v", rows)
-	}
-	p, _ := r.Plan(context.Background())
-	if onlyAction(t, p).Kind != ActionSkip {
-		t.Fatalf("expected Skip action, got %+v", p.Actions)
-	}
-}
-
-func TestVaultProject_CheckPresent(t *testing.T) {
-	tmp := t.TempDir()
-	v := newVaultAt(t, tmp)
-	r := NewVaultProject(v, "testproj")
-
-	// Before Apply — Info "missing".
-	rows := r.Check(context.Background())
-	if len(rows) != 1 || rows[0].Status != check.Info {
-		t.Errorf("expected Info row before create, got %+v", rows)
-	}
-
-	p, _ := r.Plan(context.Background())
-	_, _ = r.Apply(context.Background(), p)
-
-	// After Apply — Pass.
-	rows = r.Check(context.Background())
-	if len(rows) != 1 || rows[0].Status != check.Pass {
-		t.Errorf("expected Pass row after create, got %+v", rows)
-	}
-}
-
 // TestInterfaceSatisfaction asserts all reconcilers satisfy the Reconciler
 // interface — compile-time if possible.
 func TestInterfaceSatisfaction(t *testing.T) {
@@ -525,7 +343,6 @@ func TestInterfaceSatisfaction(t *testing.T) {
 	var _ Reconciler = (*VaultReconciler)(nil)
 	var _ Reconciler = (*VaultSettingsReconciler)(nil)
 	var _ Reconciler = (*CwdProjectReconciler)(nil)
-	var _ Reconciler = (*VaultProjectReconciler)(nil)
 }
 
 func TestReconcilerMetadata(t *testing.T) {
@@ -540,7 +357,6 @@ func TestReconcilerMetadata(t *testing.T) {
 		{NewVault(root, VaultSeed{}), "Vault", TierVault},
 		{NewVaultSettings(v), "VaultSettings", TierVault},
 		{NewCwdProject(root, CwdProjectSeed{}), "CwdProject", TierProject},
-		{NewVaultProject(v, "x"), "VaultProject", TierProject},
 	}
 	for _, c := range cases {
 		if c.r.Name() != c.name {
@@ -609,14 +425,6 @@ func TestApplyCountsByActionKind(t *testing.T) {
 				{Kind: ActionSkip, Target: "z"},
 			}},
 			want: Report{Unchanged: 1, Skipped: 1, Errors: make([]error, 1)},
-		},
-		{
-			name: "VaultProject skip",
-			r:    NewVaultProject(newVaultAt(t, t.TempDir()), "x"),
-			p: Plan{Actions: []Action{
-				{Kind: ActionSkip, Target: "x"},
-			}},
-			want: Report{Skipped: 1},
 		},
 	}
 	for _, c := range cases {

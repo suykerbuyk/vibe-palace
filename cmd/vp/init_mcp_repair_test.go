@@ -86,8 +86,9 @@ func subtreeDiff(want, got map[string]string) []string {
 //
 //  1. The MCP vp_init handler wrote a hand-rolled two-line .vibe-palace.toml,
 //     mkdir'd tasks/{done,cancelled} with discarded errors, and returned
-//     {"status":"initialized"} unconditionally. Projects/<slug>/config.toml and
-//     the commands/skills scaffold were never created.
+//     {"status":"initialized"} unconditionally. The vault side — then
+//     Projects/<slug>/config.toml (since retired) and the commands/skills
+//     scaffold — was never created.
 //  2. `vp init` returned early the moment .vibe-palace.toml existed.
 //
 // So the marker written by (1) was the reason (2) would never repair it. An

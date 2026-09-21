@@ -65,34 +65,15 @@ func TestScaffoldStamps(t *testing.T) {
 	assertStamped(t, filepath.Join(root, "Projects", "foo"))
 }
 
-// TestApplyUpgradeStamps proves applyUpgrade stamps the project root when it
-// rewrites a vault config, and does NOT stamp when vaultRoot is "" (host-local
-// configs: CWD project, global config).
+// TestApplyUpgradeStamps proves applyUpgrade does NOT stamp: every config it
+// upgrades is host-local (CWD project, global config) and lives outside the
+// vault. The vault-config case it also covered went with the per-project vault
+// config (task move-per-project-config-out-of-the-shared-vault).
 func TestApplyUpgradeStamps(t *testing.T) {
 	target := upgradeTarget{
-		canonicalText: storage.VaultProjectTemplateContent(),
-		templateText:  storage.VaultProjectTemplateContent(),
+		canonicalText: storage.CwdProjectTemplateContent(),
+		templateText:  storage.CwdProjectTemplateContent(),
 	}
-
-	t.Run("vault config stamps", func(t *testing.T) {
-		root := t.TempDir()
-		cfgPath := filepath.Join(root, "Projects", "demo", "config.toml")
-		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		// Missing the canonical [meta] keys, so applyUpgrade must rewrite.
-		if err := os.WriteFile(cfgPath, []byte("# project overrides\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		added, err := applyUpgrade(root, cfgPath, target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if added == 0 {
-			t.Fatalf("expected applyUpgrade to add missing keys, added 0")
-		}
-		assertStamped(t, filepath.Join(root, "Projects", "demo"))
-	})
 
 	t.Run("host-local config is not stamped", func(t *testing.T) {
 		dir := t.TempDir()
@@ -100,7 +81,7 @@ func TestApplyUpgradeStamps(t *testing.T) {
 		if err := os.WriteFile(cfgPath, []byte("# project overrides\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := applyUpgrade("", cfgPath, target); err != nil {
+		if _, err := applyUpgrade(cfgPath, target); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, ".surface")); !os.IsNotExist(err) {

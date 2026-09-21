@@ -104,7 +104,7 @@ func (r *CwdProjectReconciler) Apply(_ context.Context, p Plan) (Report, error) 
 			// term names <config-dir>/vibe-palace/projects/<slug>.toml, a
 			// different file that has no reconciler at all — grep
 			// HostProjectConfigPath for its only callers, all in storage.
-			if _, err := applyUpgrade("", a.Target, upgradeTarget{
+			if _, err := applyUpgrade(a.Target, upgradeTarget{
 				canonicalText: storage.CwdProjectTemplateContent(),
 				templateText:  storage.CwdProjectTemplateContent(),
 			}); err != nil {

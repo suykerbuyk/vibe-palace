@@ -311,37 +311,42 @@ func TestConfigUpgradeCwd_DryRun(t *testing.T) {
 	}
 }
 
-func TestConfigUpgradeProject_AddsMissingMeta(t *testing.T) {
-	// Set up XDG + vault pointing at temp dirs.
+// TestConfigUpgradeProject_IsRetired is criterion A10. `vp config upgrade
+// --project SLUG` existed to upgrade the vault's Projects/<slug>/config.toml,
+// which is retired; translated to sync it would now only scaffold <slug> and
+// upgrade whatever .vibe-palace.toml sits in the cwd, under an implied --yes.
+// It refuses instead, names the retirement and the sync form that still
+// scaffolds, and creates no Projects/<slug>/config.toml.
+func TestConfigUpgradeProject_IsRetired(t *testing.T) {
 	configDir := t.TempDir()
 	vaultDir := filepath.Join(t.TempDir(), "vault")
-	os.MkdirAll(filepath.Join(configDir, "vibe-palace"), 0o755)
-	os.WriteFile(filepath.Join(configDir, "vibe-palace", "config.toml"),
-		[]byte(`vault_path = "`+vaultDir+`"`+"\n"), 0o644)
+	if err := os.MkdirAll(filepath.Join(configDir, "vibe-palace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "vibe-palace", "config.toml"),
+		[]byte(`vault_path = "`+vaultDir+`"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_CONFIG_HOME", configDir)
-
-	// Sparse vault-project config: just a [palace.scoring] block a user
-	// might have written via `vp tune rooms`.
-	projectDir := filepath.Join(vaultDir, "Projects", "alpha")
-	os.MkdirAll(projectDir, 0o755)
-	projectCfg := filepath.Join(projectDir, "config.toml")
-	os.WriteFile(projectCfg, []byte(`[palace.scoring]
-min_score = 0.5
-`), 0o644)
-
-	cmd := cmdConfigUpgrade()
-	code := cmd.Run([]string{"--project", "alpha"})
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d", code)
+	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "alpha", "commands"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(projectCfg)
-	content := string(data)
-	if !strings.Contains(content, "[meta]") {
-		t.Errorf("upgrade did not add [meta]: %s", content)
+
+	var code int
+	errOut := captureStderr(t, func() {
+		code = cmdConfigUpgrade().Run([]string{"--project", "alpha"})
+	})
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (the form is retired)", code)
 	}
-	// User's existing scoring override must be preserved.
-	if !strings.Contains(content, "min_score = 0.5") {
-		t.Errorf("upgrade clobbered user's scoring override: %s", content)
+	for _, want := range []string{"--project is retired", "vp config sync --tier project --project"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("refusal does not say %q:\n%s", want, errOut)
+		}
+	}
+	cfg := filepath.Join(vaultDir, "Projects", "alpha", "config.toml")
+	if _, err := os.Lstat(cfg); !os.IsNotExist(err) {
+		t.Errorf("%s exists (lstat err: %v); the retired form must create nothing", cfg, err)
 	}
 }
 
@@ -835,11 +840,12 @@ func phase4ConfigSyncSetup(t *testing.T) (vaultDir, projDir string) {
 }
 
 // TestConfigSync_VaultProjectSkipsInsideVault reproduces the task's own
-// reported shape across two runs: a first run that would otherwise create
-// Projects/<slug>/config.toml (VaultProjectReconciler's own creation path),
-// and a second run that would otherwise enumerate the now-existing directory
-// and scaffold commands/skills READMEs into it (Phase 4's default/enumerate
-// path). Uses --project-root equal to the vault root with no --cwd/--project,
+// reported shape across two runs: a first run that used to create
+// Projects/<slug>/config.toml (the retired VaultProjectReconciler's creation
+// path — nothing writes that file now, so this half is held by that
+// retirement), and a second run that would otherwise enumerate a
+// now-existing directory and scaffold commands/skills READMEs into it (Phase
+// 4's default/enumerate path). Uses --project-root equal to the vault root with no --cwd/--project,
 // so Phase 4 takes the enumerate branch, not the explicit-addressing branch —
 // see TestConfigSync_ExplicitAddressingSkipsVaultScaffold for that one.
 func TestConfigSync_VaultProjectSkipsInsideVault(t *testing.T) {
@@ -910,11 +916,13 @@ func TestConfigSync_ExplicitAddressingSkipsVaultScaffold(t *testing.T) {
 // ErrDestinationInsideVault. This proves the gate fails CLOSED (skips
 // project-directory creation) rather than OPEN on that error, matching
 // guardExportDestination's (cmd/vp/export_guard.go) established convention
-// for this same predicate. A fail-open gate would fall through to
-// VaultProjectReconciler's normal Create path, whose Apply calls
-// os.MkdirAll for the missing vault root's Projects/<slug>/tasks
-// directories — silently resurrecting the deleted vault root. This test
-// asserts that never happens.
+// for this same predicate. It used to guard the retired
+// VaultProjectReconciler, whose Create path os.MkdirAll'd the missing vault
+// root's Projects/<slug>/tasks directories — silently resurrecting the deleted
+// vault root. The gate's one remaining subject is Phase 4's explicit-addressing
+// scaffold, so the run below addresses the project with --cwd to reach it.
+// TemplateTree also refuses an absent vault root on its own, so this pins the
+// OUTCOME — the root is never recreated — rather than the gate alone.
 func TestConfigSync_VaultProjectFailsClosedOnResolutionError(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -935,7 +943,7 @@ func TestConfigSync_VaultProjectFailsClosedOnResolutionError(t *testing.T) {
 	markProjectDir(t, projDir)
 
 	code := runConfigSync([]string{
-		"--project-root", projDir, "--tier", "project", "--yes",
+		"--project-root", projDir, "--tier", "project", "--cwd", projDir, "--yes",
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want ExitOK", code)
@@ -1093,7 +1101,10 @@ func TestEnumerateVaultProjectSlugsSkipRules(t *testing.T) {
 	}
 	// Initialised through a scaffold marker each: kept.
 	writeVaultFile(t, vaultDir, "Projects/alpha/commands/README.md", "x")
-	writeVaultFile(t, vaultDir, "Projects/beta/config.toml", "x")
+	writeVaultFile(t, vaultDir, "Projects/beta/skills/README.md", "x")
+	// Only the retired per-project vault config: Phantom, excluded, so an
+	// unflagged sync does not scaffold a survivor into a project.
+	writeVaultFile(t, vaultDir, "Projects/delta/config.toml", "x")
 	// A phantom (memory/ only): excluded.
 	writeVaultFile(t, vaultDir, "Projects/gamma/memory/m.md", "x")
 	// Not a valid slug: passes through unclassified, so TemplateTree's
@@ -1168,7 +1179,8 @@ func TestConfigSyncDoesNotScaffoldPhantomProject(t *testing.T) {
 // TestUpgradeAliasParity pins the `vp config upgrade` → `vp config sync`
 // alias translation contract established when HEALTH.md item 10 retired
 // the TOML-parsing legacy path. A byte-identical run of `vp config
-// upgrade` (with each addressing variant) and the equivalent
+// upgrade` (with each surviving addressing variant — --project is retired,
+// see TestConfigUpgradeProject_IsRetired) and the equivalent
 // `vp config sync --tier X --yes` invocation must produce the same
 // config.toml and .bak bytes on the same fixture. Guards against
 // accidental drift in aliasUpgradeToSync's flag translation.
@@ -1186,7 +1198,7 @@ func TestUpgradeAliasParity(t *testing.T) {
 	// reflects a real alias-translation divergence, not a fixture
 	// artifact.
 	t.Run("global", func(t *testing.T) {
-		fx := seedLegacyFixture(t, "global", "")
+		fx := seedLegacyFixture(t, "global")
 		orig := mustRead(t, fx.target)
 
 		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{})
@@ -1198,7 +1210,7 @@ func TestUpgradeAliasParity(t *testing.T) {
 	})
 
 	t.Run("cwd", func(t *testing.T) {
-		fx := seedLegacyFixture(t, "cwd", "")
+		fx := seedLegacyFixture(t, "cwd")
 		orig := mustRead(t, fx.target)
 
 		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{"--cwd", fx.projectDir})
@@ -1210,18 +1222,6 @@ func TestUpgradeAliasParity(t *testing.T) {
 		assertBytesEqual(t, ".vibe-palace.toml.bak", aliasBak, syncBak)
 	})
 
-	t.Run("project", func(t *testing.T) {
-		fx := seedLegacyFixture(t, "project", "alpha")
-		orig := mustRead(t, fx.target)
-
-		aliasOut, aliasBak := runAliasAndCapture(t, fx, []string{"--project", "alpha"})
-		resetFixtureTarget(t, fx, orig)
-		syncOut, syncBak := runSyncAndCapture(t, fx,
-			[]string{"--tier", "project", "--project", "alpha", "--project-root", fx.projectDir, "--yes"})
-
-		assertBytesEqual(t, "<vault>/Projects/alpha/config.toml", aliasOut, syncOut)
-		assertBytesEqual(t, "<vault>/Projects/alpha/config.toml.bak", aliasBak, syncBak)
-	})
 }
 
 // resetFixtureTarget restores the legacy fixture's target config file to
@@ -1243,9 +1243,9 @@ type legacyFixture struct {
 }
 
 // seedLegacyFixture materializes the minimum file layout each of the
-// three legacy upgrade targets needs, and returns the absolute path to
+// surviving legacy upgrade targets (global, cwd) needs, and returns the absolute path to
 // the config file the upgrade will modify.
-func seedLegacyFixture(t *testing.T, kind, projectSlug string) legacyFixture {
+func seedLegacyFixture(t *testing.T, kind string) legacyFixture {
 	t.Helper()
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -1296,26 +1296,6 @@ func seedLegacyFixture(t *testing.T, kind, projectSlug string) legacyFixture {
 			t.Fatal(err)
 		}
 		fx.target = cwdFile
-
-	case "project":
-		defaultsText, err := storage.DefaultsTomlContent()
-		if err != nil {
-			t.Fatal(err)
-		}
-		seeded := strings.Replace(defaultsText,
-			"vault_path = \"\"", "vault_path = \""+vaultDir+"\"", 1)
-		if err := os.WriteFile(globalCfg, []byte(seeded), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		projDir := filepath.Join(vaultDir, "Projects", projectSlug)
-		if err := os.MkdirAll(projDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		projCfg := filepath.Join(projDir, "config.toml")
-		if err := os.WriteFile(projCfg, []byte("[palace.scoring]\nmin_score = 0.5\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		fx.target = projCfg
 
 	default:
 		t.Fatalf("unknown fixture kind %q", kind)

@@ -192,9 +192,11 @@ func TestInitCreatesConfig(t *testing.T) {
 	}
 }
 
-// After a successful init, the vault-project config.toml exists and
-// carries the [meta] block. This covers the Fix 1b wiring in cmd_init.
-func TestInitWritesVaultProjectConfig(t *testing.T) {
+// After a successful init, the vault holds the project's commands/skills
+// scaffold and NO Projects/<slug>/config.toml: that per-project vault config is
+// retired, and vp init was its main writer (task
+// move-per-project-config-out-of-the-shared-vault, criterion A4).
+func TestInitCreatesNoVaultProjectConfig(t *testing.T) {
 	configDir, _ := initTestEnv(t, true)
 	// Read the vault path set by initTestEnv.
 	globalData, err := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
@@ -222,16 +224,14 @@ func TestInitWritesVaultProjectConfig(t *testing.T) {
 	}
 
 	vpCfg := filepath.Join(vaultDir, "Projects", "vp-init-proj", "config.toml")
-	data, err := os.ReadFile(vpCfg)
-	if err != nil {
-		t.Fatalf("vault-project config not created at %s: %v", vpCfg, err)
+	if _, err := os.Lstat(vpCfg); !os.IsNotExist(err) {
+		t.Errorf("%s exists (lstat err: %v), want absent: vp init must not write the retired per-project vault config", vpCfg, err)
 	}
-	content := string(data)
-	if !strings.Contains(content, "[meta]") {
-		t.Errorf("vault-project config missing [meta]: %s", content)
-	}
-	if !strings.Contains(content, `kind = "vault-project"`) && !strings.Contains(content, `# kind = "vault-project"`) {
-		t.Errorf("vault-project config missing kind marker: %s", content)
+	for _, rel := range []string{"commands/README.md", "skills/README.md"} {
+		p := filepath.Join(vaultDir, "Projects", "vp-init-proj", filepath.FromSlash(rel))
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("vp init did not scaffold %s: %v", p, err)
+		}
 	}
 }
 
@@ -293,10 +293,11 @@ func TestInitFailsOnMalformedMarker(t *testing.T) {
 		t.Errorf("expected a [FAIL] Project config row:\n%s", out)
 	}
 	// Two DISTINCT failures, not one. cwd-project names the file the operator
-	// can fix; vault-project names the vault that could not be opened because
-	// of it. Collapsing them would send the operator to repair the wrong thing.
-	if !strings.Contains(out, "[FAIL] Vault project") {
-		t.Errorf("expected a separate [FAIL] Vault project row:\n%s", out)
+	// can fix; project-scaffold, the first vault-side step, names the vault
+	// that could not be opened because of it. Collapsing them would send the
+	// operator to repair the wrong thing.
+	if !strings.Contains(out, "[FAIL] Project templates") {
+		t.Errorf("expected a separate [FAIL] Project templates row:\n%s", out)
 	}
 	cfgPath := filepath.Join(dir, project.ConfigFileName)
 	if !strings.Contains(out, cfgPath) {
@@ -644,12 +645,9 @@ func TestInitStatusTableRendered(t *testing.T) {
 		"[pass] Vault",
 		"[pass] Project config",
 		"go.mod detected",
-		// CHANGED: promoted from a failure-only Details line on Project config
-		// to a row of its own, present on success too.
-		"[pass] Vault project",
-		"Projects/alpha/config.toml",
 		// Unchanged in the happy path — pinned here because change (2) above
-		// gives this row a second, Skip spelling.
+		// gives this row a second, Skip spelling. It is the only vault-side
+		// row since the Vault project row retired with the file it wrote.
 		"[pass] Project templates",
 		// init manages AGENTS.md as a host-local bootstrap shim, so even a
 		// fresh tmpdir reports an Agent wiring row for it. The copilot
@@ -668,6 +666,9 @@ func TestInitStatusTableRendered(t *testing.T) {
 	// init has no Templates pass, so a first install has no Templates row.
 	if strings.Contains(out, "] Templates:") {
 		t.Errorf("unexpected Templates row:\n%s", out)
+	}
+	if strings.Contains(out, "Vault project") || strings.Contains(out, "Projects/alpha/config.toml") {
+		t.Errorf("init still reports the retired per-project vault config:\n%s", out)
 	}
 }
 
@@ -727,7 +728,6 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	// is deliberately kept — see TestInitSkipsExistingConfig.
 	for _, want := range []string{
 		"[pass] Project config",
-		"[pass] Vault project",
 		// [info], not [pass], and the wording is the point. The step RAN — it
 		// is no longer gated away — and it reports what it found rather than
 		// what it would have done: "scaffolded …" printed unconditionally is a
@@ -754,13 +754,15 @@ func TestInitFreshThenIdempotent(t *testing.T) {
 	// The vault-side artifacts a re-init used to skip must be present and
 	// unchanged — the file-level statement of the same property.
 	for _, rel := range []string{
-		filepath.Join("Projects", "alpha", "config.toml"),
 		filepath.Join("Projects", "alpha", "commands", "README.md"),
 		filepath.Join("Projects", "alpha", "skills", "README.md"),
 	} {
 		if _, err := os.Stat(filepath.Join(vaultDir, rel)); err != nil {
 			t.Errorf("stage 2: vault artifact %s missing: %v", rel, err)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(vaultDir, "Projects", "alpha", "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("stage 2: Projects/alpha/config.toml exists (lstat err: %v); nothing writes the retired vault config", err)
 	}
 	// And the advisory says what a re-init deliberately does NOT do.
 	for _, want := range []string{"vp commands upgrade", "vp commands reset", "vp skills reset"} {
@@ -1137,7 +1139,7 @@ func TestInitIgnoresVaultTemplateOverrides(t *testing.T) {
 	if strings.Contains(out, "] Templates:") {
 		t.Errorf("init rendered a Templates row:\n%s", out)
 	}
-	for _, want := range []string{"[pass] Project config", "[pass] Vault project"} {
+	for _, want := range []string{"[pass] Project config", "[pass] Project templates"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("onboarding did not run: missing %q\n%s", want, out)
 		}

@@ -54,12 +54,12 @@ func (s ProjectDirState) Initialised() bool {
 // projectScaffoldMarkers are the files `vp init` lays down that mark a
 // directory as initialised even before it holds any history.
 //
-// 🔴 config.toml IS A MARKER ONLY WHILE `vp init` STILL WRITES IT FIRST. A
-// directory holding only config.toml is an interrupted init, and every caller
-// treated that as initialised before this classifier existed. It leaves this
-// list in the same change that retires its writer (task
-// move-per-project-config-out-of-the-shared-vault, release R4).
-var projectScaffoldMarkers = []string{"commands/README.md", "skills/README.md", "config.toml"}
+// config.toml was a third marker while `vp init` still wrote the per-project
+// vault config first; it left this list in the change that retired that writer
+// (task move-per-project-config-out-of-the-shared-vault). A directory holding
+// only a config.toml is now Phantom: a survivor of the retired file, reported
+// by the vault-project-config check, not an initialised project.
+var projectScaffoldMarkers = []string{"commands/README.md", "skills/README.md"}
 
 // ClassifyProjectDir classifies <vaultRoot>/Projects/<project>/. It is the ONE
 // predicate for "is this an initialised project" — shared by absorb's

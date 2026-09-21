@@ -175,8 +175,8 @@ func runCheck(info cli.BuildInfo, fv *cli.FlagValues) int {
 // gatherCheckResults runs every diagnostic check and returns the ordered
 // results, shared by both the human and --json renderings of `vp check`.
 //
-// It delegates the five reconciled artifacts (global config, vault directory,
-// vault settings, cwd-project, vault-project) to their reconcilers' Check()
+// It delegates the four reconciled artifacts (global config, vault directory,
+// vault settings, cwd-project) to their reconcilers' Check()
 // methods so vp check and vp config sync see the same world. Embedder,
 // agent-drift, and surface checks stay inline — none has a reconciler
 // (Embedder is intentionally excluded; agent drift belongs to vp commands
@@ -210,7 +210,6 @@ func gatherCheckResults() []check.Result {
 		results = append(results,
 			check.Result{Name: "Vault", Status: check.Skip},
 			check.Result{Name: "Settings", Status: check.Skip},
-			check.Result{Name: "Vault project", Status: check.Skip},
 			check.Result{Name: "Embedder", Status: check.Skip},
 		)
 	} else {
@@ -306,12 +305,11 @@ func gatherCheckResults() []check.Result {
 		}
 	}
 
-	// --- VaultSettings + Embedder + VaultProject ---
+	// --- VaultSettings + Embedder + project scaffold ---
 	if globalOK {
 		if !vaultOK || vault == nil {
 			results = append(results,
 				check.Result{Name: "Settings", Status: check.Skip},
-				check.Result{Name: "Vault project", Status: check.Skip},
 				check.Result{Name: "Embedder", Status: check.Skip},
 			)
 		} else {
@@ -321,11 +319,8 @@ func gatherCheckResults() []check.Result {
 			cfg, sRow := check.CheckSettings(vault)
 			results = append(results, sRow)
 
-			// Vault project — derive slug from cwd; reconciler tolerates
-			// empty slug by emitting Skip.
+			// The cwd's project slug, for the project-scoped rows below.
 			slug, _ := project.DetectProject(cwd)
-			vp := reconcile.NewVaultProject(vault, slug)
-			results = append(results, vp.Check(ctx)...)
 
 			// Phase 4: per-project scaffold check. Only the current
 			// project's scaffold state is surfaced here — config sync

@@ -136,15 +136,8 @@ func Create(vaultPath, relPath, content string) (WriteResult, error) {
 	// No surface reaches Create — neither vp_vault_* nor `vp vault` has a
 	// create verb — so today this gate refuses nothing a user can ask for. It
 	// is here because Create is the only NO-CLOBBER creator in this file, which
-	// makes it the one unguarded way to materialise the retired config if the
-	// removal slips.
-	//
-	// The trap: ADR-003 pushes writers toward this funnel, so a later cleanup
-	// is tempted to route WriteVaultProjectConfig through Create "to comply".
-	// That would break `vp init` against this line. WriteVaultProjectConfig
-	// takes its own vaultlock and calls atomicfile.Write directly, and it must
-	// keep doing so until the file is retired outright.
-	// TestVaultProjectConfigWriterIsNotStrandedByTheRefusal pins that.
+	// makes it the one unguarded way to materialise the retired config. Its
+	// writer is gone, so nothing legitimate is refused here.
 	if IsVaultProjectConfigPath(relPath) {
 		return WriteResult{}, vaultProjectConfigRefusal(relPath)
 	}

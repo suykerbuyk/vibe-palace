@@ -123,7 +123,7 @@ func (r *GlobalConfigReconciler) Apply(_ context.Context, p Plan) (Report, error
 			}
 			// Global config lives under the user's config dir, not the
 			// vault — no surface stamp.
-			if _, err := applyUpgrade("", a.Target, upgradeTarget{
+			if _, err := applyUpgrade(a.Target, upgradeTarget{
 				canonicalText: defaultsText,
 				templateText:  storage.TemplateTomlContent(),
 			}); err != nil {

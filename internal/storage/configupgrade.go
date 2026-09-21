@@ -46,7 +46,7 @@ func CanonicalKeys() (map[string]bool, error) {
 // source. Only active (uncommented) keys are returned — pedagogical
 // commented examples in a template are not treated as canonical schema.
 // Callers pass the appropriate schema source (defaults.toml for global,
-// the project templates for cwd/vault-project upgrade paths).
+// the cwd-project template for its upgrade path).
 func CanonicalKeysFrom(text string) (map[string]bool, error) {
 	var raw map[string]any
 	if _, err := toml.Decode(text, &raw); err != nil {
