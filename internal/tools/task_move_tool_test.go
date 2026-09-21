@@ -559,12 +559,13 @@ const manageTaskGoldenPath = "../mcp/tool_surface.golden.json"
 // change (what the upgrade and reset commands do to vault Templates/), and
 // 5 -> 6 by board-reporting-surface-and-format-version-bump, for three
 // coupled vault write-shape changes (the open extensible header parser, the
-// widened Status vocabulary, and the CreateTime/ModTime header fields) —
-// none of which touch `move`. The ruling this test pins still holds: `move`
+// widened Status vocabulary, and the CreateTime/ModTime header fields), and
+// 6 -> 7 by move-per-project-config-out-of-the-shared-vault, for retiring the
+// per-project vault config — none of which touch `move`. The ruling this test pins still holds: `move`
 // itself does not bump the surface.
 const (
 	manageTaskSchemaSHAAtHEAD = "4fb44b92cffff09f17e7b4561eb3344e38aaeb734cf9c0748eebea37cef65832"
-	surfaceVersionAtHEAD      = 6
+	surfaceVersionAtHEAD      = 7
 )
 
 // goldenToolSurface is the subset of the manifest these assertions read.

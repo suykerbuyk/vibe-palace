@@ -159,7 +159,7 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	if err := RefuseIfNestedVaultGit(vaultPath, "pull"); err != nil {
 		return result, err
 	}
-	branch := currentBranch(vaultPath)
+	branch := branchOrMain(vaultPath)
 
 	// Scan the dirty Templates/commands/*.md set ONCE, before the loop. The set
 	// never grows across remotes: a clean merge leaves the touched templates

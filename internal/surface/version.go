@@ -266,6 +266,39 @@ import (
 // vault — ordinary task-mutation traffic, not a special migration step for
 // THIS axis.
 //
+// Bumped 6->7 (2026-09-21, operator ruling Q1 on
+// move-per-project-config-out-of-the-shared-vault). The per-project vault
+// config, Projects/<slug>/config.toml, is retired: a v7 binary never reads it
+// (the layer-3 config decode is gone), never creates it (vp init, the
+// VaultProject reconciler and `vp config upgrade --project` no longer write
+// it), and no longer counts it as a project marker. The one-shot `vp migrate
+// project-configs --apply` then deletes the tracked copies in one commit. The
+// hazard is the 3->4 and 4->5 shape — an OLD binary undoes what the new one
+// removed, and only the gate stops it:
+//
+//   - A v6 binary RE-CREATES the file. Its vp init and `vp config sync` run the
+//     VaultProject reconciler, which writes Projects/<slug>/config.toml for
+//     every project it sees, so a lagging host puts back, as vault dirt every
+//     other host then syncs, exactly what the retirement committed away.
+//   - A v6 binary still READS it, as layer 3 above the host global config, so
+//     the same vault gives a v6 host and a v7 host different scoring, rooms,
+//     search and summarization settings for one project, silently.
+//   - The retirement's own precondition depends on this bump: --apply refuses
+//     until a surface-7 stamp is committed in HEAD, or at every remote's tip,
+//     so no host that could re-create the files can still write the vault.
+//
+// The three queries below, re-run over 1fd3b3d..this change, find no further
+// write-shape change: the first two return nothing; the third lists 6dd7641
+// (readers only: ListEntities becomes skip-and-report, and a result struct
+// gains skipped_notes — nothing written to the vault changes) and 78cffad
+// (marshalSessionFile normalises a first line that yaml.v3 could not
+// round-trip; every field written is the one a v6 binary writes, so a v6
+// binary reads a v7 note unchanged). Both were read, and both are REJECTED.
+//
+// Rollout: `make install` on every host, then restart every AI harness on it.
+// The floor rises at the first v7 stamped write anywhere in the vault; run the
+// retirement only after that stamp has been pushed and pulled everywhere.
+//
 // 🔴 A BUMP STRANDS EVERY HOST THAT HAS NOT RUN `make install`, vault-wide and
 // at once: CheckCompatible takes the MAX across every stamp, so the first v3
 // write anywhere raises the floor for everybody. That is the intended effect,
@@ -273,7 +306,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 6
+const MCPSurfaceVersion int = 7
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

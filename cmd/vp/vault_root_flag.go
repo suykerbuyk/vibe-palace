@@ -42,7 +42,7 @@ func resolveVaultRootFlag(flagValue string, fallback func() (root, source string
 	if strings.TrimSpace(flagValue) != "" {
 		abs, err := expandAndAbsPath(flagValue)
 		if err != nil {
-			return "", "", fmt.Errorf("--vault %s: %w", flagValue, err)
+			return "", "", fmt.Errorf("vault %s: %w", flagValue, err)
 		}
 		return abs, vaultFlagSource, nil
 	}
@@ -132,9 +132,11 @@ func enforceSurfaceOnRoot(root string) int {
 	return cli.ExitOK
 }
 
-// refuseUnlessOwnGitRepo admits a --vault root only when git sees it as the top
+// refuseUnlessOwnGitRepo admits a vault root only when git sees it as the top
 // level of its own work tree (storage.VaultGitOK), and names the state in every
-// refusal. It is POSITIVE on purpose: storage.RefuseIfNestedVaultGit returns nil
+// refusal. Its callers are the vault git family's --vault path and the
+// project-config retirement's --apply, so the messages name the vault, not the
+// flag that may or may not have supplied it. It is POSITIVE on purpose: storage.RefuseIfNestedVaultGit returns nil
 // for every state except VaultGitNested, so it would admit a directory that is
 // not under git at all, a broken repository, or one git cannot run against.
 //
@@ -146,23 +148,23 @@ func refuseUnlessOwnGitRepo(root string) error {
 		if err == nil {
 			return nil
 		}
-		return fmt.Errorf("--vault %s: git cannot use this repository: %w", root, err)
+		return fmt.Errorf("vault %s: git cannot use this repository: %w", root, err)
 	case storage.VaultNotGit:
 		if _, serr := os.Stat(root); serr != nil {
-			return fmt.Errorf("--vault %s: not a git repository: %w", root, serr)
+			return fmt.Errorf("vault %s: not a git repository: %w", root, serr)
 		}
-		return fmt.Errorf("--vault %s: not a git repository (no .git at or above it)", root)
+		return fmt.Errorf("vault %s: not a git repository (no .git at or above it)", root)
 	case storage.VaultGitNested:
 		top, _ := storage.GitTopLevel(root)
 		if top == "" {
 			top = "an enclosing repository"
 		}
-		return fmt.Errorf("--vault %s: inside another repository (%s), not the top level of its own", root, top)
+		return fmt.Errorf("vault %s: inside another repository (%s), not the top level of its own", root, top)
 	case storage.VaultGitBroken:
-		return fmt.Errorf("--vault %s: git cannot use this repository: %v", root, err)
+		return fmt.Errorf("vault %s: git cannot use this repository: %v", root, err)
 	case storage.VaultGitUnavailable:
-		return fmt.Errorf("--vault %s: a .git exists but git is not on PATH", root)
+		return fmt.Errorf("vault %s: a .git exists but git is not on PATH", root)
 	default:
-		return fmt.Errorf("--vault %s: unrecognised git state %d; refusing", root, state)
+		return fmt.Errorf("vault %s: unrecognised git state %d; refusing", root, state)
 	}
 }
