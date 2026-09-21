@@ -43,6 +43,7 @@ import (
 	"os"
 
 	"example.com/storage"
+	"example.com/vaultfs"
 )
 
 // WRITE: the direct reintroduction this rule exists for. This is the manual
@@ -57,6 +58,17 @@ func planBoardFieldsMigration(root string) error {
 // half the rule is deleted.
 func predictFormatStamp(root string) error {
 	return os.WriteFile(root, nil, 0o644)
+}
+
+// WRITE: the project-config retirement's planner reaching the two sinks its
+// executor owns — the file removal and the removal commit. Either one inside
+// the planner lets a dry run delete, or commit, what it was only reporting.
+func planProjectConfigRetirement(root string) error {
+	if _, err := vaultfs.Delete(root, "Projects/p/config.toml", ""); err != nil {
+		return err
+	}
+	_, err := storage.CommitRemovals(root, "m", nil)
+	return err
 }
 
 // CLEAN: the executor is precisely where the write BELONGS. Flagging it is the
@@ -131,6 +143,8 @@ func TestPlannerNoWriteFlagsADirectWrite(t *testing.T) {
 	for _, want := range []string{
 		"fixture.planBoardFieldsMigration -> NewVault",
 		"fixture.predictFormatStamp -> WriteFile",
+		"fixture.planProjectConfigRetirement -> Delete",
+		"fixture.planProjectConfigRetirement -> CommitRemovals",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("%s is a planner acquiring a writer and the rule did not flag it. "+

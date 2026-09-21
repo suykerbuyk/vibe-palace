@@ -230,7 +230,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		// semantics, and a second independently-maintained copy is exactly
 		// how this class of bug (see vaultstatus-and-vaultsync-abbrev-ref-branch-corruption)
 		// arose in the first place.
-		branch = currentBranch(vaultPath)
+		branch = branchOrMain(vaultPath)
 		if len(remotes) > 0 {
 			reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 		}

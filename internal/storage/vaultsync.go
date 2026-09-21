@@ -312,7 +312,7 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		// HEAD is a valid symbolic ref (refs/heads/<branch>) whether or not
 		// that branch has any commits yet, unlike the rev-parse --abbrev-ref
 		// HEAD this used to call directly, which fails on an unborn HEAD.
-		branch = currentBranch(vaultPath)
+		branch = branchOrMain(vaultPath)
 		// Fix B: heal an already-ahead branch (a prior stranded commit) BEFORE a
 		// new commit stacks on top of it and compounds the strand. Gated on
 		// push && len(remotes) > 0 so it never fires on the downgrade path.

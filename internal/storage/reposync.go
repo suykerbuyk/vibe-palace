@@ -93,7 +93,7 @@ func CheckRepoFreshness(repoPath, remote, branch string, fetch bool, subjectLimi
 	}
 
 	if branch == "" {
-		branch = currentBranch(repoPath)
+		branch = branchOrMain(repoPath)
 	}
 	upstream, _ := gitCmd(repoPath, 5*time.Second, "config", "--get", "branch."+branch+".remote")
 
