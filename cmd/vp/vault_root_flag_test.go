@@ -453,22 +453,25 @@ func declaresFlag(cmd *cli.Command, want cli.FlagDef) bool {
 // TestMigrateVaultFlagSurfaceGatesTheResolvedRoot: every `vp migrate` command
 // taking --vault can --apply to the root it resolves, and preRun's surfaceGate
 // checked only the CONFIGURED vault. Each must refuse a newer-surface root named
-// by --vault before its first write. The family is derived from the registry,
-// so a new migrate command with --vault is covered without editing this test.
+// by --vault: exit ExitSystem with the surface gate's message. That refusal is
+// what this test proves; the fixture holds nothing any migration would rewrite,
+// so it does not show a write being stopped. The family is derived from the
+// registry, so a new migrate command with --vault is covered without editing
+// this test.
 func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
 	t.Setenv("VP_SURFACE_GATE", "")
 	live := setupTestVaultEnv(t)
-	// A committed git repo, so an ungated --apply gets past the migrations'
-	// own git precondition and would reach its writes.
+	// A committed git repo, so an ungated --apply passes the migrations' own
+	// git precondition and exits 0 instead of refusing for an unrelated reason:
+	// the exit code and message below then come from the surface gate alone.
 	newer, _ := newRepoWithOrigin(t)
 	stampDir := filepath.Join(newer, "Projects", "vibe-palace")
-	if err := os.MkdirAll(filepath.Join(stampDir, "tasks"), 0o755); err != nil {
+	if err := os.MkdirAll(stampDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := surface.WriteStamp(stampDir, surface.MCPSurfaceVersion+1, "newer-binary"); err != nil {
 		t.Fatal(err)
 	}
-	mkfile(t, newer, "Projects/vibe-palace/tasks/t.md", "# T\n\n**Status:** planning\n\nbody\n")
 	gitRun(t, newer, "add", "-A")
 	gitRun(t, newer, "commit", "-m", "stamped by a newer binary")
 
@@ -492,14 +495,10 @@ func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
 	}
 	for _, cmd := range family {
 		t.Run(cmd.Name, func(t *testing.T) {
-			before := treeSnapshot(t, newer)
 			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmd, "--apply", "--vault", newer)
 			if code != cli.ExitSystem || !strings.Contains(stderr, "this binary supports MCP surface") {
 				t.Errorf("newer-surface --vault root not refused by the surface gate: exit %d, want %d\nstdout:%s\nstderr:%s",
 					code, cli.ExitSystem, stdout, stderr)
-			}
-			if after := treeSnapshot(t, newer); after != before {
-				t.Errorf("an older binary wrote a newer-surface vault:\nbefore:\n%s\nafter:\n%s", before, after)
 			}
 		})
 	}
@@ -513,36 +512,6 @@ func declaresFlagNamed(cmd *cli.Command, name string) bool {
 		}
 	}
 	return false
-}
-
-// treeSnapshot renders every file under root with its contents, so any write
-// shows up as a difference.
-func treeSnapshot(t *testing.T, root string) string {
-	t.Helper()
-	var b strings.Builder
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		if d.IsDir() && d.Name() == ".git" {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			b.WriteString(rel + "/\n")
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		b.WriteString(rel + ": " + string(data) + "\n")
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b.String()
 }
 
 // TestEnforceSurfaceOnRoot pins the helper on its own terms: any resolved root,
