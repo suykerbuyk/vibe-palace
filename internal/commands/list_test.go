@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
@@ -66,6 +67,22 @@ func TestExtractBrief(t *testing.T) {
 				t.Fatalf("ExtractBrief: got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestExtractBriefCutsOnARuneBoundary: maxLen counts bytes, and a first line
+// with no space in the back half of those bytes is cut mid-word. "a" plus
+// thirty em dashes puts byte 60 inside a three-byte dash, so a raw cut there
+// would emit invalid UTF-8.
+func TestExtractBriefCutsOnARuneBoundary(t *testing.T) {
+	in := "a" + strings.Repeat("—", 30)
+	got := commands.ExtractBrief(in, 60)
+	if !utf8.ValidString(got) {
+		t.Fatalf("ExtractBrief(%q, 60) = %q, not valid UTF-8", in, got)
+	}
+	// Byte 60 splits the 20th dash (bytes 58-60): the cut keeps 19 whole.
+	if want := "a" + strings.Repeat("—", 19) + "…"; got != want {
+		t.Errorf("ExtractBrief = %q, want %q", got, want)
 	}
 }
 

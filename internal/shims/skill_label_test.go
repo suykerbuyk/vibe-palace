@@ -117,3 +117,21 @@ func TestYAMLDoubleQuotedEscapes(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillLabelOfAMultiByteDescriptionParses: a description whose first 60
+// bytes end inside a multi-byte character must still yield a valid UTF-8
+// label and frontmatter yaml.v3 accepts on every persona target — on the
+// Claude skill the disable-model-invocation key rides on that parse.
+func TestSkillLabelOfAMultiByteDescriptionParses(t *testing.T) {
+	it := SkillItem{Name: "dashes"}
+	it.Frontmatter.Description = "a" + strings.Repeat("—", 30)
+	if label := skillLabel(it); !utf8.ValidString(label) {
+		t.Errorf("label %q is not valid UTF-8", label)
+	}
+	for _, kind := range personaKinds {
+		var fm map[string]any
+		if err := yaml.Unmarshal([]byte(shimFrontmatter(t, RenderSkill(kind, it))), &fm); err != nil {
+			t.Errorf("%s: frontmatter is not valid YAML: %v", kind, err)
+		}
+	}
+}
