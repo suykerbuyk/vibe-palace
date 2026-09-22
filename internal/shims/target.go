@@ -469,9 +469,9 @@ func renderGrokHub(item SkillItem, sha string) string {
 }
 
 // renderGlobsYAMLFlow renders a []string as a YAML flow-sequence
-// ("[a, b]"). Empty slice → "[]". Each entry is quoted with double
-// quotes and backslash-escaped for safety against glob characters that
-// YAML parsers sometimes choke on in bare scalars.
+// ("[a, b]"). Empty slice → "[]". Each entry is a yamlDoubleQuoted scalar,
+// for safety against glob characters that YAML parsers sometimes choke on
+// in bare scalars.
 func renderGlobsYAMLFlow(paths []string) string {
 	if len(paths) == 0 {
 		return "[]"
@@ -482,9 +482,7 @@ func renderGlobsYAMLFlow(paths []string) string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString("\"")
-		sb.WriteString(strings.ReplaceAll(strings.ReplaceAll(p, "\\", "\\\\"), "\"", "\\\""))
-		sb.WriteString("\"")
+		sb.WriteString(yamlDoubleQuoted(p))
 	}
 	sb.WriteString("]")
 	return sb.String()
