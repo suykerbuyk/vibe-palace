@@ -39,7 +39,9 @@ func cmdVault() *cli.Command {
 }
 
 func cmdVaultPull() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:        "vault pull",
 		Synopsis:    "vp vault pull [--dry-run] [--vault PATH]",
 		Description: "Pull from all configured vault remotes.",
@@ -55,7 +57,7 @@ func cmdVaultPull() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault pull", fv.Get("--vault"), "pull", false)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "pull")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -73,10 +75,13 @@ func cmdVaultPull() *cli.Command {
 			return pullAll(root, remotes, fv.Bool("--dry-run"))
 		},
 	}
+	return c
 }
 
 func cmdVaultPush() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:        "vault push",
 		Synopsis:    "vp vault push [--dry-run] [--vault PATH]",
 		Description: "Push to all configured vault remotes. Requires clean vault state.",
@@ -92,7 +97,7 @@ func cmdVaultPush() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault push", fv.Get("--vault"), "push", false)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "push")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -110,10 +115,13 @@ func cmdVaultPush() *cli.Command {
 			return pushAll(root, remotes, fv.Bool("--dry-run"))
 		},
 	}
+	return c
 }
 
 func cmdVaultSync() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:     "vault sync",
 		Synopsis: "vp vault sync [--dry-run] [--no-tidy] [--vault PATH]",
 		Description: "Tidy capture artifacts, then pull and push all configured vault " +
@@ -134,7 +142,7 @@ func cmdVaultSync() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault sync", fv.Get("--vault"), "sync", false)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "sync")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -211,6 +219,7 @@ func cmdVaultSync() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+	return c
 }
 
 // plural returns "s" for any count other than 1, for terse pluralization in
@@ -230,7 +239,9 @@ var vaultCommitFlags = []cli.FlagDef{
 }
 
 func cmdVaultCommit() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:        "vault commit",
 		Synopsis:    "vp vault commit --paths <p1,p2,...> --message <msg> [--push] [--vault PATH]",
 		Description: "Stage and commit ONLY the named vault-relative paths (never git add -A), with a hostname-stamped message. Other dirty files are left untouched. Pass --push to also push to all configured remotes.",
@@ -261,7 +272,7 @@ func cmdVaultCommit() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault commit", fv.Get("--vault"), "commit", true)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "commit")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -305,6 +316,7 @@ func cmdVaultCommit() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+	return c
 }
 
 var vaultTidyFlags = []cli.FlagDef{
@@ -371,7 +383,9 @@ func printTidyReported(res *storage.TidyResult) {
 }
 
 func cmdVaultTidy() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:     "vault tidy",
 		Synopsis: "vp vault tidy [--dry-run] [--no-push] [--vault PATH]",
 		Description: "Scan the whole vault and commit ONLY classified capture artifacts " +
@@ -395,7 +409,7 @@ func cmdVaultTidy() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault tidy", fv.Get("--vault"), "tidy", true)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "tidy")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -460,6 +474,7 @@ func cmdVaultTidy() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+	return c
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +567,9 @@ func printVaultRemoteLine(st storage.RemoteStatusJSON) {
 }
 
 func cmdVaultStatus() *cli.Command {
-	return &cli.Command{
+	// Run hands c to vaultRootFor, which reads its registered MutatesVault.
+	var c *cli.Command
+	c = &cli.Command{
 		Name:     "vault status",
 		Synopsis: "vp vault status [--json] [--no-fetch] [--vault PATH]",
 		Description: "Report the vault's sync state against every configured remote " +
@@ -574,7 +591,7 @@ func cmdVaultStatus() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor("vp vault status", fv.Get("--vault"), "report vault status", false)
+			root, code := vaultRootFor(c, fv.Get("--vault"), "report vault status")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -618,6 +635,7 @@ func cmdVaultStatus() *cli.Command {
 			return cli.ExitOK
 		},
 	}
+	return c
 }
 
 func vaultRoot() (string, error) {
