@@ -69,6 +69,11 @@ func cmdMigrateIterationsPreamble() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp migrate iterations-preamble: %v\n", err)
 				return cli.ExitUser
 			}
+			// preRun's surfaceGate checked only the CONFIGURED vault; this is
+			// the root this run will actually write, however it was resolved.
+			if code := enforceSurfaceOnRoot(root); code != cli.ExitOK {
+				return code
+			}
 			if _, err := runIterationsPreambleMigration(root, fv.Bool("--apply"), os.Stderr); err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate iterations-preamble: %v\n", err)
 				return cli.ExitSystem
