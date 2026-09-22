@@ -104,11 +104,12 @@ func CursorRuleFilename(name string) string { return SkillFilePrefix + name + ".
 // `vp skills show <name>` fallback; Frontmatter carries description/paths
 // (parsed by internal/skills.Parse via context.ResolveSkillDir). The
 // description reaches a persona shim only as the short label skillLabel
-// derives from it, never as trigger text: a persona is adopted when the user
-// invokes it by name (`/vps-<name>` or a typed `vps-<name>`), not because a
-// host matched the conversation against its description. Paths is
-// Cursor-only — it renders into the Cursor rule's globs line; a path-less
-// skill renders `globs: []`.
+// derives from it, never as trigger text: a persona is meant to be adopted
+// when the user invokes it by name (`/vps-<name>` or a typed `vps-<name>`).
+// Only the Claude skill enforces that (skillLabel says how far the others
+// go). Paths is Cursor-only — it renders into the Cursor rule's globs line,
+// which Cursor auto-attaches on a file match; a path-less skill renders
+// `globs: []`.
 //
 // No host path is part of an item: a shim never names a vault file, so the
 // rendered bytes do not depend on where this host's vault lives.
@@ -230,8 +231,11 @@ const skillLabelPrefix = "Vibe-palace skill — "
 // skillLabel is a persona shim's description: skillLabelPrefix plus the
 // skill's description briefed exactly as a command's content is
 // (commands.ExtractBrief, the 60 bytes commands.List uses for shim briefs).
-// It is a label for a menu, never the skill's trigger text, so no host
-// adopts a persona because the conversation matched its description. A
+// It is a label for a menu, never the skill's trigger text. On Claude Code
+// the shim also sets disable-model-invocation, so the model cannot adopt
+// the persona itself. On Cursor and Grok the label is the only safeguard:
+// it makes a match against the conversation unlikely but does not rule it
+// out, and a Cursor rule's globs (from paths) still auto-attach. A
 // description that briefs to nothing usable falls back to the skill name.
 func skillLabel(item SkillItem) string {
 	brief := commands.ExtractBrief(sanitizeFrontmatter(item.Frontmatter.Description), 60)
@@ -255,9 +259,10 @@ func yamlDoubleQuoted(s string) string {
 
 // renderClaudeSkill also writes disable-model-invocation: true. Claude Code
 // then keeps the description out of the model's context and refuses a
-// model-initiated Skill call, while the user's /vps-<name> still works: the
-// persona is only ever adopted deliberately. A typed `vps-<name>` never used
-// the Skill tool — the agent-file block routes it to vp_skill over MCP.
+// model-initiated Skill call, while the user's /vps-<name> still works: on
+// Claude Code the persona is only ever adopted deliberately. A typed
+// `vps-<name>` never used the Skill tool — the agent-file block routes it to
+// vp_skill over MCP.
 func renderClaudeSkill(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	shimName := SkillDirName(item.Name)
