@@ -53,7 +53,10 @@ or analytical framework the AI adopts for the session. Skills have two
 required frontmatter fields:
 
 - `name` — identifier used in MCP tool calls
-- `description` — trigger conditions; tells the AI when to activate
+- `description` — what the persona is for, leading with a short noun
+  phrase. Host shims show only a one-line label derived from its first
+  60 bytes; nothing activates a persona from it — the user invokes one
+  with `/vps-<name>` or a typed `vps-<name>`
 
 Skills can include a `references/` subdirectory with supporting documents
 (checklists, frameworks, domain knowledge) that the AI can pull in as needed.
@@ -225,8 +228,7 @@ reference file.
 | Field | Type | Purpose |
 |-------|------|---------|
 | `name` | string | Canonical identifier (matches the directory name). |
-| `description` | string | Model-facing trigger description. |
-| `triggers` | `[]string` | Optional keyword/phrase hints for shim rendering. |
+| `description` | string | What the persona is for. Host shims carry only the label `Vibe-palace skill — ` plus its first 60 bytes (`commands.ExtractBrief`); no host sees the rest. |
 | `paths` | `[]string` | Optional glob hints consumed by Claude Code / Cursor. |
 | `lifetime` | string | `"postural"` (default) or `"transactional"`. |
 
@@ -275,8 +277,11 @@ Do NOT comment on style or formatting unless it obscures intent.
 
 ### 3. Guidelines for effective skills
 
-- **Write the `description` for the AI, not for humans**: It determines when
-  the skill activates. Be specific about trigger phrases and document types.
+- **Lead the `description` with a short noun phrase**: host shims show only
+  its first 60 bytes, as the label `Vibe-palace skill — <brief>`, and never
+  use it to activate the skill. A persona is adopted only when the user
+  types `/vps-<name>` or `vps-<name>`. Anything after the first sentence is
+  documentation for people choosing a skill.
 - **Define a persona**: Skills work best when they give the AI a clear role
   with specific priorities and constraints.
 - **Include anti-patterns**: "Do NOT X" is as valuable as "Do Y."
