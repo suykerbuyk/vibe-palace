@@ -1734,13 +1734,27 @@ but the *mechanism* differs by IDE. This table summarizes what each
 surface ships and how skills are invoked there. For step-by-step
 verification, see `doc/verify-skill-delivery.md`.
 
-| IDE                         | Mechanism                                                   | Auto-invokes? | Notes                                                                 |
+A persona is meant to be adopted deliberately: the user types
+`/vps-<name>` or `vps-<name>`. Each shim's description is a one-line
+`Vibe-palace skill — …` label, never the skill's trigger text. How far a
+host holds to that differs:
+
+- **Claude Code enforces it.** The shim sets `disable-model-invocation:
+  true`, so the model cannot invoke the skill.
+- **Cursor and Grok** get only the short label. That makes matching the
+  conversation against the description unlikely, but does not rule it
+  out. A Cursor rule with a description is one the agent can attach by
+  itself, and a skill's `paths:` render into the rule's `globs`, which
+  Cursor attaches whenever a matching file is in play. Whether Grok
+  auto-activates a skill from its description is unknown.
+
+| IDE                         | Mechanism                                                   | Invoked by | Notes                                                                 |
 |-----------------------------|-------------------------------------------------------------|---------------|-----------------------------------------------------------------------|
-| Claude Code                 | Native SKILL.md primitive (`.claude/skills/vps-<name>/SKILL.md`) | Yes       | Auto-loaded by Claude Code's skill picker; shim is a short delegation to `vp_skill`, with a `vp skills show <name>` fallback for when `vp_skill` cannot be loaded. |
-| Cursor                      | Native rule file (`.cursor/rules/vps-<name>.mdc`)           | Pick from Rules panel | Only emitted when `.cursor/` or `.cursor/rules/` exists in the project. vp registers no MCP server with Cursor; without one, the rule's fallback runs `vp skills show <name>` from the project directory. |
-| Zed + Claude                | Trigger phrase (managed block) + `vp_skill` MCP             | Yes, on trigger | Model recognizes `vps-<name>` via the agent-file managed block and calls `vp_skill`. |
-| Zed + Gemini / Copilot Chat | Trigger phrase (managed block) + user-paste fallback        | Partial       | Awareness works from the managed block; user pastes `vp skills show <name>` output if MCP isn't wired. |
-| Any MCP-capable host        | Trigger phrase + `vp_skill` MCP                             | Yes, on trigger | Works anywhere `vp mcp` can be registered. Provider-level tool-use policy applies. |
+| Claude Code                 | Native SKILL.md primitive (`.claude/skills/vps-<name>/SKILL.md`) | `/vps-<name>` or typed `vps-<name>` | Never by the model: the shim sets `disable-model-invocation: true`, so Claude Code keeps it out of the model's context and refuses a model-initiated call. The shim is a short delegation to `vp_skill`, with a `vp skills show <name>` fallback for when `vp_skill` cannot be loaded. |
+| Cursor                      | Native rule file (`.cursor/rules/vps-<name>.mdc`)           | Pick from Rules panel, or typed `vps-<name>`; the agent may also attach it (see above) | Only emitted when `.cursor/` or `.cursor/rules/` exists in the project. vp registers no MCP server with Cursor; without one, the rule's fallback runs `vp skills show <name>` from the project directory. |
+| Zed + Claude                | `vps-<name>` token (managed block) + `vp_skill` MCP         | Typed `vps-<name>` | Model recognizes `vps-<name>` via the agent-file managed block and calls `vp_skill`. |
+| Zed + Gemini / Copilot Chat | `vps-<name>` token (managed block) + user-paste fallback    | Typed `vps-<name>` (partial) | Awareness works from the managed block; user pastes `vp skills show <name>` output if MCP isn't wired. |
+| Any MCP-capable host        | `vps-<name>` token + `vp_skill` MCP                         | Typed `vps-<name>` | Works anywhere `vp mcp` can be registered. Provider-level tool-use policy applies. |
 
 `.cursor/rules/vps-*.mdc` is vp-managed, depends on your vault and your
 vp version, and is rewritten by `vp init`; commit it only if every

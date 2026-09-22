@@ -73,6 +73,9 @@ been proven.
    ```
    vps-startup-analyst
    ```
+   (`/vps-startup-analyst` works too. Claude never adopts the persona
+   unasked: the shim sets `disable-model-invocation: true`, so the
+   skill is absent from the model's skill listing.)
 
 **Expected response shape:**
 
@@ -91,9 +94,10 @@ been proven.
 
 - `SKILL.md` missing → run `vp init` again; confirm the project's
   `.claude/skills/` is not gitignored away.
-- Frontmatter `description:` field empty → Claude Code's skill
-  picker won't surface the skill; re-render the shim via
-  `vp commands upgrade`. Skill shims are rendered by its
+- Frontmatter lacks the `Vibe-palace skill — …` label or
+  `disable-model-invocation: true` → the shim predates the label
+  change; re-render it via `vp commands upgrade` (and
+  `vp mcp install --claude-plugin` for the plugin copy). Skill shims are rendered by its
   `PlanSkills`/`ApplySkills` half — `vp skills upgrade` only reports
   vault `Templates/skills/` overrides and never touches a shim.
   Resetting a vault skill override is `vp skills reset NAME`.
@@ -121,15 +125,16 @@ neither exists, create `.cursor/rules/` (empty) and re-run `vp init`.
 2. Open the Rules panel (Cmd/Ctrl-Shift-P → "Rules" or the sidebar
    rules picker).
 3. Confirm `vps-startup-analyst` appears in the list and its
-   description matches `SKILL.md` frontmatter.
+   description is the one-line `Vibe-palace skill — …` label derived
+   from the `SKILL.md` description.
 4. Either select the rule to attach it to the current chat, or type
    `vps-startup-analyst` in the chat to trigger via the managed
    block.
 
 **Expected response shape:**
 
-- Rules picker shows `vps-startup-analyst` with the description
-  from the SKILL.md frontmatter.
+- Rules picker shows `vps-startup-analyst` with its
+  `Vibe-palace skill — …` label.
 - Selecting / invoking the rule adopts the persona as in §1.
 - If MCP is wired, `vp_skill` is called and the full persona frame
   arrives. If MCP is not wired, the rule's fallback tells the agent

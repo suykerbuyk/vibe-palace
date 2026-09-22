@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	"github.com/suykerbuyk/vibe-palace/internal/skills"
 )
 
@@ -101,9 +102,14 @@ func CursorRuleFilename(name string) string { return SkillFilePrefix + name + ".
 // SkillItem is the Plan/Apply input for the ClaudeSkill, CursorRule and
 // GrokSkill targets. Name drives the filename, the persona argument and the
 // `vp skills show <name>` fallback; Frontmatter carries description/paths
-// (parsed by internal/skills.Parse via context.ResolveSkillDir). Paths is
-// Cursor-only — it renders into the Cursor rule's globs line; a path-less
-// skill renders `globs: []` and still activates by description.
+// (parsed by internal/skills.Parse via context.ResolveSkillDir). The
+// description reaches a persona shim only as the short label skillLabel
+// derives from it, never as trigger text: a persona is meant to be adopted
+// when the user invokes it by name (`/vps-<name>` or a typed `vps-<name>`).
+// Only the Claude skill enforces that (skillLabel says how far the others
+// go). Paths is Cursor-only — it renders into the Cursor rule's globs line,
+// which Cursor auto-attaches on a file match; a path-less skill renders
+// `globs: []`.
 //
 // No host path is part of an item: a shim never names a vault file, so the
 // rendered bytes do not depend on where this host's vault lives.
@@ -218,13 +224,48 @@ func skillFallback(name string) string {
 		"ask the user to run that command and paste its output.\n"
 }
 
+// skillLabelPrefix opens every persona shim's description, in the shape of
+// the command shim's "Vibe-palace command — <brief>" (Render).
+const skillLabelPrefix = "Vibe-palace skill — "
+
+// skillLabel is a persona shim's description: skillLabelPrefix plus the
+// skill's description briefed exactly as a command's content is
+// (commands.ExtractBrief, the 60 bytes commands.List uses for shim briefs).
+// It is a label for a menu, never the skill's trigger text. On Claude Code
+// the shim also sets disable-model-invocation, so the model cannot adopt
+// the persona itself. On Cursor and Grok the label is the only safeguard:
+// it makes a match against the conversation unlikely but does not rule it
+// out, and a Cursor rule's globs (from paths) still auto-attach. A
+// description that briefs to nothing usable falls back to the skill name.
+func skillLabel(item SkillItem) string {
+	brief := commands.ExtractBrief(sanitizeFrontmatter(item.Frontmatter.Description), 60)
+	if brief == "(no description)" {
+		brief = item.Name
+	}
+	return skillLabelPrefix + brief
+}
+
+// yamlDoubleQuoted renders s as a YAML double-quoted scalar. A bare scalar
+// cannot hold ": " (chair's and pair-reviewer's labels do), and a document
+// that fails to parse puts every key beside it at the mercy of the host's
+// fallback — disable-model-invocation included. Quoting keeps the label's
+// text as written, as the source SKILL.md files do. s is single-line
+// (sanitizeFrontmatter), so only the backslash and the quote need escaping.
+func yamlDoubleQuoted(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
+// renderClaudeSkill also writes disable-model-invocation: true. Claude Code
+// then keeps the description out of the model's context and refuses a
+// model-initiated Skill call, while the user's /vps-<name> still works: on
+// Claude Code the persona is only ever adopted deliberately. A typed
+// `vps-<name>` never used the Skill tool — the agent-file block routes it to
+// vp_skill over MCP.
 func renderClaudeSkill(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	shimName := SkillDirName(item.Name)
-	desc := sanitizeFrontmatter(item.Frontmatter.Description)
-	if desc == "" {
-		desc = "Vibe-palace skill persona — " + item.Name
-	}
 
 	var sb strings.Builder
 	sb.WriteString("---\n")
@@ -232,8 +273,9 @@ func renderClaudeSkill(item SkillItem, sha string) string {
 	sb.WriteString(shimName)
 	sb.WriteString("\n")
 	sb.WriteString("description: ")
-	sb.WriteString(desc)
+	sb.WriteString(yamlDoubleQuoted(skillLabel(item)))
 	sb.WriteString("\n")
+	sb.WriteString("disable-model-invocation: true\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString(openMarker)
 	sb.WriteString("\n")
@@ -250,15 +292,11 @@ func renderClaudeSkill(item SkillItem, sha string) string {
 
 func renderCursorRule(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
-	desc := sanitizeFrontmatter(item.Frontmatter.Description)
-	if desc == "" {
-		desc = "Vibe-palace skill persona — " + item.Name
-	}
 
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	sb.WriteString("description: ")
-	sb.WriteString(desc)
+	sb.WriteString(yamlDoubleQuoted(skillLabel(item)))
 	sb.WriteString("\n")
 	sb.WriteString("globs: ")
 	sb.WriteString(renderGlobsYAMLFlow(item.Frontmatter.Paths))
@@ -367,14 +405,10 @@ func GrokHubItem() SkillItem {
 // mirrors renderCursorRule structurally — vp_skill delegation plus the
 // skillFallback `vp skills show` fallback — but emits Grok frontmatter
 // (name/description/metadata.short-description) and omits the Claude-only
-// user-invocable / argument-hint keys.
+// disable-model-invocation key, which Grok is not known to honour.
 func renderGrokSkill(item SkillItem, sha string) string {
 	openMarker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
 	shimName := SkillDirName(item.Name)
-	desc := sanitizeFrontmatter(item.Frontmatter.Description)
-	if desc == "" {
-		desc = "Vibe-palace skill persona — " + item.Name
-	}
 
 	var sb strings.Builder
 	sb.WriteString("---\n")
@@ -382,7 +416,7 @@ func renderGrokSkill(item SkillItem, sha string) string {
 	sb.WriteString(shimName)
 	sb.WriteString("\n")
 	sb.WriteString("description: ")
-	sb.WriteString(desc)
+	sb.WriteString(yamlDoubleQuoted(skillLabel(item)))
 	sb.WriteString("\n")
 	sb.WriteString("metadata:\n")
 	sb.WriteString("  short-description: \"Vibe-palace skill: ")
@@ -435,9 +469,9 @@ func renderGrokHub(item SkillItem, sha string) string {
 }
 
 // renderGlobsYAMLFlow renders a []string as a YAML flow-sequence
-// ("[a, b]"). Empty slice → "[]". Each entry is quoted with double
-// quotes and backslash-escaped for safety against glob characters that
-// YAML parsers sometimes choke on in bare scalars.
+// ("[a, b]"). Empty slice → "[]". Each entry is a yamlDoubleQuoted scalar,
+// for safety against glob characters that YAML parsers sometimes choke on
+// in bare scalars.
 func renderGlobsYAMLFlow(paths []string) string {
 	if len(paths) == 0 {
 		return "[]"
@@ -448,9 +482,7 @@ func renderGlobsYAMLFlow(paths []string) string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString("\"")
-		sb.WriteString(strings.ReplaceAll(strings.ReplaceAll(p, "\\", "\\\\"), "\"", "\\\""))
-		sb.WriteString("\"")
+		sb.WriteString(yamlDoubleQuoted(p))
 	}
 	sb.WriteString("]")
 	return sb.String()

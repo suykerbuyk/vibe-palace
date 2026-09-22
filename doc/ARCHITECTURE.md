@@ -1929,16 +1929,24 @@ entry point); `ResolveSkillSection` walks each reference through the
 full tier chain on its own, so a project can override the persona
 while inheriting every reference — or vice versa — without having to
 clone the whole directory. The `SkillFrontmatter` parser (see
-`doc/COMMANDS-AND-SKILLS.md`) validates the `name`, `description`,
-and `version` fields that the downstream shim renderers and the
-Claude Code / Cursor skill pickers all depend on.
+`doc/COMMANDS-AND-SKILLS.md`) reads the `name`, `description`,
+`paths` and `lifetime` fields. The shim renderers derive each shim's
+one-line label from `description`; the description itself never
+reaches a host.
 
 **Shims.** On top of the resolver sits `internal/shims/`, which
 emits native artifacts into the editors that expose a first-class
 skill surface. `ClaudeSkill` writes
 `.claude/skills/vps-<name>/SKILL.md` — a short delegation to
-`vp_skill` wrapped in the managed-hash shim marker — so Claude Code's
-skill picker auto-loads it. `CursorRule` writes
+`vp_skill` wrapped in the managed-hash shim marker — so Claude Code
+offers `/vps-<name>`. The shim sets `disable-model-invocation: true`,
+so on Claude Code only the user can invoke it. Every persona shim's
+description is a `Vibe-palace skill — …` label rather than the skill's
+trigger text. On Cursor and Grok that label is the only safeguard: it
+makes the host matching the conversation against the description
+unlikely but does not rule it out, and Cursor still auto-attaches a
+rule whose `globs` (rendered from the skill's `paths:`) match.
+`CursorRule` writes
 `.cursor/rules/vps-<name>.mdc` (only when `.cursor/rules/` or
 `.cursor/` already exists at the project root), giving Cursor's
 Rules panel a native entry, and `GrokSkill` writes the same persona

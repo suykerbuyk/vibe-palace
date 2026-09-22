@@ -143,8 +143,10 @@ func Render(name, brief, project, argHint string) string {
 
 // sanitizeFrontmatter strips characters that would break single-line YAML
 // frontmatter (CR, LF). Briefs come from user-authored command files so we
-// cannot assume they are safe; we collapse whitespace rather than quoting
-// because Claude Code's parser prefers bare scalars.
+// cannot assume they are safe. It only collapses lines: it does not make the
+// value a valid YAML scalar. Render writes the command brief bare, so a brief
+// holding ": " yields frontmatter a strict YAML parser rejects; the skill
+// renderers quote their label with yamlDoubleQuoted for that reason.
 func sanitizeFrontmatter(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
