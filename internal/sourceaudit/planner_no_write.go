@@ -58,6 +58,11 @@ var plannerFuncs = map[string]bool{
 	// cmd/vp/cmd_migrate_project_configs.go, or the anchor check below reports
 	// it absent. The Delete/CommitRemovals rows in plannerWriteCalls stay.
 	"planProjectConfigRetirement": true,
+	// ONE-SHOT: remove with cmd/vp/cmd_migrate_project_slug.go and
+	// internal/storage/project_slug_migration.go. The RenameNoLock/
+	// RemoveNoLock/Move rows in plannerWriteCalls below are GENERIC and STAY:
+	// they tighten this rule for every planner, present and future.
+	"PlanProjectSlugMigration": true,
 }
 
 // plannerWriteCalls names the calls that write, or that hand back something that
@@ -83,6 +88,9 @@ var plannerWriteCalls = map[string]string{
 	"RemoveAll":                        "os.RemoveAll",
 	"Delete":                           "vaultfs.Delete",
 	"CommitRemovals":                   "storage.CommitRemovals",
+	"RenameNoLock":                     "vaultfs.RenameNoLock",
+	"RemoveNoLock":                     "vaultfs.RemoveNoLock",
+	"Move":                             "vaultfs.Move",
 }
 
 // plannerNoWrite reports a write call reachable directly from a planner.

@@ -325,6 +325,9 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// writer cannot express it: creating a Status field where none existed is
 		// the empty-to-value transition refuseHeaderChange refuses.
 		"migrate task-header-block": true,
+		// ONE-SHOT: deleted with cmd_migrate_project_slug.go. Renames and rewrites
+		// a whole project tree, task files included, and commits.
+		"migrate project-slug": true,
 	}
 
 	reg, _, _ := testRegistry()
