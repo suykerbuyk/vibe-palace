@@ -55,8 +55,10 @@ required frontmatter fields:
 - `name` — identifier used in MCP tool calls
 - `description` — what the persona is for, leading with a short noun
   phrase. Host shims show only a one-line label derived from its first
-  60 bytes; nothing activates a persona from it — the user invokes one
-  with `/vps-<name>` or a typed `vps-<name>`
+  60 bytes. The user invokes a persona with `/vps-<name>` or a typed
+  `vps-<name>`. Claude Code cannot invoke one itself
+  (`disable-model-invocation`); on Cursor and Grok the short label makes
+  that unlikely but not impossible
 
 Skills can include a `references/` subdirectory with supporting documents
 (checklists, frameworks, domain knowledge) that the AI can pull in as needed.
@@ -278,10 +280,13 @@ Do NOT comment on style or formatting unless it obscures intent.
 ### 3. Guidelines for effective skills
 
 - **Lead the `description` with a short noun phrase**: host shims show only
-  its first 60 bytes, as the label `Vibe-palace skill — <brief>`, and never
-  use it to activate the skill. A persona is adopted only when the user
-  types `/vps-<name>` or `vps-<name>`. Anything after the first sentence is
-  documentation for people choosing a skill.
+  its first 60 bytes, as the label `Vibe-palace skill — <brief>`. A persona
+  is meant to be adopted when the user types `/vps-<name>` or `vps-<name>`.
+  Claude Code enforces that; Cursor and Grok see only the label, which
+  makes a description match unlikely but not impossible. Anything after the
+  first sentence is documentation for people choosing a skill. Setting
+  `paths:` renders into the Cursor rule's `globs`, which Cursor attaches
+  automatically whenever a matching file is in play.
 - **Define a persona**: Skills work best when they give the AI a clear role
   with specific priorities and constraints.
 - **Include anti-patterns**: "Do NOT X" is as valuable as "Do Y."

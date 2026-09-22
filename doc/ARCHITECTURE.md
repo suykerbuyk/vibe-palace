@@ -1940,10 +1940,13 @@ skill surface. `ClaudeSkill` writes
 `.claude/skills/vps-<name>/SKILL.md` — a short delegation to
 `vp_skill` wrapped in the managed-hash shim marker — so Claude Code
 offers `/vps-<name>`. The shim sets `disable-model-invocation: true`,
-so only the user can invoke it, and every persona shim's description
-is a `Vibe-palace skill — …` label rather than the skill's trigger
-text: a persona is adopted deliberately, never matched from the
-conversation. `CursorRule` writes
+so on Claude Code only the user can invoke it. Every persona shim's
+description is a `Vibe-palace skill — …` label rather than the skill's
+trigger text. On Cursor and Grok that label is the only safeguard: it
+makes the host matching the conversation against the description
+unlikely but does not rule it out, and Cursor still auto-attaches a
+rule whose `globs` (rendered from the skill's `paths:`) match.
+`CursorRule` writes
 `.cursor/rules/vps-<name>.mdc` (only when `.cursor/rules/` or
 `.cursor/` already exists at the project root), giving Cursor's
 Rules panel a native entry, and `GrokSkill` writes the same persona
