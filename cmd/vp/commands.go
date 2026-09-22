@@ -124,10 +124,11 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdTasksEdit()))
 	// Registered UNWRAPPED (no mutates()), like cmdTasks()/cmdTasksEpics() above
 	// and cmdBoard() below: `vp tasks read` opens a throwaway COPY of a task body
-	// in the user's editor and never writes the vault. Wrapping it would be worse
-	// than redundant — surfaceGate would make it refuse to run against a vault
-	// written by a newer binary, and that is precisely the vault you most want to
-	// be able to read. Same ruling, same reason, as cmdAuditTaskFiles().
+	// in the user's editor (or, with no terminal, prints the body to stdout) and
+	// never writes the vault. Wrapping it would be worse than redundant —
+	// surfaceGate would make it refuse to run against a vault written by a newer
+	// binary, and that is precisely the vault you most want to be able to read.
+	// Same ruling, same reason, as cmdAuditTaskFiles().
 	reg.Register(cmdTasksRead())
 	// `vp board` is registered UNWRAPPED (no mutates()), same as cmdTasks()/
 	// cmdTasksEpics() immediately above: Board() is a pure read, vp board

@@ -576,6 +576,8 @@ func runTasksEpics(vault *storage.Vault, proj string, includeIcebox, includeDone
 
 // ---------------------------------------------------------------------------
 // tasks edit — open a task body in $VISUAL/$EDITOR and write it back validated.
+// Refuses without a terminal on stdin and stdout: an editor started without one
+// never exits, and the command would hang with nothing printed.
 // ---------------------------------------------------------------------------
 
 var tasksEditFlags = []cli.FlagDef{
@@ -592,7 +594,10 @@ func cmdTasksEdit() *cli.Command {
 			"Priority, Parent, Depends): each has its own writer, and the refusal names the one " +
 			"that owns the field you changed. Edit the body freely; change a header field with " +
 			"the action that owns it. On identical content it is a no-op; on invalid content the " +
-			"edit is preserved in a temp file whose path is printed so nothing is lost.",
+			"edit is preserved in a temp file whose path is printed so nothing is lost. " +
+			"Needs a terminal on both stdin and stdout, and refuses without one — an editor " +
+			"started from a pipe or a script never exits. To change a task non-interactively, " +
+			"use the vp_manage_task MCP tool.",
 		Flags: tasksEditFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp tasks edit fix-login-bug", Comment: "Edit the task body in your editor"},
@@ -639,6 +644,22 @@ func resolveEditor() (string, []string, error) {
 	return fields[0], fields[1:], nil
 }
 
+// nonTerminalStdio names the standard streams that are not a terminal, joined
+// for a message ("stdin", "stdout", "stdin and stdout"), or returns "" when both
+// are. An interactive editor needs both: without a terminal on stdin it has
+// nothing to read keys from, and without one on stdout it has nowhere to draw.
+// Either way it waits forever, and the vp that started it waits with it.
+func nonTerminalStdio() string {
+	var not []string
+	if !cli.IsTerminal(os.Stdin) {
+		not = append(not, "stdin")
+	}
+	if !cli.IsTerminal(os.Stdout) {
+		not = append(not, "stdout")
+	}
+	return strings.Join(not, " and ")
+}
+
 func runTasksEdit(vault *storage.Vault, proj, slug string, out, errOut io.Writer) int {
 	meta, content, err := vault.GetTask(proj, slug)
 	if err != nil {
@@ -649,6 +670,17 @@ func runTasksEdit(vault *storage.Vault, proj, slug string, out, errOut io.Writer
 	// Editing it in place rewrites history silently — refuse before opening.
 	if meta.Done {
 		fmt.Fprintf(errOut, "vp tasks edit: task '%s' is archived (done/cancelled); its body is history — refusing to edit\n", slug)
+		return cli.ExitUser
+	}
+	// NO-TERMINAL GUARD: refuse rather than start an editor that cannot exit.
+	// Unlike `vp tasks read` there is no useful fallback — printing the body and
+	// exiting 0 would report success for an edit that never happened.
+	if not := nonTerminalStdio(); not != "" {
+		verb := "is"
+		if strings.Contains(not, " and ") {
+			verb = "are"
+		}
+		fmt.Fprintf(errOut, "vp tasks edit: %s %s not a terminal, and an interactive editor needs one; the task was not changed. To change a task non-interactively, use the vp_manage_task MCP tool.\n", not, verb)
 		return cli.ExitUser
 	}
 
@@ -711,7 +743,8 @@ func runTasksEdit(vault *storage.Vault, proj, slug string, out, errOut io.Writer
 }
 
 // ---------------------------------------------------------------------------
-// tasks read — open a task body in $VISUAL/$EDITOR for READING, discarding edits.
+// tasks read — open a task body in $VISUAL/$EDITOR for READING, discarding edits;
+// print it to stdout instead when stdin or stdout is not a terminal.
 // ---------------------------------------------------------------------------
 
 var tasksReadFlags = []cli.FlagDef{
@@ -722,17 +755,21 @@ func cmdTasksRead() *cli.Command {
 	return &cli.Command{
 		Name:     "tasks read",
 		Synopsis: "vp tasks read <slug> [--project P]",
-		Description: "Open a task's whole file in $VISUAL (else $EDITOR) for READING. Works on any " +
+		Description: "In a terminal, open a task's whole file in $VISUAL (else $EDITOR) for READING; " +
+			"piped or scripted, print it to stdout instead (see below). Works on any " +
 			"task in any state — active, iceboxed, done, cancelled, epic or story — because an " +
 			"archived body is exactly the record you most often want to look at. This command " +
 			"NEVER writes the vault: you are handed a throwaway copy, and anything you type in it " +
 			"is discarded. If you did change the copy it is kept and its path is printed, so your " +
-			"notes are not lost; an untouched copy is removed. To CHANGE an active task, use " +
-			"`vp tasks edit`.",
+			"notes are not lost; an untouched copy is removed. The editor is used only when both " +
+			"stdin and stdout are terminals; otherwise (a pipe, a redirect, a script) the raw body " +
+			"is written to stdout and no editor or temp file is involved. To CHANGE an active " +
+			"task, use `vp tasks edit`.",
 		Flags: tasksReadFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp tasks read fix-login-bug", Comment: "Read a task body in your editor; edits are discarded"},
 			{Cmd: "vp tasks read old-retired-plan", Comment: "Works on done and cancelled tasks, which `vp tasks edit` refuses"},
+			{Cmd: "vp tasks read fix-login-bug | grep '^## '", Comment: "Not a terminal: the raw body goes to stdout, no editor"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(tasksReadFlags, args)
@@ -755,7 +792,7 @@ func cmdTasksRead() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp tasks read: %v\n", err)
 				return cli.ExitUser
 			}
-			return runTasksRead(vault, proj, pos[0], os.Stderr)
+			return runTasksRead(vault, proj, pos[0], os.Stdout, os.Stderr)
 		},
 	}
 }
@@ -885,8 +922,9 @@ func printTempCopyLocation(errOut io.Writer, tmpPath string) {
 }
 
 // runTasksRead opens a task body in the user's editor for READING and discards
-// whatever comes back. It is runTasksEdit minus two things, and the two
-// omissions are the whole feature:
+// whatever comes back — or, when stdin or stdout is not a terminal, writes the
+// body to out and returns. The editor path is runTasksEdit minus two things,
+// and the two omissions are the whole feature:
 //
 //   - No archived guard. storage.GetTask already resolves active, done/ and
 //     cancelled/ alike, so every state opens. `vp tasks edit` refuses an
@@ -899,16 +937,27 @@ func printTempCopyLocation(errOut io.Writer, tmpPath string) {
 //     internal/sourceaudit's derived gate reports a divergence if this function
 //     ever reaches a vault-write funnel sink through any number of hops.
 //
-// It deliberately takes no `out` writer, unlike runTasksEdit. runTasksEdit has
-// outcomes to report on stdout ("updated <slug>", "no changes"); this command
-// has none — everything it emits is a notice or a refusal, and those go to
-// stderr. Carrying an unused parameter for the sake of looking like its sibling
-// would be a small untruth about the function's interface.
-func runTasksRead(vault *storage.Vault, proj, slug string, errOut io.Writer) int {
+// out carries the body on the no-terminal path and nothing else: on the editor
+// path everything this command emits is a notice or a refusal, and those go to
+// errOut.
+func runTasksRead(vault *storage.Vault, proj, slug string, out, errOut io.Writer) int {
 	meta, content, err := vault.GetTask(proj, slug)
 	if err != nil {
 		fmt.Fprintf(errOut, "vp tasks read: no such task: %s\n", slug)
 		return cli.ExitUser
+	}
+
+	// NO TERMINAL: print the body verbatim and stop. An editor started here
+	// never exits — `vp tasks read X | grep` hung silently with nvim holding the
+	// pipe open. Reading needs no input, so stdout alone being a terminal is
+	// not enough to open an editor either, and printing is the right answer
+	// there too. Nothing goes to errOut: a caller piping this wants the bytes.
+	if nonTerminalStdio() != "" {
+		if _, err := io.WriteString(out, content); err != nil {
+			fmt.Fprintf(errOut, "vp tasks read: write body: %v\n", err)
+			return cli.ExitSystem
+		}
+		return cli.ExitOK
 	}
 
 	bin, editorArgs, err := resolveEditor()
@@ -923,10 +972,11 @@ func runTasksRead(vault *storage.Vault, proj, slug string, errOut io.Writer) int
 		return cli.ExitSystem
 	}
 
-	// Told BEFORE the editor opens, on stderr: stdout carries outcomes, and a
-	// caller redirecting stdout still needs to see this. Most editors switch to
-	// the alternate screen buffer and wipe it immediately, which is why the temp
-	// FILENAME carries the same warning for the whole session.
+	// Told BEFORE the editor opens, on stderr, which is where every notice from
+	// this command goes. (A caller redirecting stdout never gets here: that is
+	// the no-terminal path above.) Most editors switch to the alternate screen
+	// buffer and wipe it immediately, which is why the temp FILENAME carries the
+	// same warning for the whole session.
 	fmt.Fprintf(errOut, "vp tasks read: opening %s (%s) READ-ONLY — this command never writes the vault\n",
 		slug, taskStateWord(meta))
 	if meta.Done {
