@@ -10,6 +10,7 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 )
@@ -135,6 +136,8 @@ func parseFrontmatter(content string) (map[string]string, string) {
 // needed the cut snaps to the last whitespace before maxLen (unless that
 // would leave less than half of maxLen, in which case a mid-word cut is
 // accepted) and an ellipsis is appended so the truncation is visible.
+// maxLen counts bytes, so a mid-word cut backs off to the start of the
+// character it would split: a brief is always valid UTF-8.
 func ExtractBrief(content string, maxLen int) string {
 	_, content = parseFrontmatter(content)
 	for line := range strings.SplitSeq(content, "\n") {
@@ -146,6 +149,9 @@ func ExtractBrief(content string, maxLen int) string {
 			cut := strings.LastIndex(line[:maxLen], " ")
 			if cut <= maxLen/2 {
 				cut = maxLen
+				for cut > 0 && !utf8.RuneStart(line[cut]) {
+					cut--
+				}
 			}
 			return strings.TrimRight(line[:cut], " ") + "…"
 		}
