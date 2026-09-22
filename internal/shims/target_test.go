@@ -68,7 +68,8 @@ func TestRenderClaudeSkillGolden(t *testing.T) {
 	mustContain := []string{
 		"---\n",
 		"name: vps-pairing\n",
-		"description: Pair-programming persona\n",
+		"description: \"Vibe-palace skill — Pair-programming persona\"\n",
+		"disable-model-invocation: true\n",
 		"---\n\n",
 		"<!-- vibe-palace:shim v=1 sha=",
 		" -->\n",
@@ -92,7 +93,7 @@ func TestRenderCursorRuleGolden(t *testing.T) {
 	out := RenderSkill(CursorRule, sampleItem())
 	mustContain := []string{
 		"---\n",
-		"description: Pair-programming persona\n",
+		"description: \"Vibe-palace skill — Pair-programming persona\"\n",
 		"globs: [\"**/*.go\", \"internal/**\"]\n",
 		"alwaysApply: false\n",
 		"---\n\n",

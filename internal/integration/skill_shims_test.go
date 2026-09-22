@@ -183,7 +183,7 @@ func TestIntegrationSkillShimsLifecycle(t *testing.T) {
 		}
 		body := string(data)
 		for _, want := range []string{
-			"description: Pair-programming persona",
+			"description: \"Vibe-palace skill — Pair-programming persona\"",
 			"globs: [\"**/*.go\"]",
 			"alwaysApply: false",
 			"vp_skill",

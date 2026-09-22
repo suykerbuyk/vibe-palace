@@ -36,7 +36,7 @@ func TestRenderGrokSkillGolden(t *testing.T) {
 	mustContain := []string{
 		"---\n",
 		"name: vps-pairing\n",
-		"description: Pair-programming persona\n",
+		"description: \"Vibe-palace skill — Pair-programming persona\"\n",
 		"metadata:\n",
 		"  short-description: \"Vibe-palace skill: pairing\"\n",
 		"---\n\n",
