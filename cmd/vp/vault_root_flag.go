@@ -82,7 +82,11 @@ func resolveMigrationVaultRoot(flagValue string) (string, error) {
 // handed: a --vault naming a subfolder of the live vault would have tidy commit
 // into the live vault — the exact outcome the flag exists to prevent.
 //
-// mutating must match the command's mutates() registration (commit, tidy).
+// cmd is the command as registered, and whether it mutates is read from its
+// MutatesVault — the flag registerAll sets with mutates() (commit, tidy) and
+// preRun's surfaceGate reads — never passed separately, so the two cannot
+// disagree. Each caller's constructor hands Run its own *cli.Command for this;
+// a command built outside registerAll carries no mutates() and is ungated.
 // surfaceGate runs EnforceFailStop in preRun, but against the CONFIGURED
 // vault — it cannot see --vault. So when --vault names the root of a mutating
 // command, the same fail-stop runs here against the named root, before any
@@ -92,7 +96,8 @@ func resolveMigrationVaultRoot(flagValue string) (string, error) {
 //
 // git_enabled is still read from the HOST config whichever vault is named:
 // it is host policy on whether vp runs git at all, not a property of a vault.
-func vaultRootFor(cmdName, flagValue, verb string, mutating bool) (string, int) {
+func vaultRootFor(cmd *cli.Command, flagValue, verb string) (string, int) {
+	cmdName := "vp " + cmd.Name
 	root, source, err := resolveVaultRootFlag(flagValue, vaultRootWithSource)
 	if err == nil && source == vaultFlagSource {
 		err = refuseUnlessOwnGitRepo(root)
@@ -103,7 +108,7 @@ func vaultRootFor(cmdName, flagValue, verb string, mutating bool) (string, int) 
 	}
 	fmt.Fprintf(os.Stderr, "vault_path = %s\n", root)
 	fmt.Fprintf(os.Stderr, "vault_path source = %s\n", source)
-	if mutating && source == vaultFlagSource {
+	if cmd.MutatesVault && source == vaultFlagSource {
 		if code := enforceSurfaceOnRoot(root); code != cli.ExitOK {
 			return "", code
 		}

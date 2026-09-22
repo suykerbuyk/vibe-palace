@@ -19,9 +19,9 @@ import (
 // approved_by_human is a boolean the AGENT PASSES TO ITSELF. Nothing in this
 // codebase can ask a human anything — there is no elicitation, no prompt, no
 // out-of-band channel. It is ATTESTATION, not AUTHORIZATION, and at least six
-// other doors (vp_vault_write/edit/move/delete, vp_carried_promote_to_task, the
-// `vp vault move` CLI, and plain `mv` on what is an ordinary git checkout) reach
-// the identical on-disk state without passing through any of this. What these
+// other doors (vp_vault_write/edit/move/delete, the `vp vault move` CLI, and
+// plain `mv` on what is an ordinary git checkout) reach the identical on-disk
+// state without passing through any of this. What these
 // tests protect is narrow and worth protecting: the shortest, default,
 // didn't-notice path to an agent closing out its own work.
 //
