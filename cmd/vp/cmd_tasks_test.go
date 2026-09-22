@@ -1116,10 +1116,11 @@ func withoutATerminal(t *testing.T) (tmpDir, ranMarker string) {
 	t.Setenv("TMPDIR", tmpDir)
 
 	ranMarker = filepath.Join(dir, "editor-ran")
-	// The stub drops the test binary's stdio before blocking: otherwise, on a
-	// regression, the orphaned sleep holds `go test`'s output pipe open and the
-	// package run waits the full 30s after the deadline has already failed it.
-	t.Setenv("VISUAL", writeStubEditor(t, dir, "touch \""+ranMarker+"\"\nexec </dev/null >/dev/null 2>&1\nsleep 30\n"))
+	// On a regression the stub outlives the failed test, so it is kept cheap:
+	// `exec` makes the sleep the stub's only process (nothing is orphaned), it
+	// drops the test binary's stdio so it cannot hold `go test`'s output pipe
+	// open, and it sleeps only just past noTerminalDeadline.
+	t.Setenv("VISUAL", writeStubEditor(t, dir, "touch \""+ranMarker+"\"\nexec sleep 7 </dev/null >/dev/null 2>&1\n"))
 	t.Setenv("EDITOR", "")
 	return tmpDir, ranMarker
 }
@@ -1184,8 +1185,8 @@ func TestRunTasksEditWithoutATerminalRefuses(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	code := runWithDeadline(t, func() int { return runTasksEdit(v, "test-proj", "piped-edit", &out, &errOut) })
-	if code == cli.ExitOK {
-		t.Fatalf("exit = ExitOK, want a refusal; stdout=%q stderr=%q", out.String(), errOut.String())
+	if code != cli.ExitUser {
+		t.Fatalf("exit = %d, want ExitUser; stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	es := errOut.String()
 	for _, need := range []string{"stdin and stdout are not a terminal", "vp_manage_task"} {

@@ -723,6 +723,7 @@ vp tasks --epic <slug>      # just the subtree under an epic (or story), re-root
 vp tasks --standalone       # only the tasks that belong to no epic
 vp tasks epics              # roll-up of every epic: open/total, priority, status
 vp tasks edit <slug>        # open an ACTIVE task file in $EDITOR and save it back
+                            #   (needs a terminal: piped or scripted, it refuses)
 vp tasks read <slug>        # open ANY task file in $EDITOR to READ; edits are discarded
                             #   (piped or scripted: prints the raw body to stdout instead)
 ```
@@ -735,15 +736,18 @@ derived views are reachable from the `/vpc-tasks-epics`, `/vpc-tasks-epic`,
 `vp_list_tasks` (now accepting `epic`, `standalone`, and `epics_only`) and
 `vp_get_task`.
 
-Two CLI verbs open a task body in your editor, and the difference is which way
-the bytes flow. `vp tasks edit` writes the result back, validated as a whole,
-and refuses a done or cancelled task because an archived body is a record of
-what happened. `vp tasks read` writes nothing, ever, and therefore works on
-*any* task in any state — it hands you a throwaway copy named
-`vp-task-READONLY-…`, tells you before the editor opens that your edits are
-discarded, and keeps that copy with its path printed if you did type something,
-so notes are not lost. For a raw body in an agent's context rather than your
-editor, `/vpc-tasks-read` and `vp_get_task` are still the route.
+Two CLI verbs work on a task body, and the difference is which way the bytes
+flow. Both use your editor only when stdin and stdout are both terminals.
+`vp tasks edit` writes the result back, validated as a whole, and refuses a
+done or cancelled task because an archived body is a record of what happened;
+without a terminal it refuses too, and points you at `vp_manage_task`.
+`vp tasks read` writes nothing, ever, and therefore works on *any* task in any
+state — in a terminal it hands you a throwaway copy named `vp-task-READONLY-…`,
+tells you before the editor opens that your edits are discarded, and keeps that
+copy with its path printed if you did type something, so notes are not lost.
+Without a terminal it prints the raw body to stdout instead, so
+`vp tasks read <slug> | …` is a route to the raw body too; for one in an
+agent's context, `/vpc-tasks-read` and `vp_get_task` are still the route.
 
 ### Search
 
