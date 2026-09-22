@@ -345,8 +345,9 @@ func mergePlanNotes(m *mergeManifest, remotes []string) []string {
 		notes = append(notes, fmt.Sprintf(
 			"%d source slug(s) are present in only one of palace/ and Projects/. plan "+
 				"reports them and does not guess a disposition: what should happen to a "+
-				"history-without-store or store-without-history slug is owned by the task "+
-				"`vault-tree-drift-is-two-problems-with-opposite-defaults`.", len(m.Drift)))
+				"history-without-store or store-without-history slug is ruled on in task "+
+				"`single-tree-project-drift-has-no-disposition`: store-only slugs are kept, "+
+				"and no tool disposes of them.", len(m.Drift)))
 	}
 	return notes
 }
