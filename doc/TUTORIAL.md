@@ -724,6 +724,7 @@ vp tasks --standalone       # only the tasks that belong to no epic
 vp tasks epics              # roll-up of every epic: open/total, priority, status
 vp tasks edit <slug>        # open an ACTIVE task file in $EDITOR and save it back
 vp tasks read <slug>        # open ANY task file in $EDITOR to READ; edits are discarded
+                            #   (piped or scripted: prints the raw body to stdout instead)
 ```
 
 The `--epic`, `--standalone`, and `epics` views are epic-aware: the epic tree

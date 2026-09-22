@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -385,6 +387,16 @@ func TestRunTasksEpicsText(t *testing.T) {
 	}
 }
 
+// assumeTerminal makes cli.IsTerminal report true for the rest of the test.
+// `vp tasks edit` and `vp tasks read` only start an editor when stdin and
+// stdout are both terminals, and under `go test` they are not, so every test
+// that drives the editor path has to say so. The no-terminal paths have their
+// own tests, which pin VP_ASSUME_TTY off instead.
+func assumeTerminal(t *testing.T) {
+	t.Helper()
+	t.Setenv("VP_ASSUME_TTY", "1")
+}
+
 // writeStubEditor writes an executable shell script to dir and returns its path.
 func writeStubEditor(t *testing.T, dir, body string) string {
 	t.Helper()
@@ -437,6 +449,7 @@ func TestRunTasksEditWritesBack(t *testing.T) {
 	stub := writeStubEditor(t, dir, "printf '%s' \"$1\" > \""+argvFile+"\"\nprintf '\\nEdited by stub.\\n' >> \"$1\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var out, errOut bytes.Buffer
 	if code := runTasksEdit(v, "test-proj", "editme", &out, &errOut); code != cli.ExitOK {
@@ -471,6 +484,7 @@ func TestRunTasksEditNoChanges(t *testing.T) {
 	stub := writeStubEditor(t, dir, "exit 0\n") // touches nothing
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var out, errOut bytes.Buffer
 	if code := runTasksEdit(v, "test-proj", "untouched", &out, &errOut); code != cli.ExitOK {
@@ -491,6 +505,7 @@ func TestRunTasksEditInvalidPreservesTemp(t *testing.T) {
 	stub := writeStubEditor(t, dir, "printf 'just prose, no header at all\\n' > \"$1\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var out, errOut bytes.Buffer
 	if code := runTasksEdit(v, "test-proj", "breakme", &out, &errOut); code != cli.ExitUser {
@@ -522,6 +537,7 @@ func TestRunTasksEditEditorAbort(t *testing.T) {
 	stub := writeStubEditor(t, dir, "exit 1\n") // editor aborts
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var out, errOut bytes.Buffer
 	if code := runTasksEdit(v, "test-proj", "keepme", &out, &errOut); code != cli.ExitUser {
@@ -604,6 +620,7 @@ func TestRunTasksEditRefusesAHeaderChange(t *testing.T) {
 			stub := writeStubEditor(t, dir, "sed -i '"+tc.sed+"' \"$1\"\n")
 			t.Setenv("VISUAL", "")
 			t.Setenv("EDITOR", stub)
+			assumeTerminal(t)
 
 			var out, errOut bytes.Buffer
 			if code := runTasksEdit(v, "test-proj", "hdr", &out, &errOut); code != cli.ExitUser {
@@ -639,6 +656,7 @@ func TestRunTasksEditStillWritesABodyOnlyChange(t *testing.T) {
 	stub := writeStubEditor(t, dir, "printf '\\nAppended prose.\\n' >> \"$1\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var out, errOut bytes.Buffer
 	if code := runTasksEdit(v, "test-proj", "bodyonly", &out, &errOut); code != cli.ExitOK {
@@ -818,9 +836,10 @@ func assertReadOpens(t *testing.T, v *storage.Vault, proj, slug string) {
 	stub := readStub(t, dir, argvFile, "cat \"$1\" > \""+copyFile+"\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, proj, slug, &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, proj, slug, io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 
@@ -883,9 +902,10 @@ func TestRunTasksReadLeavesAModifiedTempInPlace(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "chmod u+w \"$1\"\nprintf '\\nReader notes.\\n' >> \"$1\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "scribbled", &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, "test-proj", "scribbled", io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 	es := errOut.String()
@@ -917,9 +937,10 @@ func TestRunTasksReadRemovesAnUnmodifiedTemp(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "exit 0\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "untouched-read", &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, "test-proj", "untouched-read", io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 	gone := handedPath(t, argvFile)
@@ -950,9 +971,10 @@ func TestRunTasksReadAbortLeavesAModifiedTempInPlace(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "cat \"$1\" > \"$1.new\"\nprintf '\\nNotes before the crash.\\n' >> \"$1.new\"\nmv \"$1.new\" \"$1\"\nexit 1\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "aborted-scribble", &errOut); code != cli.ExitUser {
+	if code := runTasksRead(v, "test-proj", "aborted-scribble", io.Discard, &errOut); code != cli.ExitUser {
 		t.Fatalf("exit = %d, want ExitUser; stderr=%q", code, errOut.String())
 	}
 	es := errOut.String()
@@ -983,9 +1005,10 @@ func TestRunTasksReadAbortRemovesAnUnmodifiedTemp(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "exit 1\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "aborted-clean", &errOut); code != cli.ExitUser {
+	if code := runTasksRead(v, "test-proj", "aborted-clean", io.Discard, &errOut); code != cli.ExitUser {
 		t.Fatalf("exit = %d, want ExitUser; stderr=%q", code, errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "editor exited abnormally") {
@@ -1010,9 +1033,10 @@ func TestRunTasksReadNoEditorSet(t *testing.T) {
 	}
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "")
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "no-editor", &errOut); code != cli.ExitUser {
+	if code := runTasksRead(v, "test-proj", "no-editor", io.Discard, &errOut); code != cli.ExitUser {
 		t.Fatalf("exit = %d, want ExitUser", code)
 	}
 	es := errOut.String()
@@ -1038,9 +1062,10 @@ func TestRunTasksReadDoesNotSendAnArchivedReaderAtARefusal(t *testing.T) {
 	stub := writeStubEditor(t, dir, "exit 0\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "archived-reader", &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, "test-proj", "archived-reader", io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 	es := errOut.String()
@@ -1055,10 +1080,134 @@ func TestRunTasksReadDoesNotSendAnArchivedReaderAtARefusal(t *testing.T) {
 	}
 }
 
+// noTerminalDeadline bounds the no-terminal tests. Both paths return without
+// starting a process, so a regression that reaches the (blocking) stub editor
+// fails here instead of hanging the suite.
+const noTerminalDeadline = 5 * time.Second
+
+// withoutATerminal makes the test's stdin /dev/null and its stdout a regular
+// file, and pins VP_ASSUME_TTY off, so cli.IsTerminal reports false for both
+// however `go test` itself was started. It also points TMPDIR at an empty
+// directory the caller can inspect for a leaked temp copy, and installs a stub
+// editor that records that it ran and then blocks — the editor a no-terminal
+// run must never reach. It returns the TMPDIR and the stub's marker path.
+func withoutATerminal(t *testing.T) (tmpDir, ranMarker string) {
+	t.Helper()
+	t.Setenv("VP_ASSUME_TTY", "")
+
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	dir := t.TempDir()
+	stdout, err := os.Create(filepath.Join(dir, "stdout"))
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+	origIn, origOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdin, stdout
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout = origIn, origOut
+		stdin.Close()
+		stdout.Close()
+	})
+
+	tmpDir = t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	ranMarker = filepath.Join(dir, "editor-ran")
+	// The stub drops the test binary's stdio before blocking: otherwise, on a
+	// regression, the orphaned sleep holds `go test`'s output pipe open and the
+	// package run waits the full 30s after the deadline has already failed it.
+	t.Setenv("VISUAL", writeStubEditor(t, dir, "touch \""+ranMarker+"\"\nexec </dev/null >/dev/null 2>&1\nsleep 30\n"))
+	t.Setenv("EDITOR", "")
+	return tmpDir, ranMarker
+}
+
+// runWithDeadline runs fn and fails the test if it has not returned within
+// noTerminalDeadline.
+func runWithDeadline(t *testing.T, fn func() int) int {
+	t.Helper()
+	done := make(chan int, 1)
+	go func() { done <- fn() }()
+	select {
+	case code := <-done:
+		return code
+	case <-time.After(noTerminalDeadline):
+		t.Fatalf("did not return within %v: the command is waiting on the editor", noTerminalDeadline)
+		return 0
+	}
+}
+
+// TestRunTasksReadWithoutATerminalPrintsTheBody pins the fix for `vp tasks read
+// X | grep` hanging silently: with no terminal, an editor never exits, so the
+// body must go straight to stdout with no editor and no temp copy.
+func TestRunTasksReadWithoutATerminalPrintsTheBody(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "piped-read", "")
+	_, want, err := v.GetTask("test-proj", "piped-read")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	tmpDir, ranMarker := withoutATerminal(t)
+
+	var out, errOut bytes.Buffer
+	code := runWithDeadline(t, func() int { return runTasksRead(v, "test-proj", "piped-read", &out, &errOut) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
+	}
+	if out.String() != want {
+		t.Errorf("stdout is not the task's exact bytes:\n--- got ---\n%s\n--- want ---\n%s", out.String(), want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("nothing belongs on stderr when printing the body, got %q", errOut.String())
+	}
+	if _, err := os.Stat(ranMarker); !os.IsNotExist(err) {
+		t.Errorf("the editor was started without a terminal (marker stat err = %v)", err)
+	}
+	if left, _ := os.ReadDir(tmpDir); len(left) != 0 {
+		t.Errorf("no temp copy may be made on the print path, found %v", left)
+	}
+}
+
+// TestRunTasksEditWithoutATerminalRefuses: `vp tasks edit` has no print
+// fallback — its contract is to change the task — so with no terminal it must
+// refuse promptly, name why, and point at the non-interactive route.
+func TestRunTasksEditWithoutATerminalRefuses(t *testing.T) {
+	v := testVault(t)
+	mkTask(t, v, "test-proj", "piped-edit", "")
+	_, before, err := v.GetTask("test-proj", "piped-edit")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	_, ranMarker := withoutATerminal(t)
+
+	var out, errOut bytes.Buffer
+	code := runWithDeadline(t, func() int { return runTasksEdit(v, "test-proj", "piped-edit", &out, &errOut) })
+	if code == cli.ExitOK {
+		t.Fatalf("exit = ExitOK, want a refusal; stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	es := errOut.String()
+	for _, need := range []string{"stdin and stdout are not a terminal", "vp_manage_task"} {
+		if !strings.Contains(es, need) {
+			t.Errorf("refusal must mention %q, got %q", need, es)
+		}
+	}
+	if out.Len() != 0 {
+		t.Errorf("a refusal must not print the body, got %q", out.String())
+	}
+	if _, err := os.Stat(ranMarker); !os.IsNotExist(err) {
+		t.Errorf("the editor was started without a terminal (marker stat err = %v)", err)
+	}
+	if _, after, err := v.GetTask("test-proj", "piped-edit"); err != nil || after != before {
+		t.Errorf("the task changed on a refused edit (err=%v)", err)
+	}
+}
+
 func TestRunTasksReadNoSuchTask(t *testing.T) {
 	v := testVault(t)
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "nope", &errOut); code != cli.ExitUser {
+	if code := runTasksRead(v, "test-proj", "nope", io.Discard, &errOut); code != cli.ExitUser {
 		t.Fatalf("exit = %d, want ExitUser", code)
 	}
 	if !strings.Contains(errOut.String(), "no such task: nope") {
@@ -1103,9 +1252,10 @@ func TestRunTasksReadAnnouncesDiscardBeforeTheEditorRuns(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "printf 'STUB-EDITOR-RAN\\n' >&2\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var code int
-	stream := captureStderr(t, func() { code = runTasksRead(v, "test-proj", "announced", os.Stderr) })
+	stream := captureStderr(t, func() { code = runTasksRead(v, "test-proj", "announced", io.Discard, os.Stderr) })
 	if code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, stream)
 	}
@@ -1151,9 +1301,10 @@ func TestRunTasksReadBoundsAPathologicalSlug(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "exit 0\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", slug, &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, "test-proj", slug, io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 
@@ -1251,9 +1402,10 @@ EOF
 `)
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	if code := runTasksRead(v, "test-proj", "done-one", &errOut); code != cli.ExitOK {
+	if code := runTasksRead(v, "test-proj", "done-one", io.Discard, &errOut); code != cli.ExitOK {
 		t.Fatalf("exit = %d, want ExitOK; stderr=%q", code, errOut.String())
 	}
 
@@ -1364,9 +1516,10 @@ func TestRunTasksReadReadOnlyCopyRefusesAPlainEditorWrite(t *testing.T) {
 	stub := readStub(t, dir, argvFile, "printf 'clobbered\\n' >> \"$1\"\n")
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", stub)
+	assumeTerminal(t)
 
 	var errOut bytes.Buffer
-	code := runTasksRead(v, "test-proj", "mode-guarded", &errOut)
+	code := runTasksRead(v, "test-proj", "mode-guarded", io.Discard, &errOut)
 
 	handed := handedPath(t, argvFile)
 	if _, err := os.Stat(handed); err == nil {
@@ -1415,6 +1568,7 @@ func TestTaskIsAnExactAliasOfTasks(t *testing.T) {
 			copyFile := filepath.Join(dir, "handed-copy.md")
 			t.Setenv("VISUAL", "")
 			t.Setenv("EDITOR", readStub(t, dir, argvFile, "cat \"$1\" > \""+copyFile+"\"\n"))
+			assumeTerminal(t)
 
 			reg, _, errOut := testRegistry()
 			if code := reg.Dispatch([]string{word, "read", "alias-target"}); code != cli.ExitOK {
