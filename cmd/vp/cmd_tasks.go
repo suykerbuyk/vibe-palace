@@ -755,7 +755,8 @@ func cmdTasksRead() *cli.Command {
 	return &cli.Command{
 		Name:     "tasks read",
 		Synopsis: "vp tasks read <slug> [--project P]",
-		Description: "Open a task's whole file in $VISUAL (else $EDITOR) for READING. Works on any " +
+		Description: "In a terminal, open a task's whole file in $VISUAL (else $EDITOR) for READING; " +
+			"piped or scripted, print it to stdout instead (see below). Works on any " +
 			"task in any state — active, iceboxed, done, cancelled, epic or story — because an " +
 			"archived body is exactly the record you most often want to look at. This command " +
 			"NEVER writes the vault: you are handed a throwaway copy, and anything you type in it " +
@@ -971,10 +972,11 @@ func runTasksRead(vault *storage.Vault, proj, slug string, out, errOut io.Writer
 		return cli.ExitSystem
 	}
 
-	// Told BEFORE the editor opens, on stderr: stdout carries outcomes, and a
-	// caller redirecting stdout still needs to see this. Most editors switch to
-	// the alternate screen buffer and wipe it immediately, which is why the temp
-	// FILENAME carries the same warning for the whole session.
+	// Told BEFORE the editor opens, on stderr, which is where every notice from
+	// this command goes. (A caller redirecting stdout never gets here: that is
+	// the no-terminal path above.) Most editors switch to the alternate screen
+	// buffer and wipe it immediately, which is why the temp FILENAME carries the
+	// same warning for the whole session.
 	fmt.Fprintf(errOut, "vp tasks read: opening %s (%s) READ-ONLY — this command never writes the vault\n",
 		slug, taskStateWord(meta))
 	if meta.Done {
