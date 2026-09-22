@@ -355,7 +355,12 @@ func TestVaultFlagRefusesNonexistentPath(t *testing.T) {
 // the CONFIGURED vault, so for a mutating command with --vault the named root
 // must be checked too. A copy stamped by a newer binary must refuse tidy and
 // commit even though the live vault is compatible, and must not be written.
-// Read-only status stays ungated, matching its registration.
+//
+// Every `vault` command taking --vault is driven AS REGISTERED by registerAll,
+// and each must gate the named root exactly when its registration marks it
+// mutates(): the read and transport commands (pull, push, sync, status) stay
+// ungated. A caller whose gating diverges from its registration fails here, and
+// so does a new --vault command with no row below.
 func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 	t.Setenv("VP_SURFACE_GATE", "")
 	live := setupVaultWithOrigin(t)
@@ -379,36 +384,123 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 		t.Fatal("copy is compatible, so the fixture measures nothing")
 	}
 
-	for _, tc := range []struct {
-		name string
-		cmd  func() *cli.Command
-		args []string
-	}{
-		{"tidy", cmdVaultTidy, []string{"--no-push"}},
-		{"commit", cmdVaultCommit, []string{"--paths", flagTestArtifact, "--message", "rehearse"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	// Arguments that get each command past its own validation to vaultRootFor.
+	// Every mutating row must leave copyDir untouched if the gate fires.
+	argsFor := map[string][]string{
+		"vault pull":   {"--dry-run"},
+		"vault push":   {"--dry-run"},
+		"vault sync":   {"--dry-run"},
+		"vault commit": {"--paths", flagTestArtifact, "--message", "rehearse"},
+		"vault tidy":   {"--no-push"},
+		"vault status": {"--no-fetch"},
+	}
+	const gateMsg = "this binary supports MCP surface"
+
+	family := commandsTakingVault(t, "vault")
+	var covered, mutating int
+	for _, cmd := range family {
+		covered++
+		args, ok := argsFor[cmd.Name]
+		if !ok {
+			t.Errorf("%q takes --vault but has no row in argsFor: add one so its surface gating is pinned", cmd.Name)
+			continue
+		}
+		if cmd.MutatesVault {
+			mutating++
+		}
+		t.Run(cmd.Name, func(t *testing.T) {
 			mkfile(t, copyDir, flagTestArtifact, "session\n")
 			before := gitHead(t, copyDir)
-			stdout, stderr, code := runVaultCmdCapturingBoth(t, tc.cmd(), append(tc.args, "--vault", copyDir)...)
-			if code != cli.ExitSystem {
-				t.Errorf("exit code = %d, want %d (surface fail-stop)\nstdout:%s\nstderr:%s", code, cli.ExitSystem, stdout, stderr)
+			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmd, append(args, "--vault", copyDir)...)
+			gated := code == cli.ExitSystem && strings.Contains(stderr, gateMsg)
+			if gated != cmd.MutatesVault {
+				t.Errorf("gated the newer-surface root = %v, registration MutatesVault = %v (exit %d)\nstdout:%s\nstderr:%s",
+					gated, cmd.MutatesVault, code, stdout, stderr)
 			}
-			if !strings.Contains(stderr, "surface") {
-				t.Errorf("refusal does not come from the surface gate; stderr:\n%s", stderr)
-			}
-			if got := gitHead(t, copyDir); got != before {
-				t.Errorf("an older binary wrote a newer-surface vault: HEAD %s -> %s", before, got)
+			if cmd.MutatesVault {
+				if got := gitHead(t, copyDir); got != before {
+					t.Errorf("an older binary wrote a newer-surface vault: HEAD %s -> %s", before, got)
+				}
 			}
 		})
 	}
+	// Controls: the registry walk found the family, and both sides of it.
+	if covered != len(argsFor) {
+		t.Errorf("found %d registered --vault commands, argsFor has %d rows", covered, len(argsFor))
+	}
+	if mutating == 0 || mutating == covered {
+		t.Errorf("%d of %d commands are mutating: the test no longer exercises both sides", mutating, covered)
+	}
+}
 
-	t.Run("status stays ungated", func(t *testing.T) {
-		_, stderr, code := runVaultCmdCapturingBoth(t, cmdVaultStatus(), "--no-fetch", "--vault", copyDir)
-		if code != cli.ExitOK {
-			t.Errorf("read-only status refused on a newer-surface copy: exit %d\nstderr:%s", code, stderr)
+// commandsTakingVault returns every registered "<group> ..." command that
+// declares a --vault flag. The group is the command's registered namespace
+// (vault, migrate), which is what separates the vault git family from the
+// migrate family: both declare --vault, with different help text.
+func commandsTakingVault(t *testing.T, group string) []*cli.Command {
+	t.Helper()
+	reg, _, _ := testRegistry()
+	var family []*cli.Command
+	reg.Each(func(cmd *cli.Command) {
+		if !strings.HasPrefix(cmd.Name, group+" ") {
+			return
+		}
+		for _, f := range cmd.Flags {
+			if f.Name == "--vault" {
+				family = append(family, cmd)
+				return
+			}
 		}
 	})
+	return family
+}
+
+// TestMigrateVaultFlagSurfaceGatesTheResolvedRoot: every `vp migrate` command
+// taking --vault can --apply to the root it resolves, and preRun's surfaceGate
+// checked only the CONFIGURED vault. Each must refuse a newer-surface root named
+// by --vault: exit ExitSystem with the surface gate's message. That refusal is
+// what this test proves; the fixture holds nothing any migration would rewrite,
+// so it does not show a write being stopped. The family is derived from the
+// registry, so a new migrate command with --vault is covered without editing
+// this test.
+func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
+	t.Setenv("VP_SURFACE_GATE", "")
+	live := setupTestVaultEnv(t)
+	// A committed git repo, so an ungated --apply passes the migrations' own
+	// git precondition and exits 0 instead of refusing for an unrelated reason:
+	// the exit code and message below then come from the surface gate alone.
+	newer, _ := newRepoWithOrigin(t)
+	stampDir := filepath.Join(newer, "Projects", "vibe-palace")
+	if err := os.MkdirAll(stampDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := surface.WriteStamp(stampDir, surface.MCPSurfaceVersion+1, "newer-binary"); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, newer, "add", "-A")
+	gitRun(t, newer, "commit", "-m", "stamped by a newer binary")
+
+	// Controls: the refusal must come from the named root, not the live vault.
+	if err := surface.CheckCompatible(live); err != nil {
+		t.Fatalf("live vault is not compatible, so the fixture measures nothing: %v", err)
+	}
+	if err := surface.CheckCompatible(newer); err == nil {
+		t.Fatal("named root is compatible, so the fixture measures nothing")
+	}
+
+	family := commandsTakingVault(t, "migrate")
+	if len(family) == 0 {
+		t.Fatal("no registered migrate command takes --vault, so the test measures nothing")
+	}
+	for _, cmd := range family {
+		t.Run(cmd.Name, func(t *testing.T) {
+			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmd, "--apply", "--vault", newer)
+			if code != cli.ExitSystem || !strings.Contains(stderr, "this binary supports MCP surface") {
+				t.Errorf("newer-surface --vault root not refused by the surface gate: exit %d, want %d\nstdout:%s\nstderr:%s",
+					code, cli.ExitSystem, stdout, stderr)
+			}
+		})
+	}
 }
 
 // TestEnforceSurfaceOnRoot pins the helper on its own terms: any resolved root,

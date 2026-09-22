@@ -116,6 +116,11 @@ func cmdMigrateTaskPreamble() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp migrate task-preamble: %v\n", err)
 				return cli.ExitUser
 			}
+			// preRun's surfaceGate checked only the CONFIGURED vault; this is
+			// the root this run will actually write, however it was resolved.
+			if code := enforceSurfaceOnRoot(root); code != cli.ExitOK {
+				return code
+			}
 			sum, err := runTaskPreambleMigration(root, fv.Get("--project"), fv.Bool("--apply"), os.Stdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate task-preamble: %v\n", err)
