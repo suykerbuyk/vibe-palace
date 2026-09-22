@@ -30,13 +30,13 @@ func shimFrontmatter(t *testing.T, rendered string) string {
 	return fm
 }
 
-// TestPersonaShimFrontmatterIsALabel pins the operator's ruling that a persona
-// is adopted only deliberately, over every shipped skill and every persona
-// target. Each rendered frontmatter must parse as strict YAML (a bare scalar
-// holding ": " does not, and a document that fails to parse leaves every key
-// in it to the host's fallback); its description must be the short label, not
-// the trigger text; and the Claude skill alone must carry
-// disable-model-invocation: true.
+// TestPersonaShimFrontmatterIsALabel pins the one-line label on every persona
+// target, for every shipped skill, and disable-model-invocation enforcement
+// on the Claude target only. Each rendered frontmatter must parse as strict
+// YAML (a bare scalar holding ": " does not, and a document that fails to
+// parse leaves every key in it to the host's fallback); its description must
+// be the short label, not the trigger text; and the Claude skill alone must
+// carry disable-model-invocation: true.
 func TestPersonaShimFrontmatterIsALabel(t *testing.T) {
 	items := embeddedSkillItems(t)
 	// Control: the shipped set, including the two skills whose labels hold
