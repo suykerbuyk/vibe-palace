@@ -356,7 +356,7 @@ func TestVaultFlagRefusesNonexistentPath(t *testing.T) {
 // must be checked too. A copy stamped by a newer binary must refuse tidy and
 // commit even though the live vault is compatible, and must not be written.
 //
-// Every command carrying vaultRootFlag is driven AS REGISTERED by registerAll,
+// Every `vault` command taking --vault is driven AS REGISTERED by registerAll,
 // and each must gate the named root exactly when its registration marks it
 // mutates(): the read and transport commands (pull, push, sync, status) stay
 // ungated. A caller whose gating diverges from its registration fails here, and
@@ -396,13 +396,7 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 	}
 	const gateMsg = "this binary supports MCP surface"
 
-	reg, _, _ := testRegistry()
-	var family []*cli.Command
-	reg.Each(func(cmd *cli.Command) {
-		if declaresFlag(cmd, vaultRootFlag) {
-			family = append(family, cmd)
-		}
-	})
+	family := commandsTakingVault(t, "vault")
 	var covered, mutating int
 	for _, cmd := range family {
 		covered++
@@ -439,15 +433,26 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 	}
 }
 
-// declaresFlag reports whether cmd declares want (by name and help, so the shared
-// vaultRootFlag is told apart from the migrate family's own --vault).
-func declaresFlag(cmd *cli.Command, want cli.FlagDef) bool {
-	for _, f := range cmd.Flags {
-		if f.Name == want.Name && f.Help == want.Help {
-			return true
+// commandsTakingVault returns every registered "<group> ..." command that
+// declares a --vault flag. The group is the command's registered namespace
+// (vault, migrate), which is what separates the vault git family from the
+// migrate family: both declare --vault, with different help text.
+func commandsTakingVault(t *testing.T, group string) []*cli.Command {
+	t.Helper()
+	reg, _, _ := testRegistry()
+	var family []*cli.Command
+	reg.Each(func(cmd *cli.Command) {
+		if !strings.HasPrefix(cmd.Name, group+" ") {
+			return
 		}
-	}
-	return false
+		for _, f := range cmd.Flags {
+			if f.Name == "--vault" {
+				family = append(family, cmd)
+				return
+			}
+		}
+	})
+	return family
 }
 
 // TestMigrateVaultFlagSurfaceGatesTheResolvedRoot: every `vp migrate` command
@@ -483,13 +488,7 @@ func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
 		t.Fatal("named root is compatible, so the fixture measures nothing")
 	}
 
-	reg, _, _ := testRegistry()
-	var family []*cli.Command
-	reg.Each(func(cmd *cli.Command) {
-		if strings.HasPrefix(cmd.Name, "migrate ") && declaresFlagNamed(cmd, "--vault") {
-			family = append(family, cmd)
-		}
-	})
+	family := commandsTakingVault(t, "migrate")
 	if len(family) == 0 {
 		t.Fatal("no registered migrate command takes --vault, so the test measures nothing")
 	}
@@ -502,16 +501,6 @@ func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
 			}
 		})
 	}
-}
-
-// declaresFlagNamed reports whether cmd declares a flag called name.
-func declaresFlagNamed(cmd *cli.Command, name string) bool {
-	for _, f := range cmd.Flags {
-		if f.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // TestEnforceSurfaceOnRoot pins the helper on its own terms: any resolved root,
