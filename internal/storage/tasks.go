@@ -1212,9 +1212,9 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	// touched. This lives here, not in the MCP handler, as defense in depth:
 	// the storage layer is the chokepoint every caller must pass through, so a
 	// future second caller cannot reintroduce an unvalidated body by forgetting
-	// to repeat the check. (vp_manage_task create is currently the only
-	// production caller; vp_carried_promote_to_task was the second until it was
-	// deleted.)
+	// to repeat the check. (vp_manage_task is currently the only production
+	// caller, through its create action and the tombstone its move action
+	// files.)
 	if err := validateTaskBody(content); err != nil {
 		return err
 	}
