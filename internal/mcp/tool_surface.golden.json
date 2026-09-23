@@ -369,7 +369,7 @@
     {
       "name": "vp_vault_split",
       "mutating": true,
-      "schema_sha256": "098ff9e5d7ddd3e257c67537e439d04c36090cff45904c9384a2908b83a2f128"
+      "schema_sha256": "aeef194369a352f1b6095f4e1b8fe73cdfb398db9b279a8aff539cd799cb2416"
     },
     {
       "name": "vp_vault_status",

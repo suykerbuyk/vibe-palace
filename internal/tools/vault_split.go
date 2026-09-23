@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -90,6 +91,25 @@ var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "commit-lo
 // It is storage.MachineLocalDirNames, the shared project-inventory rule, so
 // split, merge and rename prune the same directories.
 var splitPrunedDirs = storage.MachineLocalDirNames
+
+// splitDepartureRecords reports whether a vault-relative directory is
+// Audits/departures/, the tracked record of slugs that LEFT this vault
+// (package departure). It never travels, under include_audits or otherwise,
+// in a split or a merge.
+//
+// 🔴 A DEPARTURE RECORD IS A FACT ABOUT THE VAULT IT WAS WRITTEN IN. It says
+// "this slug left THIS vault, and went there". Copied into another vault it
+// is false: there, `old renamed to new` makes project.Departed("old") true
+// for a slug that was never in that vault, and redirects a write to a "new"
+// that is not there either. Excluding the directory entirely is the smaller
+// correct rule, and the alternative (carry only the records that point at a
+// travelling slug, as an alias) buys a redirect the destination can live
+// without: an absent record fails open to the git-history fallback, while a
+// wrong one refuses writes. Audit reports and the baseline, which name slugs
+// across the whole vault, still travel under include_audits as before.
+func splitDepartureRecords(vrel string) bool {
+	return vrel == departure.Dir
+}
 
 // splitSubtracted reports whether a vault-relative (slash-separated) path is in
 // the subtract set — hashed by nobody, copied by nobody.
@@ -171,6 +191,7 @@ type vaultSplitParams struct {
 	IncludeLearnings bool     `json:"include_learnings"`
 	IncludeAudits    bool     `json:"include_audits"`
 	ManifestSHA256   string   `json:"manifest_sha256"`
+	DepartureTo      string   `json:"departure_to"`
 }
 
 var vaultSplitSchema = json.RawMessage(`{
@@ -181,7 +202,8 @@ var vaultSplitSchema = json.RawMessage(`{
 		"destination": {"type": "string", "description": "Absolute host path of the new standalone vault. It must not resolve inside the bound vault. plan does not create it; apply refuses a destination that exists at all, because a pre-created directory is never stamped with the vault data format and would be born format 0."},
 		"include_learnings": {"type": "boolean", "description": "Include Knowledge/learnings/*.md in the manifest. Default false. Learnings carry no project field, so copy-none is the fail-closed default."},
 		"include_audits": {"type": "boolean", "description": "Include Audits/ in the manifest. Default false. Audit reports name slugs across the whole vault."},
-		"manifest_sha256": {"type": "string", "description": "The digest action \"plan\" returned. Required by apply, verify and purge. The manifest itself stays server-side: each of those actions re-derives it from the source and refuses unless the digest matches, so a source that changed after the plan was approved cannot be copied or deleted."}
+		"manifest_sha256": {"type": "string", "description": "The digest action \"plan\" returned. Required by apply, verify and purge. The manifest itself stays server-side: each of those actions re-derives it from the source and refuses unless the digest matches, so a source that changed after the plan was approved cannot be copied or deleted."},
+		"departure_to": {"type": "string", "description": "purge only, optional: a label naming the destination vault (for example its remote URL, once it has one) for the departure record purge writes for each slug, so a stale checkout that still names a split-out slug is told where it went. Never a host path: the record syncs to every host, so an absolute or ~ path is refused. At most 128 bytes of printable ASCII without < > & \" or \\. Omitted, the record says the destination was not recorded."}
 	},
 	"required": ["action", "slugs", "destination"]
 }`)
@@ -235,7 +257,12 @@ func VaultSplitTool(vault *storage.Vault) mcp.Tool {
 			"else — content both directions, allow-list membership by directory " +
 			"read, vault-global artifacts absent unless included, no remotes — " +
 			"and writes nothing. \"purge\" removes the source slug trees, and " +
-			"only after re-running verify itself. apply, verify and purge all " +
+			"only after re-running verify itself; it then writes one departure " +
+			"record per slug under Audits/departures/ (labelled by the optional " +
+			"departure_to), returned in departure_records for the caller to " +
+			"commit with the deletions, so a stale checkout naming a split-out " +
+			"slug is refused with a redirect instead of re-creating it. " +
+			"Audits/departures/ itself never travels. apply, verify and purge all " +
 			"require the manifest_sha256 that plan returned. Inclusion is an " +
 			"allow-list: an unknown slug is a refusal and there is no exclude " +
 			"parameter. Merging two vaults is not part of this tool.",
@@ -284,6 +311,12 @@ func vaultSplitHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// gains an action the day the schema is widened. vp_vault_merge is
 		// named in the design and is NOT here, which is why this switch has no
 		// merge arm to forget.
+		// departure_to labels the record purge writes; on any other action it
+		// would be silently ignored, and an ignored argument is a caller who
+		// thinks something happened that did not.
+		if p.DepartureTo != "" && p.Action != "purge" {
+			return nil, apperr.Caller(fmt.Errorf("departure_to applies only to action \"purge\", not %q", p.Action))
+		}
 		switch p.Action {
 		case "plan":
 			return vaultSplitPlan(vault, p)
@@ -649,7 +682,7 @@ func walkSplitGlobal(root string, p vaultSplitParams) ([]splitGlobalReport, []sp
 				return err
 			}
 			if d.IsDir() {
-				if splitPrunedDirs[d.Name()] {
+				if splitPrunedDirs[d.Name()] || splitDepartureRecords(vaultRel(root, fp)) {
 					return fs.SkipDir
 				}
 				return nil
