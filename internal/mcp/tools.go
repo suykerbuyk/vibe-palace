@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -415,6 +416,9 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 	if err := surface.EnforceFailStop(root); err != nil {
 		return "", err
 	}
+	if err := refuseDepartedProject(root, params); err != nil {
+		return "", err
+	}
 	// The write is going to happen. Advise, do not refuse.
 	probe := r.selfImageReplaced
 	if probe == nil {
@@ -424,6 +428,53 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 		return surface.StaleBinaryAdvisory(image), nil
 	}
 	return "", nil
+}
+
+// refuseDepartedProject is the departed-slug refusal for EVERY mutating tool,
+// in the one place both dispatch paths reach before a write: a tool whose
+// `project` (or `to_project`) names a project that LEFT this vault — renamed
+// or moved to another vault, per its departure record or, failing that, its
+// git history (project.Departed) — is refused with the redirect instead of
+// lazily re-creating Projects/<old>/.
+//
+// 🔴 ONE SITE, NOT A GATE PER TOOL. There is no storage-level choke point for
+// "a project tree is being created": atomicfile deliberately does not gate
+// (ADR-010), appenders stamp after writing, and there is no shared scaffolder.
+// This seam is where ADR-010 already puts the fail-stop, it sees the params of
+// every mutating call, and it replaced the two per-handler checks
+// vp_capture_session and vp_memory_harvest carried. The CLI writers are
+// covered where they resolve their slug (RequireKnownProject, the archive
+// helper) and the hook by its own stale-checkout skip.
+//
+// It keys on the parameter NAMES `project` and `to_project`, the convention
+// every project-taking tool follows — pinned by
+// tools.TestEveryMutatingToolNamesItsTargetProjectConventionally, which fails
+// on a mutating tool that names its target project any other way. A slug
+// derived later from `project_path` is not visible here; the vault writers
+// that derive one go through RequireKnownProject.
+//
+// Unparseable params are not this check's to judge (schema validation ran
+// first); a departed slug is a CALLER fault, named as one.
+func refuseDepartedProject(root string, params json.RawMessage) error {
+	if root == "" {
+		return nil
+	}
+	var p struct {
+		Project   string `json:"project"`
+		ToProject string `json:"to_project"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil
+	}
+	for _, s := range []string{p.Project, p.ToProject} {
+		if s == "" {
+			continue
+		}
+		if err := project.RefuseDeparted(root, s); err != nil {
+			return apperr.Caller(err)
+		}
+	}
+	return nil
 }
 
 // logStaleBinaryAdvisory records the advisory at WARN with fault="operational".

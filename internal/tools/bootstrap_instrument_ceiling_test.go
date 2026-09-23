@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
@@ -219,6 +221,12 @@ func worstCaseStopClass() BootstrapResult {
 	// while reporting a pass. The list that was supposed to catch the omission
 	// is gone; see boundedInstrumentKeys.
 	result.SurfaceMismatch = worstCaseSurfaceMismatch()
+
+	// The departed project, at its widest: a moved-to-vault label at the
+	// validator's own length cap (it contains no JSON-escaped character, so
+	// its bytes are its length).
+	d := worstCaseDeparture()
+	result.Departed = &DepartedProject{Source: d.Source, Kind: string(d.Kind), To: d.To, Date: d.Date}
 
 	// 🔴 THE SAMPLE IS DERIVED FROM vaultDirtSampleN, NEVER HAND-LISTED.
 	// Two literals sat here, so raising the constant 2 -> 5 grew the real
@@ -435,8 +443,23 @@ func worstCaseCommands() []commandSummary {
 // appends them. Order is delivery order — the alerts lead the directive, so the
 // LAST append is what a host cut reaches first — and the surface mismatch leads
 // because it is the only alert that says no mutating tool will run at all.
+// worstCaseDeparture is the widest departure bootstrap can report: a 64-byte
+// slug (the slug limit) moved to a vault named by a label at
+// departure.MaxLabelLen, by way of a rename.
+func worstCaseDeparture() project.Departure {
+	return project.Departure{
+		Slug:   strings.Repeat("s", 64),
+		Source: "record",
+		Kind:   departure.MovedToVault,
+		To:     strings.Repeat("v", departure.MaxLabelLen),
+		Date:   "2026-09-23",
+		Via:    []string{strings.Repeat("r", 64)},
+	}
+}
+
 func worstCaseStopAlerts() []string {
 	return []string{
+		departedMessage(worstCaseDeparture()),
 		worstCaseSurfaceMismatch().Message,
 		vaultDirtMessage(9),
 	}

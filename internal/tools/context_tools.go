@@ -52,6 +52,38 @@ import (
 //
 // Changing the order of this struct changes what survives truncation. See
 // TestBootstrapInstrumentsPrecedeBulk and TestBootstrapTruncatedPrefixIsDetectable.
+// DepartedProject is BootstrapResult.Departed: the project this bootstrap names
+// left the vault. Source is "record" (the departure record says where it went)
+// or "history" (git history says only that it existed; Kind and To are empty).
+type DepartedProject struct {
+	Source string `json:"source"`
+	Kind   string `json:"kind,omitempty"`
+	To     string `json:"to,omitempty"`
+	Date   string `json:"date,omitempty"`
+}
+
+// departedAlert is the Departed instrument and its directive line, or nil when
+// the named project is here (or has never been). It lives outside
+// assembleBootstrap because that function's `project` parameter shadows the
+// package.
+func departedAlert(vault *storage.Vault, slug string) (*DepartedProject, string) {
+	if vault == nil {
+		return nil, ""
+	}
+	d, gone := project.Departed(vault.Root, slug)
+	if !gone {
+		return nil, ""
+	}
+	return &DepartedProject{Source: d.Source, Kind: string(d.Kind), To: d.To, Date: d.Date}, departedMessage(d)
+}
+
+// departedMessage is the Departed instrument's directive line — the one
+// producer, which the ceiling fixture calls rather than paraphrasing.
+func departedMessage(d project.Departure) string {
+	return fmt.Sprintf("🔴 PROJECT DEPARTED: %q is not in this vault — %s. Every write naming %q is refused; "+
+		"to bring it back deliberately, run `vp init` in its checkout.", d.Slug, d.Redirect(), d.Slug)
+}
+
 type BootstrapResult struct {
 	Project string `json:"project"`
 
@@ -78,10 +110,23 @@ type BootstrapResult struct {
 	// for why that exception is earned.
 	Ranking *RankingReport `json:"ranking,omitempty"`
 
-	// ── STOP-CLASS INSTRUMENTS. SurfaceMismatch and VaultDirt are the two
-	// conditions that stop a session from doing its work rather than advising
-	// it, and they are the two that SUPPRESS the advisory block below. Both are
-	// computed unconditionally and can hold at once.
+	// ── STOP-CLASS INSTRUMENTS. Departed, SurfaceMismatch and VaultDirt are the
+	// three conditions that stop a session from doing its work rather than
+	// advising it, and they are the three that SUPPRESS the advisory block
+	// below. All are computed unconditionally and can hold at once.
+
+	// Departed reports that the PROJECT THIS CALL NAMES LEFT THE VAULT — renamed
+	// to another slug, or moved to another vault (project.Departed) — NIL WHEN
+	// THE PROJECT IS HERE, for the same reason the fields around it are.
+	//
+	// It is the first stop-class instrument because it is the most basic stop:
+	// the session is bootstrapping a project that no longer exists here, the
+	// payload below it is empty-ish for that reason, and every write for it is
+	// refused at the dispatch seam. Bounded on purpose: kind, where to, and
+	// when — the rename chain and the remedy ride in the directive line, and a
+	// moved-to-vault label is capped at departure.MaxLabelLen and contains no
+	// character JSON escapes.
+	Departed *DepartedProject `json:"departed,omitempty"`
 
 	// SurfaceMismatch reports that the VAULT IS AHEAD OF THIS BINARY — NIL WHEN
 	// COMPATIBLE, for the same reason Health and AuditStaleness are.
@@ -706,6 +751,13 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	//
 	// It is cheap enough for the hottest path in the system: four globs plus a
 	// stamp read per match, less than the audit-staleness check already here.
+	// A departed project FIRST: a stale checkout is the session most likely to
+	// be in trouble, and the one whose payload is otherwise nearly empty.
+	if dp, msg := departedAlert(vault, project); dp != nil {
+		result.Departed = dp
+		alerts = append(alerts, msg)
+	}
+
 	if err := surface.CheckCompatible(vault.Root); err != nil {
 		var ie *surface.IncompatibleError
 		if errors.As(err, &ie) {
@@ -807,7 +859,7 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// advisories below are SKIPPED, not computed-then-dropped, which also takes
 	// vplog.Summarize, VaultFetchAge and the audit staleness glob off the
 	// handshake on exactly the sessions that are already in trouble.
-	if result.SurfaceMismatch != nil || result.VaultDirt != nil {
+	if result.Departed != nil || result.SurfaceMismatch != nil || result.VaultDirt != nil {
 		// FrictionTrend is the one advisory computed earlier, as a byproduct of
 		// the session listing this payload already needed. Clearing it here is
 		// what keeps the gate ONE decision in ONE place: the alternative is a
@@ -1210,6 +1262,11 @@ func resolveBootstrapProject(explicit string, vault *storage.Vault, allowCwdDefa
 	detected, err := project.DetectProjectHighConfidence(cwd)
 	if err != nil {
 		return "", apperr.Caller(fmt.Errorf("project is required: %w", err))
+	}
+	if vault != nil {
+		if d, gone := project.Departed(vault.Root, detected); gone {
+			return "", apperr.Caller(fmt.Errorf("project is required: detected %q from cwd, but %s — pass project explicitly or call vp_list_projects", detected, d.Redirect()))
+		}
 	}
 	if !vaultProjectDirExists(vault, detected) {
 		return "", apperr.Caller(fmt.Errorf("project is required: detected %q from cwd but Projects/%s/ is absent from the vault — pass project explicitly, run vp init, or call vp_list_projects", detected, detected))

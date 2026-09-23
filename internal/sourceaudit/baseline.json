@@ -85,10 +85,6 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
-      "id": "uninvoked departure.List",
-      "reason": "STAGED, owned by task slug-departure-record-and-marker-redirect (F0), and TEMPORARY: F0 lands as two commits, and this commit (A1) adds the departure record's readers and writer while its first production caller of List — vp_list_projects reporting departed projects — is commit A2 of the same task. Not dead: it is exercised by internal/departure's tests, and A2 makes this entry STALE, so the gate itself demands its removal there. ADR-006 verdict: REPORT + DEFER to the next commit of the same unit."
-    },
-    {
       "id": "uninvoked mcp.KnowledgeURI",
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. The resource template IS registered so vibe-palace://knowledge/<project> resolves; no tool response ever hands one to a client. Its three former siblings here — CommandURI, SessionURI, SkillURI — were emitted by hoist-recovery-handles-above-bulk-across-the-surface and left this baseline; KnowledgeURI could NOT follow them, because it addresses a Knowledge markdown FILE while vp_get_knowledge returns KG TRIPLES. It is not a recovery handle for that tool's body, it is a pointer to a different document, so emitting it would have been a lie rather than a fix. Giving vp_get_knowledge a real hatch means paging its unbounded triple list, which is a design. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },

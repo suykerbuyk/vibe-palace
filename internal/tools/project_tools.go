@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
@@ -63,6 +65,20 @@ type projectDrift struct {
 	InProjects bool   `json:"in_projects"`
 }
 
+// projectDeparted is one project that left this vault, per its departure
+// record (package departure): renamed to To, or moved to another vault To
+// names (To may be empty — the destination was not recorded). Via lists the
+// intermediate slugs of a rename chain; Malformed says the record could not be
+// read, and the slug is departed all the same.
+type projectDeparted struct {
+	Slug      string   `json:"slug"`
+	Kind      string   `json:"kind"`
+	To        string   `json:"to"`
+	Date      string   `json:"date,omitempty"`
+	Via       []string `json:"via,omitempty"`
+	Malformed string   `json:"malformed,omitempty"`
+}
+
 // listProjectsHandler enumerates the UNION of both trees.
 //
 // It used to call ListProjects, which reads only palace/ — so it silently
@@ -96,6 +112,24 @@ func listProjectsHandler(vault *storage.Vault) mcp.HandlerFunc {
 		out := map[string]any{"projects": projects}
 		if len(drift) > 0 {
 			out["drift"] = drift
+		}
+		// Projects that LEFT this vault, with where they went (the rename chain
+		// resolved to its live end). Present only when there are any, like
+		// drift: a reader holding a stale slug finds its redirect here.
+		if gone := departure.List(vault.Root); len(gone) > 0 {
+			departed := make([]projectDeparted, 0, len(gone))
+			for _, rec := range gone {
+				d, ok := project.Departed(vault.Root, rec.Slug)
+				if !ok {
+					continue
+				}
+				departed = append(departed, projectDeparted{
+					Slug: d.Slug, Kind: string(d.Kind), To: d.To, Date: d.Date, Via: d.Via, Malformed: d.Malformed,
+				})
+			}
+			if len(departed) > 0 {
+				out["departed"] = departed
+			}
 		}
 		return out, nil
 	}
