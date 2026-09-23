@@ -188,6 +188,19 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 			continue
 		}
 
+		// A departure incoming onto work under the departed slug is refused
+		// BEFORE the heal pass or the merge touch anything: HEAD and the working
+		// tree stay exactly as they were. Later remotes are skipped for the same
+		// reason a conflict skips them — the host has to carry that work across
+		// first (see guardIncomingDepartures).
+		if err := guardIncomingDepartures(vaultPath, remote, branch); err != nil {
+			result.RemoteResults[remote] = err
+			for _, skipped := range remotes[i+1:] {
+				result.RemoteResults[skipped] = fmt.Errorf("skipped: %s carries a departure this host still has work under; carry that work across first", remote)
+			}
+			break
+		}
+
 		// Heal pass over the single dirty scan. The diff is per-remote (ref
 		// differs), but the candidate set is fixed; skip any path already healed
 		// on an earlier remote.

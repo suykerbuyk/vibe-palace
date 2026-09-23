@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // SyncResult reports a full vault sync run (classify → refuse-on-dirt → commit
@@ -133,6 +134,22 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 		return result, fmt.Errorf(
 			"refusing to sync: %d uncommitted non-artifact file(s) need review: %s",
 			len(result.GenuineDirt), strings.Join(result.GenuineDirt, ", "))
+	}
+
+	// 2b. Departure pre-flight, BEFORE the tidy commit below. A departure
+	// incoming onto this host's work under the departed slug must leave HEAD
+	// exactly as it was, and step 3 would otherwise commit first. It costs one
+	// extra fetch per remote (pullCore fetches again); a fetch failure here is
+	// left for pullCore to record.
+	branch := branchOrMain(vaultPath)
+	for _, remote := range remotes {
+		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote, branch); err != nil {
+			continue
+		}
+		if err := guardIncomingDepartures(vaultPath, remote, branch); err != nil {
+			result.Refused = true
+			return result, err
+		}
 	}
 
 	// 3. Commit the sweepable capture artifacts LOCALLY ONLY (push=false skips

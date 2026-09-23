@@ -618,6 +618,14 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 			continue
 		}
 
+		// Never rebase this host's work onto a departure of the project it is
+		// under: the push to this remote is skipped and the commit stays local
+		// (guardIncomingDepartures).
+		if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
+			result.RemoteResults[remote] = derr
+			continue
+		}
+
 		// Rebase the local capture commit onto the freshly-fetched remote tip.
 		// --autostash shelves any dirty tracked files (tidy deliberately leaves
 		// non-swept dirt in the tree) so the rebase can start, then re-applies
@@ -776,6 +784,16 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string) map[str
 		// fast-forwards. A fetch failure is fail-open (skip; the normal push loop
 		// retains its own fetch+rebase recovery).
 		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote); err != nil {
+			continue
+		}
+		// Never rebase this host's work onto a departure of the project it is
+		// under: the refusal is recorded like a conflict, so this remote's push
+		// is skipped and the new commit stays local (guardIncomingDepartures).
+		if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
+			if reconcileErrs == nil {
+				reconcileErrs = make(map[string]error, 1)
+			}
+			reconcileErrs[remote] = derr
 			continue
 		}
 		_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", ref)
