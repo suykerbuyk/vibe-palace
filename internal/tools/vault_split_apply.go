@@ -718,6 +718,12 @@ func splitLeakGateStamps(dest string) ([]string, error) {
 	return problems, nil
 }
 
+// splitPurgeAfterVerify is a TEST SEAM, nil in production: it is called after
+// purge's bind and verify have passed and before any tree is walked. That is
+// the window a concurrent writer must hit for its file to be absent from the
+// manifest purge bound.
+var splitPurgeAfterVerify func()
+
 // vaultSplitPurge removes the source slug trees, and only after proving the
 // destination holds them.
 //
@@ -751,6 +757,9 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 			"refusing to purge: the destination does not verify, so the source is still "+
 				"the only copy of this data\n%w", err)
 	}
+	if splitPurgeAfterVerify != nil {
+		splitPurgeAfterVerify()
+	}
 
 	// The compare-and-set guard for each file that travelled. Rows outside the
 	// slug trees — an included learning, an audit report — are in this map but
@@ -775,18 +784,41 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	// the manifest no longer binds and purge cannot be re-run. An absent tree is
 	// nothing to do (splitPurgeTree), so purge also tolerates the real trees
 	// being gone already.
-	var files, dirs int
-	var bytes int64
+	// 🔴 EVERY TREE IS COLLECTED AND CLASSIFIED BEFORE THE FIRST DELETION. A
+	// file that reached a slug tree after the bind above re-derived the
+	// manifest is in no manifest row, so it was never copied; deleting it is
+	// silent loss. Refusing only when the walk reaches it would be too late,
+	// because the trees walked before it would already be gone.
+	var trees []splitPurgeSet
+	var unaccounted []string
 	for _, s := range m.Slugs {
 		for _, tree := range []string{"palace/.local/embed-cache/" + s, "palace/" + s, "Projects/" + s} {
-			f, d, b, err := splitPurgeTree(vault.Root, tree, hashes)
+			set, err := splitPurgeCollect(vault.Root, tree)
 			if err != nil {
 				return nil, err
 			}
-			files += f
-			dirs += d
-			bytes += b
+			for _, rel := range set.files {
+				if hashes[rel] == "" && !splitSubtracted(rel) {
+					unaccounted = append(unaccounted, rel)
+				}
+			}
+			trees = append(trees, set)
 		}
+	}
+	if len(unaccounted) > 0 {
+		return nil, splitPurgeUnaccountedError(unaccounted)
+	}
+
+	var files, dirs int
+	var bytes int64
+	for _, set := range trees {
+		f, d, err := splitPurgeRemove(vault.Root, set, hashes)
+		if err != nil {
+			return nil, err
+		}
+		files += f
+		dirs += d
+		bytes += set.bytes
 	}
 
 	return &vaultSplitPurgeResult{
@@ -809,42 +841,48 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	}, nil
 }
 
-// splitPurgeTree removes one source slug tree: every regular file through
-// vaultfs.Delete, then every directory bottom-up through vaultfs.RemoveNoLock.
+// splitPurgeSet is one source slug tree as purge found it: every regular file
+// (vault-relative) and every directory (absolute), collected before anything is
+// removed from any tree.
+type splitPurgeSet struct {
+	files []string
+	dirs  []string
+	bytes int64
+}
+
+// splitPurgeCollect walks one source slug tree without changing it.
 //
 // A non-regular entry ANYWHERE in the tree refuses the whole purge, including
 // inside the machine-local subtrees plan prunes rather than scans. Plan may
 // ignore a symlink in an embed cache because that cache was never going to
 // travel; purge may not, because it is about to remove the directory containing
 // it and neither named primitive can classify what it would be removing.
-func splitPurgeTree(root, treeRel string, hashes map[string]string) (int, int, int64, error) {
+func splitPurgeCollect(root, treeRel string) (splitPurgeSet, error) {
+	var set splitPurgeSet
 	dir := filepath.Join(root, filepath.FromSlash(treeRel))
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Drift: this slug lives in only one of the two trees. Nothing to
 			// remove on this side, and that is not an error.
-			return 0, 0, 0, nil
+			return set, nil
 		}
-		return 0, 0, 0, fmt.Errorf("stat %s: %w", treeRel, err)
+		return set, fmt.Errorf("stat %s: %w", treeRel, err)
 	}
 	if !info.IsDir() {
-		return 0, 0, 0, fmt.Errorf(
+		return set, fmt.Errorf(
 			"%s is not a directory (mode %s): purge refuses it", treeRel, info.Mode().Type())
 	}
 
 	// Collect first, mutate second. A walk that deleted as it went would be
 	// mutating the tree it is enumerating, and the failure mode of that is a
 	// partial purge that reports success.
-	var fileRels []string
-	var dirAbs []string
-	var bytes int64
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
 		if d.IsDir() {
-			dirAbs = append(dirAbs, p)
+			set.dirs = append(set.dirs, p)
 			return nil
 		}
 		rel := vaultRel(root, p)
@@ -859,24 +897,29 @@ func splitPurgeTree(root, treeRel string, hashes map[string]string) (int, int, i
 					"RemoveNoLock is a recursive primitive and there is no third one",
 				rel, st.Mode().Type())
 		}
-		fileRels = append(fileRels, rel)
-		bytes += st.Size()
+		set.files = append(set.files, rel)
+		set.bytes += st.Size()
 		return nil
 	})
-	if err != nil {
-		return 0, 0, 0, err
-	}
+	return set, err
+}
 
+// splitPurgeRemove removes one collected tree: every regular file through
+// vaultfs.Delete, then every directory bottom-up through vaultfs.RemoveNoLock.
+// The caller has already proved that every file is accounted for.
+func splitPurgeRemove(root string, set splitPurgeSet, hashes map[string]string) (int, int, error) {
 	var files int
-	for _, rel := range fileRels {
-		// hashes[rel] is the compare-and-set guard for a file that travelled,
-		// and "" — no guard — for one the subtract set removed from the
-		// manifest (.surface, .local/**, commit-log.anchor,
-		// Projects/<slug>/config.toml). Those were never
-		// copied, so there is no destination hash to compare against; they are
-		// removed because the tree they live in is going away.
+	for _, rel := range set.files {
+		// Three classes, and the caller refused the third before any tree was
+		// touched. A manifest row is deleted under its hash, the compare-and-set
+		// guard for a file that travelled. A subtract-set file (.surface,
+		// .local/**, .vp-locks/**, commit-log.anchor, Projects/<slug>/config.toml)
+		// was excluded from the manifest by the same predicate, splitSubtracted,
+		// so it legitimately has no hash and is removed unguarded because the
+		// tree it lives in is going away. Anything else was written after the
+		// bind and never copied.
 		if _, derr := vaultfs.Delete(root, rel, hashes[rel]); derr != nil {
-			return files, 0, bytes, fmt.Errorf("purge %s: %w", rel, derr)
+			return files, 0, fmt.Errorf("purge %s: %w", rel, derr)
 		}
 		files++
 	}
@@ -885,13 +928,44 @@ func splitPurgeTree(root, treeRel string, hashes map[string]string) (int, int, i
 	// ordering by descending length removes every directory only after its
 	// contents. RemoveNoLock is os.Remove, which refuses a non-empty directory —
 	// so a miscount here fails loudly instead of removing something unexamined.
+	dirAbs := append([]string(nil), set.dirs...)
 	sort.Slice(dirAbs, func(i, j int) bool { return len(dirAbs[i]) > len(dirAbs[j]) })
 	var dirs int
 	for _, d := range dirAbs {
 		if rerr := vaultfs.RemoveNoLock(d); rerr != nil {
-			return files, dirs, bytes, fmt.Errorf("purge directory %s: %w", vaultRel(root, d), rerr)
+			return files, dirs, fmt.Errorf("purge directory %s: %w", vaultRel(root, d), rerr)
 		}
 		dirs++
 	}
-	return files, dirs, bytes, nil
+	return files, dirs, nil
+}
+
+// splitPurgeUnaccountedError is the refusal for files that are neither manifest
+// rows nor subtract-set members: bytes that reached a slug tree after purge
+// re-derived the manifest, and so were never copied to the destination.
+func splitPurgeUnaccountedError(rels []string) error {
+	sort.Strings(rels)
+	const shown = 20
+	var b strings.Builder
+	noun, verb := "files", "are"
+	if len(rels) == 1 {
+		noun, verb = "file", "is"
+	}
+	fmt.Fprintf(&b, "refusing to purge: %d %s under the purged slug trees %s not in the "+
+		"manifest this purge bound, so %s never copied to the destination:",
+		len(rels), noun, verb, map[bool]string{true: "it was", false: "they were"}[len(rels) == 1])
+	for i, r := range rels {
+		if i == shown {
+			fmt.Fprintf(&b, "\n  - … and %d more", len(rels)-shown)
+			break
+		}
+		fmt.Fprintf(&b, "\n  - %s", r)
+	}
+	b.WriteString("\nSomething wrote to these slugs after this purge re-derived the manifest " +
+		"(a capture, a task amend or a memory write). Nothing was deleted: the source and " +
+		"the destination are both as they were. Stop every writer to these slugs, then run " +
+		"plan, apply, verify and purge again into a fresh destination path; the current " +
+		"destination lacks these files, so it cannot verify against a new plan. Removing " +
+		"the old destination afterwards is optional cleanup.")
+	return apperr.Caller(errors.New(b.String()))
 }
