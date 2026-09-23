@@ -203,12 +203,66 @@ func splitCheckDestination(vaultRoot, dest string, mustExist bool) error {
 				"current-format bytes. Remove the host path, or choose another destination",
 			dest))
 	case errors.Is(err, os.ErrNotExist):
-		return nil
+		return splitRefuseNestedDestination(dest)
 	default:
 		// Anything other than "absent" — a permission error, a broken symlink
 		// component — leaves us unable to say the destination is absent, and
 		// that is exactly the state in which creating it is unsafe.
 		return apperr.Caller(fmt.Errorf("stat destination %q: %w", dest, err))
+	}
+}
+
+// splitRefuseNestedDestination refuses a not-yet-existing destination that
+// would be created inside another git work tree.
+//
+// 🔴 THE VAULT RECONCILER SKIPS GIT INIT FOR A NESTED VAULT, and rightly so for
+// config sync (tasks/done/config-sync-git-inits-a-vault-nested-in-another-
+// repository). For a split that skip is silent: the destination gets no
+// repository of its own, and verify's remote check then answers for the
+// enclosing one. So apply refuses first, using the same predicate,
+// storage.InspectVaultGit.
+//
+// The destination does not exist yet, and InspectVaultGit runs git inside the
+// path it is given, so it is asked about the nearest EXISTING ancestor. A
+// repository there, at its top level or below it, is a repository the
+// destination would be inside. A state git cannot resolve refuses too: the
+// scaffold needs a working git anyway, and "cannot tell" is not "not nested".
+func splitRefuseNestedDestination(dest string) error {
+	anc := filepath.Dir(filepath.Clean(dest))
+	for {
+		if _, err := os.Stat(anc); err == nil {
+			break
+		}
+		parent := filepath.Dir(anc)
+		if parent == anc {
+			return nil
+		}
+		anc = parent
+	}
+	state, gerr := storage.InspectVaultGit(anc)
+	switch state {
+	case storage.VaultNotGit:
+		return nil
+	case storage.VaultGitOK, storage.VaultGitNested:
+		top, err := storage.GitTopLevel(anc)
+		if err != nil || top == "" {
+			top = anc
+		}
+		return apperr.Caller(fmt.Errorf(
+			"destination %q is inside the git repository at %q: the destination would not "+
+				"get a repository of its own (the vault reconciler skips git init for a nested "+
+				"vault), so verify's remote check would answer for %q and a published split "+
+				"could land in the wrong repository. Choose a destination outside any git "+
+				"work tree", dest, top, top))
+	default:
+		reason := "git is unavailable"
+		if gerr != nil {
+			reason = gerr.Error()
+		}
+		return apperr.Caller(fmt.Errorf(
+			"cannot tell whether destination %q would be inside a git repository (%s, "+
+				"inspecting %q): split refuses rather than risk a destination without a "+
+				"repository of its own", dest, reason, anc))
 	}
 }
 
@@ -490,16 +544,33 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 	// destination is not a repository at all — which is precisely the state a
 	// swallowed git-init failure leaves behind. Treating that as an empty set
 	// would let the remote gate PASS on the one destination it exists to catch.
-	remotes, err := storage.ListRemotes(dest)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"list destination remotes: %w (this is a refusal, not an empty remote set: "+
-				"a destination that cannot answer `git remote` is not a repository)", err)
-	}
-	if len(remotes) > 0 {
+	//
+	// 🔴 AND A DESTINATION INSIDE ANOTHER WORK TREE ANSWERS `git remote` FOR THAT
+	// TREE. It then passes when the enclosing repository has no remotes (and
+	// purge deletes the source), or blames that repository's remotes on the
+	// destination. So the destination must be its own top level before its
+	// remotes mean anything; InspectVaultGit is the predicate config sync uses.
+	var remotes []string
+	if state, _ := storage.InspectVaultGit(dest); state == storage.VaultGitNested {
+		top, terr := storage.GitTopLevel(dest)
+		if terr != nil || top == "" {
+			top = "an enclosing repository"
+		}
 		problems = append(problems, fmt.Sprintf(
-			"destination has remote(s) %s: split configures none, so these were added "+
-				"outside the tool", strings.Join(remotes, ", ")))
+			"destination is not its own repository: git resolves it to the work tree at %s, "+
+				"so its remotes and history are that repository's, not the destination's", top))
+	} else {
+		remotes, err = storage.ListRemotes(dest)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list destination remotes: %w (this is a refusal, not an empty remote set: "+
+					"a destination that cannot answer `git remote` is not a repository)", err)
+		}
+		if len(remotes) > 0 {
+			problems = append(problems, fmt.Sprintf(
+				"destination has remote(s) %s: split configures none, so these were added "+
+					"outside the tool", strings.Join(remotes, ", ")))
+		}
 	}
 
 	if len(problems) > 0 {
