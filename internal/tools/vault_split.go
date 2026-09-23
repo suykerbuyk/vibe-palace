@@ -86,38 +86,23 @@ var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "commit-lo
 // split at all, so its contents are not this tool's business. Everything else
 // under an allow-listed tree IS scanned, and a non-regular file there refuses,
 // even when its own path would later be subtracted from the hash.
-var splitPrunedDirs = map[string]bool{".local": true, ".vp-locks": true}
+//
+// It is storage.MachineLocalDirNames, the shared project-inventory rule, so
+// split, merge and rename prune the same directories.
+var splitPrunedDirs = storage.MachineLocalDirNames
 
 // splitSubtracted reports whether a vault-relative (slash-separated) path is in
 // the subtract set — hashed by nobody, copied by nobody.
+//
+// 🔴 IT IS THE SHARED PROJECT-INVENTORY PREDICATE, NOT A SECOND COPY OF IT.
+// Everything that is not storage.ProjectContent (vault-bound stamps, the
+// retired per-project config, machine-local state) stays behind, for the
+// reasons above; storage.ClassifyProjectPath holds the rule, including the
+// depth-anchored config.toml match and the any-depth .surface and
+// commit-log.anchor matches, so a rename and a split can never disagree about
+// what a project is.
 func splitSubtracted(rel string) bool {
-	base := splitPathBase(rel)
-	if base == ".surface" || base == "commit-log.anchor" {
-		return true
-	}
-	// The one depth-anchored entry. The predicate is the same one vaultfs uses
-	// to refuse writes to this path, so the two cannot disagree about which
-	// file is meant; it cleans to the OS separator before splitting, so the
-	// slash-separated rel is safe on every platform.
-	if vaultfs.IsVaultProjectConfigPath(rel) {
-		return true
-	}
-	for _, comp := range strings.Split(rel, "/") {
-		if splitPrunedDirs[comp] {
-			return true
-		}
-	}
-	return false
-}
-
-// splitPathBase is filepath.Base for an already-slash-separated vault-relative
-// path. filepath.Base is separator-dependent, and every path in the manifest is
-// canonically slash-separated so the digest is identical on every platform.
-func splitPathBase(rel string) string {
-	if i := strings.LastIndex(rel, "/"); i >= 0 {
-		return rel[i+1:]
-	}
-	return rel
+	return storage.ClassifyProjectPath(rel) != storage.ProjectContent
 }
 
 // splitEntry is one file that will travel: its vault-relative slash path, the
