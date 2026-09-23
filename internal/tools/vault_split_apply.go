@@ -18,6 +18,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -119,8 +120,13 @@ type vaultSplitPurgeResult struct {
 	FilesRemoved   int      `json:"files_removed"`
 	DirsRemoved    int      `json:"dirs_removed"`
 	BytesRemoved   int64    `json:"bytes_removed"`
-	Notes          []string `json:"notes"`
-	Complete       bool     `json:"complete"`
+	// DepartureRecords are the Audits/departures/<slug>.json records this
+	// purge wrote, one per purged slug. They are left UNCOMMITTED, like the
+	// deletions, and belong in the same commit: committed alone they would
+	// claim a move another host has not seen happen.
+	DepartureRecords []string `json:"departure_records"`
+	Notes            []string `json:"notes"`
+	Complete         bool     `json:"complete"`
 }
 
 // splitBindManifest is the shared precondition of apply, verify and purge: the
@@ -812,6 +818,11 @@ var splitPurgeAfterVerify func()
 // generic writer — that every header field has exactly one typed writer — says
 // nothing about removing the file entirely.
 func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurgeResult, error) {
+	// The label is checked BEFORE anything is removed: once the trees are gone
+	// the manifest no longer binds and purge cannot be re-run with a better one.
+	if err := departure.ValidateLabel(p.DepartureTo); err != nil {
+		return nil, apperr.Caller(fmt.Errorf("departure_to: %w", err))
+	}
 	if err := splitCheckDestination(vault.Root, p.Destination, true); err != nil {
 		return nil, err
 	}
@@ -892,18 +903,44 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 		bytes += set.bytes
 	}
 
+	// 🔴 ONLY NOW, WITH EVERY TREE GONE, IS THE DEPARTURE TRUE. Written earlier
+	// it would claim a move a failed purge never finished, and with
+	// include_audits it would change Audits/ under a manifest that binds it.
+	// RecordDeparture itself refuses while Projects/<slug>/ still exists.
+	//
+	// A failure here cannot be undone by re-running purge (the trees are gone
+	// and the manifest no longer binds), so the error says exactly what is
+	// missing: the deletions stand, and the named slugs have no record — a
+	// stale checkout naming them falls back to the git-history refusal, which
+	// says the project is gone but not where.
+	var records []string
+	for _, s := range m.Slugs {
+		rel, err := vault.RecordDeparture(s, departure.MovedToVault, p.DepartureTo)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"purge removed every slug tree (%d files), but recording the departure of %q failed: %w. "+
+					"Records written before it: %v. Commit the deletions and those records; %q has no "+
+					"departure record, so a stale checkout naming it is refused from git history only",
+				files, s, err, records, s)
+		}
+		records = append(records, rel)
+	}
+
 	return &vaultSplitPurgeResult{
-		Action:         "purge",
-		Destination:    p.Destination,
-		Slugs:          m.Slugs,
-		ManifestSHA256: m.SHA256,
-		FilesRemoved:   files,
-		DirsRemoved:    dirs,
-		BytesRemoved:   bytes,
+		Action:           "purge",
+		Destination:      p.Destination,
+		Slugs:            m.Slugs,
+		ManifestSHA256:   m.SHA256,
+		FilesRemoved:     files,
+		DirsRemoved:      dirs,
+		BytesRemoved:     bytes,
+		DepartureRecords: records,
 		Notes: []string{
-			"Vault-global artifacts were not touched. Knowledge/, Audits/ and Templates/ " +
+			"Vault-global artifacts were not removed. Knowledge/, Audits/ and Templates/ " +
 				"do not partition by slug, so no part of them is derivable from this " +
 				"allow-list and purge removes none of it.",
+			"Purge ADDED one departure record per slug (departure_records). Commit them in the " +
+				"same commit as these deletions: that commit is the departure the records describe.",
 			"The split's git history stays in the source repository. Purge removes files; " +
 				"it does not rewrite history, and the destination was born as a fresh " +
 				"repository with none.",

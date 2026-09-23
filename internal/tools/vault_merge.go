@@ -703,7 +703,9 @@ func mergeWalkClass(root, rel string, included bool) ([]splitEntry, error) {
 			return err
 		}
 		if d.IsDir() {
-			if splitPrunedDirs[d.Name()] {
+			// A departure record describes the SOURCE vault's history; in the
+			// destination it would be false (see splitDepartureRecords).
+			if splitPrunedDirs[d.Name()] || splitDepartureRecords(vaultRel(root, p)) {
 				return fs.SkipDir
 			}
 			return nil
