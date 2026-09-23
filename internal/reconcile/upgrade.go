@@ -100,18 +100,8 @@ func applyUpgradeHostLocal(configPath string, target upgradeTarget) (int, error)
 		return 0, nil
 	}
 
-	backupPath := configPath + ".bak"
-	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
-		return 0, fmt.Errorf("create backup: %w", err)
-	}
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(upgraded), 0o644); err != nil {
-		_ = os.Remove(tmpPath)
-		return 0, fmt.Errorf("write temp: %w", err)
-	}
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return 0, fmt.Errorf("rename: %w", err)
+	if _, err := storage.WriteHostLocalWithBackup(configPath, data, []byte(upgraded)); err != nil {
+		return 0, err
 	}
 	// Kept, and kept as a no-op: ResolveStampDir("", ...) yields no stamp dir, so
 	// StampForPath returns early. Retaining the call keeps the "every write site
