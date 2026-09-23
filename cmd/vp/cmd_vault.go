@@ -1013,7 +1013,7 @@ func cmdVaultMove() *cli.Command {
 	return &cli.Command{
 		Name:        "vault move",
 		Synopsis:    "vp vault move <from> <to> [--json]",
-		Description: "Rename a vault-relative file. Refuses to overwrite an existing destination and '.git' paths. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
+		Description: "Rename a vault-relative file. Regular files only: refuses a directory or a symlink as the source. Refuses to overwrite an existing destination and '.git' paths. Binds the GLOBAL vault_path, not a cwd .vibe-palace.toml override; the vault acted on is reported on stderr and in --json.",
 		Flags:       vaultMoveFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault move old.md new.md", Comment: "Rename a file"},

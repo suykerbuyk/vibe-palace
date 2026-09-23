@@ -42,6 +42,11 @@ var (
 	// wraps fs.ErrNotExist via errors.Join in the constructing call site.
 	ErrFileNotFound = errors.New("vaultfs: file not found")
 
+	// ErrNotRegularFile is returned by Move when the source is anything but a
+	// regular file: a directory, a symlink (dangling or not), a device, a FIFO
+	// or a socket. Move renames one file; it never moves a tree or a link.
+	ErrNotRegularFile = errors.New("vaultfs: not a regular file")
+
 	// ErrShaConflict is returned by compare-and-set write/edit/delete when
 	// the file's current SHA-256 does not match the caller-supplied
 	// expected_sha256.

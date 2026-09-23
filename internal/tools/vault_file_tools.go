@@ -350,7 +350,8 @@ func VaultMoveTool(vault *storage.Vault) mcp.Tool {
 		Name:     "vp_vault_move",
 		Mutating: true,
 		Description: "Rename a vault-relative file from from_path to to_path. " +
-			"Returns {moved}. Refuses to overwrite an existing destination. " +
+			"Returns {moved}. Regular files only: refuses a directory or a symlink " +
+			"as the source. Refuses to overwrite an existing destination. " +
 			"Refuses '.git' paths on either endpoint. Refuses same-source-and-" +
 			"destination (caller bug). Parent directories on the destination " +
 			"side are created implicitly.",

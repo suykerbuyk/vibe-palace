@@ -376,8 +376,9 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	if filepath.Clean(fromPath) == filepath.Clean(toPath) {
 		return MoveResult{}, fmt.Errorf("vaultfs: move source and destination are the same path: %s", fromPath)
 	}
-	srcAbs, err := ResolveSafePath(vaultPath, fromPath)
-	if err != nil {
+	// Containment of the fully resolved source; moveSourceLeaf below then
+	// inspects the entry itself.
+	if _, err := ResolveSafePath(vaultPath, fromPath); err != nil {
 		return MoveResult{}, err
 	}
 	dstAbs, err := ResolveSafePath(vaultPath, toPath)
@@ -392,13 +393,14 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 		return MoveResult{}, fmt.Errorf("vaultfs: lock %s: %w", toPath, lerr)
 	}
 	defer release()
-	if _, statErr := os.Stat(srcAbs); statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return MoveResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, fromPath)
-		}
-		return MoveResult{}, fmt.Errorf("vaultfs: stat %s: %w", fromPath, statErr)
+	srcLeaf, err := moveSourceLeaf(vaultPath, fromPath)
+	if err != nil {
+		return MoveResult{}, err
 	}
-	if _, statErr := os.Stat(dstAbs); statErr == nil {
+	// Lstat, never Stat: the dst check must see a dangling symlink as the
+	// occupant it is. Stat follows it, reports "absent", and the rename below
+	// silently replaces the link.
+	if _, statErr := os.Lstat(dstAbs); statErr == nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: move destination %s already exists", toPath)
 	} else if !errors.Is(statErr, fs.ErrNotExist) {
 		return MoveResult{}, fmt.Errorf("vaultfs: stat %s: %w", toPath, statErr)
@@ -411,8 +413,70 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	//
 	// The refuse-existing-destination rule is the stat above, not the sink:
 	// RenameNoLock is os.Rename and would happily replace the destination.
-	if err := RenameNoLock(srcAbs, dstAbs); err != nil {
+	if err := RenameNoLock(srcLeaf, dstAbs); err != nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: rename %s -> %s: %w", fromPath, toPath, err)
 	}
 	return MoveResult{VaultBinding: bind(vaultPath), Moved: true}, nil
+}
+
+// moveSourceLeaf returns the absolute path of Move's source ENTRY — its parent
+// symlink-resolved, its last element NOT — and refuses anything but a regular
+// file there.
+//
+// 🔴 MOVE RENAMES ONE REGULAR FILE, AND NOTHING ELSE. ResolveSafePath follows
+// the whole path, so Stat-ing its answer asks the wrong question twice over:
+//
+//   - A DIRECTORY passes Stat, and os.Rename moves the whole tree. That is how
+//     `vp vault move Projects/a Projects/b` renamed a project with no
+//     reconciliation (palace/a/ left behind, the embed cache left to be reaped),
+//     and how `Projects/a/tasks` — three segments, under IsTaskFilePath's four —
+//     carried every task past the task-file gate.
+//   - A SYMLINK is resolved to its target, so the rename moves the TARGET and
+//     leaves a dangling link. Through a symlinked directory it also reaches a
+//     task file under a path the lexical task gate never saw.
+//
+// So the leaf is Lstat-ed, and the task gate is re-asked on the vault-relative
+// path the parent actually resolves to. Delete already refuses directories
+// (see Delete); this brings Move to the same bar, and further, because a
+// rename is not a removal.
+func moveSourceLeaf(vaultPath, fromPath string) (string, error) {
+	absVault, err := filepath.EvalSymlinks(vaultPath)
+	if err != nil {
+		return "", fmt.Errorf("vaultfs: resolve vault root: %w", err)
+	}
+	joined := filepath.Join(absVault, fromPath)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(joined))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, fromPath)
+		}
+		return "", fmt.Errorf("vaultfs: resolve %s: %w", fromPath, err)
+	}
+	if !pathIsUnder(parent, absVault) {
+		return "", fmt.Errorf("%w: parent of %q escapes vault", ErrSymlinkEscape, fromPath)
+	}
+	leaf := filepath.Join(parent, filepath.Base(joined))
+	info, err := os.Lstat(leaf)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, fromPath)
+		}
+		return "", fmt.Errorf("vaultfs: stat %s: %w", fromPath, err)
+	}
+	switch mode := info.Mode(); {
+	case mode.IsDir():
+		return "", apperr.Caller(fmt.Errorf("%w: %s is a directory. vault move renames one regular file: "+
+			"move files one at a time; to move a task use vp_manage_task action=move; "+
+			"to rename a project use `vp migrate project-slug`", ErrNotRegularFile, fromPath))
+	case mode&fs.ModeSymlink != 0:
+		return "", apperr.Caller(fmt.Errorf("%w: %s is a symlink. vault move does not follow or move links; "+
+			"move the file it points at by its own path", ErrNotRegularFile, fromPath))
+	case !mode.IsRegular():
+		return "", apperr.Caller(fmt.Errorf("%w: %s is not a regular file (%s); vault move renames regular files only",
+			ErrNotRegularFile, fromPath, mode.Type()))
+	}
+	if rel, err := filepath.Rel(absVault, leaf); err == nil && IsTaskFilePath(rel) {
+		return "", taskPathRefusal(filepath.ToSlash(rel))
+	}
+	return leaf, nil
 }
