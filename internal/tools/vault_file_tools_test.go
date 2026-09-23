@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,6 +201,23 @@ func TestVaultMove(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(vault.Root, "dst/dst.md"))
 	if string(got) != "data" {
 		t.Errorf("content = %q", got)
+	}
+}
+
+// The MCP half of Move's regular-file rule (the CLI half is
+// TestVaultCLIMoveRefusesADirectory): vp_vault_move must refuse a directory
+// through the same vaultfs.Move, not rename the tree.
+func TestVaultMoveRefusesADirectory(t *testing.T) {
+	vault := newVaultRoot(t)
+	mustWrite(t, vault, "Projects/a/sessions/s.md", "s")
+
+	p, _ := json.Marshal(map[string]any{"from_path": "Projects/a", "to_path": "Projects/b"})
+	_, err := VaultMoveTool(vault).Handler(context.Background(), p)
+	if !errors.Is(err, vaultfs.ErrNotRegularFile) {
+		t.Fatalf("want vaultfs.ErrNotRegularFile, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault.Root, "Projects/a/sessions/s.md")); err != nil {
+		t.Errorf("the source tree must be untouched: %v", err)
 	}
 }
 
