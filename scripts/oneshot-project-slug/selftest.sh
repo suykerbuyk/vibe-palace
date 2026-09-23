@@ -47,7 +47,7 @@ TO=qa-metabuild-system
 # Fixture-sized floors. The defaults are the live figures, so they must be
 # lowered here; every other rule is exactly the one that runs live.
 export SLUG_FLOOR_FROM_TRACKED=1 SLUG_FLOOR_DRAWERS=1 SLUG_FLOOR_KG_FILES=1 SLUG_FLOOR_CACHE_FROM=1 \
-       SLUG_FLOOR_ROWS=1 SLUG_FLOOR_TOTAL=1 SLUG_FLOOR_AUDIT_LINES=1 SLUG_FLOOR_CLASS=1
+       SLUG_FLOOR_TOTAL=1 SLUG_FLOOR_AUDIT_LINES=1 SLUG_FLOOR_CLASS=1
 
 ok=0 bad=0
 pass() { ok=$((ok + 1)); printf 'SELFTEST ok   %s\n' "$1"; }
@@ -131,6 +131,17 @@ inject() {  # $1 name, $2 stage (before|after), $3 shell snippet, $4 checker, $5
 
 inject c1t-missing-session after 'rm vault/Projects/'"$TO"'/sessions/2026-08-22-0f0d1eb5-02.md && git -C vault commit -q -am drop' census_a "CENSUS FAIL"
 inject c3-old-identifier after 'printf "\nproject: '"$FROM"'\n" >> vault/Projects/'"$TO"'/resume.md && git -C vault commit -q -am leak' census_a "CENSUS FAIL"
+# The C3 ruling: the accepted[] entries must be rewritten and the reason prose
+# must NOT be, so a prose edit after the migration has to fail the census.
+inject c3-baseline-prose-edited after 'python3 - <<EOF
+import json,pathlib
+p=pathlib.Path("vault/Audits/baseline.json")
+d=json.loads(p.read_text())
+r=d["dimensions"]["archive-roundtrip"]
+r["reason"]=r["reason"].replace("Projects/'"$FROM"'/","Projects/'"$TO"'/")
+p.write_text(json.dumps(d,indent=2)+"\n")
+EOF
+git -C vault commit -q -am prose' census_a "CENSUS FAIL"
 inject c6-kg-changed after 'printf "{}\n" >> vault/palace/'"$TO"'/kg/entities.jsonl && git -C vault commit -q -am kg' census_a "CENSUS FAIL"
 inject c2-extra-commit after 'git -C vault commit -q --allow-empty -m interloper' census_a "CENSUS FAIL"
 inject warm-missing-vector before 'rm "$(ls vault/palace/.local/embed-cache/'"$FROM"'/*.vec | head -1)"' warm_check "CACHE COLD"
@@ -148,12 +159,30 @@ git -C vault commit -q -am drift' parity_check "PARITY FAIL"
 # re-embeds it: the run creates a vector that is not the sanctioned stray one.
 inject parity-unexpected-embed after 'rm "$(ls vault/palace/.local/embed-cache/'"$TO"'/note.*-03.c0.vec | head -1)"' parity_check "PARITY FAIL"
 
+# imp2 round-4 SHOULD-FIX 2: the two checks added in the last rounds need
+# their own injections, or "every check can fail" is a claim about the others.
+# C4's second direction: a finding that DISAPPEARS between B and A.
+inject c4-audit-finding-disappeared after 'python3 - <<EOF
+import json,pathlib
+p=pathlib.Path("census-B.json"); d=json.loads(p.read_text())
+d["audit"]["lines"].append("- `Projects/'"$FROM"'/tasks/ghost.md` \u2014 a finding that will vanish")
+p.write_text(json.dumps(d,indent=1))
+EOF' census_a "CENSUS FAIL"
+# F2: an A query that comes back shallower than its own B1 baseline.
+expect "parity fails when a query returns fewer rows than B1" 1 "after dropping strays, B1 measured" -- \
+  env SLUG_SELFTEST_TRUNCATE_A=1 XDG_CONFIG_HOME="$G/xdg" "$here/parity.sh" --vault "$G/vault" --b1 "$G/b1.json"
+
 # The script-layer pins: a check that cannot see the right vault must refuse,
 # and a census measured without its MCP inputs must FAIL, not skip (C7).
 expect "parity refuses a vault vp does not resolve" 2 "not the vault under test" -- \
   env XDG_CONFIG_HOME="$DIR/other/xdg" "$here/parity.sh" --vault "$G/vault" --b1 "$G/b1.json"
 expect "census A refuses when the MCP inputs were not measured" 1 "were not measured" -- \
   env XDG_CONFIG_HOME="$G/xdg" bash -c 'python3 "$0" measure --vault "$1/vault" --profile rehearsal --phase A --out "$1/census-A-nomcp.json" --no-mcp --no-audit >/dev/null && python3 "$0" verify --b "$1/census-B.json" --a "$1/census-A-nomcp.json" --counts "$1/counts.json"' "$here/slugcheck.py" "$G"
+
+# F3: a query that returns nothing is broken, and the baseline must say so.
+# It runs against the UNMIGRATED second fixture, which still has both slugs.
+expect "parity baseline refuses a query that returns 0 rows" 1 "the query is broken" -- \
+  env SLUG_SELFTEST_EMPTY_QUERY=1 XDG_CONFIG_HOME="$B2/xdg" "$here/parity.sh" --baseline --vault "$B2/vault" --counts "$B2/counts.json" --out "$B2/b1-broken.json"
 
 # A census A measured against the wrong B must fail, not pass quietly.
 expect "census A against a foreign B fails" 1 "CENSUS FAIL" -- env XDG_CONFIG_HOME="$G/xdg" "$here/census.sh" --profile rehearsal --phase A --vault "$G/vault" --b "$B2/census-B.json" --counts "$G/counts.json" --out "$G/census-A2.json"
@@ -166,6 +195,17 @@ if [ "$QUICK" = 0 ]; then
   RF="$DIR/fixture-source"
   build "$RF" >/dev/null
   cp "$PLAN" "$DIR/plan.md"
+  # The rehearsal refuses before it copies anything: a RAM-backed root, and a
+  # space requirement it cannot meet. Both were learned the hard way — the
+  # first R-dev attempt filled a tmpfs with 21 GB of copies (E1, E2).
+  expect "rehearsal refuses a tmpfs copy root" 1 "RAM-backed" -- \
+    "$here/rehearsal.sh" --r /dev/shm/slug-selftest-tmpfs-probe --source "$RF/vault" --project-repo "$RF/project-repo" --plan "$DIR/plan.md"
+  # The space refusal needs a root on a REAL filesystem, or the tmpfs refusal
+  # above fires first; $HOME is the one place we know is not RAM-backed.
+  SPACE_ROOT=$(mktemp -d "$HOME/.slug-selftest-space-XXXXXX")
+  expect "rehearsal refuses when the space is not there" 1 "free and this run needs" -- \
+    env SLUG_REHEARSAL_EXTRA_KB=999999999 "$here/rehearsal.sh" --r "$SPACE_ROOT" --source "$RF/vault" --project-repo "$RF/project-repo" --plan "$DIR/plan.md"
+  rm -rf "$SPACE_ROOT"
   expect "rehearsal H1-H12 passes on the fixture" 0 "REHEARSAL PASS" -- \
     env SLUG_DRILL_N_A=1 SLUG_DRILL_N_B=3 "$here/rehearsal.sh" --r "$DIR/R" --source "$RF/vault" \
         --project-repo "$RF/project-repo" --plan "$DIR/plan.md"

@@ -1184,6 +1184,79 @@ func SlugGuard(live bool, procDir string, attest bool) error {
 }
 
 // ---------------------------------------------------------------------------
+// The free-space precondition (E3).
+
+// slugFreeSpace is a TEST SEAM: the free space on the filesystem holding a
+// path. Tests point it at a tiny number to prove the refusal fires.
+var slugFreeSpace = slugFreeBytes
+
+// slugSameDevice is a TEST SEAM: whether two paths share a filesystem. Tests
+// force it false to exercise the journal-side budget, which on this host is
+// zero because $W and the vault are both on /home.
+var slugSameDevice = sameDevice
+
+// slugSpaceSlack is what the run needs beyond the bytes it rewrites: git
+// objects for three commits, the index, and the atomicfile temporaries.
+const slugSpaceSlack = 64 << 20
+
+// slugMovedBytes is the size of every file the migration moves. It is a
+// deliberate OVER-estimate of what the run writes: K2 rewrites a subset of
+// those files (about 35 MiB of the 178 MiB moved on the live vault), atomicfile
+// writes one temporary at a time, and git's new blobs are of the same order as
+// the rewritten bytes. Doubling the moved size therefore demands roughly 5x
+// what the run needs, in the safe direction, and stays a single cheap stat
+// walk rather than a second pass over the rewrite classes.
+//
+// A file it cannot stat is an error, not a zero: a requirement that quietly
+// shrank because a tree was unreadable is not a measurement (imp3 R4-N1).
+func slugMovedBytes(root string, p *SlugPlan) (int64, error) {
+	var n int64
+	for _, mv := range p.k1Moves {
+		st, err := os.Stat(filepath.Join(root, filepath.FromSlash(mv.Src)))
+		if err != nil {
+			return 0, fmt.Errorf("cannot measure %s for the free-space check: %w", mv.Src, err)
+		}
+		n += st.Size()
+	}
+	return n, nil
+}
+
+// slugCheckSpace refuses up front when the filesystem cannot hold what the run
+// is about to write. A migration that meets ENOSPC halfway through is the one
+// failure the journal has never been rehearsed against: git may have committed
+// K0 and K1, the cache may be half renamed, and the operator is left deciding
+// whether a partial write is worse than a rollback that also cannot write.
+// Refusing before the first byte costs nothing and removes that state.
+//
+// It reports what it computed either way, so "there was room" is a measurement
+// in the log rather than an assumption.
+func slugCheckSpace(what, path string, need int64, log io.Writer) error {
+	free, ok := slugFreeSpace(path)
+	if !ok {
+		slugLog(log, "space: %s needs %s on %s; free space could not be measured on this platform, continuing\n",
+			what, slugBytes(need), path)
+		return nil
+	}
+	slugLog(log, "space: %s needs %s on %s, %s free\n", what, slugBytes(need), path, slugBytes(int64(free)))
+	if int64(free) < need {
+		return fmt.Errorf("refusing: %s needs %s free on %s and there is %s; free space or move the run",
+			what, slugBytes(need), path, slugBytes(int64(free)))
+	}
+	return nil
+}
+
+func slugBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MiB", float64(n)/float64(1<<20))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The journal.
 
 // SlugJournal records the operations git cannot undo. Each line is fsynced
@@ -1949,6 +2022,22 @@ func ApplyProjectSlugMigration(o SlugApplyOptions) (*SlugApplyResult, error) {
 	if err := SlugGuard(live, o.ProcDir, false); err != nil {
 		return nil, err
 	}
+	moved, err := slugMovedBytes(root, plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := slugCheckSpace("the migration", root, 2*moved+slugSpaceSlack, o.Log); err != nil {
+		return nil, err
+	}
+	// The apply runs the cache step in process, and that step's rm-vec saves
+	// land beside the journal. RunSlugCachePhase budgeted this and the apply
+	// did not, which made the path RB7 actually runs the weaker of the two
+	// (imp2 round-4 SHOULD-FIX 1).
+	if need := slugJournalSideBytes(root, from, o.JournalPath); need > 0 {
+		if err := slugCheckSpace("the migration's saved copies", filepath.Dir(o.JournalPath), need, o.Log); err != nil {
+			return nil, err
+		}
+	}
 	if err := SlugPreCommitCheck(root, head, nil); err != nil {
 		return nil, err
 	}
@@ -2285,6 +2374,17 @@ func RunSlugCachePhase(root, from, to, journalPath, procDir, home string, attest
 	if slugExists(root, slugCacheRel(to)+"/"+slugCacheMarker) {
 		return SlugCacheResult{NothingToDo: true}, nil
 	}
+	// The cache step renames within the vault, so the vault needs only slack.
+	// The journal's deleted/ copies are renames too when the journal shares the
+	// vault's filesystem, and full copies when it does not.
+	if err := slugCheckSpace("the cache step", root, slugSpaceSlack, log); err != nil {
+		return SlugCacheResult{}, err
+	}
+	if need := slugJournalSideBytes(root, from, journalPath); need > 0 {
+		if err := slugCheckSpace("the cache step's saved copies", filepath.Dir(journalPath), need, log); err != nil {
+			return SlugCacheResult{}, err
+		}
+	}
 	j, err := OpenSlugJournal(journalPath, root)
 	if err != nil {
 		return SlugCacheResult{}, err
@@ -2303,6 +2403,39 @@ func slugRefuseStaleMarker(root, from, to string) error {
 			slugCacheRel(to)+"/"+slugCacheMarker, slugCacheRel(from))
 	}
 	return nil
+}
+
+// slugJournalSideBytes is what the journal directory must hold: nothing when
+// it shares the vault's filesystem (rm-vec renames), and the whole source
+// cache when it does not (rm-vec copies).
+func slugJournalSideBytes(root, from, journalPath string) int64 {
+	if slugSameDevice(root, filepath.Dir(journalPath)) {
+		return 0
+	}
+	var n int64
+	dir := filepath.Join(root, filepath.FromSlash(slugCacheRel(from)))
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				n += info.Size()
+			}
+		}
+		return nil
+	})
+	return n + slugSpaceSlack
+}
+
+// sameDevice reports whether two paths sit on one filesystem. It answers false
+// when it cannot tell, which is the conservative direction: the caller then
+// budgets for a copy that may turn out to be a rename.
+func sameDevice(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	da, db := slugDeviceOf(sa), slugDeviceOf(sb)
+	return da != 0 && da == db
 }
 
 func slugCacheStep(root, from, to string, j *SlugJournal) (SlugCacheResult, error) {
