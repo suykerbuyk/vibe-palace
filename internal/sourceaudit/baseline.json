@@ -85,6 +85,10 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked departure.List",
+      "reason": "STAGED, owned by task slug-departure-record-and-marker-redirect (F0), and TEMPORARY: F0 lands as two commits, and this commit (A1) adds the departure record's readers and writer while its first production caller of List — vp_list_projects reporting departed projects — is commit A2 of the same task. Not dead: it is exercised by internal/departure's tests, and A2 makes this entry STALE, so the gate itself demands its removal there. ADR-006 verdict: REPORT + DEFER to the next commit of the same unit."
+    },
+    {
       "id": "uninvoked mcp.KnowledgeURI",
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. The resource template IS registered so vibe-palace://knowledge/<project> resolves; no tool response ever hands one to a client. Its three former siblings here — CommandURI, SessionURI, SkillURI — were emitted by hoist-recovery-handles-above-bulk-across-the-surface and left this baseline; KnowledgeURI could NOT follow them, because it addresses a Knowledge markdown FILE while vp_get_knowledge returns KG TRIPLES. It is not a recovery handle for that tool's body, it is a pointer to a different document, so emitting it would have been a lie rather than a fix. Giving vp_get_knowledge a real hatch means paging its unbounded triple list, which is a design. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },
@@ -123,6 +127,10 @@
     {
       "id": "uninvoked storage.RebindCheckout",
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
+    },
+    {
+      "id": "uninvoked storage.Vault.RecordDeparture",
+      "reason": "STAGED WRITER API, owned by epic project-relocation-rename-and-vault-split. RecordDeparture is the one writer of the tracked departure record (Audits/departures/<slug>.json) that every reader in task slug-departure-record-and-marker-redirect already consumes. Its production callers are the two front ends that make a slug depart: the split purge (commit B of that task, which waits on F1's vault_split.go change) and the supported project rename (task rename-core-fresh-target-with-digest-bind). Until one lands, only its own test calls it (storage.TestRecordDepartureWritesStampsAndRefusesALiveTree). The entry goes STALE, and the gate demands its removal, the moment the first caller lands. ADR-006 verdict: REPORT + DEFER to the owning units named above."
     },
     {
       "id": "uninvoked storage.Vault.SetClock",
