@@ -518,7 +518,17 @@ func gitPull(root string, remotes []string) (string, error) {
 		}
 	}
 	if v := storage.RemoteVerdict(storage.OpPull, res.RemoteResults, ""); v != "" {
-		return buf.String(), fmt.Errorf("%s", v)
+		// The result body is DISCARDED on a handler error, the same rule the
+		// tidy and paths branches follow: what the caller needs to act — above
+		// all a departed-slug refusal's paths and hold-branch remedy — has to
+		// ride in the error itself, not only in the output it replaces.
+		var failed strings.Builder
+		for _, remote := range remotes {
+			if rerr := res.RemoteResults[remote]; rerr != nil {
+				fmt.Fprintf(&failed, "\n[pull %s] FAILED: %v", remote, rerr)
+			}
+		}
+		return buf.String(), fmt.Errorf("%s%s", v, failed.String())
 	}
 	return buf.String(), nil
 }
