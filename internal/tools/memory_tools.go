@@ -291,8 +291,8 @@ func MemoryHarvestTool(vault *storage.Vault) mcp.Tool {
 			}
 			// Harvest lazily creates Projects/<project>/memory/ and deletes the
 			// host-local originals: a stale checkout's renamed-away slug must not
-			// be re-scaffolded. See project.RemovedSlug.
-			if err := project.RefuseRemovedSlug(vault.Root, p.Project); err != nil {
+			// be re-scaffolded. See project.Departed.
+			if err := project.RefuseDeparted(vault.Root, p.Project); err != nil {
 				return nil, err
 			}
 			if p.Cwd == "" {

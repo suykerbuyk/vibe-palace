@@ -455,8 +455,8 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
 		// A stale checkout names its renamed-away project here; capture would
-		// lazily re-scaffold Projects/<old>/. See project.RemovedSlug.
-		if err := project.RefuseRemovedSlug(vault.Root, p.Project); err != nil {
+		// lazily re-scaffold Projects/<old>/. See project.Departed.
+		if err := project.RefuseDeparted(vault.Root, p.Project); err != nil {
 			return nil, err
 		}
 

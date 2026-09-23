@@ -17,7 +17,7 @@ import (
 
 // A stale checkout — its marker still names a project that was renamed or
 // removed from the vault — must not re-scaffold Projects/<old>/. The removal is
-// recognised from the vault's git history (RemovedSlug).
+// recognised from the vault's git history, the fallback source of Departed.
 
 func vaultGit(t *testing.T, vault string, args ...string) {
 	t.Helper()
@@ -127,11 +127,11 @@ func TestRequireKnownProject_RemovedThenReinitedAuthorizes(t *testing.T) {
 // removed.
 func TestRemovedSlug_NeverExistedIsNotRemoved(t *testing.T) {
 	vault := gitVaultWithHistory(t, "old", "rm")
-	if removed, _, _ := RemovedSlug(vault, "brand-new"); removed {
+	if _, removed := Departed(vault, "brand-new"); removed {
 		t.Error("a slug with no history is not removed")
 	}
-	if removed, commit, subject := RemovedSlug(vault, "old"); !removed || commit == "" || subject != "remove old" {
-		t.Errorf("RemovedSlug(old) = %v %q %q, want true, a sha and \"remove old\"", removed, commit, subject)
+	if d, removed := Departed(vault, "old"); !removed || d.Source != "history" || d.Commit == "" || d.Subject != "remove old" {
+		t.Errorf("Departed(old) = %v %+v, want true from history, a sha and \"remove old\"", removed, d)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestRemovedSlug_FailsOpenWithoutGit(t *testing.T) {
 	defer func(g string) { removedSlugGit = g }(removedSlugGit)
 	removedSlugGit = filepath.Join(t.TempDir(), "no-such-git")
 
-	if removed, _, _ := RemovedSlug(vault, "old"); removed {
+	if _, removed := Departed(vault, "old"); removed {
 		t.Error("with no git binary the probe must fail open (not removed)")
 	}
 	if err := RequireKnownProject("old", vault, markerRepo(t, "old")); err != nil {
@@ -161,7 +161,7 @@ func TestRemovedSlug_FailsOpenOnUnreadableGitDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
 
-	if removed, _, _ := RemovedSlug(vault, "old"); removed {
+	if _, removed := Departed(vault, "old"); removed {
 		t.Error("an unreadable .git must fail open (not removed)")
 	}
 }
@@ -182,7 +182,7 @@ func TestRemovedSlug_HungGitReturnsPromptly(t *testing.T) {
 	removedSlugGit, removedSlugTimeout = fake, 200*time.Millisecond
 
 	start := time.Now()
-	removed, _, _ := RemovedSlug(vault, "old")
+	_, removed := Departed(vault, "old")
 	elapsed := time.Since(start)
 	if removed {
 		t.Error("a timed-out probe must fail open (not removed)")
@@ -212,8 +212,8 @@ func TestRemovedSlug_IgnoresAnEnclosingRepository(t *testing.T) {
 	vaultGit(t, outer, "rm", "-q", "-r", "vault/Projects/ghost")
 	vaultGit(t, outer, "commit", "-q", "-m", "rm ghost")
 
-	if removed, commit, subject := RemovedSlug(vault, "ghost"); removed {
-		t.Errorf("an enclosing repository's history is not the vault's: got removed by %s %q", commit, subject)
+	if d, removed := Departed(vault, "ghost"); removed {
+		t.Errorf("an enclosing repository's history is not the vault's: got removed by %s %q", d.Commit, d.Subject)
 	}
 	if err := RequireKnownProject("ghost", vault, markerRepo(t, "ghost")); err != nil {
 		t.Errorf("a nested vault with no history of its own must keep authorizing: %v", err)

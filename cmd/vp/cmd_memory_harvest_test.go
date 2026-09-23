@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -156,5 +157,45 @@ func TestMemoryHarvestCLIRefusesARemovedSlug(t *testing.T) {
 				t.Errorf("native memory must be untouched: %d files before, %d after", len(before), len(after))
 			}
 		})
+	}
+}
+
+// TestMemoryHarvestCLIRefusesARecordedDeparture: the same stale checkout, on a
+// vault with NO git history to fall back on — only the departure record,
+// written by storage.RecordDeparture, can refuse, and the refusal must say
+// where the project went.
+func TestMemoryHarvestCLIRefusesARecordedDeparture(t *testing.T) {
+	vault, _ := harvestCLIFixture(t, "git_enabled = true")
+	if err := os.RemoveAll(filepath.Join(vault, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(vault, "Projects", "harvp")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.NewVault(vault).RecordDeparture("harvp", departure.Renamed, "harvp-renamed"); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeDir, err := memory.NativeDirFromCwd(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadDir(nativeDir)
+
+	stdout, stderr, code := runVaultCmdCapturingBoth(t, cmdMemoryHarvest())
+	if code != cli.ExitUser {
+		t.Fatalf("exit %d, want %d (refusal)\nstdout: %s\nstderr: %s", code, cli.ExitUser, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `set [project].name = "harvp-renamed"`) {
+		t.Errorf("stderr must carry the redirect:\n%s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "Projects", "harvp")); err == nil {
+		t.Error("Projects/harvp/ was resurrected")
+	}
+	if after, _ := os.ReadDir(nativeDir); len(after) != len(before) || len(before) == 0 {
+		t.Errorf("native memory must be untouched: %d files before, %d after", len(before), len(after))
 	}
 }

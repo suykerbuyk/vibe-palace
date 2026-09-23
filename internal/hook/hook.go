@@ -229,7 +229,7 @@ type Result struct {
 	// back into the model. A loop. Loudness here is the durable log, not the exit.
 	Failures []capture.CaptureFailure `json:"failures,omitempty"`
 	// SkippedRemovedSlug is set when the marker names a project whose
-	// Projects/<slug>/ was removed or renamed away (project.RemovedSlug): the
+	// Projects/<slug>/ departed the vault (project.Departed): the
 	// checkout is stale, and the whole run is skipped rather than resurrecting
 	// the old tree. Like Failures, its loudness is vp.log (a Warn), not the exit.
 	SkippedRemovedSlug bool `json:"skipped_removed_slug,omitempty"`
@@ -289,10 +289,12 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// before its first colon is the category vplog.Summarize counts, and that
 	// count is what vp_bootstrap_context's health alert prints ("hook stale
 	// checkout ×N"), so it names the problem rather than a bare "hook".
-	if removed, commit, subject := project.RemovedSlug(opts.VaultRoot, opts.ProjectSlug); removed {
+	// The redirect (renamed to X / moved to vault Y, from the departure
+	// record) rides as an attribute, so the category stays stable.
+	if d, departed := project.Departed(opts.VaultRoot, opts.ProjectSlug); departed {
 		res.SkippedRemovedSlug = true
-		slog.Warn("hook stale checkout: skipping capture — the marker names a project removed from the vault; update .vibe-palace.toml",
-			"project", opts.ProjectSlug, "cwd", payload.CWD, "last_commit", commit, "subject", subject)
+		slog.Warn("hook stale checkout: skipping capture — the marker names a project that departed the vault; update .vibe-palace.toml",
+			"project", opts.ProjectSlug, "cwd", payload.CWD, "redirect", d.Redirect(), "source", d.Source)
 		return res, nil
 	}
 

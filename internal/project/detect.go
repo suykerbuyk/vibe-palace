@@ -251,7 +251,7 @@ func resolveDir(dir string) string {
 //
 // 🔴 A MATCHING MARKER DOES NOT RESURRECT A REMOVED SLUG. When the marker names
 // slug but Projects/<slug>/ is absent AND the vault's history shows it existed
-// (RemovedSlug), the checkout is stale — its project was renamed or removed —
+// (Departed), the checkout is stale — its project was renamed or removed —
 // and the write is refused instead of re-scaffolding the old tree. This
 // narrows ruling "1A" of tasks/done/requireknownproject-marker-arm-ignores-the-slug.md
 // ("marker name == slug authorizes, including first-ever write / marker-only
@@ -326,8 +326,8 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 		}
 	}
 	if markerName != "" && markerName == slug {
-		if removed, commit, subject := RemovedSlug(vaultRoot, slug); removed {
-			return removedSlugRefusal(slug, markerPath, commit, subject)
+		if d, departed := Departed(vaultRoot, slug); departed {
+			return departureRefusal(d, markerPath)
 		}
 		return nil
 	}
