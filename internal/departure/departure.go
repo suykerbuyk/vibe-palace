@@ -153,7 +153,7 @@ func (r Record) Encode() ([]byte, error) {
 // Read returns slug's record and whether one exists. It does NOT look at
 // Projects/<slug>/: use Find for "is this slug departed". A file that exists
 // but cannot be read or parsed is returned with Malformed set and found=true.
-func Read(vaultRoot, slug string) (rec Record, found bool) {
+func Read(vaultRoot, slug string) (Record, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Record{}, false
 	}
@@ -164,17 +164,27 @@ func Read(vaultRoot, slug string) (rec Record, found bool) {
 		}
 		return Record{Slug: slug, Malformed: err.Error()}, true
 	}
+	return Parse(slug, data), true
+}
+
+// Parse decodes the bytes of slug's record, from wherever they came: the
+// working tree (Read) or a git object (`git show <ref>:<RelPath(slug)>`, which
+// is how a pull reads a record that has not been merged yet). A record that
+// does not parse, names another slug or has an unknown kind comes back with
+// Malformed set — still a departure, per Record.Malformed.
+func Parse(slug string, data []byte) Record {
+	var rec Record
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return Record{Slug: slug, Malformed: err.Error()}, true
+		return Record{Slug: slug, Malformed: err.Error()}
 	}
 	if rec.Slug != slug {
 		// The file's name is the key; a body naming another slug is damage.
-		return Record{Slug: slug, Malformed: fmt.Sprintf("record names slug %q", rec.Slug)}, true
+		return Record{Slug: slug, Malformed: fmt.Sprintf("record names slug %q", rec.Slug)}
 	}
 	if rec.Kind != Renamed && rec.Kind != MovedToVault {
 		rec.Malformed = fmt.Sprintf("unknown kind %q", rec.Kind)
 	}
-	return rec, true
+	return rec
 }
 
 // Find reports whether slug is DEPARTED: its record exists AND
