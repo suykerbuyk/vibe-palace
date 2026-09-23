@@ -69,7 +69,7 @@ func cmdArchiveCreate(info cli.BuildInfo) *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp archive create: --session-id is required")
 				return cli.ExitUser
 			}
-			proj, vaultRoot, code := resolveProjectAndVault(fv.Get("--project"), "archive create")
+			proj, vaultRoot, code := resolveProjectForWrite(fv.Get("--project"), "archive create")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -550,7 +550,7 @@ func cmdArchiveLink() *cli.Command {
 				fmt.Fprintln(os.Stderr, "vp archive link: provide SESSION_ID (list candidates with `vp archive backfill`)")
 				return cli.ExitUser
 			}
-			proj, vaultRoot, code := resolveProjectAndVault(fv.Get("--project"), "archive link")
+			proj, vaultRoot, code := resolveProjectForWrite(fv.Get("--project"), "archive link")
 			if code != cli.ExitOK {
 				return code
 			}
@@ -594,6 +594,25 @@ func resolveProjectAndVault(projArg, cmdName string) (string, string, int) {
 		return "", "", cli.ExitUser
 	}
 	return proj, vault.Root, cli.ExitOK
+}
+
+// resolveProjectForWrite is resolveProjectAndVault for the archive subcommands
+// that WRITE under Projects/<slug>/ (`create`, `link`). A project that departed
+// this vault — renamed, or moved to another vault — is refused with the
+// redirect instead of having its transcripts tree re-created under the old
+// slug. The read subcommands (list, verify, extract) stay on the plain helper:
+// a read of a departed slug finds nothing and writes nothing, exactly as the
+// MCP dispatch seam admits reads. See project.Departed.
+func resolveProjectForWrite(projArg, cmdName string) (string, string, int) {
+	proj, root, code := resolveProjectAndVault(projArg, cmdName)
+	if code != cli.ExitOK {
+		return proj, root, code
+	}
+	if err := project.RefuseDeparted(root, proj); err != nil {
+		fmt.Fprintf(os.Stderr, "vp %s: %v\n", cmdName, err)
+		return "", "", cli.ExitUser
+	}
+	return proj, root, cli.ExitOK
 }
 
 // archiveSignOptsFromVault reads the `[archive]` section of the

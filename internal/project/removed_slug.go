@@ -80,11 +80,14 @@ type Departure struct {
 // exactly the behaviour before the fallback existed. Failing closed would
 // refuse the legitimate first write on any vault where git misbehaves.
 //
-// Residual, stated rather than hidden: this is called by RequireKnownProject's
-// marker arm, the hook, vp_capture_session and vp_memory_harvest; the other
-// project-taking MCP writers (vp_append_iteration, vp_update_resume,
-// vp_memory_write, vp_kg_add, vp_enqueue_iteration_summary) are not gated
-// here.
+// Where it is enforced — there is no single storage-level choke point for
+// "a project tree is being created", so these are the sites:
+//   - every mutating MCP tool naming a `project` / `to_project`, at the dispatch
+//     seam (mcp.refuseDepartedProject), which both dispatch paths reach;
+//   - RequireKnownProject's marker arm (the CLI harvest and absorb, and the MCP
+//     commit tools that derive their slug from project_path);
+//   - the hook's stale-checkout skip;
+//   - `vp archive create` / `link` (resolveProjectForWrite).
 func Departed(vaultRoot, slug string) (Departure, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Departure{}, false

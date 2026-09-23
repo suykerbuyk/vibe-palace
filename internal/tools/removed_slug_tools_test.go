@@ -4,8 +4,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +45,10 @@ func renamedAwayVault(t *testing.T) *storage.Vault {
 
 // The two MCP writers an agent in a stale checkout runs at wrap time. Neither
 // passes through RequireKnownProject, and both lazily create Projects/<slug>/.
+// Their refusal now lives at the dispatch seam (mcp.refuseDepartedProject)
+// rather than in each handler, so this drives them the way a host does:
+// tools/call through a real server. Here the evidence is git HISTORY (no
+// departure record), the fallback source.
 func TestRemovedSlugIsRefusedByTheCaptureAndHarvestTools(t *testing.T) {
 	// A real native memory for the stale checkout, so that without the gate the
 	// harvest has something to route into Projects/old/memory/.
@@ -63,26 +65,18 @@ func TestRemovedSlugIsRefusedByTheCaptureAndHarvestTools(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		params map[string]any
-		tool   func(*storage.Vault) func(context.Context, json.RawMessage) (any, error)
 	}{
-		{"vp_capture_session", map[string]any{"project": "old", "summary": "a session in a stale checkout"},
-			func(v *storage.Vault) func(context.Context, json.RawMessage) (any, error) {
-				return CaptureSessionTool(v, nil).Handler
-			}},
-		{"vp_memory_harvest", map[string]any{"project": "old", "cwd": staleCwd},
-			func(v *storage.Vault) func(context.Context, json.RawMessage) (any, error) {
-				return MemoryHarvestTool(v).Handler
-			}},
+		{"vp_capture_session", map[string]any{"project": "old", "summary": "a session in a stale checkout"}},
+		{"vp_memory_harvest", map[string]any{"project": "old", "cwd": staleCwd}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vault := renamedAwayVault(t)
-			p, _ := json.Marshal(tc.params)
-			_, err := tc.tool(vault)(context.Background(), p)
-			if err == nil {
-				t.Fatal("a removed slug must be refused")
+			text, isErr := callTool(t, seamServer(t, vault), tc.name, tc.params)
+			if !isErr {
+				t.Fatalf("a removed slug must be refused, got %q", text)
 			}
-			if !strings.Contains(err.Error(), "Projects/old/ was removed") {
-				t.Errorf("refusal must say the project was removed, got %q", err)
+			if !strings.Contains(text, "Projects/old/ was removed") {
+				t.Errorf("refusal must say the project was removed, got %q", text)
 			}
 			if _, statErr := os.Stat(filepath.Join(vault.Root, "Projects", "old")); statErr == nil {
 				t.Error("Projects/old/ was resurrected")
