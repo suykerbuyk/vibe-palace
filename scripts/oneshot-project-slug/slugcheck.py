@@ -30,6 +30,15 @@ FROM_DEFAULT = "quantum-ng"
 TO_DEFAULT = "qa-metabuild-system"
 
 # Search parity query set (plan, C7): 18 plain queries plus 2 filtered.
+#
+# DEPTH (code review of R-dev, F1). The engine takes its candidate pool as
+# limit*3 by raw distance BEFORE the wing/room filters, so a room-filtered
+# query at -n 10 survives only a handful of rows: on the live vault, `-r
+# decisions` returned 4 and `-w … -r security` returned 1, out of rooms
+# holding 1,680 and 1,324 drawers. Those queries therefore run deeper, in B1
+# and in A alike, so that what they compare is a real slice of the room.
+N_PLAIN_B1, N_PLAIN_A = 10, 20
+N_FILTERED = 60
 QUERIES = [
     {"q": "nested hypervisor for the Proxmox cluster"},
     {"q": "one build at a time, the WSL2 host dies if two builds run"},
@@ -234,7 +243,6 @@ PATTERNS = {
     "tracked_by": r"(?m)^tracked_by: Projects/{s}/",
     "project_slug": r'"project_slug": "{s}"',
     "vault_rel_session_note": r'"vault_rel_session_note": "Projects/{s}/',
-    "baseline_path": r"Projects/{s}/",
 }
 
 
@@ -306,13 +314,41 @@ def literal_counts(root, files, frm, to):
             continue
         t = b.decode("utf-8", errors="replace")
         for k, rx in PATTERNS.items():
-            if k == "baseline_path" and rel != "Audits/baseline.json":
-                continue
             for s in (frm, to):
                 n = len(re.findall(rx.format(s=re.escape(s)), t))
                 if n:
                     pat[k][s] = pat[k].get(s, 0) + n
     return per, pat
+
+
+def baseline_counts(root, slugs):
+    """Audits/baseline.json, split the way W8 splits it.
+
+    `accepted` is what the migration rewrites: the accepted[] entries, which
+    name real files. `prose` is the reason strings, which the migration must
+    NOT touch — they are the record of why a debt was accepted, written in the
+    tense of the day it was accepted. Counting them together (as an earlier
+    draft did) fails a correct run; not counting them at all would let a
+    rewrite reach text it was never supposed to reach, unseen.
+    """
+    out = {"accepted": {s: 0 for s in slugs}, "prose": {s: 0 for s in slugs}}
+    p = os.path.join(root, "Audits", "baseline.json")
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return out
+    for dim in doc.get("dimensions", {}).values():
+        if not isinstance(dim, dict):
+            continue
+        for entry in dim.get("accepted", []) or []:
+            for s in slugs:
+                if "Projects/%s/" % s in str(entry):
+                    out["accepted"][s] += 1
+        reason = str(dim.get("reason", ""))
+        for s in slugs:
+            out["prose"][s] += reason.count("Projects/%s/" % s)
+    return out
 
 
 def stray_group(root, s, stem_prefix):
@@ -438,6 +474,7 @@ def cmd_measure(a):
     rec["literal_per_file"] = per
     rec["literal_total"] = {a.frm: sum(v[0] for v in per.values()), a.to: sum(v[1] for v in per.values())}
     rec["patterns"] = pat
+    rec["baseline"] = baseline_counts(root, (a.frm, a.to))
     rec["stray_prefix"] = a.stray_prefix
     rec["stray_group"] = {s: stray_group(root, s, a.stray_prefix) for s in (a.frm, a.to)}
     rec["last_heading"] = {s: last_heading(root, s) for s in (a.frm, a.to)}
@@ -564,6 +601,24 @@ def cmd_verify(a):
         got = A["patterns"].get(k, {}).get(to, 0)
         v.check("C3", got == w, "A %s naming %s is %d, want %d" % (k, to, got, w))
     v.check("C3 floor", B["patterns"].get("project_fm", {}).get(frm, 0) >= floor("CLASS", 1), "B has no project: %s lines" % frm)
+    # C3, Audits/baseline.json. W8 rewrites the accepted[] entries and nothing
+    # else, so the census measures exactly that — and holds the reason prose to
+    # EQUALITY, because a change there means the rewrite reached text it was
+    # never supposed to touch (code review of R-dev, the C3 ruling).
+    ba, aa = B.get("baseline", {}), A.get("baseline", {})
+    v.check("C3 baseline", aa.get("accepted", {}).get(frm, -1) == 0,
+            "A's baseline accepted[] still names %s %s times" % (frm, aa.get("accepted", {}).get(frm)))
+    wantAcc = ba.get("accepted", {}).get(frm, 0) + ba.get("accepted", {}).get(to, 0)
+    v.check("C3 baseline", aa.get("accepted", {}).get(to, -1) == wantAcc,
+            "A's baseline accepted[] names %s %s times, want %d (B: %s + %s)" % (
+                to, aa.get("accepted", {}).get(to), wantAcc,
+                ba.get("accepted", {}).get(frm), ba.get("accepted", {}).get(to)))
+    v.check("C3 baseline floor", ba.get("accepted", {}).get(frm, 0) >= floor("BASELINE", 1),
+            "B's baseline accepts no %s path, so this check measured nothing" % frm)
+    for s in (frm, to):
+        v.check("C3 baseline prose", aa.get("prose", {}).get(s) == ba.get("prose", {}).get(s),
+                "baseline reason prose naming %s is %s in A and %s in B; the migration must not touch prose" % (
+                    s, aa.get("prose", {}).get(s), ba.get("prose", {}).get(s)))
     gone = set(B["literal_per_file"]) - set(A["literal_per_file"])
     deleted = set(C.get("k0_delete", [])) | {r["dst"] for r in C.get("k0_rename", []) if "/premerge-stray-" in r["dst"]}
     lost_f = sum(B["literal_per_file"][p][0] for p in gone & set(C.get("k0_delete", [])))
@@ -623,6 +678,12 @@ def cmd_verify(a):
         mapped = {line.replace(frm, to) for line in B["audit"]["lines"]}
         new = [line for line in A["audit"]["lines"] if line not in mapped]
         v.check("C4", not new, "audit verdict lines only in A (a new finding or a dimension that flipped): %s" % new[:5])
+        # And the other direction: a finding that DISAPPEARS is also a change
+        # the migration made to the audit's view of the vault, and the plan
+        # says A's findings equal B's with paths mapped. Measured equal on the
+        # live data (17 lines either way), so this is equality, not a hope.
+        gone = [line for line in mapped if line not in set(A["audit"]["lines"])]
+        v.check("C4", not gone, "audit verdict lines that B had and A does not: %s" % gone[:5])
         v.check("C4 floor", len(B["audit"]["lines"]) >= floor("AUDIT_LINES", 10), "B audit has %d verdict lines" % len(B["audit"]["lines"]))
     return v.finish()
 
@@ -807,10 +868,23 @@ def row_key(row):
     return [row.get("source_type", ""), norm_ref(row), row.get("room", ""), sha256_text(row.get("content", ""))]
 
 
-def search_run(slug, n, frm, root):
+# SLUG_SELFTEST_EMPTY_QUERY makes one query ask for a room that holds nothing,
+# so the self-test can prove the "this query is broken" refusal fires.
+if os.environ.get("SLUG_SELFTEST_EMPTY_QUERY"):
+    QUERIES = QUERIES + [{"q": "a query that matches nothing at all", "room": "no-such-room"}]
+
+
+def query_n(q, phase):
+    """The -n this query runs at. Filtered queries go deep in both phases."""
+    if "room" in q or "wing" in q:
+        return N_FILTERED
+    return N_PLAIN_B1 if phase == "b1" else N_PLAIN_A
+
+
+def search_run(slug, phase, frm, root):
     res = []
     for q in QUERIES:
-        cmd = [vp_bin(), "search", "--json", "-n", str(n), "-p", slug]
+        cmd = [vp_bin(), "search", "--json", "-n", str(query_n(q, phase)), "-p", slug]
         if "wing" in q:
             cmd += ["-w", slug if q["wing"] == "FROM" else q["wing"]]
         if "room" in q:
@@ -869,9 +943,9 @@ def cmd_parity_baseline(a):
     root = os.path.abspath(a.vault)
     pin(root)
     C = read_json(a.counts)
-    b1a = search_run(a.frm, 10, a.frm, root)
-    b1b = search_run(a.frm, 10, a.frm, root)
-    b2 = search_run(a.to, 20, a.frm, root)
+    b1a = search_run(a.frm, "b1", a.frm, root)
+    b1b = search_run(a.frm, "b1", a.frm, root)
+    b2 = search_run(a.to, "a", a.frm, root)
     stray = sorted({r["key"][3] for q in b2 for r in q})
     renames = {}
     pre = "Projects/%s/sessions/" % a.to
@@ -886,12 +960,19 @@ def cmd_parity_baseline(a):
             if n.startswith(p):
                 expect.append("note.%s.%s.%s" % (a.to, new, n[len(p):]))
     out = {"queries": QUERIES, "from": a.frm, "to": a.to, "b1": b1a, "b1_repeat": b1b, "b2": b2,
-           "stray_hashes": stray, "expect_new_vec": sorted(expect)}
+           "stray_hashes": stray, "expect_new_vec": sorted(expect),
+           "n": {"plain_b1": N_PLAIN_B1, "plain_a": N_PLAIN_A, "filtered": N_FILTERED}}
     v = Verdict("BASELINE")
     v.check("determinism", b1a == b1b, "the two B1 runs differ")
+    # F3: the ONE absolute floor. Its only job is to catch a query set that
+    # measures nothing — a query returning 0 rows is broken, not shallow — plus
+    # the independent global total. Everything else is derived from B1 itself.
     for i, q in enumerate(b1a):
-        v.check("floor", len(q) >= floor("ROWS", 5), "B1 query %d returned %d rows" % (i + 1, len(q)))
-    v.check("floor", sum(len(q) for q in b1a) >= floor("TOTAL", 150), "B1 total %d rows" % sum(len(q) for q in b1a))
+        v.check("floor", len(q) >= 1, "B1 query %d returned 0 rows: the query is broken, not merely shallow (%r)" % (i + 1, QUERIES[i]["q"]))
+    total = sum(len(q) for q in b1a)
+    v.check("floor", total >= floor("TOTAL", 150), "B1 total %d rows" % total)
+    out["b1_counts"] = [len(q) for q in b1a]
+    print("B1 rows per query: %s (total %d)" % (out["b1_counts"], total))
     v.check("stray", bool(expect), "no stray note vectors found to predict the re-embed")
     out["floors"] = FLOORS_USED
     write_json(a.out, out)
@@ -906,10 +987,17 @@ def cmd_parity_check(a):
     stray = set(base["stray_hashes"])
     v = Verdict("PARITY")
     v.check("baseline", base["b1"] == base["b1_repeat"], "the baseline's two B1 runs differ")
+    # A and B1 must search a filtered query at the SAME depth, or the
+    # comparison is not like for like and F2's floor measures the difference
+    # between two depths rather than between two corpora (imp3 R4-N2).
+    for qi, q in enumerate(QUERIES):
+        if "room" in q or "wing" in q:
+            v.check("depth symmetry q%d" % (qi + 1), query_n(q, "b1") == query_n(q, "a"),
+                    "filtered query %d runs at -n %d in B1 and -n %d in A" % (qi + 1, query_n(q, "b1"), query_n(q, "a")))
     runs = []
     for i in range(a.runs):
         before = {n for _, n, _, _ in snapshot(root, [to])}
-        r = search_run(to, 20, frm, root)
+        r = search_run(to, "a", frm, root)
         created = new_vecs(root, to, before)
         want = base["expect_new_vec"] if i == 0 else []
         v.check("vectors run %d" % (i + 1), created == want, "new vectors %s, want exactly %s" % (created[:6], want))
@@ -917,9 +1005,19 @@ def cmd_parity_check(a):
     for i, r in enumerate(runs[1:], start=2):
         v.check("determinism", r == runs[0], "run %d differs from run 1" % i)
     a1 = runs[0]
+    # SLUG_SELFTEST_TRUNCATE_A drops rows from every A query, so the self-test
+    # can prove the depth floor below actually fires.
+    if os.environ.get("SLUG_SELFTEST_TRUNCATE_A"):
+        a1 = [q[:1] for q in a1]
     for qi, (b1, rows) in enumerate(zip(base["b1"], a1)):
         v.check("project q%d" % (qi + 1), all(x["project"] == to for x in rows), "a row is not in project %s" % to)
-        msg = compare_query(b1, rows, stray)
+        # F2: the floor for this query is what B1 itself measured. A migration
+        # that LOSES retrieval shows up here; a query that is merely shallow
+        # does not, because its own baseline is shallow too.
+        kept = [r for r in rows if r["key"][3] not in stray]
+        v.check("depth q%d" % (qi + 1), len(kept) >= len(b1),
+                "query %d returned %d rows after dropping strays, B1 measured %d" % (qi + 1, len(kept), len(b1)))
+        msg = compare_query(b1, rows, stray, b1_n=query_n(QUERIES[qi], "b1"))
         v.check("query %d %r" % (qi + 1, QUERIES[qi]["q"]), not msg, msg)
     if a.out:
         write_json(a.out, {"runs": runs})

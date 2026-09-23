@@ -9,7 +9,8 @@
 #   rehearsal.sh --r DIR [--final] [--source VAULT] [--project-repo DIR]
 #                [--plan TASKFILE] [--no-isolation] [--keep]
 #
-# --r            scratch root (tmpfs is fine); every copy lives under it
+# --r            scratch root on a REAL filesystem, never tmpfs; every copy
+#                lives under it (for example ~/vp-rehearsal-2026-09-22)
 # --final        R-final: refuse a dirty copy instead of freezing copy dirt
 # --source       vault to copy (default ~/vibe-palace-vault); NEVER written to
 # --project-repo repo to clone for the capture proofs (default ~/code/qa-metabuild-system)
@@ -17,6 +18,8 @@
 #                (default: the task in the source vault)
 # --no-isolation skip the H4 user-namespace read-only bind and use the plan's
 #                recorded-state fallback instead
+# --keep         keep every copy after its last use (the default frees each
+#                copy as soon as the steps that need it are done)
 #
 # It prints one line per step and ends with REHEARSAL PASS (exit 0) or
 # REHEARSAL FAIL <step> (exit 1). R-final's recorded outputs land in DIR/out:
@@ -37,7 +40,7 @@ N_B="${SLUG_DRILL_N_B:-1044}"    # ... and before the DRILL2b kill
 ARGV=("$@")
 SELF="$here/$(basename "${BASH_SOURCE[0]}")"
 
-R="" SOURCE="$HOME/vibe-palace-vault" REPO="$HOME/code/qa-metabuild-system" PLAN="" FINAL=0 ISO=1 INSIDE=0
+R="" SOURCE="$HOME/vibe-palace-vault" REPO="$HOME/code/qa-metabuild-system" PLAN="" FINAL=0 ISO=1 INSIDE=0 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --r) R=${2:-}; shift ;;
@@ -46,6 +49,7 @@ while [ $# -gt 0 ]; do
     --project-repo) REPO=${2:-}; shift ;;
     --plan) PLAN=${2:-}; shift ;;
     --no-isolation) ISO=0 ;;
+    --keep) KEEP=1 ;;
     --inside) INSIDE=1 ;;
     -h|--help) sed -n '5,25p' "${BASH_SOURCE[0]}" >&2; exit 2 ;;
     *) echo "rehearsal.sh: unknown argument $1" >&2; exit 2 ;;
@@ -58,6 +62,17 @@ SOURCE=$(cd "$SOURCE" && pwd)
 : "${PLAN:=$SOURCE/Projects/vibe-palace/tasks/migrate-quantum-ng-vault-history-to-qa-metabuild-system.md}"
 
 fail() { echo "REHEARSAL FAIL $1: $2" >&2; exit 1; }
+# release frees a VAULT COPY once nothing else needs it, so eight vault-sized
+# copies never coexist. The small per-drill work directories (<copy>-w: the
+# journal, its saved vectors and the logs) are the run's evidence and are kept.
+# --keep retains the copies too.
+release() {
+  [ "$KEEP" = 1 ] && return 0
+  for c in "$@"; do
+    rm -rf "${R:?}/$c" "${R:?}/xdg-$c"
+    step "free" "released copy $c"
+  done
+}
 step() { printf '%s %s\n' "$1" "$2"; }
 vault_of() { echo "$R/$1"; }
 xdg_of() { echo "$R/xdg-$1"; }
@@ -91,11 +106,43 @@ else
   step H4 "FALLBACK: recorded source HEAD and dirt hash; checked again at the end"
 fi
 
-mkdir -p "$R/out"
 command -v python3 >/dev/null || fail H0 "python3 is required"
+
+# --------------------------------------------------------------- H0b space
+# The copies are whole vaults. On this host /tmp is a RAM-backed tmpfs, so a
+# rehearsal run there holds every copy in memory and stops the machine, not
+# just the run (that is exactly what happened on the first R-dev attempt).
+# The COPY ROOT is what fills a disk; $SOURCE and $W are not copied into.
+fstype=$(stat -f -c %T "$R")
+case "$fstype" in
+  tmpfs|ramfs)
+    fail H0 "$R is on $fstype, which is RAM-backed: put the rehearsal root on a real filesystem (for example ~/vp-rehearsal-2026-09-22)" ;;
+esac
+# The requirement is measured, never assumed: the source vault's own disk
+# usage times the number of copies this script makes, plus a tenth for the
+# copies' own git churn and the drill journals.
+src_kb=$(du -sk "$SOURCE" | cut -f1)
+copies=8   # vault seq bfb bft drill drill2a drill2b, and bfa taken at H8
+# SLUG_REHEARSAL_EXTRA_KB is an operator margin (and what the self-test raises
+# to an impossible figure, to prove this refusal fires).
+need_kb=$(( src_kb * copies * 11 / 10 + ${SLUG_REHEARSAL_EXTRA_KB:-0} ))
+free_kb=$(df -Pk "$R" | awk 'NR==2 {print $4}')
+hum() { awk -v k="$1" 'BEGIN { printf "%.1f GiB", k/1048576 }'; }
+mkdir -p "$R/out"
+step H0b "space: source $(hum "$src_kb"), $copies copies need $(hum "$need_kb") on $R ($fstype), $(hum "$free_kb") free"
+if [ "$free_kb" -lt "$need_kb" ]; then
+  fail H0 "$R has $(hum "$free_kb") free and this run needs $(hum "$need_kb") ($copies copies of $(hum "$src_kb")); free space or choose another root"
+fi
 "$VP" version >/dev/null || fail H0 "no usable vp binary (VP=$VP)"
 VPPATH=$(command -v "$VP")
 sha256sum "$VPPATH" | cut -d' ' -f1 > "$R/out/vp.sha256"
+# The lifted Rollback A block calls plain `vp`, exactly as it will live, where
+# the migration build IS the installed vp (RB2 pins its sha256). Here the
+# binary may be called anything, so expose it under the name the block uses —
+# otherwise `vp` resolves to the host's release build, which has no
+# `migrate project-slug`, and the drill fails on its first call. R-dev caught
+# precisely that.
+mkdir -p "$R/bin" && ln -sf "$VPPATH" "$R/bin/vp"
 step H0 "vp $("$VP" version | head -1), sha256 $(cat "$R/out/vp.sha256")"
 
 # --------------------------------------------------------------- H1 copies
@@ -168,6 +215,7 @@ XDG_CONFIG_HOME=$X "$VP" migrate project-slug --from "$FROM" --to "$TO" --vault 
   cat "$R/apply.log" >&2; fail H7 "apply"; }
 XDG_CONFIG_HOME=$X "$here/census.sh" --cache-report "$R/apply.log" --pre "$R/cache-pre.list" --stray "$R/journal.d/stray.list" --vault "$V" || fail H7 "cache report"
 XDG_CONFIG_HOME=$X "$here/census.sh" --profile rehearsal --phase A --vault "$V" --b "$R/census-B-full.json" --counts "$R/out/counts.json" --out "$R/census-A.json" || fail H7 "census A"
+XDG_CONFIG_HOME=$X "$here/census.sh" --profile live --phase A --vault "$V" --b "$R/out/census-B.json" --counts "$R/out/counts.json" --out "$R/census-A-live.json" || fail H7 "census A (live profile, RB9's own invocation)"
 XDG_CONFIG_HOME=$X "$here/parity.sh" --vault "$V" --b1 "$R/out/b1.json" --runs 1 --out "$R/parity-A.json" || fail H7 "parity"
 step H7 "applied, census A and parity pass"
 
@@ -215,7 +263,7 @@ drill_apply() {  # $1 copy name -> applies, leaving $R/<c>-w/journal.tsv
 
 drill_rollback() {  # $1 copy name
   local w="$R/$1-w"
-  ( set +e; STATE="$w/state.env" DRILL=1 PATH="$(dirname "$VPPATH"):$PATH" bash "$R/rollback-a.sh" ) > "$w/rollback.log" 2>&1
+  ( set +e; STATE="$w/state.env" DRILL=1 PATH="$R/bin:$PATH" bash "$R/rollback-a.sh" ) > "$w/rollback.log" 2>&1
   grep -q 'ROLLBACK A DONE' "$w/rollback.log" || { cat "$w/rollback.log" >&2; return 1; }
 }
 
@@ -284,7 +332,9 @@ crash_drill() {  # $1 copy, $2 journal lines to wait for
   step H9b "$c: $KILLED_AT, rolled back clean"
 }
 crash_drill drill2a "$N_A"
+release drill
 crash_drill drill2b "$N_B"
+release drill2a drill2b
 
 # BFA is COPY as it stands after H8, before the capture probe writes to it.
 cp -a "$V" "$(vault_of bfa)"
@@ -326,6 +376,7 @@ python3 "$here/slugcheck.py" c12 --counts "$R/out/counts.json" --to "$TO" \
   --bft-before "$R/bft-before.jsonl" --bft-after "$(vault_of bft)/$DEC_A" \
   --bfa-before "$R/bfa-before.jsonl" --bfa-after "$(vault_of bfa)/$DEC_A" || fail H11 "C12 set comparison"
 step H11 "C12: after the migration the backfill appends exactly the source set plus the target set"
+release bfb bft bfa
 
 # --------------------------------------------------------------- H12 SEQ
 SQ=$(vault_of seq)
@@ -344,6 +395,7 @@ N2=$(cap seq qms-clone "$R/transcripts/h12b.jsonl" "2026-09-22-dddd0000-0000-000
 [ "${N1%-01}" = "${N2%-02}" ] || fail H12 "second capture is $N2; want ${N1%-01}-02 (same date and writer)"
 case "$N2" in *-02) : ;; *) fail H12 "the second capture minted $N2, want -02" ;; esac
 step H12 "session counter continues: $N1 then $N2"
+release seq
 
 # --------------------------------------------------------------- H4 fallback close
 if [ "$ISO" = 0 ]; then

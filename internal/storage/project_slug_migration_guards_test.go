@@ -854,3 +854,157 @@ func TestSlugReplayRefusesAnMkLineOutsideTheCacheDirectory(t *testing.T) {
 		t.Fatal("the refused replay deleted the file anyway")
 	}
 }
+
+// ---------------------------------------------------------------- E3
+
+// The free-space precondition. A migration that meets ENOSPC halfway through
+// is the one failure the journal has never been rehearsed against, so the run
+// refuses before its first write and says what it computed.
+func TestSlugApplyRefusesWithoutRoomToWrite(t *testing.T) {
+	root := slugFixture(t)
+	o := slugOpts(t, root)
+	var log strings.Builder
+	o.Log = &log
+	prev := slugFreeSpace
+	slugFreeSpace = func(string) (uint64, bool) { return 1 << 10, true } // 1 KiB
+	t.Cleanup(func() { slugFreeSpace = prev })
+	_, err := ApplyProjectSlugMigration(o)
+	if err == nil || !strings.Contains(err.Error(), "needs") || !strings.Contains(err.Error(), "free") {
+		t.Fatalf("an apply with no room must refuse, got %v", err)
+	}
+	if n := gitRun(t, root, "rev-list", "--count", "HEAD"); n != "1" {
+		t.Fatalf("the refused apply committed (%s commits)", n)
+	}
+	if !strings.Contains(log.String(), "space: the migration needs") {
+		t.Fatalf("the run must state what it computed, got %q", log.String())
+	}
+	// With room, the same fixture applies, and the computed figure is logged.
+	slugFreeSpace = func(string) (uint64, bool) { return 8 << 30, true }
+	log.Reset()
+	o2 := slugOpts(t, root)
+	o2.Log = &log
+	if _, err := ApplyProjectSlugMigration(o2); err != nil {
+		t.Fatalf("apply with room: %v", err)
+	}
+	if !strings.Contains(log.String(), "space: the migration needs") || !strings.Contains(log.String(), "free") {
+		t.Fatalf("the measured figures must be logged, got %q", log.String())
+	}
+}
+
+// The cache phase has its own precondition, on the vault and, when the journal
+// lives on another filesystem, on the journal's side too.
+func TestSlugCachePhaseRefusesWithoutRoomToWrite(t *testing.T) {
+	root := slugFixture(t)
+	o := slugOpts(t, root)
+	if _, err := ApplyProjectSlugMigration(o); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	// Put the vault back in the pre-cache state the phase keys on: the marker
+	// gone, with the migrated tree in place, as a host that pulled K0..K2 has.
+	if err := os.Remove(filepath.Join(root, "palace", ".local", "embed-cache", slugTo, slugCacheMarker)); err != nil {
+		t.Fatal(err)
+	}
+	prev := slugFreeSpace
+	slugFreeSpace = func(string) (uint64, bool) { return 1 << 10, true }
+	t.Cleanup(func() { slugFreeSpace = prev })
+	_, err := RunSlugCachePhase(root, slugFrom, slugTo, filepath.Join(t.TempDir(), "c.tsv"), o.ProcDir, o.Home, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "needs") {
+		t.Fatalf("a cache phase with no room must refuse, got %v", err)
+	}
+}
+
+// The requirement must be the RIGHT SIZE, not merely present. Both earlier
+// tests set the free-space seam to 1 KiB, which is below even the slack, so
+// they passed whatever the requirement computed: a requirement wrong in the
+// dangerous direction was invisible (imp3 round-4 R4-S2).
+func TestSlugApplySpaceRequirementIsSizedFromTheVault(t *testing.T) {
+	root := slugFixture(t)
+	o := slugOpts(t, root)
+	plan, err := PlanProjectSlugMigration(root, slugFrom, slugTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := slugMovedBytes(root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved <= 0 {
+		t.Fatalf("the fixture moves %d bytes, so this test measures nothing", moved)
+	}
+	need := 2*moved + slugSpaceSlack
+	prev := slugFreeSpace
+	t.Cleanup(func() { slugFreeSpace = prev })
+
+	// Between the slack and the requirement: the slack alone would have let
+	// this through, so this is what pins the computed size.
+	slugFreeSpace = func(string) (uint64, bool) { return uint64(need - 1), true }
+	if _, err := ApplyProjectSlugMigration(o); err == nil || !strings.Contains(err.Error(), "needs") {
+		t.Fatalf("free space one byte under the requirement must refuse, got %v", err)
+	}
+	if n := gitRun(t, root, "rev-list", "--count", "HEAD"); n != "1" {
+		t.Fatalf("the refused apply committed (%s commits)", n)
+	}
+	// Just above it: the same fixture applies.
+	slugFreeSpace = func(string) (uint64, bool) { return uint64(need + 1), true }
+	if _, err := ApplyProjectSlugMigration(slugOpts(t, root)); err != nil {
+		t.Fatalf("free space just over the requirement must apply: %v", err)
+	}
+}
+
+// A file the walk cannot stat makes the requirement smaller than the truth, so
+// it is an error rather than a zero (imp3 R4-N1).
+func TestSlugMovedBytesRefusesAnUnmeasurableFile(t *testing.T) {
+	root := slugFixture(t)
+	plan, err := PlanProjectSlugMigration(root, slugFrom, slugTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := slugMovedBytes(root, plan); err != nil {
+		t.Fatalf("the intact fixture must measure: %v", err)
+	}
+	if len(plan.k1Moves) == 0 {
+		t.Fatal("the fixture moves nothing, so this test measures nothing")
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(plan.k1Moves[0].Src))); err != nil {
+		t.Fatal(err)
+	}
+	_, err = slugMovedBytes(root, plan)
+	if err == nil || !strings.Contains(err.Error(), "cannot measure") {
+		t.Fatalf("an unmeasurable file must refuse, got %v", err)
+	}
+}
+
+// The journal-side budget: zero when the journal shares the vault's
+// filesystem (rm-vec renames), the source cache's size when it does not
+// (rm-vec copies). On this host both live on /home, so the seam is the only
+// way to reach the second branch.
+func TestSlugJournalSideBudget(t *testing.T) {
+	root := slugFixture(t)
+	jp := filepath.Join(t.TempDir(), "journal.tsv")
+	prev := slugSameDevice
+	t.Cleanup(func() { slugSameDevice = prev })
+
+	slugSameDevice = func(string, string) bool { return true }
+	if got := slugJournalSideBytes(root, slugFrom, jp); got != 0 {
+		t.Fatalf("one filesystem means rm-vec renames, so the budget is 0, got %d", got)
+	}
+	slugSameDevice = func(string, string) bool { return false }
+	got := slugJournalSideBytes(root, slugFrom, jp)
+	if got <= slugSpaceSlack {
+		t.Fatalf("a separate filesystem must budget the source cache too, got %d", got)
+	}
+	// And the apply refuses when that budget cannot be met.
+	o := slugOpts(t, root)
+	o.JournalPath = jp
+	prevFree := slugFreeSpace
+	t.Cleanup(func() { slugFreeSpace = prevFree })
+	slugFreeSpace = func(p string) (uint64, bool) {
+		if p == filepath.Dir(jp) {
+			return 1 << 10, true
+		}
+		return 8 << 30, true
+	}
+	if _, err := ApplyProjectSlugMigration(o); err == nil || !strings.Contains(err.Error(), "saved copies") {
+		t.Fatalf("an apply whose journal filesystem is full must refuse, got %v", err)
+	}
+}

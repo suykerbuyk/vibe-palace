@@ -125,8 +125,12 @@ def main():
     w(v, S + ".surface", "surface = 3\n")
     w(v, S + "drawers/%s/decisions/drawers.jsonl" % TO,
       row(TO, "Archive then retire the tapemanager leftover QA topics.", "decisions", "decision", "session/%s-01#decision/" % STEM))
+    # The reason prose names the old slug on purpose: the migration must NOT
+    # rewrite it, and the census holds it to equality (the C3 ruling).
     w(v, "Audits/baseline.json", json.dumps({"dimensions": {"archive-roundtrip": {
-        "reason": "accepted during the fixture", "accepted": [P + "transcripts/2026-08-22-aaaa1.manifest.json"]}}}, indent=2) + "\n")
+        "reason": "ACCEPTED DEBT. NEW 2026-08-22: the " + P + "transcripts/2026-08-22-aaaa2.manifest.json entry"
+                  " is a SUPERSEDED duplicate, recorded here as history.",
+        "accepted": [P + "transcripts/2026-08-22-aaaa1.manifest.json"]}}}, indent=2) + "\n")
     w(v, "Audits/.surface", "surface = 3\n")
     w(v, "Projects/other/resume.md", "---\nproject: other\n---\n\n# other — Working Context\n\nMentions quantum-ng in prose.\n")
     git(v, "init", "-q", "-b", "main")
