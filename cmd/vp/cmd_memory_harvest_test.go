@@ -116,3 +116,45 @@ func TestMemoryHarvestCLICommitsWhenGitIsEnabled(t *testing.T) {
 		t.Error("an enabled harvest left HEAD unchanged")
 	}
 }
+
+// TestMemoryHarvestCLIRefusesARemovedSlug is the stale-checkout case: the cwd
+// marker still names "harvp", but the vault renamed Projects/harvp/ away. The
+// marker arm used to authorize that and the harvest re-created
+// Projects/harvp/memory/ — and deleted the native originals. It must refuse
+// with nothing written and nothing deleted, whatever git_enabled says: the
+// removal probe is a read, and the kill switch governs mutation.
+func TestMemoryHarvestCLIRefusesARemovedSlug(t *testing.T) {
+	for _, gitLine := range []string{"git_enabled = true", "git_enabled = false"} {
+		t.Run(gitLine, func(t *testing.T) {
+			vault, _ := harvestCLIFixture(t, gitLine)
+			gitInVault(t, vault, "mv", "Projects/harvp", "Projects/harvp-renamed")
+			gitInVault(t, vault, "commit", "-qm", "migrate: harvp -> harvp-renamed (1/2 rename)")
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			nativeDir, err := memory.NativeDirFromCwd(cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := os.ReadDir(nativeDir)
+
+			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmdMemoryHarvest())
+			if code != cli.ExitUser {
+				t.Fatalf("exit %d, want %d (refusal)\nstdout: %s\nstderr: %s", code, cli.ExitUser, stdout, stderr)
+			}
+			for _, want := range []string{"Projects/harvp/ was removed", "[project].name", "vp init"} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr must contain %q:\n%s", want, stderr)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(vault, "Projects", "harvp")); err == nil {
+				t.Error("Projects/harvp/ was resurrected")
+			}
+			after, _ := os.ReadDir(nativeDir)
+			if len(after) != len(before) || len(before) == 0 {
+				t.Errorf("native memory must be untouched: %d files before, %d after", len(before), len(after))
+			}
+		})
+	}
+}

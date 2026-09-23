@@ -786,9 +786,12 @@ name = "dotfiles"
 // --- RequireKnownProject (commit-write-tools write-authorization gate) ---
 
 // TestRequireKnownProject_MarkerPresent pins the marker arm's success case:
-// the marker NAMES the slug, and no Projects/<slug>/ exists. That combination
-// is the marker-only first-ever write (`vp init` whose vault-tree creation was
-// skipped), so it must keep authorizing.
+// the marker NAMES the slug, and no Projects/<slug>/ exists, and the vault has
+// no history of it. That combination is the marker-only first-ever write (a
+// host whose vault has not pulled the other host's `vp init` yet, or a
+// `vp init` that failed after writing the marker), so it must keep
+// authorizing. A slug WITH history is the removed-slug case, refused instead:
+// TestRequireKnownProject_MarkerNamingRemovedSlugRefuses.
 func TestRequireKnownProject_MarkerPresent(t *testing.T) {
 	vault := t.TempDir()
 	repo := t.TempDir()

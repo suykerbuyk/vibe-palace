@@ -22,6 +22,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -287,6 +288,12 @@ func MemoryHarvestTool(vault *storage.Vault) mcp.Tool {
 			}
 			if p.Project == "" {
 				return nil, fmt.Errorf("project is required")
+			}
+			// Harvest lazily creates Projects/<project>/memory/ and deletes the
+			// host-local originals: a stale checkout's renamed-away slug must not
+			// be re-scaffolded. See project.RemovedSlug.
+			if err := project.RefuseRemovedSlug(vault.Root, p.Project); err != nil {
+				return nil, err
 			}
 			if p.Cwd == "" {
 				return nil, fmt.Errorf("cwd is required")
