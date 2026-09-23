@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -452,6 +453,11 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		var p captureSessionParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		// A stale checkout names its renamed-away project here; capture would
+		// lazily re-scaffold Projects/<old>/. See project.RemovedSlug.
+		if err := project.RefuseRemovedSlug(vault.Root, p.Project); err != nil {
+			return nil, err
 		}
 
 		sp := capture.SessionParams{

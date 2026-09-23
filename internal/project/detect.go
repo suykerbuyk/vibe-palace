@@ -249,6 +249,18 @@ func resolveDir(dir string) string {
 // it is not evidence either — those cases fall through to the exists check
 // rather than authorizing.
 //
+// 🔴 A MATCHING MARKER DOES NOT RESURRECT A REMOVED SLUG. When the marker names
+// slug but Projects/<slug>/ is absent AND the vault's history shows it existed
+// (RemovedSlug), the checkout is stale — its project was renamed or removed —
+// and the write is refused instead of re-scaffolding the old tree. This
+// narrows ruling "1A" of tasks/done/requireknownproject-marker-arm-ignores-the-slug.md
+// ("marker name == slug authorizes, including first-ever write / marker-only
+// init") in exactly that one case. 1A's rejected alternative (exists-only)
+// was rejected because it "breaks wrap/absorb/harvest after marker-only
+// `vp init`", and that premise went stale at 8049dfc: `vp init` now always
+// scaffolds Projects/<slug>/. Every case 1A protects has no history for the
+// slug, so it still authorizes.
+//
 // A name MISMATCH falls through, it does not refuse: Projects/<slug>/ existing
 // is independent evidence, so a rename in progress (marker edited before the
 // vault directory is moved) and a deliberate cross-project write from inside a
@@ -264,7 +276,7 @@ func resolveDir(dir string) string {
 // the hook is opportunistic (a false negative is a harmless skipped capture),
 // whereas these tools run during a wrap where a false negative BREAKS it — and
 // legitimate projects exist in Projects/<slug>/ without a repo-side marker
-// (vp init's vault-tree creation is best-effort and skipped on re-init).
+// (created on another host, or before the project had a checkout here).
 //
 // The $HOME / filesystem-root force-skip takes precedence over the exists
 // branch: a stray Projects/<home-basename>/ left by an earlier mis-scaffold must
@@ -314,6 +326,9 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 		}
 	}
 	if markerName != "" && markerName == slug {
+		if removed, commit, subject := RemovedSlug(vaultRoot, slug); removed {
+			return removedSlugRefusal(slug, markerPath, commit, subject)
+		}
 		return nil
 	}
 	if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {

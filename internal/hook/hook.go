@@ -228,6 +228,11 @@ type Result struct {
 	// capture would block the first turn of every session and feed its own error
 	// back into the model. A loop. Loudness here is the durable log, not the exit.
 	Failures []capture.CaptureFailure `json:"failures,omitempty"`
+	// SkippedRemovedSlug is set when the marker names a project whose
+	// Projects/<slug>/ was removed or renamed away (project.RemovedSlug): the
+	// checkout is stale, and the whole run is skipped rather than resurrecting
+	// the old tree. Like Failures, its loudness is vp.log (a Warn), not the exit.
+	SkippedRemovedSlug bool `json:"skipped_removed_slug,omitempty"`
 }
 
 // enrichDrainBudget bounds how many queued enrichment jobs a single SessionEnd
@@ -243,7 +248,7 @@ var ValidEvents = map[string]bool{
 }
 
 // Run executes the hook pipeline. Ordering (claim-decoupling): validate →
-// opt-in gate (.vibe-palace.toml signal) → resolve claimDir → archive (ALWAYS,
+// opt-in gate (.vibe-palace.toml signal) → removed-slug gate → resolve claimDir → archive (ALWAYS,
 // non-fatal) → memory harvest (SessionEnd only, non-fatal) → claim-gated session
 // capture (auto-summary, transcript read, WriteSession, WriteClaim). Archive and
 // harvest run regardless of claim state — both are idempotent housekeeping; only
@@ -271,6 +276,23 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	if project.DetectSignal(payload.CWD) != project.SignalVibeConfig {
 		res.SkippedNoProject = true
 		slog.Info("hook: skipping capture — no .vibe-palace.toml project signal", "cwd", payload.CWD)
+		return res, nil
+	}
+
+	// 2b. Stale-checkout gate. The marker-presence gate above does not look at
+	// the NAME, and everything below (archive, harvest with push, capture)
+	// lazily creates Projects/<slug>/. A checkout whose marker still names a
+	// renamed-away project would resurrect it, unattended, at every SessionEnd.
+	// Skip BEFORE any of it: the transcript stays in the host's own store and
+	// the native memory is neither read nor deleted, so nothing is lost. Warn,
+	// not Info — this is a checkout the operator has to fix. The message's text
+	// before its first colon is the category vplog.Summarize counts, and that
+	// count is what vp_bootstrap_context's health alert prints ("hook stale
+	// checkout ×N"), so it names the problem rather than a bare "hook".
+	if removed, commit, subject := project.RemovedSlug(opts.VaultRoot, opts.ProjectSlug); removed {
+		res.SkippedRemovedSlug = true
+		slog.Warn("hook stale checkout: skipping capture — the marker names a project removed from the vault; update .vibe-palace.toml",
+			"project", opts.ProjectSlug, "cwd", payload.CWD, "last_commit", commit, "subject", subject)
 		return res, nil
 	}
 
