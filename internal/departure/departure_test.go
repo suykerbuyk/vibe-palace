@@ -145,3 +145,24 @@ func TestValidate_RefusesHostPathsAndSelfRenames(t *testing.T) {
 		t.Errorf("Encode must stamp the format: %s %v", b, err)
 	}
 }
+
+// Parse is Read without the file: a pull reads a record straight out of a git
+// object before it is merged. Same verdicts as Read for every shape.
+func TestParse_SameVerdictsAsRead(t *testing.T) {
+	good, err := (Record{Slug: "old", Kind: Renamed, To: "new", Date: "2026-09-23"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := Parse("old", good); rec.Malformed != "" || rec.Kind != Renamed || rec.To != "new" {
+		t.Errorf("Parse(good) = %+v", rec)
+	}
+	for name, body := range map[string]string{
+		"garbled":   "{not json",
+		"wrongname": `{"format":"vp-departure/1","slug":"other","kind":"renamed","to":"x"}`,
+		"oddkind":   `{"format":"vp-departure/1","slug":"oddkind","kind":"exploded","to":"x"}`,
+	} {
+		if rec := Parse(name, []byte(body)); rec.Malformed == "" || rec.Slug != name {
+			t.Errorf("Parse(%s) = %+v, want Malformed set and the slug kept", name, rec)
+		}
+	}
+}
