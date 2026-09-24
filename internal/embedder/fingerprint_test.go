@@ -31,7 +31,7 @@ func TestFingerprintNamesEveryRegimeInput(t *testing.T) {
 	if Fingerprint("sentence-transformers/all-MiniLM-L6-v2", 512) == base {
 		t.Error("a max_seq_len change must change the fingerprint")
 	}
-	if BehaviourVersion != 1 {
-		t.Errorf("BehaviourVersion = %d; this unit ships 1, the token-truncation unit bumps it", BehaviourVersion)
+	if BehaviourVersion != 2 {
+		t.Errorf("BehaviourVersion = %d; token-level truncation ships 2", BehaviourVersion)
 	}
 }

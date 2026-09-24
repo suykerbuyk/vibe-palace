@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/gomlx/go-huggingface/tokenizers/api"
 	"github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
 
@@ -99,7 +101,7 @@ type ONNXEmbedder struct {
 	mu        sync.Mutex
 	dims      int
 	batchSz   int
-	maxSeqLen int
+	tokenizer *truncatingTokenizer
 }
 
 // modelCacheLockPath derives the absolute path NewONNX locks against before
@@ -332,6 +334,27 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		}
 	}
 
+	// Truncate by TOKENS: the go-huggingface tokenizer hugot uses ignores
+	// its MaxLen option, so nothing else stops an input from overflowing the
+	// position table. maxSeqLen counts [CLS] and [SEP], the sentence-
+	// transformers convention, and never exceeds the model's position table.
+	//
+	// COUPLING: this reaches into hugot internals (hugot@v0.7.0
+	// backends/tokenizer_go.go: tokenizeInputsGo calls
+	// GoTokenizer.Tokenizer.EncodeWithAnnotations). A hugot upgrade
+	// (evaluate-hugot-v0-7-8-upgrade) that renames the field or stops calling
+	// through it must fail here, never embed untruncated input silently: the
+	// probe below proves the wrapper was invoked.
+	if pipeline.Model == nil || pipeline.Model.Tokenizer == nil || pipeline.Model.Tokenizer.GoTokenizer == nil {
+		session.Destroy()
+		return nil, fmt.Errorf("embedder: hugot pipeline has no Go tokenizer to truncate through")
+	}
+	if pos := pipeline.Model.MaxPositionEmbeddings; pos > 0 && maxSeqLen > pos {
+		maxSeqLen = pos
+	}
+	tk := &truncatingTokenizer{Tokenizer: pipeline.Model.Tokenizer.GoTokenizer.Tokenizer, maxLen: maxSeqLen}
+	pipeline.Model.Tokenizer.GoTokenizer.Tokenizer = tk
+
 	// Probe dimensions with a test embedding.
 	probe, err := pipeline.RunPipeline([]string{"probe"})
 	if err != nil {
@@ -342,35 +365,53 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		session.Destroy()
 		return nil, fmt.Errorf("probe returned empty embedding")
 	}
+	if tk.calls.Load() == 0 {
+		session.Destroy()
+		return nil, fmt.Errorf("embedder: hugot did not tokenize through the truncating tokenizer; token truncation would be bypassed (see evaluate-hugot-v0-7-8-upgrade)")
+	}
 
 	return &ONNXEmbedder{
 		session:   session,
 		pipeline:  pipeline,
 		dims:      len(probe.Embeddings[0]),
 		batchSz:   batchSize,
-		maxSeqLen: maxSeqLen,
+		tokenizer: tk,
 	}, nil
 }
 
-// truncateForModel bounds text to at most maxSeqLen-2 runes — a conservative
-// stand-in for token count, since word-piece tokenization cannot produce more
-// tokens than there are runes to consume. The -2 reserves room for the
-// [CLS] and [SEP] special tokens hugot adds around the content tokens: at
-// maxSeqLen itself (e.g. the 512-position default), a rune-for-rune worst
-// case can still tokenize to maxSeqLen content tokens and, with CLS+SEP,
-// overflow the position table by 2 — which is exactly the measured 515-vs-512
-// panic. No tokenizer dependency is added; the floor of 1 keeps a tiny
-// maxSeqLen (e.g. a test value of 2) from truncating to nothing.
-func (e *ONNXEmbedder) truncateForModel(text string) string {
-	limit := e.maxSeqLen - 2
-	if limit < 1 {
-		limit = 1
+// truncatingTokenizer truncates the token IDs hugot feeds the model to
+// maxLen, keeping the final [SEP]: [CLS] t1..t(maxLen-2) [SEP], which is
+// Hugging Face / sentence-transformers truncation. It works on IDs, never on
+// text, so the kept tokens are exactly the full encoding's prefix. Only
+// EncodeWithAnnotations is overridden: it is the one call hugot makes.
+type truncatingTokenizer struct {
+	api.Tokenizer
+	maxLen int
+	calls  atomic.Int64
+}
+
+func (t *truncatingTokenizer) EncodeWithAnnotations(text string) api.AnnotatedEncoding {
+	t.calls.Add(1)
+	enc := t.Tokenizer.EncodeWithAnnotations(text)
+	limit := max(t.maxLen, 2)
+	if len(enc.IDs) <= limit {
+		return enc
 	}
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
+	enc.IDs = keepHeadAndLast(enc.IDs, limit)
+	if len(enc.SpecialTokensMask) > limit {
+		enc.SpecialTokensMask = keepHeadAndLast(enc.SpecialTokensMask, limit)
 	}
-	return string(runes[:limit])
+	if len(enc.Spans) > limit {
+		enc.Spans = keepHeadAndLast(enc.Spans, limit)
+	}
+	return enc
+}
+
+// keepHeadAndLast returns s[:n-1] followed by s's last element, as a new slice.
+func keepHeadAndLast[T any](s []T, n int) []T {
+	out := make([]T, 0, n)
+	out = append(out, s[:n-1]...)
+	return append(out, s[len(s)-1])
 }
 
 // Embed returns a normalized embedding vector for a single text.
@@ -382,7 +423,7 @@ func (e *ONNXEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	result, err := e.pipeline.RunPipeline([]string{e.truncateForModel(text)})
+	result, err := e.pipeline.RunPipeline([]string{text})
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
@@ -408,13 +449,8 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 		end := min(start+e.batchSz, len(texts))
 		chunk := texts[start:end]
-		truncated := make([]string, len(chunk))
-		for i, t := range chunk {
-			truncated[i] = e.truncateForModel(t)
-		}
-
 		e.mu.Lock()
-		out, err := e.pipeline.RunPipeline(truncated)
+		out, err := e.pipeline.RunPipeline(chunk)
 		e.mu.Unlock()
 		if err != nil {
 			return nil, fmt.Errorf("embed batch chunk [%d:%d]: %w", start, end, err)

@@ -7,9 +7,15 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gomlx/go-huggingface/tokenizers/api"
+	"github.com/gomlx/go-huggingface/tokenizers/hftokenizer"
 
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -60,32 +66,124 @@ func TestONNXEmbed(t *testing.T) {
 	}
 }
 
-// TestTruncateForModelReservesSpecialTokens pins the -2 margin in
-// truncateForModel without downloading the ONNX model: at maxSeqLen=512 (the
-// MiniLM position-table default), a rune-for-rune worst-case input can
-// tokenize to maxSeqLen content tokens, and hugot then adds [CLS]+[SEP]
-// around them — overflowing the position table by 2, which is the measured
-// 515-vs-512 panic. Truncating to maxSeqLen runes (no margin) does not catch
-// this; truncating to maxSeqLen-2 does.
-func TestTruncateForModelReservesSpecialTokens(t *testing.T) {
-	e := &ONNXEmbedder{maxSeqLen: 512}
-	long := strings.Repeat("x", 600)
+// TestTruncatingTokenizerKeepsHFTruncation pins Hugging Face truncation on
+// the token IDs, without compiling the model: an over-limit encoding becomes
+// [CLS] + the full encoding's first maxLen-2 content tokens + [SEP], and an
+// under-limit one is returned unchanged. The go-huggingface tokenizer ignores
+// its own MaxLen, which is why this wrapper exists at all.
+func TestTruncatingTokenizerKeepsHFTruncation(t *testing.T) {
+	path := filepath.Join(testutil.ProjectCacheDir(t), "sentence-transformers_all-MiniLM-L6-v2", "tokenizer.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("tokenizer not cached at %s: %v", path, err)
+	}
+	inner, err := hftokenizer.NewFromFile(nil, path)
+	if err != nil {
+		t.Fatalf("load tokenizer: %v", err)
+	}
+	if err := inner.With(api.EncodeOptions{AddSpecialTokens: true, IncludeSpecialTokensMask: true}); err != nil {
+		t.Fatal(err)
+	}
+	tk := &truncatingTokenizer{Tokenizer: inner, maxLen: 16}
 
-	got := e.truncateForModel(long)
-	if n := len([]rune(got)); n > 510 {
-		t.Errorf("truncateForModel(512) kept %d runes, want <= 510 (maxSeqLen-2, room for [CLS]+[SEP])", n)
+	long := strings.Repeat("Unaffable résumé-writers re-tokenize 12,345 words; ", 20)
+	full := inner.EncodeWithAnnotations(long)
+	if len(full.IDs) <= 16 {
+		t.Fatalf("fixture too short: %d tokens", len(full.IDs))
+	}
+	got := tk.EncodeWithAnnotations(long)
+	want := append(append([]int{}, full.IDs[:15]...), full.IDs[len(full.IDs)-1])
+	if !slices.Equal(got.IDs, want) {
+		t.Errorf("truncated IDs = %v, want %v", got.IDs, want)
+	}
+	if len(got.SpecialTokensMask) != 16 || got.SpecialTokensMask[0] != 1 || got.SpecialTokensMask[15] != 1 {
+		t.Errorf("special-token mask not trimmed to [CLS]...[SEP]: %v", got.SpecialTokensMask)
+	}
+	if tk.calls.Load() != 1 {
+		t.Errorf("calls = %d, want 1", tk.calls.Load())
 	}
 
-	short := strings.Repeat("x", 100)
-	if got := e.truncateForModel(short); got != short {
-		t.Errorf("truncateForModel left an under-limit string unchanged? got %d runes, want %d", len([]rune(got)), len([]rune(short)))
+	short := inner.EncodeWithAnnotations("hello world")
+	if got := tk.EncodeWithAnnotations("hello world"); !slices.Equal(got.IDs, short.IDs) {
+		t.Errorf("under-limit input changed: %v, want %v", got.IDs, short.IDs)
+	}
+}
+
+// singleTokenWords are each one WordPiece token in all-MiniLM-L6-v2's
+// vocabulary, so a text built from them has exactly one token per word.
+var singleTokenWords = strings.Fields("the cat sat on a mat while dogs ran in green fields near old stone walls and birds sang")
+
+func wordsText(n int) string {
+	w := make([]string, n)
+	for i := range w {
+		w[i] = singleTokenWords[i%len(singleTokenWords)]
+	}
+	return strings.Join(w, " ")
+}
+
+// TestEmbedLongInputEqualsTokenTruncatedEmbedding is the acceptance test of
+// embedder-truncates-by-characters-not-tokens: at maxSeqLen=256 a long input
+// embeds exactly as its first 254 tokens do, and not as its first 254
+// characters (the 23bedcc rune cut this replaced). It also fails loudly if a
+// hugot upgrade stops tokenizing through the wrapper.
+func TestEmbedLongInputEqualsTokenTruncatedEmbedding(t *testing.T) {
+	emb := newTestONNX(t) // maxSeqLen 256
+	ctx := context.Background()
+	long := wordsText(600)
+	ref := wordsText(254)
+	if n := len(emb.tokenizer.Tokenizer.Encode(ref)); n != 256 {
+		t.Fatalf("reference text tokenizes to %d ids, want 256 ([CLS] + 254 + [SEP]); the word list is no longer single-token", n)
 	}
 
-	// Floor: a maxSeqLen so small that maxSeqLen-2 would be <= 0 must not
-	// truncate to an empty string.
-	tiny := &ONNXEmbedder{maxSeqLen: 2}
-	if got := tiny.truncateForModel("hello"); len([]rune(got)) < 1 {
-		t.Errorf("truncateForModel with maxSeqLen=2 produced an empty string, want floor of 1 rune")
+	before := emb.tokenizer.calls.Load()
+	got, err := emb.Embed(ctx, long)
+	if err != nil {
+		t.Fatalf("Embed(long): %v", err)
+	}
+	if emb.tokenizer.calls.Load() == before {
+		t.Fatal("Embed did not tokenize through the truncating tokenizer: hugot's call path changed (evaluate-hugot-v0-7-8-upgrade)")
+	}
+	want, err := emb.Embed(ctx, ref)
+	if err != nil {
+		t.Fatalf("Embed(ref): %v", err)
+	}
+	if c := cosineSim(got, want); c < 0.999999 {
+		t.Errorf("cos(Embed(long), Embed(first 254 tokens)) = %.7f, want >= 0.999999", c)
+	}
+	runeCut, err := emb.Embed(ctx, string([]rune(long)[:254]))
+	if err != nil {
+		t.Fatalf("Embed(rune cut): %v", err)
+	}
+	if c := cosineSim(got, runeCut); c >= 0.99 {
+		t.Errorf("cos(Embed(long), Embed(first 254 runes)) = %.7f: the long input is still being cut by characters", c)
+	}
+}
+
+// TestONNXEmbedOver512TokensDoesNotPanic keeps the 515-token fix: a 2000-token
+// input embeds at the 512 default and at a configured 1024, which must be
+// clamped to the model's 512-position table.
+func TestONNXEmbedOver512TokensDoesNotPanic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ONNX test in short mode (requires model download)")
+	}
+	long := strings.Repeat("word ", 2000)
+	for _, seq := range []int{0, 1024} {
+		emb, err := NewONNX("sentence-transformers/all-MiniLM-L6-v2", testutil.ProjectCacheDir(t), seq, 32)
+		if err != nil {
+			t.Fatalf("NewONNX(maxSeqLen=%d): %v", seq, err)
+		}
+		if emb.tokenizer.maxLen != 512 {
+			t.Errorf("maxSeqLen=%d: token limit = %d, want 512", seq, emb.tokenizer.maxLen)
+		}
+		vecs, err := emb.EmbedBatch(context.Background(), []string{long, "short"})
+		if err != nil {
+			t.Fatalf("maxSeqLen=%d: EmbedBatch over 512 tokens: %v", seq, err)
+		}
+		for i, v := range vecs {
+			if len(v) != 384 {
+				t.Errorf("maxSeqLen=%d: vec %d len %d, want 384", seq, i, len(v))
+			}
+		}
+		emb.Close()
 	}
 }
 
