@@ -333,6 +333,17 @@ func mergeLegacyEmbedCache(res *EmbedCacheSweep, legacy, target string) error {
 		return fmt.Errorf("read legacy embed cache: %w", err)
 	}
 	var failures []string
+	merged := false
+	// A merged legacy vector's embedding regime is unknown, so the target
+	// directory must re-validate: its fingerprint sidecar goes (see
+	// EmbedCacheFingerprintFile).
+	defer func() {
+		if merged {
+			if err := os.Remove(filepath.Join(target, EmbedCacheFingerprintFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				res.Errors = append(res.Errors, fmt.Sprintf("drop fingerprint of %s: %v", target, err))
+			}
+		}
+	}()
 	for _, e := range entries {
 		name := e.Name()
 		if !e.Type().IsRegular() || !strings.HasSuffix(name, ".vec") {
@@ -356,12 +367,14 @@ func mergeLegacyEmbedCache(res *EmbedCacheSweep, legacy, target string) error {
 		switch {
 		case err == nil:
 			res.Merged++
+			merged = true
 		case errors.Is(err, fs.ErrExist):
 			res.Dropped++
 		default:
 			switch cerr := copyLegacyVector(src, dst); {
 			case cerr == nil:
 				res.Merged++
+				merged = true
 			case errors.Is(cerr, fs.ErrExist):
 				res.Dropped++
 			default:
@@ -455,8 +468,8 @@ func copyLegacyVector(src, dst string) error {
 //     is kept whenever palace/<slug> or Projects/<slug> exists at all — a
 //     symlink, a Windows junction, or a case-insensitive match the enumerators
 //     drop is still a project here.
-//   - Inside a reaped directory only regular *.vec files are removed. Anything
-//     else stays and keeps the directory in place.
+//   - Inside a reaped directory only regular *.vec files and the fingerprint
+//     sidecar are removed. Anything else stays and keeps the directory in place.
 func (v *Vault) reapOrphanCaches(res *EmbedCacheSweep, cacheRoot string) {
 	entries, err := sweepReadCacheDir(cacheRoot)
 	if err != nil {
@@ -499,7 +512,9 @@ func (v *Vault) reapOrphanCaches(res *EmbedCacheSweep, cacheRoot string) {
 			continue
 		}
 		for _, f := range files {
-			if !f.Type().IsRegular() || !strings.HasSuffix(f.Name(), ".vec") {
+			// The fingerprint sidecar belongs to the vectors: it goes with them,
+			// or it alone would keep the orphaned directory from emptying.
+			if !f.Type().IsRegular() || (!strings.HasSuffix(f.Name(), ".vec") && f.Name() != EmbedCacheFingerprintFile) {
 				continue
 			}
 			if err := os.Remove(filepath.Join(dir, f.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
