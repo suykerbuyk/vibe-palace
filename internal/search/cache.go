@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -45,14 +46,25 @@ var cacheWriteFile = os.WriteFile
 // The Once is per INSTANCE, not per package: a fresh engine sweeps again, which
 // matches process semantics and gives each test a clean start. It is lazy, so
 // constructing an engine (the tool registry, the surface golden) does no I/O.
+//
+// A cache with a fingerprint (set by NewEngine when it has an embedder)
+// validates each project directory once per instance against the
+// storage.EmbedCacheFingerprintFile sidecar: vectors written under another
+// embedding regime, or before sidecars existed, are removed once and
+// re-embedded as ordinary misses. A cache with no fingerprint never checks
+// and never removes anything.
 type EmbedCache struct {
 	vault     *storage.Vault
 	sweepOnce sync.Once
+
+	fingerprint string
+	checkedMu   sync.Mutex
+	checked     map[string]bool
 }
 
 // NewEmbedCache creates a new embedding cache backed by the vault.
 func NewEmbedCache(vault *storage.Vault) *EmbedCache {
-	return &EmbedCache{vault: vault}
+	return &EmbedCache{vault: vault, checked: map[string]bool{}}
 }
 
 // Get returns a cached embedding vector, or nil if not cached.
@@ -158,7 +170,68 @@ func (c *EmbedCache) sweep() {
 // a project's vectors live. Every other path in this package builds on it.
 func (c *EmbedCache) dir(project string) (string, error) {
 	c.sweep()
-	return c.vault.EmbedCacheDir(project)
+	d, err := c.vault.EmbedCacheDir(project)
+	if err != nil || c.fingerprint == "" {
+		return d, err
+	}
+	if err := c.ensureFingerprint(project, d); err != nil {
+		return "", err
+	}
+	return d, nil
+}
+
+// ensureFingerprint validates one project directory's embedding regime, once
+// per instance. A missing or different sidecar means every vector in the
+// directory may be stale: each regular *.vec is removed (nothing else is), and
+// the sidecar is rewritten, so the vectors re-embed as misses and are never
+// mixed with this regime's. A failure is not memoized; the next access retries.
+func (c *EmbedCache) ensureFingerprint(project, dir string) error {
+	c.checkedMu.Lock()
+	defer c.checkedMu.Unlock()
+	if c.checked[project] {
+		return nil
+	}
+	side := filepath.Join(dir, storage.EmbedCacheFingerprintFile)
+	cur, err := os.ReadFile(side)
+	if err == nil && strings.TrimSpace(string(cur)) == c.fingerprint {
+		c.checked[project] = true
+		return nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read embed cache fingerprint: %w", err)
+	}
+	removed := 0
+	ents, rerr := os.ReadDir(dir)
+	if rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		return fmt.Errorf("read embed cache dir: %w", rerr)
+	}
+	for _, e := range ents {
+		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".vec") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("invalidate stale vector: %w", err)
+		}
+		removed++
+	}
+	if err := storage.EnsureDir(dir); err != nil {
+		return fmt.Errorf("ensure embed cache dir: %w", err)
+	}
+	tmp := side + ".tmp"
+	if err := os.WriteFile(tmp, []byte(c.fingerprint+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write embed cache fingerprint: %w", err)
+	}
+	if err := os.Rename(tmp, side); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write embed cache fingerprint: %w", err)
+	}
+	if removed > 0 {
+		slog.Info("embed cache regime changed: stale vectors invalidated",
+			"project", project, "invalidated", removed,
+			"old", strings.TrimSpace(string(cur)), "new", c.fingerprint)
+	}
+	c.checked[project] = true
+	return nil
 }
 
 // path returns palace/.local/embed-cache/{project}/{drawerID}.vec.

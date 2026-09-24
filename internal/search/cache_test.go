@@ -186,11 +186,13 @@ func writeLegacyVector(t *testing.T, root, project, id string, vec []float32) st
 	return p
 }
 
-// TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration: the move must not
-// cost a re-embed. Vectors cached at the legacy path by an older binary are
-// migrated by the first cache operation and served as hits by the same Rebuild.
-func TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+// TestEmbedCache_LegacyVectorsMigrateThenReembedOnce: the layout move still
+// happens on the first cache operation, but a legacy vector carries no
+// embedding-regime fingerprint, so its regime is unknown and it is re-embedded
+// ONCE (it may predate a truncation change: the 2026-09-24 fingerprint unit).
+// After that the directory is fingerprinted and a fresh engine serves hits.
+func TestEmbedCache_LegacyVectorsMigrateThenReembedOnce(t *testing.T) {
+	eng, v, _ := countingEngine(t, storage.Config{})
 	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content one", "facts")
 	d2 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content two", "facts")
 
@@ -207,11 +209,8 @@ func TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if stats.Embedded != 0 || stats.CacheHits != 2 {
-		t.Fatalf("stats = %+v, want 0 embedded and 2 cache hits — the migration cost a re-embed", stats)
-	}
-	if _, batches := emb.counts(); batches != 0 {
-		t.Errorf("embedder ran %d batches, want 0", batches)
+	if stats.Embedded != 2 || stats.CacheHits != 0 {
+		t.Fatalf("stats = %+v, want the 2 unfingerprinted legacy vectors re-embedded once", stats)
 	}
 	if _, err := os.Stat(filepath.Join(v.Root, "palace", "proj", ".local")); !os.IsNotExist(err) {
 		t.Errorf("the emptied legacy .local must be healed away (stat err %v)", err)
@@ -220,6 +219,16 @@ func TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(v.Root, "palace", ".local", "embed-cache", "proj", d.ID+".vec")); err != nil {
 			t.Errorf("vector %s not at the new path: %v", d.ID, err)
 		}
+	}
+
+	again := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10})
+	t.Cleanup(func() { again.Close() })
+	stats, err = again.Rebuild(context.Background(), "proj")
+	if err != nil {
+		t.Fatalf("second Rebuild: %v", err)
+	}
+	if stats.Embedded != 0 || stats.CacheHits != 2 {
+		t.Errorf("second engine stats = %+v, want 2 cache hits and no re-embed", stats)
 	}
 }
 

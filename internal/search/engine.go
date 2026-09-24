@@ -73,10 +73,17 @@ type projectBuild struct {
 
 // NewEngine creates a search engine.
 func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) *Engine {
+	cache := NewEmbedCache(vault)
+	if emb != nil {
+		// Only an engine that can embed validates the cache's regime: one with
+		// no embedder (vp check's) must never invalidate vectors it cannot
+		// replace.
+		cache.fingerprint = embedder.Fingerprint(cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
+	}
 	return &Engine{
 		embedder:  emb,
 		vault:     vault,
-		cache:     NewEmbedCache(vault),
+		cache:     cache,
 		config:    cfg,
 		indexes:   make(map[string]*VectorIndex),
 		metadata:  make(map[string]drawerMeta),
