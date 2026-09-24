@@ -18,7 +18,9 @@ import "fmt"
 // Fingerprint against a per-project sidecar).
 //
 // 1: truncation to maxSeqLen-2 runes, as introduced by 23bedcc.
-const BehaviourVersion = 1
+// 2: token-level truncation replaces the 254-rune cut
+// (embedder-truncates-by-characters-not-tokens).
+const BehaviourVersion = 2
 
 // Fingerprint identifies the embedding regime for a model and configured
 // max_sequence_length (0 kept as 0: the fallback is covered by
