@@ -104,7 +104,7 @@ type EmbedCacheSweep struct {
 	Dropped  int      // legacy vectors discarded because the new layout already held that ID
 	Healed   int      // palace/<slug>/ directories removed because the sweep left them empty
 	Reaped   int      // palace/.local/embed-cache/<slug>/ directories removed for slugs that exist nowhere
-	Departed int      // palace/.local/embed-cache/<slug>/ directories removed because <slug> moved to another vault
+	Departed int      // palace/.local/embed-cache/<slug>/ caches emptied of vectors because <slug> moved to another vault (the directory stays if it holds other files)
 	Tracked  []string // slugs left untouched because git tracks files under their .local/
 	Errors   []string // per-slug failures; each leaves its directory in place for the next run
 }
@@ -501,7 +501,7 @@ func (v *Vault) reapOrphanCaches(res *EmbedCacheSweep, scan cacheScan) {
 		if !e.Type().IsDir() || slug.Validate(name) != nil || scan.known[name] || v.projectPathExists(name) {
 			continue
 		}
-		removed, errs := removeCacheDir(filepath.Join(scan.root, name), name)
+		_, removed, errs := removeCacheDir(filepath.Join(scan.root, name), name)
 		res.Errors = append(res.Errors, errs...)
 		if removed {
 			res.Reaped++
