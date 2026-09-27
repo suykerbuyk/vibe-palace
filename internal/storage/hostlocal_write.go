@@ -85,27 +85,47 @@ func hostLocalTarget(path string) (string, fs.FileMode, error) {
 	return target, mode, nil
 }
 
-// replaceFileMode replaces target with data, temp-then-rename in target's own
-// directory, the temp created with mode.
+// replaceFileMode replaces target with data at mode, temp-then-rename in
+// target's own directory.
 func replaceFileMode(target string, data []byte, mode fs.FileMode) error {
-	tmpPath := target + ".tmp"
-	if err := writeFileMode(tmpPath, data, mode); err != nil {
+	return writeFileMode(target, data, mode)
+}
+
+// writeFileMode writes data to path with exactly mode, and never lets the
+// bytes sit in a file of any other mode — not even briefly.
+//
+// 🔴 A NEW FILE, NEVER THE OLD ONE. Truncating and rewriting an existing file
+// (os.WriteFile) puts the new bytes into it while it still has its OLD mode: a
+// .bak left 0644 by an older vp would hold a 0600 config's bytes, world
+// readable, until a chmod caught up. Instead the bytes go into a fresh temp
+// file created 0600 (os.CreateTemp), set to mode BEFORE anything is written,
+// then renamed over path — so path holds either its old bytes or the new ones
+// at the new mode. The explicit chmod also defeats the umask, which would
+// otherwise narrow a 0644 config's rewrite.
+func writeFileMode(path string, data []byte, mode fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	fail := func(prefix string, err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		return fail("write temp", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail("write temp", err)
+	}
+	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := os.Rename(tmpPath, target); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
-}
-
-// writeFileMode writes data to path with exactly mode: os.WriteFile applies
-// the umask on create and leaves an existing file's mode alone, so the mode
-// is set explicitly afterwards.
-func writeFileMode(path string, data []byte, mode fs.FileMode) error {
-	if err := os.WriteFile(path, data, mode); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
 }
