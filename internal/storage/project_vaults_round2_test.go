@@ -156,6 +156,24 @@ func TestResolveUnreadableConfigFailsClosed(t *testing.T) {
 			t.Errorf("err = %v, want ErrHostConfigUnreadable and not ErrVaultBindingRejected", err)
 		}
 	})
+	// Lstat succeeds and the read fails: the read-error branch, not the stat
+	// one. MUTATION CONTRACT: treat a non-ENOENT read error as "no bindings"
+	// and this goes RED.
+	t.Run("unreadable_file", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a mode-000 file")
+		}
+		f := newBindFixture(t)
+		dir := f.checkout(t, "qa", "[project]\nname = \"qa\"\n")
+		if err := os.Chmod(f.cfg, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(f.cfg, 0o644) })
+		_, err := ResolveVaultBinding(dir)
+		if !errors.Is(err, ErrHostConfigUnreadable) {
+			t.Errorf("err = %v, want ErrHostConfigUnreadable", err)
+		}
+	})
 	t.Run("eacces", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root ignores directory permissions")
