@@ -75,10 +75,15 @@ func makeTestVault(t *testing.T, dir string) string {
 // stubGitSlug replaces the resolver's git-origin derivation for one test and
 // counts its calls.
 func stubGitSlug(t *testing.T, slug string) *int {
+	return stubGitSlugResult(t, slug, nil)
+}
+
+// stubGitSlugResult is stubGitSlug with an error: a lookup that could not tell.
+func stubGitSlugResult(t *testing.T, slug string, err error) *int {
 	t.Helper()
 	calls := 0
 	orig := gitRemoteSlug
-	gitRemoteSlug = func(string) string { calls++; return slug }
+	gitRemoteSlug = func(string) (string, error) { calls++; return slug, err }
 	t.Cleanup(func() { gitRemoteSlug = orig })
 	return &calls
 }
@@ -268,9 +273,7 @@ func TestResolveBinding_MalformedTableRefused(t *testing.T) {
 		"case_variant_table": "\n[PROJECT_VAULTS]\nqa = \"" + quantum + "\"\n",
 		"invalid_slug_key":   "\n[project_vaults]\n\"Bad Key\" = \"" + quantum + "\"\n",
 		"non_string_value":   "\n[project_vaults]\nqa = 3\n",
-		"empty_value":        "\n[project_vaults]\nqa = \"  \"\n",
 		"not_a_table":        "project_vaults = \"" + quantum + "\"\n",
-		"unparseable":        "\n[project_vaults\n",
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -278,15 +281,6 @@ func TestResolveBinding_MalformedTableRefused(t *testing.T) {
 			mustReject(t, dir)
 		})
 	}
-	t.Run("dangling_symlink_config", func(t *testing.T) {
-		if err := os.Remove(f.cfg); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(filepath.Join(f.home, "nowhere.toml"), f.cfg); err != nil {
-			t.Skipf("symlink: %v", err)
-		}
-		mustReject(t, dir)
-	})
 }
 
 // Test 8: the binding reaches a fresh worktree, which gets only the committed

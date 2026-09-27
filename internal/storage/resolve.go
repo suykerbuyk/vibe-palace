@@ -6,14 +6,9 @@ package storage
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
-
-	"github.com/BurntSushi/toml"
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
-	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
 // projectFileName is the per-source-directory project config file. It
@@ -59,14 +54,25 @@ func ResolveVaultPath(cwd string) (path string, source string, err error) {
 // across hosts names its project, and each host binds that project to a vault
 // in its own global config. Tier 1 remains for untracked trees.
 //
+// The marker is found and read by project.LocateMarker — the ONE walk
+// (symlink-resolved, bounded at the resolved $HOME) and reader that project
+// detection also uses, so the vault and the project label cannot come from
+// different files or disagree on the (trimmed) name.
+//
 // Every refusal below wraps ErrVaultBindingRejected and never falls through
-// to a lower tier, because the lowest tier is the LIVE vault. (A cwd file that
-// fails to parse at all is an error too, but an untyped one — unchanged here.)
-//   - a cwd file whose vault_path is swallowed by a table;
-//   - an unreadable or malformed [project_vaults] table;
+// to a lower tier, because the lowest tier is the LIVE vault:
+//   - a found marker that cannot be read or parsed, or whose vault_path is not
+//     a string or is swallowed by a table;
+//   - a malformed [project_vaults] table (a case-variant key, a non-slug key,
+//     a non-string or empty value);
 //   - tiers 1 and 2 naming different vaults (both sources are named);
-//   - a tier-2 target that is not an existing vault;
-//   - a marker naming no project while the git-origin slug is bound.
+//   - a tier-2 target that is not an absolute path to an existing vault;
+//   - a marker naming no project while the git-origin slug is bound, or while
+//     git cannot be asked (missing, failed, timed out) on a host that binds.
+//
+// A global config that is present but unreadable fails with
+// ErrHostConfigUnreadable instead: it is a broken host config, not a binding
+// refusal. An absent (or dangling-symlink) config means "no bindings".
 //
 // Callers must pass cwd explicitly; no env var, no implicit os.Getwd.
 func ResolveVaultBinding(cwd string) (Resolution, error) {
@@ -75,23 +81,19 @@ func ResolveVaultBinding(cwd string) (Resolution, error) {
 		return Resolution{}, fmt.Errorf("resolve cwd: %w", err)
 	}
 
-	var marker cwdMarker
-	cwdFile := findCwdMarkerFile(cwdAbs)
-	if cwdFile != "" {
-		m, perr := readCwdMarker(cwdFile)
-		if perr != nil {
-			return Resolution{}, fmt.Errorf("parse %s: %w", cwdFile, perr)
-		}
-		marker = m
+	marker, err := readCwdMarker(cwdAbs)
+	if err != nil {
+		return Resolution{}, err
 	}
+	cwdFile := marker.Path
 
 	bindings, cfgPath, err := readProjectVaults()
 	if err != nil {
 		return Resolution{}, err
 	}
 
-	name := strings.TrimSpace(marker.ProjectName)
-	if slug.Validate(name) != nil {
+	name := marker.Name
+	if marker.NameErr != nil {
 		name = ""
 	}
 
@@ -133,17 +135,28 @@ func ResolveVaultBinding(cwd string) (Resolution, error) {
 	// a host with no bindings never runs git to resolve a vault.
 	var warnings []string
 	if len(bindings) > 0 {
-		if gs := gitRemoteSlug(cwdAbs); gs != "" && gs != name {
+		gs, gerr := gitRemoteSlug(cwdAbs)
+		switch {
+		case gerr != nil && name == "":
+			// The answer decides between a refusal and the global (live)
+			// vault, and git could not give it: refuse rather than guess.
+			return Resolution{}, fmt.Errorf("%w: this checkout names no project (%s), this host binds projects in %s, "+
+				"and its git origin could not be read to rule them out (%v). Refusing to fall back to the global vault; "+
+				"set [project].name in the checkout's .vibe-palace.toml",
+				ErrVaultBindingRejected, markerWhere(cwdFile), cfgPath, gerr)
+		case gerr != nil:
+			// The marker names the project, so the git slug could only have
+			// produced the advisory below. Say it was not checked.
+			warnings = append(warnings, fmt.Sprintf(
+				"%s names project %q, which has no [project_vaults] entry; its git origin could not be read to check "+
+					"whether a bound project is meant (%v)", cwdFile, name, gerr))
+		case gs != "" && gs != name:
 			if target, ok := bindings[gs]; ok {
 				if name == "" {
-					where := "no .vibe-palace.toml"
-					if cwdFile != "" {
-						where = cwdFile + " names no project"
-					}
 					return Resolution{}, fmt.Errorf("%w: this checkout's git origin names project %q, which %s binds to %s "+
 						"on this host, but there is %s. Refusing to fall back to the global vault; "+
 						"set [project].name in the checkout's .vibe-palace.toml",
-						ErrVaultBindingRejected, gs, cfgPath, target, where)
+						ErrVaultBindingRejected, gs, cfgPath, target, markerWhere(cwdFile))
 				}
 				warnings = append(warnings, fmt.Sprintf(
 					"%s names project %q, which has no [project_vaults] entry, while its git origin names %q, which does; "+
@@ -159,41 +172,62 @@ func ResolveVaultBinding(cwd string) (Resolution, error) {
 	return Resolution{Path: path, Source: source, Warnings: warnings}, nil
 }
 
-// findCwdMarkerFile is the resolver's walk: the nearest .vibe-palace.toml at or
-// above cwdAbs, bounded at $HOME, or "".
-func findCwdMarkerFile(cwdAbs string) string {
-	var boundary string
-	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
-		if abs, aerr := filepath.Abs(home); aerr == nil {
-			boundary = abs
-		}
+// markerWhere phrases "which marker names no project" for a refusal.
+func markerWhere(cwdFile string) string {
+	if cwdFile == "" {
+		return "no .vibe-palace.toml"
 	}
-	return findProjectFileUpward(cwdAbs, boundary)
+	return cwdFile + " names no project"
+}
+
+// readCwdMarker is the resolver's marker read: project.LocateMarker — the ONE
+// walk and reader detection also uses (ADR-012) — with its failures turned
+// into refusals.
+//
+// 🔴 A FOUND MARKER THAT CANNOT BE READ IS A REFUSAL, NOT "NO MARKER". Once a
+// committed marker plus a host binding decides the vault, a marker that fails
+// to read or parse (a syntax error in one commit, `vault_path = 5`, EACCES)
+// hides the binding it would have keyed. Every such failure wraps
+// ErrVaultBindingRejected — the one error `vp hook` treats as "capture
+// nothing" instead of falling back to the global (live) vault — and never
+// fs.ErrNotExist, which callers read as "no config at all".
+func readCwdMarker(cwdAbs string) (project.Marker, error) {
+	m, err := project.LocateMarker(cwdAbs)
+	if err != nil {
+		if m.Path == "" {
+			return project.Marker{}, fmt.Errorf("%w: find .vibe-palace.toml from %s: %v", ErrVaultBindingRejected, cwdAbs, err)
+		}
+		return project.Marker{}, fmt.Errorf("%w: parse %s: %v. Refusing to resolve a vault from a marker that "+
+			"cannot be read: it may name a project this host binds elsewhere, and the fallback is the global (live) vault",
+			ErrVaultBindingRejected, m.Path, err)
+	}
+	if m.SwallowedTable != "" {
+		return project.Marker{}, fmt.Errorf("parse %s: %w", m.Path, errSwallowedVaultPath(m.SwallowedTable))
+	}
+	return m, nil
 }
 
 // CwdMarker returns the .vibe-palace.toml the resolver would read from cwd
-// ("" when there is none) and its top-level vault_path, found by the SAME walk
-// and decode, so a report about "this checkout's marker" cannot name a
-// different file than the one that binds the vault.
+// ("" when there is none) and its top-level vault_path, through the SAME walk
+// and reader, so a report about "this checkout's marker" cannot name a
+// different file than the one that binds the vault. Its errors are the
+// resolver's: typed refusals.
 func CwdMarker(cwd string) (path, vaultPath string, err error) {
 	cwdAbs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve cwd: %w", err)
 	}
-	path = findCwdMarkerFile(cwdAbs)
-	if path == "" {
-		return "", "", nil
-	}
-	m, err := readCwdMarker(path)
+	m, err := readCwdMarker(cwdAbs)
 	if err != nil {
-		return path, "", fmt.Errorf("parse %s: %w", path, err)
+		return "", "", err
 	}
-	return path, m.VaultPath, nil
+	return m.Path, m.VaultPath, nil
 }
 
-// gitRemoteSlug is project.GitRemoteSlug behind a seam, so a test can prove
-// the resolver never runs git on a host that binds nothing.
-var gitRemoteSlug = project.GitRemoteSlug
+// gitRemoteSlug is project.GitRemoteSlugChecked behind a seam, so a test can
+// prove the resolver never runs git on a host that binds nothing, and can make
+// the lookup fail.
+var gitRemoteSlug = project.GitRemoteSlugChecked
 
 // ResolveGlobalVaultPath returns the vault root from the global config only
 // (no cwd walk). Use this for machine-wide artifacts such as user-global host
@@ -208,103 +242,6 @@ func ResolveGlobalVaultPath() (path string, source string, err error) {
 		return "", "", verr
 	}
 	return root, "global:" + cfgPath, nil
-}
-
-// findProjectFileUpward walks from dir toward the filesystem root
-// looking for projectFileName. If homeBoundary is non-empty, the walk
-// stops before inspecting homeBoundary itself — so a file at
-// $HOME/.vibe-palace.toml is never matched when the walk originates
-// below $HOME.
-func findProjectFileUpward(dir, homeBoundary string) string {
-	for {
-		if homeBoundary != "" && dir == homeBoundary {
-			return ""
-		}
-		candidate := filepath.Join(dir, projectFileName)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-// cwdMarker is what the resolver reads from a .vibe-palace.toml: the
-// top-level vault_path (tier 1) and [project].name (the key for tier 2).
-// Unknown top-level keys and sections are tolerated.
-type cwdMarker struct {
-	VaultPath   string
-	ProjectName string
-}
-
-// readCwdMarker reads a .vibe-palace.toml ONCE and returns both keys the
-// resolver needs.
-//
-// vault_path is decoded exactly as before this file learned about names: a
-// wrong-typed value is an error. The name is read TOLERANTLY from a generic
-// decode of the same bytes — a missing, non-table [project] or non-string name
-// is "no usable name", never an error — so no marker that resolved before
-// ADR-012 fails to resolve now merely for what its [project] table holds.
-//
-// It REFUSES a vault_path that TOML parsed as a sub-key of a table rather
-// than a top-level key — see errSwallowedVaultPath. That is a hard error,
-// joining the malformed-TOML path this file already documents: no silent
-// fallback.
-func readCwdMarker(path string) (cwdMarker, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cwdMarker{}, err
-	}
-	var cfg struct {
-		VaultPath string `toml:"vault_path"`
-	}
-	md, err := toml.Decode(string(data), &cfg)
-	if err != nil {
-		return cwdMarker{}, err
-	}
-	if cfg.VaultPath == "" {
-		if owner := swallowedVaultPathTable(md); owner != "" {
-			return cwdMarker{}, errSwallowedVaultPath(owner)
-		}
-	}
-	m := cwdMarker{VaultPath: cfg.VaultPath}
-	var raw map[string]any
-	if _, err := toml.Decode(string(data), &raw); err == nil {
-		if p, ok := raw["project"].(map[string]any); ok {
-			m.ProjectName, _ = p["name"].(string)
-		}
-	}
-	return m, nil
-}
-
-// swallowedVaultPathTable reports the table that captured a vault_path key,
-// or "" when none did.
-//
-// vault_path is a TOP-LEVEL key, but TOML scopes every key that follows a
-// [table] header INTO that table. So the natural writing order
-//
-//	[project]
-//	name = "throwaway"
-//	vault_path = "/tmp/throwaway-vault"
-//
-// binds project.vault_path, leaves the top-level key unset, and the decode
-// succeeds with err == nil. Without this detection the caller falls through to
-// the GLOBAL config — the live vault — and writes there. Iteration 210 caught
-// that only after a throwaway run had captured into the real vault.
-//
-// MetaData.Keys reports every key the document actually defined, so the
-// swallowed case is directly observable; the decode alone cannot see it.
-func swallowedVaultPathTable(md toml.MetaData) string {
-	for _, key := range md.Keys() {
-		if len(key) < 2 || key[len(key)-1] != "vault_path" {
-			continue
-		}
-		return strings.Join(key[:len(key)-1], ".")
-	}
-	return ""
 }
 
 // ErrSwallowedVaultPath marks a .vibe-palace.toml that was FOUND and PARSED

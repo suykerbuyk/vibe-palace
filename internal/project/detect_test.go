@@ -119,7 +119,7 @@ func TestGitRemoteName_IgnoresInheritedGitDirAndWorkTree(t *testing.T) {
 	t.Setenv("GIT_DIR", filepath.Join(decoyDir, ".git"))
 	t.Setenv("GIT_WORK_TREE", decoyDir)
 
-	got, err := gitRemoteName(projectDir)
+	got, _, err := gitRemoteName(projectDir)
 	if err != nil {
 		t.Fatalf("gitRemoteName: %v", err)
 	}

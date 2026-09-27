@@ -21,16 +21,32 @@ import (
 // vault on THIS host (ADR-012, resolution tier 2).
 const projectVaultsKey = "project_vaults"
 
+// ErrHostConfigUnreadable marks a global config that is THERE and cannot be
+// read or parsed, found while looking for [project_vaults].
+//
+// It is deliberately NOT ErrVaultBindingRejected. That sentinel is a claim
+// about a binding; this is a broken host config, which every command already
+// reports as such — `vp check` must keep running its rows on it (preflight
+// works on exactly the machine it diagnoses), and the hook's fallback to the
+// global vault cannot capture anything, because opening the global vault reads
+// the same unreadable file and fails. Resolution still fails closed on it: an
+// unreadable file might hold the binding that should have applied.
+var ErrHostConfigUnreadable = errors.New("host config unreadable")
+
 // readProjectVaults returns the host's [project_vaults] table from the global
 // config, and that config's path.
 //
-// An ABSENT config file, or an unresolvable config directory, is "no
-// bindings": the host binds nothing, and tier 3 reports its own error if it
-// needs the file. Anything else that stops the table being read is a refusal
-// wrapping ErrVaultBindingRejected, because an unreadable table might hold the
-// binding that should have applied, and the tier below is the live vault:
-//   - an Lstat error other than ENOENT (a dangling symlink, EACCES, EIO);
-//   - a file that does not parse;
+// "No bindings", with no error, when the config is ABSENT: an unresolvable
+// config directory, an Lstat ENOENT, or a dangling symlink (a link to nothing
+// is no file). The host binds nothing, and tier 3 then reports the missing
+// config exactly as it did before [project_vaults] existed.
+//
+// ErrHostConfigUnreadable when the config is present and cannot be read or
+// parsed (EACCES, EIO, a syntax error).
+//
+// ErrVaultBindingRejected when the config parses but the table is wrong — a
+// refusal about the binding itself, which the hook must treat as "capture
+// nothing":
 //   - a top-level key that differs from project_vaults only in case — the
 //     table is decoded into a map, never a struct field, precisely because
 //     BurntSushi matches struct fields case-insensitively (HostGitEnabled has
@@ -45,19 +61,26 @@ func readProjectVaults() (map[string]string, string, error) {
 	rejected := func(format string, a ...any) error {
 		return fmt.Errorf("%w: [%s] in %s: %s", ErrVaultBindingRejected, projectVaultsKey, cfgPath, fmt.Sprintf(format, a...))
 	}
+	unreadable := func(format string, a ...any) error {
+		return fmt.Errorf("%w: %s: %s", ErrHostConfigUnreadable, cfgPath, fmt.Sprintf(format, a...))
+	}
 	if _, err := os.Lstat(cfgPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, cfgPath, nil
 		}
-		return nil, cfgPath, rejected("cannot stat the config: %v", err)
+		return nil, cfgPath, unreadable("cannot stat the config: %v", err)
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
-		return nil, cfgPath, rejected("cannot read the config: %v", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Lstat found the entry, the read found nothing: a dangling symlink.
+			return nil, cfgPath, nil
+		}
+		return nil, cfgPath, unreadable("cannot read the config: %v", err)
 	}
 	var top map[string]any
 	if _, err := toml.Decode(string(data), &top); err != nil {
-		return nil, cfgPath, rejected("the config does not parse: %v", err)
+		return nil, cfgPath, unreadable("the config does not parse: %v", err)
 	}
 	for key := range top {
 		if key != projectVaultsKey && strings.EqualFold(key, projectVaultsKey) {
@@ -78,8 +101,11 @@ func readProjectVaults() (map[string]string, string, error) {
 			return nil, cfgPath, rejected("key %q is not a project slug: %v", key, err)
 		}
 		s, ok := v.(string)
-		if !ok || strings.TrimSpace(s) == "" {
-			return nil, cfgPath, rejected("%s = %v is not a non-empty path string", key, v)
+		if !ok {
+			return nil, cfgPath, rejected("%s = %v is a %T, not a path string", key, v, v)
+		}
+		if strings.TrimSpace(s) == "" {
+			return nil, cfgPath, rejected("%s is an empty string, not a vault path", key)
 		}
 		out[key] = s
 	}
@@ -103,10 +129,13 @@ func boundVaultRoot(cfgPath, name, target string) (string, error) {
 	if err != nil {
 		return "", rejected(fmt.Sprintf("cannot be expanded (%v)", err))
 	}
-	abs, err := filepath.Abs(expanded)
-	if err != nil {
-		return "", rejected(fmt.Sprintf("cannot be made absolute (%v)", err))
+	// A relative target would resolve against whatever directory the process
+	// happens to run in, so one binding would name a different vault from
+	// every checkout. Only an absolute path (after ~ expansion) is a binding.
+	if !filepath.IsAbs(expanded) {
+		return "", rejected("is not an absolute path (write it absolute, or starting with ~/)")
 	}
+	abs := filepath.Clean(expanded)
 	st, err := os.Stat(abs)
 	if err != nil {
 		return "", rejected(fmt.Sprintf("cannot be read (%v)", err))
