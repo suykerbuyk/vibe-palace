@@ -6,6 +6,7 @@ package storage
 import (
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -70,7 +71,10 @@ func (c ProjectPathClass) String() string {
 // MachineLocalDirNames are the directory names whose subtrees are
 // ProjectMachineLocal, for walks that prune by DirEntry name. A caller must not
 // modify it.
-var MachineLocalDirNames = map[string]bool{".local": true, ".vp-locks": true}
+//
+// It is departure.MachineLocalDirNames, the one definition: the departure
+// residue probe drops the same components, and departure cannot import storage.
+var MachineLocalDirNames = departure.MachineLocalDirNames
 
 // ClassifyProjectPath classifies a slash-separated vault-relative path.
 //

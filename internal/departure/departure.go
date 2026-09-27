@@ -20,7 +20,7 @@
 //     Audits/ is vault-global, shares the one Audits/.surface stamp, and no
 //     project enumerator walks it.
 //
-// This is a LEAF package (it imports only internal/slug) so that
+// This is a LEAF package (it imports only internal/slug and internal/gitenv) so that
 // internal/project — which internal/storage imports, and so cannot import
 // storage — can read it, and so the embed-cache sweep and the pull guard can
 // read it with nothing but a vault root.
@@ -188,16 +188,30 @@ func Parse(slug string, data []byte) Record {
 }
 
 // Find reports whether slug is DEPARTED: its record exists AND
-// Projects/<slug>/ is absent. The directory wins — a deliberate `vp init`
-// re-scaffold reopens the slug without anyone deleting the record, and a later
-// departure simply overwrites it.
+// Projects/<slug>/ is absent, or holds only residue git would not carry
+// (OnlyResidue). The directory wins — a deliberate `vp init` re-scaffold
+// reopens the slug without anyone deleting the record (its scaffold is content
+// git would carry), and a later departure simply overwrites it.
 func Find(vaultRoot, slug string) (Record, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Record{}, false
 	}
-	if _, err := os.Lstat(filepath.Join(vaultRoot, "Projects", slug)); !errors.Is(err, fs.ErrNotExist) {
-		// Present, or not inspectable: either way the slug is not departed.
-		return Record{}, false
+	if fi, err := os.Lstat(filepath.Join(vaultRoot, "Projects", slug)); !errors.Is(err, fs.ErrNotExist) {
+		if err != nil || !fi.IsDir() {
+			// Not inspectable, or not a directory (a symlink, a regular
+			// file): not evidence of departure, and not a tree the residue
+			// probe's Projects/<slug>/ pathspec can judge.
+			return Record{}, false
+		}
+		// Present. The record is read FIRST, so a live project with none —
+		// the common case, on every dispatch — costs one failed open and no
+		// git. Only a recorded slug whose directory survived asks git whether
+		// anything in it is more than a pull's leftovers.
+		rec, found := Read(vaultRoot, slug)
+		if !found || !OnlyResidue(vaultRoot, slug) {
+			return Record{}, false
+		}
+		return rec, true
 	}
 	return Read(vaultRoot, slug)
 }
@@ -235,7 +249,7 @@ func Resolve(vaultRoot, slug string) (chain []Record, ok bool) {
 }
 
 // List returns every DEPARTED slug's record (record present, Projects/<slug>/
-// absent), sorted by slug. Entries that are not <valid-slug>.json are skipped:
+// absent or residue only; see Find), sorted by slug. Entries that are not <valid-slug>.json are skipped:
 // one stray file cannot hide the others.
 func List(vaultRoot string) []Record {
 	if vaultRoot == "" {

@@ -48,9 +48,10 @@ type Departure struct {
 	Commit, Subject string
 }
 
-// Departed reports a slug whose Projects/<slug>/ is ABSENT from the vault and
-// which is known to have LEFT it: renamed to another slug, or moved to another
-// vault.
+// Departed reports a slug whose Projects/<slug>/ is ABSENT from the vault — or,
+// when its departure record exists, holds only residue git would not carry
+// (departure.OnlyResidue) — and which is known to have LEFT it: renamed to
+// another slug, or moved to another vault.
 //
 // 🔴 THIS IS WHAT A STALE CHECKOUT LOOKS LIKE. A checkout whose
 // .vibe-palace.toml still names a departed slug would otherwise lazily
@@ -92,10 +93,16 @@ func Departed(vaultRoot, slug string) (Departure, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Departure{}, false
 	}
-	if _, err := os.Lstat(filepath.Join(vaultRoot, "Projects", slug)); !os.IsNotExist(err) {
-		// Present, or not inspectable: either way not evidence of departure.
+	_, lerr := os.Lstat(filepath.Join(vaultRoot, "Projects", slug))
+	present := lerr == nil
+	if lerr != nil && !os.IsNotExist(lerr) {
+		// Not inspectable: not evidence of departure.
 		return Departure{}, false
 	}
+	// A PRESENT directory can still be a departure: a pull removes only tracked
+	// files, so a departed project's directory survives holding ignored
+	// residue. departure.Find (under Resolve) decides that from the record and
+	// git, and only when a record exists, so a live project costs no git here.
 	if chain, ok := departure.Resolve(vaultRoot, slug); ok {
 		last := chain[len(chain)-1]
 		d := Departure{Slug: slug, Source: "record", Kind: last.Kind, To: last.To, Date: last.Date, Malformed: last.Malformed}
@@ -103,6 +110,12 @@ func Departed(vaultRoot, slug string) (Departure, bool) {
 			d.Via = append(d.Via, r.To)
 		}
 		return d, true
+	}
+	if present {
+		// The git-history fallback is for an ABSENT directory only: asking git
+		// about every present project with no record is the cost the residue
+		// rule was built to avoid.
+		return Departure{}, false
 	}
 	if removed, commit, subject := historyRemoved(vaultRoot, slug); removed {
 		return Departure{Slug: slug, Source: "history", Commit: commit, Subject: subject}, true
@@ -128,7 +141,7 @@ func historyRemoved(vaultRoot, slug string) (removed bool, commit, subject strin
 	// compared with the vault root, both symlink-resolved), which this package
 	// cannot import because storage imports it.
 	top, err := removedSlugGitOut(ctx, vaultRoot, "rev-parse", "--show-toplevel")
-	if err != nil || !sameResolvedDir(strings.TrimSpace(top), vaultRoot) {
+	if err != nil || !departure.SameResolvedDir(strings.TrimSpace(top), vaultRoot) {
 		return false, "", ""
 	}
 	out, err := removedSlugGitOut(ctx, vaultRoot, "log", "-1", "--format=%H%x00%s", "--", "Projects/"+slug+"/")
@@ -152,18 +165,6 @@ func removedSlugGitOut(ctx context.Context, dir string, args ...string) (string,
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	return string(out), err
-}
-
-// sameResolvedDir reports whether a and b are the same directory once both
-// are symlink-resolved (git reports a resolved top level; a vault path may
-// not be). Unresolvable means "not the same": the probe then fails open.
-func sameResolvedDir(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	ra, err1 := filepath.EvalSymlinks(a)
-	rb, err2 := filepath.EvalSymlinks(b)
-	return err1 == nil && err2 == nil && filepath.Clean(ra) == filepath.Clean(rb)
 }
 
 // RefuseDeparted is Departed as a refusal, for writers that take a slug with

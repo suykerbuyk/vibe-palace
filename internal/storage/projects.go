@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -84,6 +85,19 @@ func (v *Vault) ListAllProjects() ([]ProjectPresence, error) {
 	projects, err := listProjectDirs(filepath.Join(v.Root, "Projects"))
 	if err != nil {
 		return nil, fmt.Errorf("list Projects entries: %w", err)
+	}
+	// A DEPARTED slug is not a project here even when its Projects/ directory
+	// survived a pull holding only ignored residue (departure.Find). Dropped on
+	// the Projects/ side only: listProjectDirs also feeds listPalaceStores, and
+	// the palace side already has its own presence rule. departure.List reads
+	// the records once and asks git only for a recorded slug whose directory
+	// is still there.
+	if gone := departure.List(v.Root); len(gone) > 0 {
+		departed := make(map[string]bool, len(gone))
+		for _, rec := range gone {
+			departed[rec.Slug] = true
+		}
+		projects = slices.DeleteFunc(projects, func(s string) bool { return departed[s] })
 	}
 
 	byslug := make(map[string]ProjectPresence, len(palace)+len(projects))
