@@ -2052,6 +2052,45 @@ var toolCoverageFixtures = map[string]toolFixture{
 		},
 	},
 
+	"vp_config_bind": {
+		// Mode new needs no git remote: bind a slug the harness vault (the
+		// host default here) never held to a second stamped vault. IsolateEnv
+		// gives each call its own HOME/XDG, so the write lands in a temp host
+		// config.
+		build: func(t *testing.T, h *testHarness) any {
+			home := testinfra.IsolateEnv(t).Home
+			cfg, err := storage.VaultConfigFilePath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte("vault_path = \""+h.Vault.Root+"\"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(home, "other-vault")
+			if err := surface.WriteFormat(target, surface.RequiredDataFormat); err != nil {
+				t.Fatal(err)
+			}
+			return map[string]any{"slug": "cov-bind", "vault_path": target, "mode": "new"}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				ConfigPath string `json:"config_path"`
+				Change     string `json:"change"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.ConfigPath == "" || !strings.Contains(out.Change, "cov-bind") {
+				t.Errorf("vp_config_bind report = %s", payload)
+			}
+			body, err := os.ReadFile(out.ConfigPath)
+			if err != nil || !strings.Contains(string(body), "cov-bind = ") {
+				t.Errorf("the host config does not carry the binding (err %v):\n%s", err, body)
+			}
+		},
+	},
+
 	"vp_init": {
 		build: func(t *testing.T, h *testHarness) any {
 			projectDir := filepath.Join(t.TempDir(), "cov-init-proj")

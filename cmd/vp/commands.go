@@ -101,6 +101,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdConfig())
 	reg.Register(mutates(cmdConfigUpgrade()))
 	reg.Register(mutates(cmdConfigSync()))
+	// mutates(): `vp config bind` writes the host's global config, not the
+	// vault, but it decides which vault every later write lands in — gated
+	// like vp_config_bind, its MCP twin.
+	reg.Register(mutates(cmdConfigBind()))
 	reg.Register(cmdMCP())
 	reg.Register(cmdMCPServe())
 	reg.Register(cmdMCPInstall(info))

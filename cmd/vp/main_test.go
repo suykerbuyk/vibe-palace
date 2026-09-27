@@ -259,6 +259,9 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"summarize iterations": true,
 		"config upgrade":       true,
 		"config sync":          true,
+		// config bind writes the host's global config, not the vault, but it
+		// decides which vault every later write lands in (vp_config_bind twin).
+		"config bind": true,
 		// The reset verbs remove a vault Templates/ file (vaultfs.Delete),
 		// write its backup (vaultfs.Create) and commit the removal. `commands
 		// upgrade` and `skills upgrade` are deliberately ABSENT: they were

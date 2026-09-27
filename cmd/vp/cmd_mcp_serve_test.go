@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,7 +166,9 @@ func TestMCPServeReadOnlyFiltersMutatingTools(t *testing.T) {
 }
 
 // TestMCPServeAllowWritesExposesMutatingTools verifies that, without filtering
-// (--allow-writes), every MutatingToolName is present over tools/list.
+// (--allow-writes), every MutatingToolName is present over tools/list — except
+// the stdio-only tools, which write the server host's own state and are never
+// served.
 func TestMCPServeAllowWritesExposesMutatingTools(t *testing.T) {
 	stack := newServeTestStack(t)
 	handler := buildMCPServeHandler(stack, mcpServeTestToken, true /* allowWrites */)
@@ -173,8 +176,27 @@ func TestMCPServeAllowWritesExposesMutatingTools(t *testing.T) {
 	names := listToolNames(t, handler, mcpServeTestToken)
 
 	for _, m := range tools.MutatingToolNames {
+		if slices.Contains(tools.StdioOnlyToolNames, m) {
+			continue
+		}
 		if !names[m] {
 			t.Errorf("mutating tool %q must be PRESENT with --allow-writes", m)
+		}
+	}
+}
+
+// TestStdioOnlyToolsAreAbsentOnServe: vp_config_bind writes the host's global
+// config and verifies the host's checkouts, which over `vp mcp serve` are the
+// SERVER's, not the caller's — so it is absent even with --allow-writes.
+// MUTATION CONTRACT: register it unconditionally and this goes RED.
+func TestStdioOnlyToolsAreAbsentOnServe(t *testing.T) {
+	stack := newServeTestStack(t)
+	handler := buildMCPServeHandler(stack, mcpServeTestToken, true /* allowWrites */)
+
+	names := listToolNames(t, handler, mcpServeTestToken)
+	for _, m := range tools.StdioOnlyToolNames {
+		if names[m] {
+			t.Errorf("stdio-only tool %q is served over HTTP", m)
 		}
 	}
 }

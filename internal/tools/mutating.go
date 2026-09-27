@@ -70,6 +70,10 @@ var MutatingToolNames = []string{
 	"vp_kg_add",
 	"vp_kg_invalidate",
 	"vp_init",
+	// vp_config_bind writes the host's global config, not the vault — but it
+	// decides which vault every later write lands in, so a stale binary must
+	// refuse it like a writer.
+	"vp_config_bind",
 	"vp_vault_sync",
 	"vp_vault_tidy",
 	// vp_refresh_index backfills archived transcripts into drawers
