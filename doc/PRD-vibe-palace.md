@@ -95,6 +95,10 @@ of the MCP server, not inputs to it.
 
 **The project-local footprint is exactly one file:** `.vibe-palace.toml` at the
 project root. This file contains only the project identity (name, domain, tags).
+It MAY be committed to the project repository; a committed copy never carries
+`vault_path`, because a path is a fact about one host. Which vault a project
+lives in on a given host is that host's own `[project_vaults]` binding in its
+global config (ADR-012).
 Everything else — workflow rules, behavioral calibration, commands, skills,
 templates — is delivered through the MCP interface on demand.
 
