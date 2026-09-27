@@ -187,20 +187,24 @@ func RebindCheckout(r CheckoutRebind) (CheckoutRebindReport, error) {
 		return rep, nil
 	}
 
-	// Writes, in order: the host's [project_vaults] key, the toml, the
-	// host-local project config, the anchors. A failure after the first write
-	// restores what was already written.
+	// Writes, in order: the host's [project_vaults].<to> key, the toml, the
+	// host-local project config, the anchors. A failure before the anchors
+	// undoes what was already written — each undo a compare-and-set against
+	// the bytes this call wrote, so another writer's change is never
+	// overwritten with an older pre-image.
+	var written []string
 	var cfgBackup string
-	if bm.move {
+	if bm.add {
 		if err := casWriteHostConfig(bm.cfgPath, bm.old, []byte(bm.next), &cfgBackup); err != nil {
 			return rep, fmt.Errorf("refusing: %v", err)
 		}
+		written = append(written, fmt.Sprintf("%s (added [%s].%s; pre-image %s)", bm.cfgPath, projectVaultsKey, r.ToSlug, cfgBackup))
 	}
 	undoCfg := func(cause error) error {
-		if !bm.move {
+		if !bm.add {
 			return cause
 		}
-		if rerr := restoreHostLocal(bm.cfgPath, bm.old); rerr != nil {
+		if rerr := restoreHostLocalCAS(bm.cfgPath, []byte(bm.next), bm.old); rerr != nil {
 			return fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", cause, bm.cfgPath, rerr, cfgBackup)
 		}
 		return fmt.Errorf("%w; %s was restored to its previous bytes", cause, bm.cfgPath)
@@ -211,11 +215,12 @@ func RebindCheckout(r CheckoutRebind) (CheckoutRebindReport, error) {
 			return rep, undoCfg(fmt.Errorf("rewrite %s: %w", rep.TomlPath, err))
 		}
 		rep.BackupPath = bak
+		written = append(written, fmt.Sprintf("%s (name %s -> %s; pre-image %s)", rep.TomlPath, r.FromSlug, r.ToSlug, bak))
 	}
 	undoToml := func(cause error) error {
 		if next != "" {
-			if rerr := restoreHostLocal(rep.TomlPath, old); rerr != nil {
-				cause = fmt.Errorf("%w; restoring %s also failed: %v", cause, rep.TomlPath, rerr)
+			if rerr := restoreHostLocalCAS(rep.TomlPath, []byte(next), old); rerr != nil {
+				cause = fmt.Errorf("%w; restoring %s also failed: %v — its pre-image is %s", cause, rep.TomlPath, rerr, rep.BackupPath)
 			}
 		}
 		return undoCfg(cause)
@@ -226,20 +231,29 @@ func RebindCheckout(r CheckoutRebind) (CheckoutRebindReport, error) {
 			return rep, undoToml(fmt.Errorf("move host project config: %w", err))
 		}
 		movedHost = true
+		written = append(written, fmt.Sprintf("%s (moved from %s)", rep.HostConfig.To, rep.HostConfig.From))
 	}
-	if bm.move {
+	if bm.verify {
 		res, err := ResolveVaultBinding(r.Checkout)
 		want := "binding:" + bm.cfgPath + "#" + r.ToSlug
 		if err != nil || res.Source != want || !sameVaultRoot(res.Path, r.VaultRoot) {
+			cause := fmt.Errorf("refusing: after the rename the checkout resolves %q (source %q, err %v), not %s through the binding",
+				res.Path, res.Source, err, r.VaultRoot)
 			if movedHost {
-				_ = os.Rename(rep.HostConfig.To, rep.HostConfig.From)
+				if rerr := os.Rename(rep.HostConfig.To, rep.HostConfig.From); rerr != nil {
+					cause = fmt.Errorf("%w; moving %s back to %s also failed: %v", cause, rep.HostConfig.To, rep.HostConfig.From, rerr)
+				}
 			}
-			return rep, undoToml(fmt.Errorf("refusing: after the rename the checkout resolves %q (source %q, err %v), not %s through the binding",
-				res.Path, res.Source, err, r.VaultRoot))
+			return rep, undoToml(cause)
 		}
 	}
-	if err := rebindApplyAnchors(anchors); err != nil {
-		return rep, err
+	copied, err := rebindApplyAnchors(anchors)
+	if err != nil {
+		// The rename itself is complete and consistent; only the anchor copy
+		// failed. Nothing is undone — say exactly what is now on disk.
+		written = append(written, copied...)
+		return rep, fmt.Errorf("%w; the rename is otherwise complete, and these were written and NOT undone: %s",
+			err, strings.Join(written, "; "))
 	}
 	rep.Anchors = anchors
 	return rep, nil
@@ -291,28 +305,43 @@ func rebindSplit(r CheckoutRebind, rep CheckoutRebindReport, m project.Marker, a
 		rep.Anchors = rebindDryAnchors(anchors)
 		return rep, nil
 	}
-	if err := rebindApplyAnchors(anchors); err != nil {
-		return rep, err
+	if _, err := rebindApplyAnchors(anchors); err != nil {
+		return rep, fmt.Errorf("%w; the bind itself is complete (%s)", err, br.ConfigPath)
 	}
 	rep.Anchors = anchors
 	return rep, nil
 }
 
-// rebindBinding is a rename's planned [project_vaults] key move.
+// rebindBinding is a rename's planned [project_vaults] change.
 type rebindBinding struct {
-	move    bool
+	// add is true when <to> must be added; verify is true whenever <to> is
+	// bound after the rename (added now, or already), so the renamed checkout
+	// must resolve through it.
+	add     bool
+	verify  bool
 	cfgPath string
 	old     []byte
 	next    string
 	change  string
 }
 
-// rebindBindingPlan plans moving [project_vaults].<from> to <to>, so the
-// renamed checkout keeps resolving the vault it was bound to. A bound <from>
-// must point at the vault the rename landed in, and an existing <to> must
-// agree with it; anything else refuses before any write.
+// rebindBindingPlan plans ADDING [project_vaults].<to> with <from>'s value, so
+// the renamed checkout keeps resolving the vault it was bound to.
+//
+// 🔴 <from> IS NEVER REMOVED. Every other checkout on this host that still
+// names <from> — another worktree, a second clone — resolves through that key;
+// removing it would drop them to the global vault, where their first capture
+// would create Projects/<from> in the live vault. They keep resolving the bound
+// vault, whose `renamed` departure record then refuses <from> and redirects to
+// <to>. For the same reason a crash between this write and the toml write
+// strands nothing.
+//
+// A bound <from> must point at the vault the rename landed in, and an existing
+// <to> must agree with it; anything else refuses before any write. The
+// bindings are parsed from the same bytes the splice edits and the
+// compare-and-set compares against.
 func rebindBindingPlan(r CheckoutRebind) (rebindBinding, error) {
-	bindings, cfgPath, err := readProjectVaults()
+	bindings, cfgPath, old, err := readProjectVaultsBytes()
 	if err != nil {
 		return rebindBinding{}, fmt.Errorf("refusing: the host config cannot be used: %w", err)
 	}
@@ -324,6 +353,7 @@ func rebindBindingPlan(r CheckoutRebind) (rebindBinding, error) {
 			if berr != nil || !sameVaultRoot(root, r.VaultRoot) {
 				return rebindBinding{}, fmt.Errorf("refusing: %s binds %q to %q, not to %s where the rename landed", cfgPath, r.ToSlug, toVal, r.VaultRoot)
 			}
+			return rebindBinding{verify: true, cfgPath: cfgPath}, nil
 		}
 		return rebindBinding{}, nil
 	}
@@ -338,28 +368,18 @@ func rebindBindingPlan(r CheckoutRebind) (rebindBinding, error) {
 		if toRoot, berr := boundVaultRoot(cfgPath, r.ToSlug, toVal); berr != nil || !sameVaultRoot(toRoot, fromRoot) {
 			return rebindBinding{}, fmt.Errorf("refusing: %s already binds %q to %q, which is not %s; merge the two by hand", cfgPath, r.ToSlug, toVal, fromRoot)
 		}
+		return rebindBinding{verify: true, cfgPath: cfgPath}, nil
 	}
-	old, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return rebindBinding{}, fmt.Errorf("refusing: read %s: %w", cfgPath, err)
-	}
-	next, err := removeProjectVault(string(old), r.FromSlug)
+	next, _, err := spliceProjectVault(string(old), r.ToSlug, fromVal)
 	if err != nil {
 		return rebindBinding{}, fmt.Errorf("refusing: %w", err)
 	}
-	want := map[string]string{r.FromSlug: "", r.ToSlug: toVal}
-	if !toOK {
-		if next, _, err = spliceProjectVault(next, r.ToSlug, fromVal); err != nil {
-			return rebindBinding{}, fmt.Errorf("refusing: %w", err)
-		}
-		want[r.ToSlug] = fromVal
-	}
-	if err := projectVaultsPostcondition(string(old), next, want); err != nil {
+	if err := projectVaultsPostcondition(string(old), next, map[string]string{r.ToSlug: fromVal}); err != nil {
 		return rebindBinding{}, fmt.Errorf("refusing: %w", err)
 	}
 	return rebindBinding{
-		move: true, cfgPath: cfgPath, old: old, next: next,
-		change: fmt.Sprintf("[%s] %s -> %s = %q", projectVaultsKey, r.FromSlug, r.ToSlug, want[r.ToSlug]),
+		add: true, verify: true, cfgPath: cfgPath, old: old, next: next,
+		change: fmt.Sprintf("[%s] + %s = %q (%s kept, for checkouts that still name it)", projectVaultsKey, r.ToSlug, fromVal, r.FromSlug),
 	}, nil
 }
 
@@ -373,24 +393,27 @@ func rebindDryAnchors(anchors []RebindFileAction) []RebindFileAction {
 	return anchors
 }
 
-// rebindApplyAnchors copies the planned anchors.
-func rebindApplyAnchors(anchors []RebindFileAction) error {
+// rebindApplyAnchors copies the planned anchors, returning the ones it copied
+// (so a failure part-way can say exactly what is on disk).
+func rebindApplyAnchors(anchors []RebindFileAction) ([]string, error) {
+	var copied []string
 	for _, a := range anchors {
 		if a.Action != "copied" {
 			continue
 		}
 		data, err := os.ReadFile(a.From)
 		if err != nil {
-			return fmt.Errorf("read anchor: %w", err)
+			return copied, fmt.Errorf("read anchor: %w", err)
 		}
 		if err := os.MkdirAll(filepath.Dir(a.To), 0o755); err != nil {
-			return fmt.Errorf("create anchor dir: %w", err)
+			return copied, fmt.Errorf("create anchor dir: %w", err)
 		}
 		if err := os.WriteFile(a.To, data, 0o644); err != nil {
-			return fmt.Errorf("write anchor: %w", err)
+			return copied, fmt.Errorf("write anchor: %w", err)
 		}
+		copied = append(copied, a.To+" (anchor)")
 	}
-	return nil
+	return copied, nil
 }
 
 func rebindValidate(r CheckoutRebind) error {
