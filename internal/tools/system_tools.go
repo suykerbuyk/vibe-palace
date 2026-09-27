@@ -674,14 +674,14 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 		}
 
 		if p.DryRun {
-			res, err := storage.TidyScan(root)
-			if err != nil {
-				return nil, fmt.Errorf("tidy scan: %w", err)
+			res, refusal := storage.TidyPreview(root)
+			if res == nil {
+				return nil, fmt.Errorf("tidy scan: %w", refusal)
 			}
 			summary := fmt.Sprintf("dry run: would sweep %d artifact%s, %d reported%s",
 				len(res.Swept), plural(len(res.Swept)), len(res.Reported),
 				userMemorySummarySuffix(len(res.ReportedUserContent)))
-			return map[string]any{
+			out := map[string]any{
 				"status":                "ok",
 				"dry_run":               true,
 				"swept":                 res.Swept,
@@ -689,8 +689,15 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"reported_user_content": res.ReportedUserContent,
 				"deferred":              res.Deferred,
 				"committed":             false,
-				"summary":               summary,
-			}, nil
+			}
+			// The prediction is a refusal, not a failed dry run: say it in a
+			// field and the summary, and keep the result a normal one.
+			if refusal != nil {
+				out["would_refuse"] = refusal.Error()
+				summary += "; a real tidy would refuse (see would_refuse)"
+			}
+			out["summary"] = summary
+			return out, nil
 		}
 
 		push := true

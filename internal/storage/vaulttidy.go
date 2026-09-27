@@ -353,6 +353,28 @@ func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, 
 	}, nil
 }
 
+// TidyPreview is the dry run's verdict: TidyScan plus the one check a real
+// tidy makes before it commits that classification cannot — the U1 commit
+// guard — under the real run's own condition. tidyVaultCore goes through here,
+// so a dry run and a real run cannot disagree about it: both refuse exactly
+// when there is something to sweep while a departure record is uncommitted.
+//
+// A scan failure returns a nil result. A refusal returns the full result AND
+// the guard's error (errors.Is ErrPendingDeparture), so a dry run can still
+// print what it would have swept before saying why a real run would not.
+func TidyPreview(vaultPath string) (*TidyResult, error) {
+	result, err := TidyScan(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	// An empty sweep set is a no-op that never reaches a committer, so it is
+	// never refused (the same condition as tidyVaultCore's early return).
+	if len(result.Swept) == 0 {
+		return result, nil
+	}
+	return result, refuseOnPendingDepartures(vaultPath)
+}
+
 // TidyVault scans the whole vault for uncommitted dirt, classifies it into
 // host-generated capture artifacts (swept) versus everything else (reported),
 // and commits ONLY the swept set via CommitAndPushPaths. It NEVER runs
@@ -382,7 +404,7 @@ func TidyVault(vaultPath string, push bool) (*TidyResult, error) {
 // tidyVaultCore is TidyVault after its git_enabled gate, for storage-internal
 // composition (SyncVault).
 func tidyVaultCore(vaultPath string, push bool) (*TidyResult, error) {
-	result, err := TidyScan(vaultPath)
+	result, err := TidyPreview(vaultPath)
 	if err != nil {
 		return nil, err
 	}
