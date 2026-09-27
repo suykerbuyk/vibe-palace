@@ -69,10 +69,11 @@ since-deleted `templates.Executor`). It does not materialize
 template bytes onto disk; it merges the *missing canonical keys* from a template
 into a config the user already owns. It therefore has its own `.bak` rule.
 
-Every config it upgrades is host-local — the CWD project config
-(`.vibe-palace.toml`) and the global config — and lives outside the vault.
-Nothing commits these files and nothing syncs them, so the `.bak` is the only
-pre-image they have. The write keeps its raw `backup` + temp + rename and is
+Every config it upgrades lives outside the vault: the global config, which is
+host-local, and the CWD project config (`.vibe-palace.toml`). The CWD project
+config MAY be committed to its project repository (ADR-012: a committed copy is
+identity only and never carries `vault_path`), but vp never commits or syncs
+either file, so the `.bak` is the only pre-image vp can rely on. The write keeps its raw `backup` + temp + rename and is
 deliberately **not** routed through `atomicfile`: it must not inherit
 atomicfile's permission/fsync semantics or the vault surface stamp.
 

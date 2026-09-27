@@ -702,6 +702,32 @@ MCP handler coverage in `internal/tools/system_tools_test.go`:
 `TestVaultSync_BareRefusesGenuineDirt` (refuses on genuine dirt), and
 `TestVaultSync_NoTidyIsRawRefusal` (`no_tidy:true` restores the raw refuse-on-any-dirt path).
 
+### `internal/storage/`, `internal/check/`, `cmd/vp/` — Vault Resolution Tiers (ADR-012)
+
+Covers `storage.ResolveVaultBinding`: the checkout `vault_path`, then the host's
+`[project_vaults]` binding, then the global `vault_path`, and the single typed
+refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
+`$HOME`/`XDG_CONFIG_HOME` fixtures; the git-origin derivation is a seam
+(`gitRemoteSlug`) so a test can count its calls.
+
+| Test | What it proves |
+|------|----------------|
+| `TestResolveBinding_PrecedenceMatrix` | Each tier alone, and tiers 1+2 agreeing, give the expected path and source prefix |
+| `TestResolveRefusesCwdBindingDisagreement` | A checkout `vault_path` and a binding naming different vaults refuse, naming both sources |
+| `TestResolveRefusesMissingBoundVault` | A bound target that is missing or has no manifest refuses, and nothing is created there |
+| `TestResolveRefusesUnnamedMarkerWithBoundGitSlug` | A marker naming no project (or no marker) refuses while its git-origin slug is bound |
+| `TestResolveUnboundHostNeverExecsGit` | A host with no bindings never runs the git-origin derivation |
+| `TestResolveWarnsWhenGitSlugBoundButMarkerNameIsNot` | An unbound marker name resolves tier 3, with a warning naming both slugs |
+| `TestResolveBinding_MalformedTableRefused` | Case-variant table, invalid key, non-string/empty value, non-table, unparseable config, dangling symlink: all refuse |
+| `TestResolveBindingReachesAFreshWorktree` | A fresh `git worktree` (committed marker only) resolves the binding |
+| `TestMachineWideSurfacesIgnoreProjectBindings` | `ResolveGlobalVaultPath`/`OpenVaultGlobal` stay on tier 3 from inside a bound checkout |
+| `TestStaleBindingAcceptsTier2Binding` | The MCP drift check sees tier 2, and reports a stale server with the binding source |
+| `TestSwallowedStillMatchesBothSentinels` | A swallowed `vault_path` matches both `ErrSwallowedVaultPath` and `ErrVaultBindingRejected` |
+| `TestHookRejectedBindingCapturesNothing` (`cmd/vp`) | A rejected binding captures nothing: no global-vault fallback |
+| `TestSkillsShowDoesNotDegradeARejectedBinding` (`cmd/vp`) | A rejected binding stays a usage error, never "no vault configured" |
+| `TestCheckConfigReportsRejectedBindingNotMissing` (`internal/check`) | `vp check` reports a rejected binding, never "not found / run vp init" |
+| `TestCheckTrackedMarkerVaultPath` (`internal/check`) | The CLI-only row flags a committed marker that sets `vault_path`, and only that |
+
 ### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
 
 Covers the host-qualified `<date>-<fp8>-<NN>` session-id scheme (see

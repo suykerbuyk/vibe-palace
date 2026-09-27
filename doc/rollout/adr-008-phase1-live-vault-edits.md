@@ -169,6 +169,9 @@ session. Nothing is done until the human says it is done.
   at a path that was true only on the **old WSL** host — and an **empty directory** sits there, so
   the wrong answer *looks* plausible instead of failing loudly.) **Resolve, don't recall:**
   `vault_path` in `~/.config/vibe-palace/config.toml` (per-tree override: `.vibe-palace.toml`);
+  *(Note added 2026-09-27, outside the applied text: vault resolution is now three tiers — a
+  checkout's untracked `vault_path`, then the host's `[project_vaults]` binding, then the global
+  `vault_path` — and a committed `.vibe-palace.toml` never carries `vault_path`. See ADR-012.)*
   `vp status` prints what the binary resolved. Write the **constraint** (POSIX filesystem, never
   NTFS/exFAT), never the **path**.
 - **🔴 A REMOTE-TRACKING REF IS NOT THE REMOTE (191).** `git rev-list @{u}..HEAD` reports phantom

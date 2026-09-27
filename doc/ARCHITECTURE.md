@@ -374,6 +374,32 @@ itself keeps it distinct from the per-path keys the content writers take, so a
 committer that already holds a per-path lock cannot self-deadlock (the paths
 hash to different sidecar files).
 
+### Vault resolution: 3 tiers (ADR-012)
+
+Which vault a command reads and writes is resolved separately from the settings
+below, by `storage.ResolveVaultBinding` (`ResolveVaultPath` wraps it):
+
+1. **Checkout override** — the nearest `.vibe-palace.toml` at or above the
+   working directory (the walk stops at `$HOME`), if it sets a top-level
+   `vault_path`. Source `cwd:<file>`. For untracked trees only: a committed
+   `.vibe-palace.toml` is identity only and never carries `vault_path`
+   (`vp check` reports one that does).
+2. **Host binding** — the global config's `[project_vaults].<slug>`, keyed on
+   the `[project].name` of that same file. Source `binding:<config>#<slug>`.
+3. **Host default** — the global config's `vault_path`. Source `global:<config>`.
+
+Resolution fails closed, with one error type (`storage.ErrVaultBindingRejected`)
+that `vp hook` treats as "capture nothing", never as "fall back to the global
+vault". It refuses when:
+- tiers 1 and 2 name different vaults;
+- a binding's target is not an existing vault;
+- the table is malformed;
+- a checkout names no project while its git-origin slug is bound.
+
+The host menu shims and the vault git family (`vp vault pull/push/…`, which
+take `--vault`) resolve tier 3 only. `vp status` and `vp check` print the
+resolved path and its source.
+
 ### Configuration: 3-Tier TOML Precedence
 
 Configuration follows a 3-tier override chain:
@@ -698,7 +724,7 @@ injects the vault reference into every request context.
 
 ```
 cmd/vp/main.go
-├── storage.OpenVaultFromCwd(cwd) # resolve vault (honors cwd .vibe-palace.toml vault_path override)
+├── storage.OpenVaultFromCwd(cwd) # resolve vault (3 tiers, ADR-012: cwd vault_path, [project_vaults], global)
 ├── embedder.NewLazy(NewONNX...)  # DEFER the ONNX model load — no I/O here
 ├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver
