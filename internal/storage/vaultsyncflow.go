@@ -71,6 +71,44 @@ func (r *TidyResult) GenuineDirt() []string {
 	return genuineDirt(r.Reported, r.ReportedUserContent)
 }
 
+// refuseSyncOnDirt is SyncVault's refuse-on-dirt gate (step 2), the one
+// definition that both the real sync and its dry run (SyncPreview) apply, so
+// the two cannot order or word it differently.
+func refuseSyncOnDirt(scan *TidyResult) error {
+	if dirt := scan.GenuineDirt(); len(dirt) > 0 {
+		return fmt.Errorf(
+			"refusing to sync: %d uncommitted non-artifact file(s) need review: %s",
+			len(dirt), strings.Join(dirt, ", "))
+	}
+	return nil
+}
+
+// SyncPreview is a sync DRY RUN's verdict on the working tree: SyncVault's
+// steps before any network I/O, in SyncVault's order, without committing.
+//
+//  1. classify (TidyScan);
+//  2. refuse on genuine dirt — refuseSyncOnDirt, with refused=true, which a
+//     front-end maps exactly as it maps SyncResult.Refused;
+//  3. the U1 commit guard the step-3 tidy commit would meet (previewCommitGuard).
+//
+// Step 3 is unreachable today: a pending departure record is itself genuine dirt
+// (only Audits/*.md and Audits/baseline.json are artifacts), so step 2 refuses
+// first. It is kept so a change to that classification cannot open a gap
+// between the preview and the real sync. The incoming-departure preflight
+// (step 2b) needs a fetch, so a preview does not run it.
+//
+// A scan failure returns a nil scan.
+func SyncPreview(vaultPath string) (scan *TidyResult, refused bool, err error) {
+	scan, err = TidyScan(vaultPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := refuseSyncOnDirt(scan); err != nil {
+		return scan, true, err
+	}
+	return scan, false, previewCommitGuard(vaultPath, scan)
+}
+
 // SyncVault runs a full vault sync: classify the working tree, refuse up front
 // if it carries genuine (non-artifact, non-memory) dirt, commit the sweepable
 // capture artifacts LOCALLY, pull each remote, re-assert the tree is clean, and
@@ -129,11 +167,9 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// 2. Refuse-on-dirt BEFORE any network I/O (finding L1). Genuine dirt is
 	// reported paths that are not deliberately-pending user memory.
 	result.GenuineDirt = scan.GenuineDirt()
-	if len(result.GenuineDirt) > 0 {
+	if err := refuseSyncOnDirt(scan); err != nil {
 		result.Refused = true
-		return result, fmt.Errorf(
-			"refusing to sync: %d uncommitted non-artifact file(s) need review: %s",
-			len(result.GenuineDirt), strings.Join(result.GenuineDirt, ", "))
+		return result, err
 	}
 
 	// 2b. Departure pre-flight, BEFORE the tidy commit below. A departure

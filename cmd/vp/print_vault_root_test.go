@@ -136,12 +136,14 @@ func TestVaultSyncDryRunPrintsRootAboveTheDirt(t *testing.T) {
 	vaultDir := pvrGitVault(t, true)
 	artifact, _ := seedSweepAndDirt(t, vaultDir)
 
+	// The seeded dirt is genuine, so a real sync refuses on it (ExitUser) and the
+	// preview predicts that — after printing the root and the lists it qualifies.
 	var code int
 	out := captureStdout(t, func() {
-		code = cmdVaultSync().Run([]string{"--dry-run"})
+		captureStderr(t, func() { code = cmdVaultSync().Run([]string{"--dry-run"}) })
 	})
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d, want %d; out:\n%s", code, cli.ExitOK, out)
+	if code != cli.ExitUser {
+		t.Fatalf("exit code = %d, want %d; out:\n%s", code, cli.ExitUser, out)
 	}
 
 	root := "Vault: " + vaultDir

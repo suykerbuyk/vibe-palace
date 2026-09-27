@@ -626,11 +626,9 @@ func TestVaultSyncDefaultRefusesGenuineDirt(t *testing.T) {
 // sweep ("Would sweep" + the artifact path) on stdout and commits NOTHING (local
 // HEAD unchanged). Dry-run never touches the network, so a URL remote suffices.
 //
-// Exit code is ExitUser, not ExitOK: the preview is printed first, but the
-// downstream dry-run pushAll checks `git status --porcelain` BEFORE its dry-run
-// branch and refuses on the (still-dirty) tree. The preview + no-commit are the
-// load-bearing assertions here; the exit code just records that pre-existing
-// pushAll guard on a dirty dry-run.
+// The tree carries only a sweepable artifact: a real sync would sweep it and go
+// on, so the preview exits OK. Genuine dirt makes both refuse — that verdict is
+// TestVaultSyncDryRunPredictsTheRealSyncVerdict's.
 func TestVaultSyncDryRunPreviewSweep(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	run := func(args ...string) {
@@ -652,15 +650,13 @@ func TestVaultSyncDryRunPreviewSweep(t *testing.T) {
 
 	artifact := "Projects/vibe-palace/sessions/2026-07-19.md"
 	mkfile(t, vaultDir, artifact, "session\n")
-	mkfile(t, vaultDir, "Projects/vibe-palace/resume.md", "resume\n")
 
 	var code int
 	out := captureStdout(t, func() {
 		code = cmdVaultSync().Run([]string{"--dry-run"})
 	})
 	// A dry-run executes nothing, so it previews the classification and the
-	// would-run pull/push and exits OK — it never fails on the dirty tree the
-	// real run would sweep (the Reported section already surfaces genuine dirt).
+	// would-run pull/push and exits OK: a real sync would sweep this tree.
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
 	}

@@ -70,3 +70,43 @@ func TestTidyPreviewAgreesWithTidyVaultOnTheCommitGuard(t *testing.T) {
 		}
 	})
 }
+
+// SF1 (code review round 1): the sync dry run must predict the real sync's
+// verdict on the same state, in the real sync's order. A pending departure
+// record is genuine dirt, so a real sync refuses on dirt (Refused, before any
+// network I/O) and never reaches the U1 guard; the preview must say the same.
+func TestSyncPreviewAgreesWithSyncVault(t *testing.T) {
+	t.Run("pending record: both refuse on genuine dirt", func(t *testing.T) {
+		dir, _ := repoWithRemote(t)
+		writeFile(t, dir, "Projects/vibe-palace/sessions/2026-09-27.md", "session\n")
+		b, err := (departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: "q"}).Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, dir, departure.RelPath("alpha"), string(b))
+		head := gitRun(t, dir, "rev-parse", "HEAD")
+
+		scan, refused, perr := SyncPreview(dir)
+		res, rerr := SyncVault(dir, []string{"origin"})
+		if rerr == nil || !res.Refused {
+			t.Fatalf("test premise: a real sync refuses on dirt, got refused=%v err=%v", res.Refused, rerr)
+		}
+		if scan == nil || !refused || perr == nil || perr.Error() != rerr.Error() {
+			t.Errorf("preview verdict refused=%v %v; real sync refused=%v %v", refused, perr, res.Refused, rerr)
+		}
+		if got := gitRun(t, dir, "rev-parse", "HEAD"); got != head {
+			t.Error("a refused sync moved HEAD")
+		}
+	})
+	t.Run("only a sweepable artifact: neither refuses", func(t *testing.T) {
+		dir, _ := repoWithRemote(t)
+		writeFile(t, dir, "Projects/vibe-palace/sessions/2026-09-27.md", "session\n")
+		scan, refused, perr := SyncPreview(dir)
+		if scan == nil || refused || perr != nil {
+			t.Fatalf("preview = refused=%v %v; want a clean verdict", refused, perr)
+		}
+		if res, rerr := SyncVault(dir, []string{"origin"}); rerr != nil || res.Refused || !res.Committed {
+			t.Fatalf("test premise: a real sync succeeds, got refused=%v committed=%v err=%v", res.Refused, res.Committed, rerr)
+		}
+	})
+}
