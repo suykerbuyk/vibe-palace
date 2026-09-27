@@ -173,9 +173,9 @@ func cmdVaultSync() *cli.Command {
 			// --dry-run (tidy path): commit NOTHING. Classify and print the
 			// sweep/report split, then preview the network with dry-run pull+push.
 			if dryRun {
-				scan, err := storage.TidyScan(root)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", err)
+				scan, refusal := storage.TidyPreview(root)
+				if scan == nil {
+					fmt.Fprintf(os.Stderr, "vp vault sync: %v\n", refusal)
 					return cli.ExitSystem
 				}
 				// Above the dirt list, same contract as `vault tidy`. `root`
@@ -185,6 +185,12 @@ func cmdVaultSync() *cli.Command {
 				printVaultRoot(os.Stdout, root)
 				printTidyList("Would sweep", scan.Swept)
 				printTidyReported(scan)
+				// A real sync's tidy step refuses here (the U1 commit guard),
+				// before any network I/O, so the preview stops here too.
+				if refusal != nil {
+					fmt.Fprintf(os.Stderr, "vp vault sync: a real run would refuse: %v\n", refusal)
+					return cli.ExitSystem
+				}
 				if code := pullAll(root, remotes, true); code != cli.ExitOK {
 					return code
 				}
@@ -423,14 +429,20 @@ func cmdVaultTidy() *cli.Command {
 
 			// --dry-run: classify only, never commit.
 			if fv.Bool("--dry-run") {
-				res, err := storage.TidyScan(root)
-				if err != nil {
+				res, err := storage.TidyPreview(root)
+				if res == nil {
 					fmt.Fprintf(os.Stderr, "vp vault tidy: %v\n", err)
 					return cli.ExitSystem
 				}
 				printTidyList("Would sweep", res.Swept)
 				printTidyReported(res)
 				fmt.Println("dry run: nothing was committed")
+				// The real run's verdict and exit code: it refuses (the U1
+				// commit guard), so the preview says so and exits as it would.
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp vault tidy: a real run would refuse: %v\n", err)
+					return cli.ExitSystem
+				}
 				return cli.ExitOK
 			}
 
