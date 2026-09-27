@@ -287,6 +287,12 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 	}
 	defer releaseCommitLock()
 
+	// The commit guard, before anything is staged (commitOnlyPaths is the
+	// backstop): nothing commits while a split purge is unfinished.
+	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+		return nil, err
+	}
+
 	// Remote enumeration is required only for the network push path.
 	// Local-only commits (push=false) must succeed on a vault with zero
 	// remotes.
@@ -359,6 +365,11 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
 	if err := commitOnlyPaths(vaultPath, fullMsg, keep); err != nil {
+		if errors.Is(err, ErrPendingDeparture) {
+			// The guard's backstop fired after staging (a record appeared
+			// between the first check and the commit): leave nothing staged.
+			_, _ = gitCmd(vaultPath, 30*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...)
+		}
 		return nil, err
 	}
 
@@ -472,6 +483,12 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 		}
 	}
 	defer unlock()
+
+	// The commit guard, before anything is staged (commitOnlyPaths is the
+	// backstop).
+	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+		return nil, err
+	}
 
 	fail := func(err error) (*PushResult, error) {
 		commitRemovalsBeforeUnstageHook()
@@ -611,47 +628,30 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 			continue
 		}
 
-		// Rejection path (non-fast-forward or other push error). Fetch
-		// failure surfaces directly — no rebase/converge.
-		if _, fetchErr := gitCmd(vaultPath, 60*time.Second, "fetch", remote); fetchErr != nil {
-			result.RemoteResults[remote] = fmt.Errorf("fetch %s: %w", remote, fetchErr)
+		// Rejection path (non-fast-forward or other push error).
+		//
+		// 🔴 THE RECONCILE RUNS UNDER THE VAULT COMMIT LOCK. `rebase
+		// --autostash` shelves and re-applies whatever the working tree and the
+		// index hold — including another committer's in-flight work (a split
+		// purge's staged removal). Every committer holds this key across its
+		// index critical section, so taking it here makes the reconcile wait
+		// for them instead of stashing their state. The network push itself
+		// stays outside the lock; the fetch is inside because the guard and the
+		// rebase must see the tip it fetched. Callers released the lock before
+		// calling pushCommitted, so this never nests.
+		releaseReconcile, lerr := vaultlock.Acquire(vaultPath, vaultPath)
+		if lerr != nil {
+			result.RemoteResults[remote] = fmt.Errorf("acquire vault commit lock for the reconcile: %w", lerr)
 			continue
 		}
-
-		// Never rebase this host's work onto a departure of the project it is
-		// under: the push to this remote is skipped and the commit stays local
-		// (guardIncomingDepartures).
-		if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
-			result.RemoteResults[remote] = derr
+		reconciled, rebasedHere := reconcileRejectedPush(vaultPath, remote, branch, result)
+		releaseReconcile()
+		if !reconciled {
 			continue
 		}
-
-		// Rebase the local capture commit onto the freshly-fetched remote tip.
-		// --autostash shelves any dirty tracked files (tidy deliberately leaves
-		// non-swept dirt in the tree) so the rebase can start, then re-applies
-		// them. The state-dir — NOT the exit code — is the source of truth for
-		// whether the rebase landed: a true content conflict leaves rebase-merge/
-		// rebase-apply in place (commit did NOT land), while an autostash re-apply
-		// conflict completes the rebase (commit landed) yet may exit non-zero on
-		// older git or exit 0 with conflict markers on modern git.
-		_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", remote+"/"+branch)
-		if rebaseInProgress(vaultPath) {
-			// TRUE rebase conflict: the capture commit did not land. Abort
-			// (this also restores the autostashed working-tree edits) and skip
-			// the push for this remote — the commit stays local (Stranded surfaces it).
-			_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
-			result.RemoteResults[remote] = fmt.Errorf("rebase against %s failed: %w", remote, rebaseErr)
-			continue
+		if rebasedHere {
+			rebasedAny = true
 		}
-		// Rebase completed: the capture commit is on HEAD and will push below.
-		// If the autostash re-apply conflicted, the operator's edits are retained
-		// in the stash and the named files carry conflict markers — surface loudly.
-		if unmerged := unmergedPaths(vaultPath); len(unmerged) > 0 {
-			result.PopConflict = true
-			result.PopConflictPaths = unmerged
-		}
-
-		rebasedAny = true
 		curSHA, _ = gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
 
 		if _, pushErr := gitCmd(vaultPath, 60*time.Second, "push", remote, branch); pushErr != nil {
@@ -1046,6 +1046,17 @@ func stagedChangesIn(vaultPath string, paths []string) (bool, error) {
 // silent no-op is the wrong direction for a function whose whole job is making a
 // write durable.
 func commitOnlyPaths(vaultPath, message string, paths []string) error {
+	// The commit guard's backstop: every caller also runs it before staging.
+	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+		return err
+	}
+	return commitPathspec(vaultPath, message, paths)
+}
+
+// commitPathspec is commitOnlyPaths without the commit guard. Its only other
+// caller is CommitSplitPurge, whose commit is the one that finishes the
+// pending departure records the guard refuses on.
+func commitPathspec(vaultPath, message string, paths []string) error {
 	f, err := os.CreateTemp("", "vp-commit-pathspec-*")
 	if err != nil {
 		return fmt.Errorf("git commit: create pathspec file: %w", err)
@@ -1083,6 +1094,53 @@ func forceWithLease(vaultPath, remote, branch, expectedSHA string) error {
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branch, expectedSHA)
 	_, err := gitCmd(vaultPath, 60*time.Second, "push", lease, remote, branch)
 	return err
+}
+
+// reconcileRejectedPush is pushCommitted's rejection recovery for one remote:
+// fetch, the departure guard, then `rebase --autostash` onto the fetched tip.
+// The caller holds the vault commit lock across it. reconciled is false when
+// the push to this remote must be skipped (its RemoteResults entry is set);
+// rebased reports whether a rebase ran and landed.
+func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult) (reconciled, rebased bool) {
+	// Fetch failure surfaces directly — no rebase/converge.
+	if _, fetchErr := gitCmd(vaultPath, 60*time.Second, "fetch", remote); fetchErr != nil {
+		result.RemoteResults[remote] = fmt.Errorf("fetch %s: %w", remote, fetchErr)
+		return false, false
+	}
+
+	// Never rebase this host's work onto a departure of the project it is
+	// under: the push to this remote is skipped and the commit stays local
+	// (guardIncomingDepartures).
+	if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
+		result.RemoteResults[remote] = derr
+		return false, false
+	}
+
+	// Rebase the local capture commit onto the freshly-fetched remote tip.
+	// --autostash shelves any dirty tracked files (tidy deliberately leaves
+	// non-swept dirt in the tree) so the rebase can start, then re-applies
+	// them. The state-dir — NOT the exit code — is the source of truth for
+	// whether the rebase landed: a true content conflict leaves rebase-merge/
+	// rebase-apply in place (commit did NOT land), while an autostash re-apply
+	// conflict completes the rebase (commit landed) yet may exit non-zero on
+	// older git or exit 0 with conflict markers on modern git.
+	_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", remote+"/"+branch)
+	if rebaseInProgress(vaultPath) {
+		// TRUE rebase conflict: the capture commit did not land. Abort
+		// (this also restores the autostashed working-tree edits) and skip
+		// the push for this remote — the commit stays local (Stranded surfaces it).
+		_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
+		result.RemoteResults[remote] = fmt.Errorf("rebase against %s failed: %w", remote, rebaseErr)
+		return false, false
+	}
+	// Rebase completed: the capture commit is on HEAD and will push below.
+	// If the autostash re-apply conflicted, the operator's edits are retained
+	// in the stash and the named files carry conflict markers — surface loudly.
+	if unmerged := unmergedPaths(vaultPath); len(unmerged) > 0 {
+		result.PopConflict = true
+		result.PopConflictPaths = unmerged
+	}
+	return true, true
 }
 
 // rebaseInProgress reports whether a rebase is mid-flight in the vault repo,

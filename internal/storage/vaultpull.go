@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // PullResult reports what happened during a Pull operation. It mirrors
@@ -188,75 +190,93 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 			continue
 		}
 
-		// A departure incoming onto work under the departed slug is refused
-		// BEFORE the heal pass or the merge touch anything: HEAD and the working
-		// tree stay exactly as they were. Later remotes are skipped for the same
-		// reason a conflict skips them — the host has to carry that work across
-		// first (see guardIncomingDepartures).
-		if err := guardIncomingDepartures(vaultPath, remote, branch); err != nil {
+		// 🔴 THE GUARD, HEAL AND MERGE RUN UNDER THE VAULT COMMIT LOCK. A merge
+		// rewrites the index and working tree under every other committer, and
+		// a split purge's staged removal is exactly the in-flight state it must
+		// not merge over; every committer holds this key across its index
+		// critical section. The fetch above stays outside it (network). Nothing
+		// that calls pullCore holds the key.
+		release, lerr := vaultlock.Acquire(vaultPath, vaultPath)
+		if lerr != nil {
+			result.RemoteResults[remote] = fmt.Errorf("acquire vault commit lock for the merge: %w", lerr)
+			continue
+		}
+		stop := func() bool {
+			// A departure incoming onto work under the departed slug is refused
+			// BEFORE the heal pass or the merge touch anything: HEAD and the working
+			// tree stay exactly as they were. Later remotes are skipped for the same
+			// reason a conflict skips them — the host has to carry that work across
+			// first (see guardIncomingDepartures).
+			if err := guardIncomingDepartures(vaultPath, remote, branch); err != nil {
+				result.RemoteResults[remote] = err
+				for _, skipped := range remotes[i+1:] {
+					result.RemoteResults[skipped] = fmt.Errorf("skipped: %s carries a departure this host still has work under; carry that work across first", remote)
+				}
+				return true
+			}
+
+			// Heal pass over the single dirty scan. The diff is per-remote (ref
+			// differs), but the candidate set is fixed; skip any path already healed
+			// on an earlier remote.
+			for _, p := range dirty {
+				if healed[p] {
+					continue
+				}
+				// Working-tree content == remote ref content? Exit 0 means no diff →
+				// the dirt is the remote's own bytes and is safe to discard. A nonzero
+				// exit (genuine local edit) or any probe error skips the path.
+				if _, err := gitCmd(vaultPath, 10*time.Second, "diff", "--quiet", ref, "--", p); err != nil {
+					continue
+				}
+				// Discard the uncommitted obstruction so the merge can proceed.
+				//
+				// 🔴 FAIL-OPEN IS THE RULING, NOT AN OVERSIGHT — DO NOT MAKE THIS
+				// ABORT THE PULL. A vault pull is the route by which a host
+				// RECEIVES a newer binary's fixes, including the fix that would
+				// repair whatever is wrong with its own template mirror. Aborting
+				// on one mirror's checkout failure strands exactly the host that
+				// most needs the pull to succeed — the same self-lockout hazard
+				// already ruled against when `vault sync` was unwrapped from
+				// mutates(). The heal pass is a best-effort convenience over a
+				// narrow, guarded, fully-recoverable path set and stays one.
+				//
+				// What changed: the error is no longer DISCARDED. The defect was
+				// silence, not permissiveness. The path is still skipped and still
+				// not reported as healed, but git's reason is now recorded and
+				// rendered beside the [heal] lines, so the merge failure this path
+				// goes on to cause has a stated cause.
+				if _, err := gitCmd(vaultPath, 10*time.Second, "checkout", "HEAD", "--", p); err != nil {
+					healFailed[p] = err.Error()
+					continue
+				}
+				healed[p] = true
+				result.HealedTemplates = append(result.HealedTemplates, p)
+			}
+
+			// Merge the already-fetched remote-tracking ref. `git fetch` above updated
+			// <remote>/<branch>, so `git merge <remote>/<branch>` reuses it — same
+			// plain-merge semantics as `git pull <remote> <branch>` (no rebase) but
+			// without the second fetch that `git pull` would perform.
+			out, err := gitCmd(vaultPath, 120*time.Second, "merge", ref)
+			result.RemoteOutput[remote] = out
 			result.RemoteResults[remote] = err
-			for _, skipped := range remotes[i+1:] {
-				result.RemoteResults[skipped] = fmt.Errorf("skipped: %s carries a departure this host still has work under; carry that work across first", remote)
-			}
-			break
-		}
 
-		// Heal pass over the single dirty scan. The diff is per-remote (ref
-		// differs), but the candidate set is fixed; skip any path already healed
-		// on an earlier remote.
-		for _, p := range dirty {
-			if healed[p] {
-				continue
+			// A merge that left unmerged paths makes the tree unmergeable: no later
+			// remote can merge onto a conflicted tree, and continuing would only run
+			// doomed heal+merge attempts. Record the remaining (not-yet-attempted)
+			// remotes with a skip sentinel and abandon the sweep. A plain fetch/network
+			// failure (handled above with `continue`) carries no unmerged paths and so
+			// still falls through to the next mirror — best-effort preserved.
+			if err != nil && len(unmergedPaths(vaultPath)) > 0 {
+				for _, skipped := range remotes[i+1:] {
+					result.RemoteResults[skipped] = fmt.Errorf("skipped: prior remote left an unresolved merge conflict")
+				}
+				return true
 			}
-			// Working-tree content == remote ref content? Exit 0 means no diff →
-			// the dirt is the remote's own bytes and is safe to discard. A nonzero
-			// exit (genuine local edit) or any probe error skips the path.
-			if _, err := gitCmd(vaultPath, 10*time.Second, "diff", "--quiet", ref, "--", p); err != nil {
-				continue
-			}
-			// Discard the uncommitted obstruction so the merge can proceed.
-			//
-			// 🔴 FAIL-OPEN IS THE RULING, NOT AN OVERSIGHT — DO NOT MAKE THIS
-			// ABORT THE PULL. A vault pull is the route by which a host
-			// RECEIVES a newer binary's fixes, including the fix that would
-			// repair whatever is wrong with its own template mirror. Aborting
-			// on one mirror's checkout failure strands exactly the host that
-			// most needs the pull to succeed — the same self-lockout hazard
-			// already ruled against when `vault sync` was unwrapped from
-			// mutates(). The heal pass is a best-effort convenience over a
-			// narrow, guarded, fully-recoverable path set and stays one.
-			//
-			// What changed: the error is no longer DISCARDED. The defect was
-			// silence, not permissiveness. The path is still skipped and still
-			// not reported as healed, but git's reason is now recorded and
-			// rendered beside the [heal] lines, so the merge failure this path
-			// goes on to cause has a stated cause.
-			if _, err := gitCmd(vaultPath, 10*time.Second, "checkout", "HEAD", "--", p); err != nil {
-				healFailed[p] = err.Error()
-				continue
-			}
-			healed[p] = true
-			result.HealedTemplates = append(result.HealedTemplates, p)
-		}
-
-		// Merge the already-fetched remote-tracking ref. `git fetch` above updated
-		// <remote>/<branch>, so `git merge <remote>/<branch>` reuses it — same
-		// plain-merge semantics as `git pull <remote> <branch>` (no rebase) but
-		// without the second fetch that `git pull` would perform.
-		out, err := gitCmd(vaultPath, 120*time.Second, "merge", ref)
-		result.RemoteOutput[remote] = out
-		result.RemoteResults[remote] = err
-
-		// A merge that left unmerged paths makes the tree unmergeable: no later
-		// remote can merge onto a conflicted tree, and continuing would only run
-		// doomed heal+merge attempts. Record the remaining (not-yet-attempted)
-		// remotes with a skip sentinel and abandon the sweep. A plain fetch/network
-		// failure (handled above with `continue`) carries no unmerged paths and so
-		// still falls through to the next mirror — best-effort preserved.
-		if err != nil && len(unmergedPaths(vaultPath)) > 0 {
-			for _, skipped := range remotes[i+1:] {
-				result.RemoteResults[skipped] = fmt.Errorf("skipped: prior remote left an unresolved merge conflict")
-			}
+			return false
+		}()
+		release()
+		if stop {
 			break
 		}
 	}

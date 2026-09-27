@@ -203,8 +203,11 @@ func TestPull_RestartFlow(t *testing.T) {
 	if got := readFile(t, dir, "Templates/commands/bar.md"); got != "new command\n" {
 		t.Errorf("disjoint remote file not merged: %q", got)
 	}
-	// Working tree must be clean after a successful merge.
-	if dirty, _ := HasUncommittedChanges(dir, "."); dirty {
+	// Working tree must be clean after a successful merge. The merge now runs
+	// under the vault commit lock, whose sidecar directory .vp-locks/ a real
+	// vault gitignores (CanonicalGitignorePatterns) and this bare test repo
+	// does not; it is lock state, not merge residue.
+	if dirty, _ := HasUncommittedChanges(dir, ".", ":(exclude).vp-locks"); dirty {
 		t.Errorf("working tree should be clean after restart pull")
 	}
 }

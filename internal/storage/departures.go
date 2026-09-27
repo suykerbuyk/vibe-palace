@@ -38,18 +38,39 @@ import (
 // the departure is made against — a commit cannot name its own SHA, and
 // `git log -- <path>` recovers the departing one). Neither is a parameter.
 func (v *Vault) RecordDeparture(slug string, kind departure.Kind, to string) (string, error) {
+	rel, _, err := v.writeDeparture(slug, kind, to, true)
+	return rel, err
+}
+
+// RecordDepartureForPurge is RecordDeparture for a split purge, the one writer
+// that records a departure BEFORE the trees are gone: the purge writes its
+// records, then removes the tracked files and commits both in one commit
+// (storage.CommitSplitPurge). Written first, an interrupted purge leaves an
+// uncommitted record behind, and the commit guard then refuses every other
+// vp commit until the purge is finished or undone — a record written last
+// would leave a crash's half-removal unguarded. created reports whether the
+// file did not exist before, which is what the purge's rollback needs: a
+// created record is removed, an overwritten (committed) one is restored from
+// HEAD.
+func (v *Vault) RecordDepartureForPurge(slug string, kind departure.Kind, to string) (rel string, created bool, err error) {
+	return v.writeDeparture(slug, kind, to, false)
+}
+
+func (v *Vault) writeDeparture(slug string, kind departure.Kind, to string, requireAbsent bool) (string, bool, error) {
 	rec := departure.Record{Slug: slug, Kind: kind, To: to, Date: v.CalendarDay(time.Now())}
 	if err := rec.Validate(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	projDir, err := v.ProjectDir(slug)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	if _, err := os.Lstat(projDir); err == nil {
-		return "", fmt.Errorf("refusing to record a departure of %q: Projects/%s/ still exists", slug, slug)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("refusing to record a departure of %q: cannot inspect Projects/%s/: %w", slug, slug, err)
+	if requireAbsent {
+		if _, err := os.Lstat(projDir); err == nil {
+			return "", false, fmt.Errorf("refusing to record a departure of %q: Projects/%s/ still exists", slug, slug)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", false, fmt.Errorf("refusing to record a departure of %q: cannot inspect Projects/%s/: %w", slug, slug, err)
+		}
 	}
 	// base_commit only from the vault's OWN repository: an enclosing repo's
 	// HEAD would be a fact about a different history.
@@ -60,17 +81,19 @@ func (v *Vault) RecordDeparture(slug string, kind departure.Kind, to string) (st
 	}
 	data, err := rec.Encode()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	rel := departure.RelPath(slug)
 	abs := filepath.Join(v.Root, filepath.FromSlash(rel))
 	release, err := vaultlock.Acquire(v.Root, abs)
 	if err != nil {
-		return "", fmt.Errorf("lock %s: %w", rel, err)
+		return "", false, fmt.Errorf("lock %s: %w", rel, err)
 	}
 	defer release()
+	_, statErr := os.Lstat(abs)
+	created := errors.Is(statErr, fs.ErrNotExist)
 	if err := atomicfile.Write(v.Root, abs, data, atomicfile.WithFsync()); err != nil {
-		return "", fmt.Errorf("write %s: %w", rel, err)
+		return "", false, fmt.Errorf("write %s: %w", rel, err)
 	}
-	return rel, nil
+	return rel, created, nil
 }
