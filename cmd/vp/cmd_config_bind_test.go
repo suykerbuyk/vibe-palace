@@ -117,3 +117,30 @@ func TestConfigBindRefusesAndValidatesUsage(t *testing.T) {
 		t.Error("a refused bind changed the config")
 	}
 }
+
+// Fold: a repeated --vault refuses, and --checkout=~/… is tilde-expanded.
+func TestConfigBindVaultOnceAndTildeCheckout(t *testing.T) {
+	cfg, quantum, cos := cliBindHost(t)
+	before, _ := os.ReadFile(cfg)
+	var out, errOut bytes.Buffer
+	if code := runConfigBind([]string{"qa", "--vault", "~/quantum-vault", "--vault", "~/other"}, &out, &errOut); code != cli.ExitUser {
+		t.Errorf("a repeated --vault exited %d, want ExitUser", code)
+	}
+	if after, _ := os.ReadFile(cfg); !bytes.Equal(after, before) {
+		t.Error("a refused bind changed the config")
+	}
+	home, _ := os.UserHomeDir()
+	rel, err := filepath.Rel(home, cos[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runConfigBind([]string{"qa", "--vault", "~/quantum-vault", "--checkout=~/" + rel, "--json"}, &out, &errOut); code != cli.ExitOK {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	var rep storage.BindReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil || len(rep.Checkouts) != 1 || rep.Checkouts[0].Resolved != quantum {
+		t.Errorf("a ~/ --checkout was not expanded and verified: %+v (%v)", rep.Checkouts, err)
+	}
+}

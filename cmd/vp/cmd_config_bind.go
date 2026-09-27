@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -62,8 +63,22 @@ func runConfigBind(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "vp config bind: --vault is required")
 		return cli.ExitUser
 	}
+	if n := len(fv.GetAll("--vault")); n > 1 {
+		fmt.Fprintf(errOut, "vp config bind: --vault was given %d times; a project binds to exactly one vault\n", n)
+		return cli.ExitUser
+	}
 	var checkouts []string
 	for _, c := range fv.GetAll("--checkout") {
+		// The shell expands a leading ~ only at the start of a word, so
+		// `--checkout=~/code/x` reaches us unexpanded.
+		if c == "~" || strings.HasPrefix(c, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Fprintf(errOut, "vp config bind: --checkout %s: %v\n", c, err)
+				return cli.ExitUser
+			}
+			c = filepath.Join(home, c[1:])
+		}
 		abs, err := filepath.Abs(c)
 		if err != nil {
 			fmt.Fprintf(errOut, "vp config bind: --checkout %s: %v\n", c, err)
