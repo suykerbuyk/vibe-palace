@@ -110,8 +110,9 @@ type DepartedCacheSweep struct {
 	// only), whether or not their directory could go too: a directory holding
 	// anything that is not a cache file stays, and its vectors are gone all the same.
 	Removed []string
-	// Kept names the Removed caches whose directory stayed because it holds
-	// files that are not cache files (removeCacheDir never removes those).
+	// Kept names the Removed caches whose directory stayed: it holds files that
+	// are not cache files (removeCacheDir never removes those), or a vector's
+	// removal failed (that failure is in Errors).
 	Kept []string
 	// Undecidable is set when a guard stopped the pass before any slug was
 	// judged. A reporter must show it, never "0".
