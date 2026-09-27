@@ -175,6 +175,57 @@ func TestPendingDepartureRecoveriesWorkAsWritten(t *testing.T) {
 	}
 }
 
+// D3 (split-and-sweep-reporting-defects-found-by-rehearsal-a2): a committed
+// record that is staged-deleted but still on disk has two porcelain entries
+// ("D " and "??"). The guard must name it once — in the record list, the slug
+// list, the finish and undo recipes and the commit subject — not once per entry.
+func TestPendingDepartureNamesATwiceListedRecordOnce(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "Projects/keep/resume.md", "keep\n")
+	b, err := (departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: "q"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := departure.RelPath("alpha")
+	writeFile(t, dir, rec, string(b))
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "seed")
+	gitRun(t, dir, "rm", "-q", "--cached", "--", rec)
+	if st := gitRun(t, dir, "status", "--porcelain=v1", "-uall", "--", departure.Dir); st != "D  "+rec+"\n?? "+rec {
+		t.Fatalf("test premise: the record must show twice, got:\n%s", st)
+	}
+	err = refuseOnPendingDepartures(dir)
+	var pe *PendingDepartureError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want a PendingDepartureError, got %v", err)
+	}
+	if len(pe.Records) != 1 || pe.Records[0] != rec {
+		t.Errorf("Records = %q, want exactly [%s]", pe.Records, rec)
+	}
+	msg := err.Error()
+	// Once per list: the refusal line names it once, the finish recipe twice
+	// (git add -- and git commit --), the undo recipe once.
+	lines := strings.Split(msg, "\n")
+	want := map[string]int{"refusing to commit: ": 1, "  - finish it: ": 2, "  - or undo it: ": 1}
+	for prefix, n := range want {
+		found := false
+		for _, line := range lines {
+			if strings.HasPrefix(line, prefix) {
+				found = true
+				if got := strings.Count(line, rec); got != n {
+					t.Errorf("%q names %s %d times, want %d:\n%s", prefix, rec, got, n, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %q line in:\n%s", prefix, msg)
+		}
+	}
+	if !strings.Contains(msg, "a split purge of alpha did not finish") || !strings.Contains(msg, `"vault split: purge alpha (finished by hand)"`) {
+		t.Errorf("slug list or subject names alpha more than once:\n%s", msg)
+	}
+}
+
 // Row 6 (N1): a rejected push's reconcile — fetch, guard, rebase --autostash —
 // waits for a purge holding the vault commit lock, instead of stashing the
 // purge's staged removal out from under it.
