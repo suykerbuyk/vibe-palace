@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -120,7 +121,9 @@ func pendingDepartures(vaultPath string) ([]string, error) {
 		}
 	}
 	sort.Strings(recs)
-	return recs, nil
+	// One record can carry two entries — staged-deleted and still on disk shows
+	// as both "D " and "??" — and every recovery line is built from this list.
+	return slices.Compact(recs), nil
 }
 
 // refuseOnPendingDepartures is the commit guard. Every vp committer runs it
