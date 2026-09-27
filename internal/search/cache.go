@@ -155,7 +155,7 @@ func (c *EmbedCache) sweep() {
 		if res.Changed() {
 			slog.Info("embed cache sweep",
 				"moved", res.Moved, "merged", res.Merged, "dropped", res.Dropped,
-				"healed", res.Healed, "reaped", res.Reaped)
+				"healed", res.Healed, "reaped", res.Reaped, "departed", res.Departed)
 		}
 		for _, s := range res.Tracked {
 			slog.Warn("embed cache sweep: legacy cache is tracked by git; left in place", "project", s)

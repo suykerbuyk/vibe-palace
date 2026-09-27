@@ -147,7 +147,12 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 			RemoteOutput:  map[string]string{},
 		}, err
 	}
-	return pullCore(vaultPath, remotes)
+	res, err := pullCore(vaultPath, remotes)
+	// A pull is how a host learns that a project moved to another vault, so it
+	// is where that project's host-local embed cache goes. It never fails the
+	// pull, runs no embedder, and holds no vault lock.
+	sweepDepartedAfterPull(vaultPath)
+	return res, err
 }
 
 // pullCore is Pull after its git_enabled gate. Storage-internal composition

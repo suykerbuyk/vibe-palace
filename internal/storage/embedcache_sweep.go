@@ -81,8 +81,11 @@ import (
 //     (a rebase replaying the commit that created it, a checkout of an older
 //     commit, `git stash -u`) — loses its vectors. There is no grace window.
 //     The cost is a re-embed on the next miss; no content is lost.
-//   - Two vaults sharing one palace/.local through a symlink reap each other's
-//     caches on every start, for the same reason and at the same cost.
+//   - A symlinked palace/.local or palace/.local/embed-cache is judged by
+//     nobody: stage 2 (the departed pass and the orphan reap) does nothing
+//     there, because removal through the link would delete vectors outside
+//     this vault. Two vaults sharing one cache that way used to reap each
+//     other's caches on every start; now neither reaps.
 
 // Test seams. Production never replaces them; tests do, to reach the failure
 // branches (a rename or hard link the filesystem refuses, a target that
@@ -96,19 +99,20 @@ var (
 
 // EmbedCacheSweep reports what one SweepEmbedCaches run did.
 type EmbedCacheSweep struct {
-	Moved   int      // legacy caches renamed whole into palace/.local/embed-cache/<slug>/
-	Merged  int      // legacy vectors linked or copied one by one into a new-layout cache
-	Dropped int      // legacy vectors discarded because the new layout already held that ID
-	Healed  int      // palace/<slug>/ directories removed because the sweep left them empty
-	Reaped  int      // palace/.local/embed-cache/<slug>/ directories removed for slugs that exist nowhere
-	Tracked []string // slugs left untouched because git tracks files under their .local/
-	Errors  []string // per-slug failures; each leaves its directory in place for the next run
+	Moved    int      // legacy caches renamed whole into palace/.local/embed-cache/<slug>/
+	Merged   int      // legacy vectors linked or copied one by one into a new-layout cache
+	Dropped  int      // legacy vectors discarded because the new layout already held that ID
+	Healed   int      // palace/<slug>/ directories removed because the sweep left them empty
+	Reaped   int      // palace/.local/embed-cache/<slug>/ directories removed for slugs that exist nowhere
+	Departed int      // palace/.local/embed-cache/<slug>/ directories removed because <slug> moved to another vault
+	Tracked  []string // slugs left untouched because git tracks files under their .local/
+	Errors   []string // per-slug failures; each leaves its directory in place for the next run
 }
 
 // Changed reports whether the sweep moved, merged, dropped, healed or reaped
 // anything.
 func (s EmbedCacheSweep) Changed() bool {
-	return s.Moved+s.Merged+s.Dropped+s.Healed+s.Reaped > 0
+	return s.Moved+s.Merged+s.Dropped+s.Healed+s.Reaped+s.Departed > 0
 }
 
 // SweepEmbedCaches migrates legacy embed caches into the new layout, removes the
@@ -127,7 +131,10 @@ func (s EmbedCacheSweep) Changed() bool {
 // EVERY run, not only the run that moved something, so a process killed
 // between the rename and the removals leaves state the next run finishes.
 //
-// Stage 2 reaps orphaned caches: see reapOrphanCaches.
+// Stage 2 reads the cache root and the project listing once (scanCaches), then
+// removes the cache of every slug that moved to another vault (departedPass,
+// decided by its departure record), then reaps orphaned caches
+// (reapOrphanCaches) by its own rule for whatever is left.
 //
 // Stage 3 is the returned report. An absent palace/ is a no-op; an unreadable
 // one is the only error, and every per-slug failure lands in Errors instead.
@@ -180,7 +187,19 @@ func (v *Vault) SweepEmbedCaches() (EmbedCacheSweep, error) {
 	}
 
 	removeStaleCopyTemps(&res, cacheRoot, time.Now().Add(-staleCopyTemp))
-	v.reapOrphanCaches(&res, cacheRoot)
+
+	// Stage 2 reads the cache root and the project listing ONCE: the departed
+	// pass (a slug that moved to another vault, decided by its record) runs
+	// first, then the orphan reap judges whatever is left by its own rule.
+	scan := v.scanCaches(cacheRoot)
+	var dep DepartedCacheSweep
+	v.departedPass(scan, true, &dep)
+	res.Departed = len(dep.Removed)
+	if dep.Undecidable == "" {
+		// An undecidable scan is reported once, by the reap below.
+		res.Errors = append(res.Errors, dep.Errors...)
+	}
+	v.reapOrphanCaches(&res, scan)
 	return res, nil
 }
 
@@ -470,64 +489,22 @@ func copyLegacyVector(src, dst string) error {
 //     drop is still a project here.
 //   - Inside a reaped directory only regular *.vec files and the fingerprint
 //     sidecar are removed. Anything else stays and keeps the directory in place.
-func (v *Vault) reapOrphanCaches(res *EmbedCacheSweep, cacheRoot string) {
-	entries, err := sweepReadCacheDir(cacheRoot)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			res.Errors = append(res.Errors, fmt.Sprintf("reap skipped: read embed cache: %v", err))
+func (v *Vault) reapOrphanCaches(res *EmbedCacheSweep, scan cacheScan) {
+	if scan.undecidable != "" {
+		if scan.err != nil {
+			res.Errors = append(res.Errors, "reap skipped: "+scan.err.Error())
 		}
 		return
 	}
-	if len(entries) == 0 {
-		return
-	}
-
-	if fi, err := os.Stat(filepath.Join(v.Root, "Projects")); err != nil || !fi.IsDir() {
-		return
-	}
-	presence, err := v.ListAllProjects()
-	if err != nil {
-		res.Errors = append(res.Errors, fmt.Sprintf("reap skipped: %v", err))
-		return
-	}
-	if len(presence) == 0 {
-		return
-	}
-	known := make(map[string]bool, len(presence))
-	for _, p := range presence {
-		known[p.Slug] = true
-	}
-
-	for _, e := range entries {
+	for _, e := range scan.entries {
 		name := e.Name()
-		if !e.Type().IsDir() || slug.Validate(name) != nil || known[name] || v.projectPathExists(name) {
+		if !e.Type().IsDir() || slug.Validate(name) != nil || scan.known[name] || v.projectPathExists(name) {
 			continue
 		}
-		dir := filepath.Join(cacheRoot, name)
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				res.Errors = append(res.Errors, fmt.Sprintf("%s: read orphaned cache: %v", name, err))
-			}
-			continue
-		}
-		for _, f := range files {
-			// The fingerprint sidecar belongs to the vectors: it goes with them,
-			// or it alone would keep the orphaned directory from emptying.
-			if !f.Type().IsRegular() || (!strings.HasSuffix(f.Name(), ".vec") && f.Name() != EmbedCacheFingerprintFile) {
-				continue
-			}
-			if err := os.Remove(filepath.Join(dir, f.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				res.Errors = append(res.Errors, fmt.Sprintf("%s: remove orphaned vector: %v", name, err))
-			}
-		}
-		err = os.Remove(dir)
-		switch {
-		case err == nil:
+		removed, errs := removeCacheDir(filepath.Join(scan.root, name), name)
+		res.Errors = append(res.Errors, errs...)
+		if removed {
 			res.Reaped++
-		case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrExist):
-		default:
-			res.Errors = append(res.Errors, fmt.Sprintf("%s: remove orphaned cache: %v", name, err))
 		}
 	}
 }
