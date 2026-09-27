@@ -751,6 +751,63 @@ key. vp creates no symlinks inside the vault; this needs a hand-made link.
 `TestMoveTaskSourceIsLocked`, `TestMoveTaskDestinationIsTheLockedPath`, and the
 contended race and deadlock tests in `task_move_race_test.go`.
 
+## Amendment (2026-09-27): what the repo-root key covers
+
+The split purge now commits its own result, and the rejected-push reconcile and
+the pull merge can no longer run over a purge in flight. Both changes widen who
+holds the repo-root key. None of them adds a nesting.
+
+### The repo-root key
+
+The root key (`vaultlock.Acquire(vaultRoot, vaultRoot)`) serialises the vault's
+git index and working tree. Its holders are:
+
+- the index critical section of every committer (`commitAndPushPathsCore`,
+  `CommitRemovals`, `pruneMirrors`);
+- **`pushCommitted`'s rejected-push reconcile** (fetch → departure guard →
+  `rebase --autostash` / `--abort`), taken per remote and released before the
+  retried push;
+- **`pullCore`'s guard → heal → merge**, taken per remote after the fetch;
+- **split purge's commit step** (`CommitSplitPurge`: HEAD re-check → `git rm` →
+  stage → commit → assert, or its rollback).
+
+The network push and the pull's fetch are never inside it. A root-key holder
+runs git only and never acquires a per-path key, with the one existing
+exception of `pruneMirrors`' directory → file prune (root, then `vaultfs.Delete`
+per mirror). Split purge writes its departure records (per-path keys) *before*
+taking the root key, and removes or restores them and cleans up *after*
+releasing it.
+
+### Premise P extends to the root key
+
+No holder of a per-path key waits on the root key. Re-audited at `4679728`: none
+of the 55 per-path lock sites' files calls a committer, and every caller of a
+root-key holder starts from a holder of nothing — `memory.Harvest` releases each
+memory lock in a closure before it commits; `commitTaskWrite` runs after the task
+writer returns; `RetireProjectConfigs` calls `vaultfs.Delete` and then
+`CommitRemovals`; `template_reset` holds nothing when it commits; the hook
+releases the archive manifest lock before `Harvest`; the one-shot migration
+releases the root key before committing. The only edge out of the root key,
+`pruneMirrors`' root → file, ends at a per-path key whose holders never wait on
+the root key, so no cycle can pass through it. *Why it cannot deadlock* holds
+unchanged.
+
+### A pending departure blocks every commit but purge's own
+
+`commitOnlyPaths`, the single sink every vp commit reaches, refuses while an
+uncommitted `Audits/departures/*.json` exists; only the split purge's own commit
+is exempt. This is a guard, not a lock: it closes the crash window between the
+purge writing its records and committing them, which no lock can span.
+
+### Pins
+
+`internal/storage`: `TestPushReconcileWaitsForTheCommitLock`,
+`TestPullMergeWaitsForTheCommitLock`,
+`TestCommitGuardRefusesEveryCommitterWhileADepartureIsPending`.
+`internal/tools`: `TestPurgeRefusesWhenHEADMovesBeforeTheLock`,
+`TestPurgeInterruptedAfterTheRecordsIsGuarded`,
+`TestPurgeRollbackIsLossless`.
+
 ## References
 
 - Lock primitive: `internal/vaultlock/` (`vaultlock.go`, `flock_unix.go`,
