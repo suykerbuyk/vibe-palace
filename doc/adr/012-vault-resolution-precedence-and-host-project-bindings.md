@@ -135,6 +135,11 @@ vault's departure record then refuses the write.
   session in the checkout). Closing it in code is a parked follow-on.
 - Resolution still does not check that a tier-1 or tier-3 root exists. That is a
   whole-binary behaviour change and a parked follow-on.
-- The command that writes a binding without hand-editing the config is
-  `checkout-rebind-entry-point` (U2b). Until it lands, the binding is one line an
-  operator adds to their own host's config.
+- A binding is written by `vp config bind <slug> --vault <path> [--checkout
+  <dir>...]` or the stdio MCP tool `vp_config_bind` (both over
+  `storage.BindProjectVault`, task `checkout-rebind-entry-point`). It checks the
+  split landed (a moved-to-vault record whose destination equals a remote of the
+  target) or, with `--new`, that the default vault never held the project; it
+  never re-points an existing binding, never writes a checkout, and restores the
+  config if any named checkout does not then resolve through it. A checkout
+  rebind's split kind binds this way; its rename kind moves the binding key.
