@@ -52,6 +52,11 @@
       "schema_sha256": "15f610fbbc57599f94811a0ee899e3182ebfbee45283b37aed1471c4858ea9c8"
     },
     {
+      "name": "vp_config_bind",
+      "mutating": true,
+      "schema_sha256": "6bf6296a38a3adf63a6a74ff1dd3e780dd457123d3504613dac0c49fb26a879b"
+    },
+    {
       "name": "vp_enqueue_iteration_summary",
       "mutating": true,
       "schema_sha256": "b50186802c795a0f26e6224b1da7ccc8e597f96772bf26a335f8f1fbefa7edd2"

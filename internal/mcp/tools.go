@@ -452,7 +452,9 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 // on a mutating tool with a property whose name CONTAINS "project" other than
 // project, to_project or project_path. That is all it checks: a property that
 // names a project without the word (e.g. `slug`) is invisible to both this
-// seam and that pin. A slug
+// seam and that pin. The one tool allowed to do that — vp_config_bind, which
+// binds a departed project to the vault it moved to — is declared by the
+// exact-name allow-list in tools.TestOnlyTheBindToolTargetsAProjectBySlug. A slug
 // derived later from `project_path` is not visible here; the vault writers
 // that derive one go through RequireKnownProject.
 //

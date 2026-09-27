@@ -10,6 +10,9 @@ import (
 type FlagValues struct {
 	flags map[string]string
 	bools map[string]bool
+	// multi keeps EVERY value a repeated value flag was given, in order; flags
+	// keeps the last, which is what Get has always returned.
+	multi map[string][]string
 	args  []string
 }
 
@@ -19,6 +22,12 @@ func (f *FlagValues) Get(name string) string {
 }
 
 // Bool returns true if a boolean flag was set.
+// GetAll returns every value a repeated value flag was given, in order (nil
+// when it was not given), for flags documented as repeatable.
+func (f *FlagValues) GetAll(name string) []string {
+	return f.multi[name]
+}
+
 func (f *FlagValues) Bool(name string) bool {
 	return f.bools[name]
 }
@@ -63,6 +72,7 @@ func ParseFlags(defs []FlagDef, args []string) (*FlagValues, error) {
 	fv := &FlagValues{
 		flags: make(map[string]string),
 		bools: make(map[string]bool),
+		multi: make(map[string][]string),
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -123,6 +133,7 @@ func ParseFlags(defs []FlagDef, args []string) (*FlagValues, error) {
 			} else {
 				return nil, fmt.Errorf("flag %s requires a value", key)
 			}
+			fv.multi[def.Name] = append(fv.multi[def.Name], fv.flags[def.Name])
 		}
 	}
 

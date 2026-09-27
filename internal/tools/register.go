@@ -57,6 +57,12 @@ func WithLaunch(launch detachlaunch.LaunchFunc) RegisterOption {
 	return func(o *registerOptions) { o.launch = launch }
 }
 
+// StdioOnlyToolNames are the tools RegisterAll registers on the stdio
+// transport only (never on `vp mcp serve`, which passes
+// WithRequireExplicitProject), because they write the host the process runs
+// on. Pinned by TestStdioOnlyToolsAreAbsentOnServe.
+var StdioOnlyToolNames = []string{"vp_config_bind"}
+
 // RegisterAll registers all tools with the MCP registry.
 // If engine is nil, search tools and capture tools are not registered.
 func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, opts ...RegisterOption) {
@@ -111,6 +117,13 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(ManageTaskTool(vault))
 	reg.MustRegister(ReadResourceTool(resolver, vault))
 	reg.MustRegister(InitProjectTool(vault))
+	// The stdio-only tools write THIS host's own state (vp_config_bind: the
+	// global config, verified against this host's checkouts), so they exist
+	// only where the process is the caller's own: on the multiplexed
+	// `vp mcp serve` that state belongs to the server host.
+	if !o.requireExplicitProject {
+		reg.MustRegister(ConfigBindTool())
+	}
 	reg.MustRegister(VaultSyncTool(vault))
 	reg.MustRegister(VaultTidyTool(vault))
 	reg.MustRegister(VaultSplitTool(vault))
