@@ -17,6 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
@@ -281,7 +282,11 @@ func rebindRenamePreconditions(r CheckoutRebind, pf project.ProjectFile) error {
 			"or its marker names a project the vault does not hold", r.VaultRoot, r.ToSlug)
 	}
 	if _, err := os.Lstat(filepath.Join(r.VaultRoot, "Projects", r.FromSlug)); err == nil {
-		return fmt.Errorf("refusing: %s still has Projects/%s: the vault rename has not landed", r.VaultRoot, r.FromSlug)
+		// A directory that survived a pull holding only ignored residue is a
+		// LANDED rename, not a pending one: departure.Find says which.
+		if _, departed := departure.Find(r.VaultRoot, r.FromSlug); !departed {
+			return fmt.Errorf("refusing: %s still has Projects/%s: the vault rename has not landed", r.VaultRoot, r.FromSlug)
+		}
 	}
 	return nil
 }

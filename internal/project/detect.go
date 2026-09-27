@@ -297,6 +297,11 @@ func resolveDir(dir string) string {
 func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 	if strings.TrimSpace(repoRoot) == "" {
 		if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {
+			// A directory is not proof the project is here: a departed one's
+			// survives a pull holding ignored residue (Departed).
+			if d, departed := Departed(vaultRoot, slug); departed {
+				return departureRefusal(d, "")
+			}
 			return nil
 		}
 		return fmt.Errorf(
@@ -332,6 +337,11 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 		return nil
 	}
 	if fi, err := os.Stat(filepath.Join(vaultRoot, "Projects", slug)); err == nil && fi.IsDir() {
+		// The same rule as the slug-only arm above: a departed project's
+		// directory can survive holding residue alone.
+		if d, departed := Departed(vaultRoot, slug); departed {
+			return departureRefusal(d, "")
+		}
 		return nil
 	}
 	switch {
