@@ -697,12 +697,10 @@ func rebindQueuedJobs(checkout, from string, kind RebindKind) []string {
 	return out
 }
 
-// rebindGitCommands are printed for the operator and never run. A split
-// changes nothing in the repository, so it has none.
+// rebindGitCommands are printed for the operator and never run. Only a rename
+// has any: a split changes nothing in the repository, and rebindSplit never
+// asks for them.
 func rebindGitCommands(r CheckoutRebind) []string {
-	if r.Kind == RebindSplit {
-		return nil
-	}
 	msg := fmt.Sprintf("Rebind this checkout to vibe-palace project %s", r.ToSlug)
 	return []string{
 		fmt.Sprintf("git -C %s add -- .vibe-palace.toml", r.Checkout),

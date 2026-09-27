@@ -386,19 +386,27 @@ func TestRebindRenameRefusesABindingConflict(t *testing.T) {
 	cfg, _ := VaultConfigFilePath()
 	co := filepath.Join(home, "code", "proj")
 	tp := filepath.Join(co, ".vibe-palace.toml")
-	for name, body := range map[string]string{
-		"to_bound_elsewhere":   "old-slug = \"~/quantum-vault\"\nnew-slug = \"" + elsewhere + "\"\n",
-		"from_bound_elsewhere": "old-slug = \"" + elsewhere + "\"\n",
+	// Each refusal must come from the PRECONDITION, before any write: the
+	// post-write verification would also refuse and restore, but only after
+	// writing (and leaving a .bak) — so the message and the absent .bak are
+	// what prove the precondition fired.
+	for name, c := range map[string]struct{ body, want string }{
+		"to_bound_elsewhere":   {"old-slug = \"~/quantum-vault\"\nnew-slug = \"" + elsewhere + "\"\n", "merge the two by hand"},
+		"from_bound_elsewhere": {"old-slug = \"" + elsewhere + "\"\n", "but the rename landed in"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rebindWrite(t, cfg, "vault_path = \""+global+"\"\n\n[project_vaults]\n"+body)
+			rebindWrite(t, cfg, "vault_path = \""+global+"\"\n\n[project_vaults]\n"+c.body)
 			rebindWrite(t, tp, rebindToml)
+			_ = os.Remove(cfg + ".bak")
 			before := bindRead(t, cfg)
-			if _, err := RebindCheckout(rebindRename(co, quantum)); err == nil || !strings.Contains(err.Error(), "refusing") {
-				t.Fatalf("want a refusal, got %v", err)
+			if _, err := RebindCheckout(rebindRename(co, quantum)); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("want a precondition refusal containing %q, got %v", c.want, err)
 			}
 			if bindRead(t, cfg) != before || bindRead(t, tp) != rebindToml {
 				t.Error("a refused rename wrote something")
+			}
+			if _, err := os.Stat(cfg + ".bak"); !os.IsNotExist(err) {
+				t.Error("the config was written (a .bak exists) before the refusal")
 			}
 		})
 	}
