@@ -1217,6 +1217,30 @@ func ListRemotes(vaultPath string) ([]string, error) {
 	return remotes, nil
 }
 
+// VaultRemoteURLs returns every remote URL configured in the vault repo's OWN
+// config (`--local`, so a user- or system-level remote.*.url can never count).
+// A repository with no remotes is (nil, nil). Any other failure — git missing,
+// a failed or timed-out exec, a directory that is not a repository — is an
+// error: `vp config bind` compares these URLs with a departure record's label,
+// and must not read "could not ask git" as "no remotes".
+func VaultRemoteURLs(vaultPath string) ([]string, error) {
+	out, err := gitCmd(vaultPath, 5*time.Second, "config", "--local", "--get-regexp", `^remote\..*\.url$`)
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 && out == "" {
+			return nil, nil // --get-regexp matched nothing
+		}
+		return nil, fmt.Errorf("read the remotes of %s: %w", vaultPath, err)
+	}
+	var urls []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if _, url, ok := strings.Cut(strings.TrimSpace(line), " "); ok && url != "" {
+			urls = append(urls, strings.TrimSpace(url))
+		}
+	}
+	return urls, nil
+}
+
 // checkIdentity returns nil if git can resolve a committer identity from any
 // source (.git/config, ~/.gitconfig, system gitconfig, or GIT_AUTHOR_*/
 // GIT_COMMITTER_* env vars). Returns an actionable error otherwise. Uses

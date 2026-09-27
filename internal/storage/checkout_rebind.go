@@ -19,7 +19,6 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
-	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -31,8 +30,10 @@ const (
 	// RebindRename changes [project].name from FromSlug to ToSlug: the project
 	// was renamed inside its vault.
 	RebindRename RebindKind = iota + 1
-	// RebindSplit sets the top-level vault_path: the project moved to another
-	// vault under the same slug.
+	// RebindSplit binds the project to its new vault on this host
+	// ([project_vaults], ADR-012) through BindProjectVault: the project moved to
+	// another vault under the same slug. The checkout is never written — a
+	// committed marker never carries vault_path.
 	RebindSplit
 )
 
@@ -57,8 +58,9 @@ type CheckoutRebind struct {
 	FromSlug string
 	// ToSlug is the new slug (rename only).
 	ToSlug string
-	// VaultPath is the new top-level vault_path exactly as it should be
-	// written; "~/…" is allowed and kept (split only).
+	// VaultPath is the vault the project moved to, written into the host's
+	// [project_vaults] exactly as given; it must be absolute after ~ expansion
+	// (split only).
 	VaultPath string
 	// VaultRoot is the vault that must already hold the project under its new
 	// name (rename only). A split checks the vault VaultPath resolves to.
@@ -91,16 +93,20 @@ type RebindGrepHit struct {
 
 // CheckoutRebindReport is everything a rebind did or would do.
 type CheckoutRebindReport struct {
-	TomlPath    string             `json:"toml_path"`
-	TomlChange  string             `json:"toml_change"`
-	BackupPath  string             `json:"backup_path,omitempty"`
-	HostConfig  *RebindFileAction  `json:"host_config,omitempty"`
-	Anchors     []RebindFileAction `json:"anchors,omitempty"`
-	GrepHits    []RebindGrepHit    `json:"grep_hits,omitempty"`
-	GrepTotal   int                `json:"grep_total"`
-	GitCommands []string           `json:"git_commands"`
-	Warnings    []string           `json:"warnings,omitempty"`
-	DryRun      bool               `json:"dry_run"`
+	TomlPath   string `json:"toml_path"`
+	TomlChange string `json:"toml_change"`
+	BackupPath string `json:"backup_path,omitempty"`
+	// BindingChange is the [project_vaults] key a rename moved; Binding is the
+	// bind a split made.
+	BindingChange string             `json:"binding_change,omitempty"`
+	Binding       *BindReport        `json:"binding,omitempty"`
+	HostConfig    *RebindFileAction  `json:"host_config,omitempty"`
+	Anchors       []RebindFileAction `json:"anchors,omitempty"`
+	GrepHits      []RebindGrepHit    `json:"grep_hits,omitempty"`
+	GrepTotal     int                `json:"grep_total"`
+	GitCommands   []string           `json:"git_commands"`
+	Warnings      []string           `json:"warnings,omitempty"`
+	DryRun        bool               `json:"dry_run"`
 }
 
 // rebindGrepCap bounds the hits a report carries; GrepTotal says how many
@@ -108,9 +114,17 @@ type CheckoutRebindReport struct {
 const rebindGrepCap = 200
 
 // RebindCheckout rebinds one project checkout after its project was renamed
-// or split away: it edits exactly one line of the checkout's
-// .vibe-palace.toml, carries the host-local bindings, and reports what it
-// cannot fix.
+// or split away, and reports what it cannot fix.
+//
+// A rename edits exactly one line of the checkout's .vibe-palace.toml, moves
+// the host-local project config and the host's [project_vaults] key, and
+// carries the wrapstate anchors. A split changes no byte of the checkout: it
+// binds the project to its new vault in the host's global config
+// (BindProjectVault, ADR-012) — a committed marker never carries vault_path.
+//
+// The marker is read by project.ReadMarker, the reader resolution and
+// detection share, and must be the file project.FindMarker finds from the
+// checkout, so the marker this edits is the marker that binds the vault.
 //
 // Every precondition is checked before the first write. It never commits in
 // the project repository; GitCommands are for the operator to run, because
@@ -120,68 +134,48 @@ func RebindCheckout(r CheckoutRebind) (CheckoutRebindReport, error) {
 	if err := rebindValidate(r); err != nil {
 		return rep, err
 	}
-	rep.TomlPath = filepath.Join(r.Checkout, ".vibe-palace.toml")
-	old, err := os.ReadFile(rep.TomlPath)
+	rep.TomlPath = filepath.Join(r.Checkout, projectFileName)
+	old, m, err := rebindReadMarker(rep.TomlPath, r.Checkout)
 	if err != nil {
-		return rep, fmt.Errorf("refusing: %s: %w (the checkout root must hold its own .vibe-palace.toml)", rep.TomlPath, err)
-	}
-	pf, err := project.ParseProjectFile(rep.TomlPath)
-	if err != nil {
-		return rep, fmt.Errorf("refusing: %w", err)
-	}
-	if pf.Project.Name == "" {
-		return rep, fmt.Errorf("refusing: %s names no [project].name", rep.TomlPath)
-	}
-
-	// The vault the checkout resolves to BEFORE the edit, for the grep of a
-	// split: code that hard-codes the old vault's path.
-	oldVault, _, _ := ResolveVaultPath(r.Checkout)
-
-	var next string
-	switch r.Kind {
-	case RebindRename:
-		if err := rebindRenamePreconditions(r, pf); err != nil {
-			return rep, err
-		}
-		if pf.Project.Name == r.ToSlug {
-			rep.TomlChange = "already rebound"
-		} else {
-			next, rep.TomlChange, err = rebindNameLine(string(old), r.FromSlug, r.ToSlug)
-			if err != nil {
-				return rep, err
-			}
-		}
-		hc, err := rebindHostConfigPlan(r.FromSlug, r.ToSlug)
-		if err != nil {
-			return rep, err
-		}
-		rep.HostConfig = hc
-	case RebindSplit:
-		want, err := rebindSplitPreconditions(r, pf)
-		if err != nil {
-			return rep, err
-		}
-		if cur := strings.TrimSpace(pf.VaultPath); cur != "" && rebindSamePath(cur, want) {
-			rep.TomlChange = "already rebound"
-		} else {
-			next, rep.TomlChange, err = rebindVaultPathLine(string(old), r.VaultPath)
-			if err != nil {
-				return rep, err
-			}
-		}
-	}
-	if next != "" {
-		if err := rebindPostcondition(string(old), next, r); err != nil {
-			return rep, err
-		}
+		return rep, err
 	}
 	anchors, err := rebindAnchorPlan(r)
 	if err != nil {
 		return rep, err
 	}
+	if r.Kind == RebindSplit {
+		return rebindSplit(r, rep, m, anchors)
+	}
+
+	// Rename.
+	if err := rebindRenamePreconditions(r, m); err != nil {
+		return rep, err
+	}
+	var next string
+	if m.Name == r.ToSlug {
+		rep.TomlChange = "already rebound"
+	} else {
+		next, rep.TomlChange, err = rebindNameLine(string(old), r.FromSlug, r.ToSlug)
+		if err != nil {
+			return rep, err
+		}
+		if err := rebindPostcondition(string(old), next, r); err != nil {
+			return rep, err
+		}
+	}
+	hc, err := rebindHostConfigPlan(r.FromSlug, r.ToSlug)
+	if err != nil {
+		return rep, err
+	}
+	rep.HostConfig = hc
+	bm, err := rebindBindingPlan(r)
+	if err != nil {
+		return rep, err
+	}
+	rep.BindingChange = bm.change
 
 	// Report-only work: nothing below changes the checkout.
-	rep.GrepHits, rep.GrepTotal, rep.Warnings = rebindGrep(r, oldVault)
+	rep.GrepHits, rep.GrepTotal, rep.Warnings = rebindGrep(r, "")
 	rep.Warnings = append(rep.Warnings, rebindQueuedJobs(r.Checkout, r.FromSlug, r.Kind)...)
 	rep.GitCommands = rebindGitCommands(r)
 
@@ -189,55 +183,214 @@ func RebindCheckout(r CheckoutRebind) (CheckoutRebindReport, error) {
 		if rep.HostConfig != nil && rep.HostConfig.Action == "moved" {
 			rep.HostConfig.Action = "would-move"
 		}
-		for i := range anchors {
-			if anchors[i].Action == "copied" {
-				anchors[i].Action = "would-copy"
-			}
-		}
-		rep.Anchors = anchors
+		rep.Anchors = rebindDryAnchors(anchors)
 		return rep, nil
 	}
 
-	// Writes, in order: the toml, the host-local config, the anchors.
+	// Writes, in order: the host's [project_vaults] key, the toml, the
+	// host-local project config, the anchors. A failure after the first write
+	// restores what was already written.
+	var cfgBackup string
+	if bm.move {
+		if err := casWriteHostConfig(bm.cfgPath, bm.old, []byte(bm.next), &cfgBackup); err != nil {
+			return rep, fmt.Errorf("refusing: %v", err)
+		}
+	}
+	undoCfg := func(cause error) error {
+		if !bm.move {
+			return cause
+		}
+		if rerr := restoreHostLocal(bm.cfgPath, bm.old); rerr != nil {
+			return fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", cause, bm.cfgPath, rerr, cfgBackup)
+		}
+		return fmt.Errorf("%w; %s was restored to its previous bytes", cause, bm.cfgPath)
+	}
 	if next != "" {
 		bak, err := WriteHostLocalWithBackup(rep.TomlPath, old, []byte(next))
 		if err != nil {
-			return rep, fmt.Errorf("rewrite %s: %w", rep.TomlPath, err)
+			return rep, undoCfg(fmt.Errorf("rewrite %s: %w", rep.TomlPath, err))
 		}
 		rep.BackupPath = bak
-		if r.Kind == RebindSplit {
-			got, src, err := ResolveVaultPath(r.Checkout)
-			if err != nil || !rebindSamePath(got, r.VaultPath) || !strings.HasPrefix(src, "cwd:") {
-				// Restore the pre-image: a rebind that does not resolve is
-				// worse than none.
-				_ = os.WriteFile(rep.TomlPath, old, 0o644)
-				return rep, fmt.Errorf("refusing: after the edit the checkout resolves the vault %q (source %s, err %v), not %q; the original file was restored",
-					got, src, err, r.VaultPath)
+	}
+	undoToml := func(cause error) error {
+		if next != "" {
+			if rerr := restoreHostLocal(rep.TomlPath, old); rerr != nil {
+				cause = fmt.Errorf("%w; restoring %s also failed: %v", cause, rep.TomlPath, rerr)
 			}
 		}
+		return undoCfg(cause)
 	}
+	movedHost := false
 	if rep.HostConfig != nil && rep.HostConfig.Action == "moved" {
 		if err := os.Rename(rep.HostConfig.From, rep.HostConfig.To); err != nil {
-			return rep, fmt.Errorf("move host project config: %w", err)
+			return rep, undoToml(fmt.Errorf("move host project config: %w", err))
+		}
+		movedHost = true
+	}
+	if bm.move {
+		res, err := ResolveVaultBinding(r.Checkout)
+		want := "binding:" + bm.cfgPath + "#" + r.ToSlug
+		if err != nil || res.Source != want || !sameVaultRoot(res.Path, r.VaultRoot) {
+			if movedHost {
+				_ = os.Rename(rep.HostConfig.To, rep.HostConfig.From)
+			}
+			return rep, undoToml(fmt.Errorf("refusing: after the rename the checkout resolves %q (source %q, err %v), not %s through the binding",
+				res.Path, res.Source, err, r.VaultRoot))
 		}
 	}
+	if err := rebindApplyAnchors(anchors); err != nil {
+		return rep, err
+	}
+	rep.Anchors = anchors
+	return rep, nil
+}
+
+// rebindReadMarker reads the checkout root's own marker (no upward walk, so a
+// parent project's marker is never edited) through the shared reader, and
+// refuses unless it is also the marker the resolver's walk finds.
+func rebindReadMarker(tomlPath, checkout string) ([]byte, project.Marker, error) {
+	old, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return nil, project.Marker{}, fmt.Errorf("refusing: %s: %w (the checkout root must hold its own .vibe-palace.toml)", tomlPath, err)
+	}
+	m, err := project.ReadMarker(tomlPath)
+	switch {
+	case err != nil:
+		return nil, m, fmt.Errorf("refusing: %s: %w", tomlPath, err)
+	case m.Name == "":
+		return nil, m, fmt.Errorf("refusing: %s names no [project].name", tomlPath)
+	case m.NameErr != nil:
+		return nil, m, fmt.Errorf("refusing: %s: [project].name %q: %w", tomlPath, m.Name, m.NameErr)
+	}
+	found, _ := project.FindMarker(checkout)
+	resolved, rerr := filepath.EvalSymlinks(tomlPath)
+	if rerr != nil || found != filepath.Clean(resolved) {
+		return nil, m, fmt.Errorf("refusing: from %s the resolver reads %q, not %s; rebind from the directory whose marker binds the vault",
+			checkout, found, tomlPath)
+	}
+	return old, m, nil
+}
+
+// rebindSplit binds the checkout's project to the vault it moved to. The
+// checkout itself is not written.
+func rebindSplit(r CheckoutRebind, rep CheckoutRebindReport, m project.Marker, anchors []RebindFileAction) (CheckoutRebindReport, error) {
+	if m.Name != r.FromSlug {
+		return rep, fmt.Errorf("refusing: the checkout names project %q, not %q", m.Name, r.FromSlug)
+	}
+	br, err := BindProjectVault(BindRequest{
+		Slug: r.FromSlug, VaultPath: r.VaultPath, Mode: BindMoved,
+		Checkouts: []string{r.Checkout}, DryRun: r.DryRun,
+	})
+	rep.Binding = &br
+	if err != nil {
+		return rep, err
+	}
+	rep.TomlChange = "unchanged (bound in " + br.ConfigPath + ")"
+	rep.GrepHits, rep.GrepTotal, rep.Warnings = br.GrepHits, br.GrepTotal, br.Warnings
+	if r.DryRun {
+		rep.Anchors = rebindDryAnchors(anchors)
+		return rep, nil
+	}
+	if err := rebindApplyAnchors(anchors); err != nil {
+		return rep, err
+	}
+	rep.Anchors = anchors
+	return rep, nil
+}
+
+// rebindBinding is a rename's planned [project_vaults] key move.
+type rebindBinding struct {
+	move    bool
+	cfgPath string
+	old     []byte
+	next    string
+	change  string
+}
+
+// rebindBindingPlan plans moving [project_vaults].<from> to <to>, so the
+// renamed checkout keeps resolving the vault it was bound to. A bound <from>
+// must point at the vault the rename landed in, and an existing <to> must
+// agree with it; anything else refuses before any write.
+func rebindBindingPlan(r CheckoutRebind) (rebindBinding, error) {
+	bindings, cfgPath, err := readProjectVaults()
+	if err != nil {
+		return rebindBinding{}, fmt.Errorf("refusing: the host config cannot be used: %w", err)
+	}
+	fromVal, fromOK := bindings[r.FromSlug]
+	toVal, toOK := bindings[r.ToSlug]
+	if !fromOK {
+		if toOK {
+			root, berr := boundVaultRoot(cfgPath, r.ToSlug, toVal)
+			if berr != nil || !sameVaultRoot(root, r.VaultRoot) {
+				return rebindBinding{}, fmt.Errorf("refusing: %s binds %q to %q, not to %s where the rename landed", cfgPath, r.ToSlug, toVal, r.VaultRoot)
+			}
+		}
+		return rebindBinding{}, nil
+	}
+	fromRoot, err := boundVaultRoot(cfgPath, r.FromSlug, fromVal)
+	if err != nil {
+		return rebindBinding{}, fmt.Errorf("refusing: %w", err)
+	}
+	if !sameVaultRoot(fromRoot, r.VaultRoot) {
+		return rebindBinding{}, fmt.Errorf("refusing: %s binds %q to %s, but the rename landed in %s", cfgPath, r.FromSlug, fromRoot, r.VaultRoot)
+	}
+	if toOK {
+		if toRoot, berr := boundVaultRoot(cfgPath, r.ToSlug, toVal); berr != nil || !sameVaultRoot(toRoot, fromRoot) {
+			return rebindBinding{}, fmt.Errorf("refusing: %s already binds %q to %q, which is not %s; merge the two by hand", cfgPath, r.ToSlug, toVal, fromRoot)
+		}
+	}
+	old, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return rebindBinding{}, fmt.Errorf("refusing: read %s: %w", cfgPath, err)
+	}
+	next, err := removeProjectVault(string(old), r.FromSlug)
+	if err != nil {
+		return rebindBinding{}, fmt.Errorf("refusing: %w", err)
+	}
+	want := map[string]string{r.FromSlug: "", r.ToSlug: toVal}
+	if !toOK {
+		if next, _, err = spliceProjectVault(next, r.ToSlug, fromVal); err != nil {
+			return rebindBinding{}, fmt.Errorf("refusing: %w", err)
+		}
+		want[r.ToSlug] = fromVal
+	}
+	if err := projectVaultsPostcondition(string(old), next, want); err != nil {
+		return rebindBinding{}, fmt.Errorf("refusing: %w", err)
+	}
+	return rebindBinding{
+		move: true, cfgPath: cfgPath, old: old, next: next,
+		change: fmt.Sprintf("[%s] %s -> %s = %q", projectVaultsKey, r.FromSlug, r.ToSlug, want[r.ToSlug]),
+	}, nil
+}
+
+// rebindDryAnchors reports the anchor plan as it would run.
+func rebindDryAnchors(anchors []RebindFileAction) []RebindFileAction {
+	for i := range anchors {
+		if anchors[i].Action == "copied" {
+			anchors[i].Action = "would-copy"
+		}
+	}
+	return anchors
+}
+
+// rebindApplyAnchors copies the planned anchors.
+func rebindApplyAnchors(anchors []RebindFileAction) error {
 	for _, a := range anchors {
 		if a.Action != "copied" {
 			continue
 		}
 		data, err := os.ReadFile(a.From)
 		if err != nil {
-			return rep, fmt.Errorf("read anchor: %w", err)
+			return fmt.Errorf("read anchor: %w", err)
 		}
 		if err := os.MkdirAll(filepath.Dir(a.To), 0o755); err != nil {
-			return rep, fmt.Errorf("create anchor dir: %w", err)
+			return fmt.Errorf("create anchor dir: %w", err)
 		}
 		if err := os.WriteFile(a.To, data, 0o644); err != nil {
-			return rep, fmt.Errorf("write anchor: %w", err)
+			return fmt.Errorf("write anchor: %w", err)
 		}
 	}
-	rep.Anchors = anchors
-	return rep, nil
+	return nil
 }
 
 func rebindValidate(r CheckoutRebind) error {
@@ -273,9 +426,9 @@ func rebindValidate(r CheckoutRebind) error {
 	return nil
 }
 
-func rebindRenamePreconditions(r CheckoutRebind, pf project.ProjectFile) error {
-	if pf.Project.Name != r.FromSlug && pf.Project.Name != r.ToSlug {
-		return fmt.Errorf("refusing: the checkout names project %q, neither %q nor %q", pf.Project.Name, r.FromSlug, r.ToSlug)
+func rebindRenamePreconditions(r CheckoutRebind, m project.Marker) error {
+	if m.Name != r.FromSlug && m.Name != r.ToSlug {
+		return fmt.Errorf("refusing: the checkout names project %q, neither %q nor %q", m.Name, r.FromSlug, r.ToSlug)
 	}
 	if st, err := os.Stat(filepath.Join(r.VaultRoot, "Projects", r.ToSlug)); err != nil || !st.IsDir() {
 		return fmt.Errorf("refusing: %s has no Projects/%s: rebind the checkout only after the vault rename has landed, "+
@@ -289,36 +442,6 @@ func rebindRenamePreconditions(r CheckoutRebind, pf project.ProjectFile) error {
 		}
 	}
 	return nil
-}
-
-// rebindSplitPreconditions returns the absolute vault VaultPath resolves to,
-// after proving it is a vault of the required data format that holds the slug.
-func rebindSplitPreconditions(r CheckoutRebind, pf project.ProjectFile) (string, error) {
-	if pf.Project.Name != r.FromSlug {
-		return "", fmt.Errorf("refusing: the checkout names project %q, not %q", pf.Project.Name, r.FromSlug)
-	}
-	want, err := rebindExpand(r.VaultPath)
-	if err != nil {
-		return "", fmt.Errorf("refusing: vault_path %q: %w", r.VaultPath, err)
-	}
-	format, err := surface.ReadFormat(want)
-	if err != nil {
-		return "", fmt.Errorf("refusing: %s is not a readable vault: %w", want, err)
-	}
-	if format != surface.RequiredDataFormat {
-		return "", fmt.Errorf("refusing: %s is at data format %d, required %d", want, format, surface.RequiredDataFormat)
-	}
-	held := false
-	for _, tree := range ProjectTrees(r.FromSlug) {
-		if st, err := os.Stat(filepath.Join(want, filepath.FromSlash(tree))); err == nil && st.IsDir() {
-			held = true
-		}
-	}
-	if !held {
-		return "", fmt.Errorf("refusing: %s holds neither palace/%s nor Projects/%s: point the checkout only at a vault that holds the project",
-			want, r.FromSlug, r.FromSlug)
-	}
-	return want, nil
 }
 
 func rebindExpand(p string) (string, error) {
@@ -392,58 +515,8 @@ func rebindNameLine(text, from, to string) (string, string, error) {
 	return strings.Join(lines, "\n"), "- " + oldLine + "\n+ " + lines[idx], nil
 }
 
-// rebindVaultPathLine sets the TOP-LEVEL vault_path. A vault_path under any
-// table refuses: it is already swallowed, and the operator must fix the file.
-func rebindVaultPathLine(text, value string) (string, string, error) {
-	lines := strings.Split(text, "\n")
-	ranges := FindSectionRanges(text)
-	topEnd := len(lines)
-	for _, sr := range ranges {
-		if sr.Name == "" {
-			topEnd = sr.EndLine
-			continue
-		}
-		for i := sr.StartLine + 1; i < sr.EndLine && i < len(lines); i++ {
-			if k, ok := parseKeyAssignment(trimLeftSpace(lines[i]), false); ok && k == "vault_path" {
-				return "", "", fmt.Errorf("refusing: line %d sets vault_path inside [%s], where TOML scopes it to that table "+
-					"and it overrides nothing; move or remove it by hand", i+1, sr.Name)
-			}
-		}
-	}
-	newLine := "vault_path = " + rebindQuote(value)
-	active, commented := -1, -1
-	for i := 0; i < topEnd && i < len(lines); i++ {
-		t := trimLeftSpace(lines[i])
-		if k, ok := parseKeyAssignment(t, false); ok && k == "vault_path" {
-			if active >= 0 {
-				return "", "", fmt.Errorf("refusing: more than one top-level vault_path line")
-			}
-			active = i
-		} else if k, ok := parseKeyAssignment(t, true); ok && k == "vault_path" && commented < 0 {
-			commented = i
-		}
-	}
-	switch {
-	case active >= 0:
-		indent, _, ok := rebindAssignment(lines[active], "vault_path")
-		if !ok {
-			return "", "", fmt.Errorf("refusing: line %d %q is not a plain vault_path = \"…\"; edit it by hand", active+1, lines[active])
-		}
-		oldLine := lines[active]
-		lines[active] = indent + newLine
-		return strings.Join(lines, "\n"), "- " + oldLine + "\n+ " + lines[active], nil
-	case commented >= 0:
-		// Keep the template's commented example and set the key under it.
-		lines = append(lines[:commented+1], append([]string{newLine}, lines[commented+1:]...)...)
-	default:
-		// Top-level keys must precede the first table header.
-		lines = append(lines[:topEnd], append([]string{newLine, ""}, lines[topEnd:]...)...)
-	}
-	return strings.Join(lines, "\n"), "+ " + newLine, nil
-}
-
-// rebindPostcondition refuses, before any write, unless the new text differs
-// from the old in exactly the one key the rebind sets, with the intended value.
+// rebindPostcondition refuses, before any write, unless a rename's new text
+// differs from the old in exactly [project].name, with the intended value.
 func rebindPostcondition(old, next string, r CheckoutRebind) error {
 	var a, b map[string]any
 	if _, err := toml.Decode(old, &a); err != nil {
@@ -452,29 +525,18 @@ func rebindPostcondition(old, next string, r CheckoutRebind) error {
 	if _, err := toml.Decode(next, &b); err != nil {
 		return fmt.Errorf("refusing: the edit would not parse: %w", err)
 	}
-	var pf project.ProjectFile
-	if _, err := toml.Decode(next, &pf); err != nil {
-		return fmt.Errorf("refusing: the edit would not parse: %w", err)
+	pa, _ := a["project"].(map[string]any)
+	pb, _ := b["project"].(map[string]any)
+	if pa == nil || pb == nil {
+		return fmt.Errorf("refusing: no [project] table")
 	}
-	switch r.Kind {
-	case RebindRename:
-		if pf.Project.Name != r.ToSlug {
-			return fmt.Errorf("refusing: the edit would name %q, not %q", pf.Project.Name, r.ToSlug)
-		}
-		pa, _ := a["project"].(map[string]any)
-		pb, _ := b["project"].(map[string]any)
-		if pa == nil || pb == nil {
-			return fmt.Errorf("refusing: no [project] table")
-		}
-		delete(pa, "name")
-		delete(pb, "name")
-	case RebindSplit:
-		if pf.VaultPath != r.VaultPath {
-			return fmt.Errorf("refusing: the edit would set vault_path %q, not %q", pf.VaultPath, r.VaultPath)
-		}
-		delete(a, "vault_path")
-		delete(b, "vault_path")
+	// Read the name the way project.ReadMarker does — from the generic decode —
+	// so a wrong-typed key elsewhere in [project] cannot fail a rename.
+	if name, _ := pb["name"].(string); name != r.ToSlug {
+		return fmt.Errorf("refusing: the edit would name %v, not %q", pb["name"], r.ToSlug)
 	}
+	delete(pa, "name")
+	delete(pb, "name")
 	if !reflect.DeepEqual(a, b) {
 		return fmt.Errorf("refusing: the edit would change more than the one key it sets")
 	}
@@ -635,12 +697,13 @@ func rebindQueuedJobs(checkout, from string, kind RebindKind) []string {
 	return out
 }
 
-// rebindGitCommands are printed for the operator and never run.
+// rebindGitCommands are printed for the operator and never run. A split
+// changes nothing in the repository, so it has none.
 func rebindGitCommands(r CheckoutRebind) []string {
-	msg := fmt.Sprintf("Rebind this checkout to vibe-palace project %s", r.ToSlug)
 	if r.Kind == RebindSplit {
-		msg = fmt.Sprintf("Rebind this checkout to the vibe-palace vault at %s", r.VaultPath)
+		return nil
 	}
+	msg := fmt.Sprintf("Rebind this checkout to vibe-palace project %s", r.ToSlug)
 	return []string{
 		fmt.Sprintf("git -C %s add -- .vibe-palace.toml", r.Checkout),
 		fmt.Sprintf("git -C %s commit -m %q", r.Checkout, msg),

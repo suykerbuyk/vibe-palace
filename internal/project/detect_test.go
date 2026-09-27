@@ -374,7 +374,7 @@ func TestReadMarker_EmptyFile(t *testing.T) {
 	}
 }
 
-func TestParseProjectFile_VaultPath(t *testing.T) {
+func TestReadMarker_VaultPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
 	content := `vault_path = "/tmp/alt-vault"
@@ -386,19 +386,19 @@ name = "test-proj"
 		t.Fatal(err)
 	}
 
-	pf, err := ParseProjectFile(path)
+	pf, err := ReadMarker(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if pf.VaultPath != "/tmp/alt-vault" {
 		t.Errorf("VaultPath = %q, want %q", pf.VaultPath, "/tmp/alt-vault")
 	}
-	if pf.Project.Name != "test-proj" {
-		t.Errorf("Project.Name = %q, want %q", pf.Project.Name, "test-proj")
+	if pf.Name != "test-proj" {
+		t.Errorf("Name = %q, want %q", pf.Name, "test-proj")
 	}
 }
 
-func TestParseProjectFile_UnknownKeysTolerated(t *testing.T) {
+func TestReadMarker_UnknownKeysTolerated(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
 	content := `vault_path = "/tmp/v"
@@ -414,19 +414,19 @@ key = "value"
 		t.Fatal(err)
 	}
 
-	pf, err := ParseProjectFile(path)
+	pf, err := ReadMarker(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if pf.VaultPath != "/tmp/v" {
 		t.Errorf("VaultPath = %q, want %q", pf.VaultPath, "/tmp/v")
 	}
-	if pf.Project.Name != "p" {
-		t.Errorf("Project.Name = %q, want %q", pf.Project.Name, "p")
+	if pf.Name != "p" {
+		t.Errorf("Name = %q, want %q", pf.Name, "p")
 	}
 }
 
-func TestParseProjectFile_NoVaultPath(t *testing.T) {
+func TestReadMarker_NoVaultPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
 	content := `[project]
@@ -436,7 +436,7 @@ name = "p"
 		t.Fatal(err)
 	}
 
-	pf, err := ParseProjectFile(path)
+	pf, err := ReadMarker(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

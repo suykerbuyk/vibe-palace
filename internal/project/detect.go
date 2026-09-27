@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
@@ -120,21 +119,6 @@ func isForceSkipDir(dir string) bool {
 		return true
 	}
 	return false
-}
-
-// ProjectConfig holds project identity parsed from a .vibe-palace.toml file.
-type ProjectConfig struct {
-	Name   string   `toml:"name"`
-	Domain string   `toml:"domain"`
-	Tags   []string `toml:"tags"`
-}
-
-// ProjectFile is the top-level TOML structure for .vibe-palace.toml.
-// It carries the [project] block and an optional top-level vault_path
-// override. Other top-level keys are ignored.
-type ProjectFile struct {
-	Project   ProjectConfig `toml:"project"`
-	VaultPath string        `toml:"vault_path"`
 }
 
 // DetectProject determines the project name for the given working directory.
@@ -358,22 +342,6 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 				"directory first; otherwise check the spelling against `vp_list_projects`.",
 			slug, markerPath, markerName, slug, slug, slug)
 	}
-}
-
-// ParseProjectFile parses a .vibe-palace.toml file and returns the full
-// file contents, including any top-level vault_path override. Unknown
-// top-level keys are tolerated.
-func ParseProjectFile(path string) (ProjectFile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ProjectFile{}, fmt.Errorf("read config: %w", err)
-	}
-
-	var pf ProjectFile
-	if err := toml.Unmarshal(data, &pf); err != nil {
-		return ProjectFile{}, fmt.Errorf("parse config: %w", err)
-	}
-	return pf, nil
 }
 
 // findMarkerUpward walks from dir toward the filesystem root looking for a

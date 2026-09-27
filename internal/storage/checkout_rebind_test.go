@@ -132,52 +132,62 @@ func TestRebindCheckoutRenameChangesOneLine(t *testing.T) {
 	}
 }
 
-// R2: a split sets the TOP-LEVEL vault_path, so the checkout resolves the new
-// vault; it replaces an active one; and it refuses one swallowed by a table.
-func TestRebindCheckoutSplitSetsTopLevelVaultPath(t *testing.T) {
+// R2 (ADR-012): a split BINDS the project in the host's global config and
+// changes no byte of the checkout — a committed marker never carries
+// vault_path — and prints no git commands, because the repository has nothing
+// to commit.
+func TestRebindCheckoutSplitBindsWithoutTouchingTheMarker(t *testing.T) {
 	home := rebindEnv(t)
-	newVault := rebindVault(t, filepath.Join(home, "quantum-vault"), "old-slug")
+	_, quantum := splitHost(t, home, "old-slug")
+	cfg, _ := VaultConfigFilePath()
 	split := func(co string) CheckoutRebind {
 		return CheckoutRebind{Kind: RebindSplit, Checkout: co, FromSlug: "old-slug", VaultPath: "~/quantum-vault"}
 	}
 
-	t.Run("commented example", func(t *testing.T) {
+	t.Run("identity marker", func(t *testing.T) {
 		co := t.TempDir()
 		tp := filepath.Join(co, ".vibe-palace.toml")
 		rebindWrite(t, tp, rebindToml)
-		if _, err := RebindCheckout(split(co)); err != nil {
+		rep, err := RebindCheckout(split(co))
+		if err != nil {
 			t.Fatalf("rebind: %v", err)
 		}
-		got, _ := os.ReadFile(tp)
-		want := strings.Replace(rebindToml, "# vault_path = \"~/work-palace-vault\"\n",
-			"# vault_path = \"~/work-palace-vault\"\nvault_path = \"~/quantum-vault\"\n", 1)
-		if string(got) != want {
-			t.Errorf("unexpected file:\n%s", got)
+		if got, _ := os.ReadFile(tp); string(got) != rebindToml {
+			t.Errorf("a split changed the marker:\n%s", got)
+		}
+		if len(rep.GitCommands) != 0 {
+			t.Errorf("a split printed git commands %v; the repository has nothing to commit", rep.GitCommands)
 		}
 		p, src, err := ResolveVaultPath(co)
-		if err != nil || p != newVault || !strings.HasPrefix(src, "cwd:") {
-			t.Errorf("ResolveVaultPath = %q, %q, %v; want %q from the checkout", p, src, err, newVault)
+		if err != nil || p != quantum || src != "binding:"+cfg+"#old-slug" {
+			t.Errorf("ResolveVaultPath = %q, %q, %v; want %q through the binding", p, src, err, quantum)
 		}
 	})
-	t.Run("existing active vault_path", func(t *testing.T) {
+	t.Run("checkout vault_path disagreeing refuses and restores", func(t *testing.T) {
+		rebindWrite(t, cfg, "vault_path = \""+filepath.Join(home, "global-vault")+"\"\n")
+		other := rebindVault(t, filepath.Join(home, "old-vault"))
 		co := t.TempDir()
 		tp := filepath.Join(co, ".vibe-palace.toml")
-		before := strings.Replace(rebindToml, "# vault_path = \"~/work-palace-vault\"", "vault_path = \"~/old-vault\"", 1)
+		before := strings.Replace(rebindToml, "# vault_path = \"~/work-palace-vault\"", "vault_path = \""+other+"\"", 1)
 		rebindWrite(t, tp, before)
-		if _, err := RebindCheckout(split(co)); err != nil {
-			t.Fatalf("rebind: %v", err)
+		cfgBefore, _ := os.ReadFile(cfg)
+		if _, err := RebindCheckout(split(co)); err == nil || !strings.Contains(err.Error(), "restored") {
+			t.Fatalf("want a refusal that restored the config, got %v", err)
 		}
-		got, _ := os.ReadFile(tp)
-		if want := strings.Replace(before, `vault_path = "~/old-vault"`, `vault_path = "~/quantum-vault"`, 1); string(got) != want {
-			t.Errorf("unexpected file:\n%s", got)
+		if got, _ := os.ReadFile(cfg); string(got) != string(cfgBefore) {
+			t.Errorf("the config was not restored:\n%s", got)
+		}
+		if got, _ := os.ReadFile(tp); string(got) != before {
+			t.Error("a refused rebind must not change the marker")
 		}
 	})
 	t.Run("swallowed vault_path refuses", func(t *testing.T) {
+		rebindWrite(t, cfg, "vault_path = \""+filepath.Join(home, "global-vault")+"\"\n")
 		co := t.TempDir()
 		tp := filepath.Join(co, ".vibe-palace.toml")
 		before := rebindToml + "vault_path = \"~/elsewhere\"\n"
 		rebindWrite(t, tp, before)
-		if _, err := RebindCheckout(split(co)); err == nil || !strings.Contains(err.Error(), "inside [project]") {
+		if _, err := RebindCheckout(split(co)); err == nil || !strings.Contains(err.Error(), "[project]") {
 			t.Fatalf("want a refusal naming [project], got %v", err)
 		}
 		if got, _ := os.ReadFile(tp); string(got) != before {
@@ -315,7 +325,7 @@ func TestRebindCheckoutCarriesHostProjectConfig(t *testing.T) {
 func TestRebindCheckoutPersistsNoCheckoutPath(t *testing.T) {
 	home := rebindEnv(t)
 	vault := rebindVault(t, filepath.Join(home, "vault"), "new-slug")
-	rebindVault(t, filepath.Join(home, "quantum-vault"), "old-slug")
+	splitHost(t, home, "old-slug")
 	src, _ := HostProjectConfigPath("old-slug")
 	rebindWrite(t, src, "[palace.scoring]\n")
 
@@ -439,6 +449,7 @@ func TestRebindCheckoutRefusesATargetThatDoesNotHoldTheProject(t *testing.T) {
 	if _, err := RebindCheckout(rebindRename(co, both)); err == nil || !strings.Contains(err.Error(), "still has Projects/old-slug") {
 		t.Errorf("want a refusal while the source still exists, got %v", err)
 	}
+	splitHost(t, home, "old-slug")
 	unstamped := filepath.Join(home, "not-a-vault")
 	rebindWrite(t, filepath.Join(unstamped, "Projects", "old-slug", "resume.md"), "x\n")
 	if _, err := RebindCheckout(CheckoutRebind{Kind: RebindSplit, Checkout: co, FromSlug: "old-slug", VaultPath: "~/not-a-vault"}); err == nil {

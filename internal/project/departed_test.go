@@ -55,7 +55,7 @@ func TestRequireKnownProject_RecordRedirectsOnANonGitVault(t *testing.T) {
 	}
 }
 
-// T5. A move to another vault says to repoint vault_path, with and without a
+// T5. A move to another vault names the bind command, with and without a
 // recorded destination.
 func TestRequireKnownProject_MovedToVaultSaysSetVaultPath(t *testing.T) {
 	vault := t.TempDir()
@@ -64,12 +64,12 @@ func TestRequireKnownProject_MovedToVaultSaysSetVaultPath(t *testing.T) {
 
 	err := RequireKnownProject("labelled", vault, markerRepo(t, "labelled"))
 	if err == nil || !strings.Contains(err.Error(), `moved to another vault, "git@example.com:me/quantum.git"`) ||
-		!strings.Contains(err.Error(), "point vault_path at that vault") {
+		!strings.Contains(err.Error(), "vp config bind labelled --vault") {
 		t.Errorf("labelled move refusal wrong: %v", err)
 	}
 	err = RefuseDeparted(vault, "bare")
 	if err == nil || !strings.Contains(err.Error(), "a destination that was not recorded") ||
-		!strings.Contains(err.Error(), "point vault_path at that vault") {
+		!strings.Contains(err.Error(), "vp config bind bare --vault") {
 		t.Errorf("unlabelled move refusal wrong: %v", err)
 	}
 }
