@@ -58,13 +58,13 @@ func cmdStatus() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp status: get working directory: %v\n", err)
 				return cli.ExitUser
 			}
-			vaultPath, vaultSource, err := storage.ResolveVaultPath(cwd)
+			res, err := storage.ResolveVaultBinding(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp status: %v\n", err)
 				return cli.ExitUser
 			}
 
-			return runStatus(storage.NewVault(vaultPath), proj, vaultSource, fv.Bool("--json"), os.Stdout)
+			return runStatus(storage.NewVault(res.Path), proj, res.Source, res.Warnings, fv.Bool("--json"), os.Stdout)
 		},
 	}
 }
@@ -75,12 +75,16 @@ type statusResult struct {
 	// never a re-resolution — and VaultPathSource names where that binding came
 	// from, in the same cwd:<file> / global:<configpath> vocabulary vp check
 	// uses. Both exist so "resolve, don't recall" has a command that answers.
-	VaultPath       string              `json:"vault_path"`
-	VaultPathSource string              `json:"vault_path_source"`
-	Palace          *palace.PalaceStats `json:"palace,omitempty"`
-	Tasks           int                 `json:"active_tasks"`
-	Sessions        int                 `json:"recent_sessions"`
-	KG              *storage.KGStats    `json:"knowledge_graph,omitempty"`
+	VaultPath       string `json:"vault_path"`
+	VaultPathSource string `json:"vault_path_source"`
+	// VaultBindingWarnings are the resolver's advisories about this binding
+	// (ADR-012), e.g. a git-origin slug bound on this host while the marker
+	// names a different, unbound project.
+	VaultBindingWarnings []string            `json:"vault_binding_warnings,omitempty"`
+	Palace               *palace.PalaceStats `json:"palace,omitempty"`
+	Tasks                int                 `json:"active_tasks"`
+	Sessions             int                 `json:"recent_sessions"`
+	KG                   *storage.KGStats    `json:"knowledge_graph,omitempty"`
 	// ProjectConfigSources are the per-project config files that exist for
 	// this project: at most the host-local file, since the vault's per-project
 	// file stopped being read (task
@@ -93,11 +97,11 @@ type statusResult struct {
 // vault, supplied by the caller that resolved it; an empty one is reported as
 // "unknown" rather than guessed at, because a fabricated source is exactly the
 // recalled-instead-of-resolved answer this output exists to replace.
-func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON bool, out io.Writer) int {
+func runStatus(vault *storage.Vault, proj string, vaultSource string, warnings []string, asJSON bool, out io.Writer) int {
 	if vaultSource == "" {
 		vaultSource = "unknown"
 	}
-	result := statusResult{Project: proj, VaultPath: vault.Root, VaultPathSource: vaultSource}
+	result := statusResult{Project: proj, VaultPath: vault.Root, VaultPathSource: vaultSource, VaultBindingWarnings: warnings}
 
 	if g, err := palace.BuildGraph(vault, proj); err == nil {
 		stats := g.Stats()
@@ -144,6 +148,9 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, asJSON boo
 	// must work against either command.
 	fmt.Fprintf(out, "vault_path = %s\n", result.VaultPath)
 	fmt.Fprintf(out, "vault_path source = %s\n", result.VaultPathSource)
+	for _, w := range result.VaultBindingWarnings {
+		fmt.Fprintf(out, "vault binding warning: %s\n", w)
+	}
 	if result.Palace != nil {
 		fmt.Fprintf(out, "Palace:  %d wings, %d rooms, %d drawers\n",
 			result.Palace.Wings, result.Palace.Rooms, result.Palace.Drawers)

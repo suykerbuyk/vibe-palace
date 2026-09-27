@@ -417,6 +417,68 @@ func CheckAgentDrift(projectRoot string) Result {
 	return r
 }
 
+// CheckTrackedMarkerVaultPath reports a .vibe-palace.toml that is committed to
+// its repository AND sets vault_path (ADR-012: a tracked marker is identity
+// only). A path is a fact about one host, so a committed one is false on every
+// other host that shares the repo; the per-host binding belongs in the global
+// config's [project_vaults].
+//
+// Advisory (Info), never Fail, like CheckProjectGitignore, and for the same
+// reason it is CLI-only: it inspects the caller's checkout, which the MCP
+// vp_check (bound to the server's vault) cannot see. The marker is found by
+// the resolver's own walk (storage.CwdMarker), so the file reported is the
+// file that binds the vault.
+func CheckTrackedMarkerVaultPath(cwd string) Result {
+	r := Result{Name: "Tracked marker vault_path", Status: Pass}
+	marker, vaultPath, err := storage.CwdMarker(cwd)
+	switch {
+	case err != nil:
+		r.Status = Info
+		r.Summary = "could not read the marker: " + err.Error()
+		return r
+	case marker == "":
+		r.Status = Skip
+		r.Summary = "no .vibe-palace.toml above this directory"
+		return r
+	}
+	tracked, err := gitTracksFile(marker)
+	switch {
+	case err != nil:
+		r.Status = Skip
+		r.Summary = "not in a git work tree: " + marker
+		return r
+	case !tracked:
+		r.Summary = "marker is not committed: " + marker
+		return r
+	case vaultPath == "":
+		r.Summary = "committed marker names no vault_path: " + marker
+		return r
+	}
+	r.Status = Info
+	r.Summary = "a committed .vibe-palace.toml sets vault_path"
+	r.Details = []string{
+		fmt.Sprintf("  %s: vault_path = %q", marker, vaultPath),
+		"A committed marker is identity only (ADR-012): the path is true on this host and false on every other " +
+			"host that shares the repository. Remove vault_path from it and bind the project on each host in the " +
+			"global config instead:",
+		"  [project_vaults]",
+		"  <project> = \"<this host's vault path>\"",
+	}
+	return r
+}
+
+// gitTracksFile reports whether path is tracked by the git repository that
+// contains it. An error means there is no work tree to ask (or git failed).
+func gitTracksFile(path string) (bool, error) {
+	cmd := exec.Command("git", "-C", filepath.Dir(path), "ls-files", "-z", "--", filepath.Base(path))
+	cmd.Env = storage.SafeGitEnv("GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return len(out) > 0, nil
+}
+
 // CheckProjectGitignore reports whether the project repo-root .gitignore
 // is missing any of the canonical vp-owned host-local artifact patterns
 // (CLAUDE.md, commit.msg, .claude/, .grok/, .vibe-palace/). This is an

@@ -99,7 +99,7 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 			// sending that operator at the global one points them at the wrong
 			// file — the same misdirection CheckConfigAt used to emit.
 			summary := "vault path unresolved — run `vp init`"
-			if errors.Is(err, storage.ErrSwallowedVaultPath) {
+			if errors.Is(err, storage.ErrVaultBindingRejected) {
 				summary = "vault path REJECTED, not missing: " + err.Error()
 			}
 			return Plan{Actions: []Action{{

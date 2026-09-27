@@ -403,8 +403,9 @@ func TestConfigSummarizationEmpty(t *testing.T) {
 }
 
 func TestCurrentVersionMinor(t *testing.T) {
-	if CurrentVersionMinor != 1 {
-		t.Errorf("CurrentVersionMinor = %d, want 1", CurrentVersionMinor)
+	// 2: [project_vaults] (ADR-012).
+	if CurrentVersionMinor != 2 {
+		t.Errorf("CurrentVersionMinor = %d, want 2", CurrentVersionMinor)
 	}
 }
 

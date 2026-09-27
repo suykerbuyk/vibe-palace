@@ -93,6 +93,11 @@ func vaultManifestPath(root string) string {
 	return filepath.Join(root, vaultManifestDir, vaultManifestFile)
 }
 
+// VaultManifestPath is vaultManifestPath for callers outside this package that
+// must recognise a vault root by its manifest (the resolver's project-binding
+// tier), so the location has one definition.
+func VaultManifestPath(root string) string { return vaultManifestPath(root) }
+
 // ReadFormat reads the vault-wide data-format number from
 // <root>/.vibe-palace/vault.toml.
 //

@@ -30,7 +30,7 @@ func testVault(t *testing.T) *storage.Vault {
 func TestRunStatusEmpty(t *testing.T) {
 	v := testVault(t)
 	var buf bytes.Buffer
-	code := runStatus(v, "test-proj", testVaultSource, false, &buf)
+	code := runStatus(v, "test-proj", testVaultSource, nil, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -55,7 +55,7 @@ func TestRunStatusWithData(t *testing.T) {
 	}, "body")
 
 	var buf bytes.Buffer
-	code := runStatus(v, "test-proj", testVaultSource, false, &buf)
+	code := runStatus(v, "test-proj", testVaultSource, nil, false, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -73,7 +73,7 @@ func TestRunStatusJSON(t *testing.T) {
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
 
 	var buf bytes.Buffer
-	code := runStatus(v, "test-proj", testVaultSource, true, &buf)
+	code := runStatus(v, "test-proj", testVaultSource, nil, true, &buf)
 	if code != cli.ExitOK {
 		t.Errorf("exit code = %d", code)
 	}
@@ -106,7 +106,7 @@ func TestRunStatusJSON(t *testing.T) {
 func TestRunStatusPrintsVaultPathAndSource(t *testing.T) {
 	v := testVault(t)
 	var buf bytes.Buffer
-	if code := runStatus(v, "test-proj", testVaultSource, false, &buf); code != cli.ExitOK {
+	if code := runStatus(v, "test-proj", testVaultSource, nil, false, &buf); code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}
 	out := buf.String()
@@ -128,7 +128,7 @@ func TestRunStatusPrintsVaultPathAndSource(t *testing.T) {
 func TestRunStatusJSONCarriesVaultPathAndSource(t *testing.T) {
 	v := testVault(t)
 	var buf bytes.Buffer
-	if code := runStatus(v, "test-proj", testVaultSource, true, &buf); code != cli.ExitOK {
+	if code := runStatus(v, "test-proj", testVaultSource, nil, true, &buf); code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}
 	var result statusResult
@@ -150,7 +150,7 @@ func TestRunStatusJSONCarriesVaultPathAndSource(t *testing.T) {
 func TestRunStatusUnknownSourceIsNotGuessed(t *testing.T) {
 	v := testVault(t)
 	var buf bytes.Buffer
-	if code := runStatus(v, "test-proj", "", false, &buf); code != cli.ExitOK {
+	if code := runStatus(v, "test-proj", "", nil, false, &buf); code != cli.ExitOK {
 		t.Fatalf("exit code = %d", code)
 	}
 	if !strings.Contains(buf.String(), "vault_path source = unknown") {
@@ -249,7 +249,7 @@ func TestRunStatusNamesProjectConfigSources(t *testing.T) {
 		initTestEnv(t, false)
 		v := testVault(t)
 		var buf bytes.Buffer
-		if code := runStatus(v, "proj", testVaultSource, false, &buf); code != cli.ExitOK {
+		if code := runStatus(v, "proj", testVaultSource, nil, false, &buf); code != cli.ExitOK {
 			t.Fatalf("exit code = %d", code)
 		}
 		if !strings.Contains(buf.String(), "project config = none") {
@@ -262,7 +262,7 @@ func TestRunStatusNamesProjectConfigSources(t *testing.T) {
 		v := testVault(t)
 		hostPath := writeHost(t)
 		var buf bytes.Buffer
-		if code := runStatus(v, "proj", testVaultSource, false, &buf); code != cli.ExitOK {
+		if code := runStatus(v, "proj", testVaultSource, nil, false, &buf); code != cli.ExitOK {
 			t.Fatalf("exit code = %d", code)
 		}
 		out := buf.String()
@@ -281,7 +281,7 @@ func TestRunStatusNamesProjectConfigSources(t *testing.T) {
 		hostPath := writeHost(t)
 		vaultPath := writeVault(t, v)
 		var buf bytes.Buffer
-		if code := runStatus(v, "proj", testVaultSource, true, &buf); code != cli.ExitOK {
+		if code := runStatus(v, "proj", testVaultSource, nil, true, &buf); code != cli.ExitOK {
 			t.Fatalf("exit code = %d", code)
 		}
 		var got statusResult

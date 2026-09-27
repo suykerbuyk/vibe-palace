@@ -76,7 +76,7 @@ func cmdPlansScan() *cli.Command {
 				switch {
 				case perr == nil:
 					vaultRoot = vp
-				case errors.Is(perr, storage.ErrSwallowedVaultPath):
+				case errors.Is(perr, storage.ErrVaultBindingRejected):
 					degraded = perr.Error()
 					fmt.Fprintf(os.Stderr, "vp plans scan: %v\n", perr)
 					fmt.Fprintln(os.Stderr, "vp plans scan: every marked candidate below is reported \"unmanaged\" because of the above.")

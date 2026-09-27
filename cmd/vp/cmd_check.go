@@ -98,7 +98,7 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 	switch {
 	case perr == nil:
 		vaultRoot = vp
-	case errors.Is(perr, storage.ErrSwallowedVaultPath):
+	case errors.Is(perr, storage.ErrVaultBindingRejected):
 		return nil, perr
 	}
 	return check.RunSelected(vaultRoot, filter)
@@ -373,6 +373,11 @@ func gatherCheckResults() []check.Result {
 	// vp commands upgrade, surfaced here when canonical entries are missing). ---
 	results = append(results, check.CheckProjectGitignore(cwd))
 
+	// --- Committed .vibe-palace.toml carrying vault_path (advisory, ADR-012:
+	// a tracked marker is identity only; the host binding lives in
+	// [project_vaults]). ---
+	results = append(results, check.CheckTrackedMarkerVaultPath(cwd))
+
 	// --- Git post-commit hook (advisory — installed by vp init /
 	// vp commands upgrade / wrap-time ingest, surfaced here when absent).
 	//
@@ -403,7 +408,7 @@ func gatherCheckResults() []check.Result {
 	// conversion exists to stop — printed here as the report's CLOSING LINE,
 	// where it would be the last thing an operator sees after Config already
 	// Failed for the real reason.
-	if _, _, perr := storage.ResolveVaultPath(cwd); errors.Is(perr, storage.ErrSwallowedVaultPath) {
+	if _, _, perr := storage.ResolveVaultPath(cwd); errors.Is(perr, storage.ErrVaultBindingRejected) {
 		results = append(results, check.Result{
 			Name: "Surface", Status: check.Skip,
 			Summary: "not evaluated — vault path rejected (see Config above)",

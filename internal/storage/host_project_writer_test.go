@@ -6,6 +6,7 @@ package storage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,8 +113,8 @@ func TestWriteHostScoringConfigSeedsMeta(t *testing.T) {
 	text := string(body)
 	for _, want := range []string{
 		"[meta]",
-		"version_major = 1",
-		"version_minor = 1",
+		fmt.Sprintf("version_major = %d", CurrentVersionMajor),
+		fmt.Sprintf("version_minor = %d", CurrentVersionMinor),
 		`kind = "host-project"`,
 		"[palace.scoring.rooms.general]",
 	} {

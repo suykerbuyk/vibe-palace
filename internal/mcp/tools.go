@@ -449,7 +449,10 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 // It keys on the parameter NAMES `project` and `to_project`, the convention
 // every project-taking tool follows — pinned by
 // tools.TestEveryMutatingToolNamesItsTargetProjectConventionally, which fails
-// on a mutating tool that names its target project any other way. A slug
+// on a mutating tool with a property whose name CONTAINS "project" other than
+// project, to_project or project_path. That is all it checks: a property that
+// names a project without the word (e.g. `slug`) is invisible to both this
+// seam and that pin. A slug
 // derived later from `project_path` is not visible here; the vault writers
 // that derive one go through RequireKnownProject.
 //

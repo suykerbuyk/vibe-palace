@@ -99,7 +99,8 @@ func (r *CwdProjectReconciler) Apply(_ context.Context, p Plan) (Report, error) 
 			rep.Created++
 		case ActionUpdate:
 			// CWD project config is REPO-local (.vibe-palace.toml in the
-			// repo, not the vault) — no surface stamp. Deliberately not
+			// repo, not the vault; it may be committed, and a committed copy
+			// is identity only, ADR-012) — no surface stamp. Deliberately not
 			// "host-local": since the per-project scoring layer landed, that
 			// term names <config-dir>/vibe-palace/projects/<slug>.toml, a
 			// different file that has no reconciler at all — grep

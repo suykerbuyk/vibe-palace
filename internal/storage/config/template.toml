@@ -37,7 +37,7 @@ log_level = "info"
 # to add missing keys when vp is updated.
 [meta]
 version_major = 1
-version_minor = 1
+version_minor = 2
 # kind identifies which schema this file follows ("global", "cwd-project",
 # or "host-project"). Do not change for an existing file.
 # kind = "global"
@@ -123,3 +123,12 @@ overlap = 100
 # base_url = "https://api.x.ai/v1"
 # max_tokens = 4096
 # timeout_seconds = 30
+
+# Per-host project -> vault bindings (ADR-012). A project's checkout names
+# its project in .vibe-palace.toml ([project].name); this table says which
+# vault that project lives in ON THIS HOST. It sits between a checkout's own
+# vault_path (which wins, and must agree with it) and vault_path above.
+# A tracked .vibe-palace.toml never carries vault_path: bind it here instead.
+# Kept LAST in this file: every key below a [table] header belongs to it.
+# [project_vaults]
+# my-project = "~/other-vault"
