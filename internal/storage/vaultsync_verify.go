@@ -179,9 +179,8 @@ func PruneMirrorsInEnclosingRepo(vaultPath string, paths []string, v PruneVerifi
 // vaultPath must be the root of its own repository; a vault nested in another
 // repository uses PruneMirrorsInEnclosingRepo.
 //
-// The lock serialises against every vp committer. storage.Pull does not take
-// it; a concurrent merge fails on git's own index guards rather than losing
-// anything.
+// The lock serialises against every vp committer, and against storage.Pull's
+// merge and a rejected push's reconcile, which take the same key.
 //
 // commit=false is the enclosing-repo form: no remote, no reconcile, no fetch,
 // no identity check, no stage, no commit.
@@ -211,6 +210,22 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		}
 	}
 	defer unlock()
+
+	// The commit guard, before anything is staged (commitOnlyPaths is the
+	// backstop): nothing commits while a split purge is unfinished. Only when
+	// this call COMMITS: the enclosing-repo form (commit=false) stages and
+	// commits nothing, and in a nested vault a purge's records stay
+	// uncommitted by design (vp never commits into an enclosing repository),
+	// so guarding it would refuse that prune forever.
+	if err := refuseOnPendingDepartures(vaultPath); commit && err != nil {
+		for _, rel := range paths {
+			out.keep(rel, "prune deferred: a split purge is unfinished")
+		}
+		out.Errors = append(out.Errors, err)
+		// The refusal itself, not the outcome's count: it carries the
+		// recoveries the operator must run.
+		return nil, out, err
+	}
 
 	var remotes []string
 	branch := "main"

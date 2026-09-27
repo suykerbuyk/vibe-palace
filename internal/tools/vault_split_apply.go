@@ -23,6 +23,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // Slice 2 of vp_vault_split: the three actions that touch a filesystem —
@@ -121,12 +122,19 @@ type vaultSplitPurgeResult struct {
 	DirsRemoved    int      `json:"dirs_removed"`
 	BytesRemoved   int64    `json:"bytes_removed"`
 	// DepartureRecords are the Audits/departures/<slug>.json records this
-	// purge wrote, one per purged slug. They are left UNCOMMITTED, like the
-	// deletions, and belong in the same commit: committed alone they would
+	// purge wrote, one per purged slug. On a vault that commits they are in the
+	// purge commit with the removal (CommitSHA); committed alone they would
 	// claim a move another host has not seen happen.
 	DepartureRecords []string `json:"departure_records"`
-	Notes            []string `json:"notes"`
-	Complete         bool     `json:"complete"`
+	// CommitSHA is the purge commit, local and not pushed. Empty on a vault
+	// that is not a git repository of its own, where nothing is committed.
+	CommitSHA string `json:"commit_sha,omitempty"`
+	// CleanupLeft lists the untracked paths the post-commit cleanup could not
+	// remove, or that nobody collected. None is publishable; an "untracked"
+	// one is a resurrection risk and is named in Notes.
+	CleanupLeft []splitPurgeCleanupEntry `json:"cleanup_left,omitempty"`
+	Notes       []string                 `json:"notes"`
+	Complete    bool                     `json:"complete"`
 }
 
 // splitBindManifest is the shared precondition of apply, verify and purge: the
@@ -860,12 +868,10 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	// a slug later reused on this host: note and iteration cache IDs are
 	// positional, and the orphan reaper keeps any ID that is live again.
 	//
-	// It is purged FIRST. It is the tree most likely to refuse — a concurrent
-	// Put can repopulate it between the walk and the directory removal — and a
-	// refusal must land while the real trees still exist: once they are gone,
-	// the manifest no longer binds and purge cannot be re-run. An absent tree is
-	// nothing to do (splitPurgeTree), so purge also tolerates the real trees
-	// being gone already.
+	// On a vault that commits, it is removed LAST, with the other untracked
+	// rows, after the purge commit has landed (see splitPurgeCleanup): a
+	// leftover cache is regenerable and never publishable, so it may fail
+	// there without failing the purge.
 	// 🔴 EVERY TREE IS COLLECTED AND CLASSIFIED BEFORE THE FIRST DELETION. A
 	// file that reached a slug tree after the bind above re-derived the
 	// manifest is in no manifest row, so it was never copied; deleting it is
@@ -891,8 +897,185 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 		return nil, splitPurgeUnaccountedError(unaccounted)
 	}
 
+	// A vault that commits gets the atomic purge; one that cannot commit — no
+	// repository of its own, or one nested inside another — keeps the plain
+	// removal: nothing can publish half of it there.
+	state, _ := storage.InspectVaultGit(vault.Root)
+	switch state {
+	case storage.VaultGitOK:
+		return splitPurgeCommitted(vault, p, m, trees, hashes)
+	case storage.VaultNotGit, storage.VaultGitNested:
+		return splitPurgeUncommitted(vault, p, m, trees, hashes)
+	default:
+		return nil, fmt.Errorf("refusing to purge: cannot tell whether the vault is a git repository of its own, so cannot tell whether the removal must be committed")
+	}
+}
+
+// splitPurgeAfterRecords is a TEST SEAM, nil in production: it is called after
+// the departure records are written and before the tracked removal is
+// committed — the window a crash, or a pull landing, falls into.
+var splitPurgeAfterRecords func()
+
+// splitPurgeBeforeCleanup is a TEST SEAM, nil in production: it is called after
+// the purge commit has landed and before the untracked cleanup.
+var splitPurgeBeforeCleanup func()
+
+// splitPurgeCommitted is purge on a vault that commits, in the order that
+// leaves nothing another committer can publish half of
+// (split-purge-commits-its-own-result):
+//
+//  1. preflight — changes nothing;
+//  2. the departure records, FIRST: from here the commit guard refuses every
+//     other vp commit, so an interrupted purge cannot be half-published;
+//  3. under the vault commit lock: HEAD unchanged, `git rm` of the TRACKED
+//     files, stage the records, ONE local commit (storage.CommitSplitPurge);
+//  4. after the commit, best-effort: the untracked and ignored rows this purge
+//     collected, the embed cache and the empty directories. What is left is
+//     reported in cleanup_left; none of it is tracked, so none of it is
+//     publishable.
+//
+// A failure in 2–3 rolls back losslessly — git restores the tracked files,
+// and no untracked file has been touched yet — so purge can simply be re-run.
+func splitPurgeCommitted(vault *storage.Vault, p vaultSplitParams, m *splitManifest, trees []splitPurgeSet, hashes map[string]string) (*vaultSplitPurgeResult, error) {
+	collected := make(map[string]bool)
+	for _, set := range trees {
+		for _, rel := range set.files {
+			collected[rel] = true
+		}
+	}
+	head, err := storage.SplitPurgePreflight(vault.Root, m.Slugs, collected)
+	if err != nil {
+		return nil, apperr.Caller(err)
+	}
+
+	type written struct {
+		rel     string
+		created bool
+	}
+	var records []written
+	// The record write restamps Audits/.surface (atomicfile), so its state
+	// before step 1 is part of what a rollback restores.
+	const auditsSurface = "Audits/.surface"
+	surfaceAbs := filepath.Join(vault.Root, filepath.FromSlash(auditsSurface))
+	surfaceBefore, statErr := os.ReadFile(surfaceAbs)
+	surfaceExisted := statErr == nil
+	undoRecords := func(cause error) error {
+		var errs []string
+		if surfaceExisted {
+			// Its bytes are restored as they were. atomicfile does not stamp a
+			// .surface path (surface.ResolveStampDir skips it), so this
+			// restore cannot restamp itself.
+			// Read and write under the stamp's own advisory lock (ADR-003); the
+			// vault commit lock is already released here, so this nests
+			// nothing.
+			if release, err := vaultlock.Acquire(vault.Root, surfaceAbs); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: lock: %v", auditsSurface, err))
+			} else {
+				if now, err := os.ReadFile(surfaceAbs); err != nil || string(now) != string(surfaceBefore) {
+					if err := atomicfile.Write(vault.Root, surfaceAbs, surfaceBefore); err != nil {
+						errs = append(errs, fmt.Sprintf("%s: %v", auditsSurface, err))
+					}
+				}
+				_ = release()
+			}
+		} else if _, err := os.Lstat(surfaceAbs); err == nil {
+			if _, err := vaultfs.Delete(vault.Root, auditsSurface, ""); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", auditsSurface, err))
+			}
+		}
+		// Removed last, in reverse: while one is left, the commit guard stays
+		// armed.
+		for i := len(records) - 1; i >= 0; i-- {
+			r := records[i]
+			var err error
+			if r.created {
+				_, err = vaultfs.Delete(vault.Root, r.rel, "")
+			} else {
+				err = storage.RestoreFromHEAD(vault.Root, r.rel)
+			}
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", r.rel, err))
+			}
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("%w; and restoring the departure records failed (%s): the commit guard will refuse every vp commit until they are restored or removed by hand", cause, strings.Join(errs, "; "))
+		}
+		return cause
+	}
+	for _, s := range m.Slugs {
+		rel, created, err := vault.RecordDepartureForPurge(s, departure.MovedToVault, p.DepartureTo)
+		if err != nil {
+			return nil, undoRecords(fmt.Errorf("record the departure of %q: %w (nothing was removed)", s, err))
+		}
+		records = append(records, written{rel, created})
+	}
+	if splitPurgeAfterRecords != nil {
+		splitPurgeAfterRecords()
+	}
+
+	recRels := make([]string, 0, len(records))
+	for _, r := range records {
+		recRels = append(recRels, r.rel)
+	}
+	res, err := storage.CommitSplitPurge(vault.Root, storage.SplitPurgeCommit{
+		Slugs:      m.Slugs,
+		Records:    recRels,
+		Message:    splitPurgeCommitMessage(m, p.DepartureTo, recRels),
+		ExpectHead: head,
+	})
+	if err != nil && (res == nil || res.CommitSHA == "") {
+		return nil, undoRecords(err)
+	}
+	if err != nil {
+		// The commit landed; an assertion after it failed. Nothing is rolled
+		// back over a landed commit.
+		return nil, err
+	}
+
+	if splitPurgeBeforeCleanup != nil {
+		splitPurgeBeforeCleanup()
+	}
+	files, dirs, left := splitPurgeCleanup(vault.Root, trees, hashes)
+	result := &vaultSplitPurgeResult{
+		Action:           "purge",
+		Destination:      p.Destination,
+		Slugs:            m.Slugs,
+		ManifestSHA256:   m.SHA256,
+		FilesRemoved:     res.TrackedRemoved + files,
+		DirsRemoved:      dirs,
+		BytesRemoved:     splitPurgeBytes(trees),
+		DepartureRecords: recRels,
+		CommitSHA:        res.CommitSHA,
+		CleanupLeft:      left,
+		Notes: []string{
+			"Vault-global artifacts were not removed. Knowledge/, Audits/ and Templates/ " +
+				"do not partition by slug, so no part of them is derivable from this " +
+				"allow-list and purge removes none of it.",
+			fmt.Sprintf("Committed as %s, with the departure records, and not pushed: "+
+				"`vp vault sync` publishes it. Nothing of this purge is left uncommitted.", res.CommitSHA),
+			"The split's git history stays in the source repository. Purge removes files; " +
+				"it does not rewrite history, and the destination was born as a fresh " +
+				"repository with none.",
+		},
+		Complete: true,
+	}
+	for _, l := range left {
+		if l.Class == "untracked" {
+			result.Notes = append(result.Notes, fmt.Sprintf(
+				"RESURRECTION RISK: %s is an untracked file under a purged tree that this purge did not collect "+
+					"(something wrote there during the purge). It makes the slug read as present again, and tidy "+
+					"would commit it back; move it to the destination vault or delete it.", l.Path))
+		}
+	}
+	return result, nil
+}
+
+// splitPurgeUncommitted is purge on a vault that cannot commit — no repository
+// of its own, or one nested inside another, into which vp never commits. It is
+// the removal as it has always been: every tree, then the records, and no
+// commit, because nothing can publish half of it.
+func splitPurgeUncommitted(vault *storage.Vault, p vaultSplitParams, m *splitManifest, trees []splitPurgeSet, hashes map[string]string) (*vaultSplitPurgeResult, error) {
 	var files, dirs int
-	var bytes int64
 	for _, set := range trees {
 		f, d, err := splitPurgeRemove(vault.Root, set, hashes)
 		if err != nil {
@@ -900,32 +1083,17 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 		}
 		files += f
 		dirs += d
-		bytes += set.bytes
 	}
-
-	// 🔴 ONLY NOW, WITH EVERY TREE GONE, IS THE DEPARTURE TRUE. Written earlier
-	// it would claim a move a failed purge never finished, and with
-	// include_audits it would change Audits/ under a manifest that binds it.
-	// RecordDeparture itself refuses while Projects/<slug>/ still exists.
-	//
-	// A failure here cannot be undone by re-running purge (the trees are gone
-	// and the manifest no longer binds), so the error says exactly what is
-	// missing: the deletions stand, and the named slugs have no record — a
-	// stale checkout naming them falls back to the git-history refusal, which
-	// says the project is gone but not where.
 	var records []string
 	for _, s := range m.Slugs {
 		rel, err := vault.RecordDeparture(s, departure.MovedToVault, p.DepartureTo)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"purge removed every slug tree (%d files), but recording the departure of %q failed: %w. "+
-					"Records written before it: %v. Commit the deletions and those records; %q has no "+
-					"departure record, so a stale checkout naming it is refused from git history only",
-				files, s, err, records, s)
+					"Records written before it: %v", files, s, err, records)
 		}
 		records = append(records, rel)
 	}
-
 	return &vaultSplitPurgeResult{
 		Action:           "purge",
 		Destination:      p.Destination,
@@ -933,20 +1101,111 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 		ManifestSHA256:   m.SHA256,
 		FilesRemoved:     files,
 		DirsRemoved:      dirs,
-		BytesRemoved:     bytes,
+		BytesRemoved:     splitPurgeBytes(trees),
 		DepartureRecords: records,
 		Notes: []string{
 			"Vault-global artifacts were not removed. Knowledge/, Audits/ and Templates/ " +
 				"do not partition by slug, so no part of them is derivable from this " +
 				"allow-list and purge removes none of it.",
-			"Purge ADDED one departure record per slug (departure_records). Commit them in the " +
-				"same commit as these deletions: that commit is the departure the records describe.",
-			"The split's git history stays in the source repository. Purge removes files; " +
-				"it does not rewrite history, and the destination was born as a fresh " +
-				"repository with none.",
+			"Nothing was committed: this vault is not a git repository of its own, so " +
+				"vp commits nothing into it.",
 		},
 		Complete: true,
 	}, nil
+}
+
+func splitPurgeBytes(trees []splitPurgeSet) int64 {
+	var n int64
+	for _, set := range trees {
+		n += set.bytes
+	}
+	return n
+}
+
+// splitPurgeCommitMessage is the purge commit's message. It names no host
+// path: the commit syncs to every host.
+func splitPurgeCommitMessage(m *splitManifest, to string, records []string) string {
+	where := to
+	if where == "" {
+		where = "a vault that was not recorded"
+	}
+	return fmt.Sprintf("vault split: purge %s (moved to %s)\n\nmanifest_sha256: %s\ndeparture records: %s",
+		strings.Join(m.Slugs, ", "), where, m.SHA256, strings.Join(records, ", "))
+}
+
+// splitPurgeCleanupEntry is one path step 4 of a committed purge left behind.
+type splitPurgeCleanupEntry struct {
+	Path string `json:"path"`
+	// Class is "ignored", "machine-local" or "untracked". An untracked
+	// (non-ignored) leftover is a resurrection risk: it reads as project
+	// content, and tidy would commit it back.
+	Class  string `json:"class"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// splitPurgeCleanup removes, after the purge commit, exactly the files purge
+// COLLECTED that git did not remove (untracked and ignored rows, and the embed
+// cache), then the directories bottom-up. A file written after the collect is
+// never removed. Nothing here fails the purge: every path left is reported.
+func splitPurgeCleanup(root string, trees []splitPurgeSet, hashes map[string]string) (files, dirs int, left []splitPurgeCleanupEntry) {
+	collected := map[string]bool{}
+	for _, set := range trees {
+		for _, rel := range set.files {
+			collected[rel] = true
+			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+				continue // git rm removed it
+			}
+			if _, err := vaultfs.Delete(root, rel, hashes[rel]); err != nil {
+				left = append(left, splitPurgeCleanupEntry{Path: rel, Reason: err.Error()})
+				continue
+			}
+			files++
+		}
+		dirAbs := append([]string(nil), set.dirs...)
+		sort.Slice(dirAbs, func(i, j int) bool { return len(dirAbs[i]) > len(dirAbs[j]) })
+		for _, d := range dirAbs {
+			if err := vaultfs.RemoveNoLock(d); err == nil {
+				dirs++
+			}
+		}
+	}
+	// Whatever is still under a purged tree — a failed removal above, or a file
+	// nobody collected — is reported with its class.
+	seen := map[string]bool{}
+	for _, l := range left {
+		seen[l.Path] = true
+	}
+	for _, set := range trees {
+		if len(set.dirs) == 0 {
+			continue // the tree was absent
+		}
+		// set.dirs[0] is the tree root: splitPurgeCollect's walk records it first.
+		_ = filepath.WalkDir(set.dirs[0], func(fp string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if rel := vaultRel(root, fp); !seen[rel] {
+				seen[rel] = true
+				left = append(left, splitPurgeCleanupEntry{Path: rel})
+			}
+			return nil
+		})
+	}
+	for i := range left {
+		switch ignored, err := storage.GitPathIgnored(root, left[i].Path); {
+		case storage.ClassifyProjectPath(left[i].Path) == storage.ProjectMachineLocal:
+			left[i].Class = "machine-local"
+		case err == nil && ignored:
+			left[i].Class = "ignored"
+		default:
+			left[i].Class = "untracked"
+		}
+		if left[i].Reason == "" && !collected[left[i].Path] {
+			left[i].Reason = "written under the purged tree after purge collected it"
+		}
+	}
+	sort.Slice(left, func(i, j int) bool { return left[i].Path < left[j].Path })
+	return files, dirs, left
 }
 
 // splitPurgeSet is one source slug tree as purge found it: every regular file
