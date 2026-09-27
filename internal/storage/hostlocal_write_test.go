@@ -62,3 +62,58 @@ func TestWriteHostLocalWithBackup(t *testing.T) {
 		t.Errorf("a failed rename must remove its .tmp (stat err %v)", err)
 	}
 }
+
+// A .bak left at another mode by an earlier write ends at the config's mode,
+// and the new bytes never enter the old .bak file (they go into a fresh temp
+// at the target mode, renamed over it) — so a 0600 config's bytes are never,
+// even briefly, in a world-readable file. MUTATION CONTRACT: drop the chmod
+// and the 0640 case goes RED; write the .bak in place and the inode check does.
+func TestWriteHostLocalBackupTakesTheConfigsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes and inodes")
+	}
+	for _, c := range []struct {
+		name            string
+		cfgMode, bakWas os.FileMode
+	}{
+		{"config_0600_bak_0644", 0o600, 0o644},
+		{"config_0640_bak_0666", 0o640, 0o666},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "config.toml")
+			if err := os.WriteFile(p, []byte("old\n"), c.cfgMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(p, c.cfgMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p+".bak", []byte("stale\n"), c.bakWas); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(p+".bak", c.bakWas); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(p + ".bak")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := WriteHostLocalWithBackup(p, []byte("old\n"), []byte("new\n")); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(p + ".bak")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Mode().Perm() != c.cfgMode {
+				t.Errorf(".bak mode %v, want the config's %v", after.Mode().Perm(), c.cfgMode)
+			}
+			if os.SameFile(before, after) {
+				t.Error("the new bytes were written into the old .bak file, which held its old mode while they landed")
+			}
+			if leftovers, _ := filepath.Glob(filepath.Join(dir, "*.tmp*")); len(leftovers) != 0 {
+				t.Errorf("temp files survived: %v", leftovers)
+			}
+		})
+	}
+}

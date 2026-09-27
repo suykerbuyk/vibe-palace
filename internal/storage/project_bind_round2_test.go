@@ -340,3 +340,35 @@ func TestBindVerifyRequiresTheBindingSource(t *testing.T) {
 		t.Error("the config was not restored")
 	}
 }
+
+// A rename whose <to> is ALREADY bound (with or without <from>) writes no
+// binding, but must still verify the renamed checkout resolves through <to>:
+// a checkout whose own vault_path disagrees is refused and its marker
+// restored. MUTATION CONTRACT: return verify:false on either already-bound
+// path and the matching subtest goes RED.
+func TestRebindRenameVerifiesWhenToIsAlreadyBound(t *testing.T) {
+	for name, table := range map[string]string{
+		"to_only":     "new-slug = \"~/quantum-vault\"\n",
+		"from_and_to": "old-slug = \"~/quantum-vault\"\nnew-slug = \"~/quantum-vault\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := rebindEnv(t)
+			global := rebindVault(t, filepath.Join(home, "global-vault"))
+			quantum := rebindVault(t, filepath.Join(home, "quantum-vault"), "new-slug")
+			elsewhere := rebindVault(t, filepath.Join(home, "elsewhere"))
+			cfg, _ := VaultConfigFilePath()
+			rebindWrite(t, cfg, "vault_path = \""+global+"\"\n\n[project_vaults]\n"+table)
+			co := filepath.Join(home, "code", "proj")
+			tp := filepath.Join(co, ".vibe-palace.toml")
+			body := "vault_path = \"" + elsewhere + "\"\n" + rebindToml
+			rebindWrite(t, tp, body)
+
+			if _, err := RebindCheckout(rebindRename(co, quantum)); err == nil || !strings.Contains(err.Error(), "after the rename") {
+				t.Fatalf("want the post-write verification refusal, got %v", err)
+			}
+			if bindRead(t, tp) != body {
+				t.Error("a failed verification did not restore the marker")
+			}
+		})
+	}
+}
