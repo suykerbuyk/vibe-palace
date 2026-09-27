@@ -727,6 +727,21 @@ refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
 | `TestSkillsShowDoesNotDegradeARejectedBinding` (`cmd/vp`) | A rejected binding stays a usage error, never "no vault configured" |
 | `TestCheckConfigReportsRejectedBindingNotMissing` (`internal/check`) | `vp check` reports a rejected binding, never "not found / run vp init" |
 | `TestCheckTrackedMarkerVaultPath` (`internal/check`) | The CLI-only row flags a committed marker that sets `vault_path`, and only that |
+| `TestResolveRefusesABrokenMarker` | A found marker with a syntax error, a wrong-typed `vault_path` or EACCES is a typed refusal, with or without bindings |
+| `TestResolveWhenGitCannotRuleOutABinding` | With `PATH=""` on a binding host: an unnamed marker refuses, a named one warns, a non-repo needs no git |
+| `TestResolveRefusesARelativeBindingTarget` | A relative target is refused even when a vault exists at that path relative to cwd |
+| `TestResolveAbsentOrDanglingConfigIsNoBindings` | An absent or dangling-symlink config is "no bindings" and still reads as not-configured |
+| `TestResolveUnreadableConfigFailsClosed` | An unparseable or EACCES config fails with `ErrHostConfigUnreadable`, not a binding refusal |
+| `TestResolveRefusesEmptyValueAndFileTargetAsSuch` | An empty value and a file target are each refused as what they are |
+| `TestResolverAndDetectionShareOneMarker` | A padded name and a symlinked checkout bind and label from the same marker |
+| `TestGitRemoteSlugChecked` (`internal/project`) | "No repo"/"no origin" is `("", nil)`; git missing from PATH is an error |
+| `TestHookBrokenMarkerOfBoundProjectCapturesNothing` (`cmd/vp`) | A bound project's broken marker captures nothing, in either vault |
+| `TestMemoryHarvestCLIWritesTheBoundVault` (`cmd/vp`) | `vp memory harvest` in a bound checkout writes the bound vault, not the live one |
+| `TestHookSessionEndHarvestsIntoTheBoundVault` (`cmd/vp`) | The SessionEnd harvest writes the vault the hook resolved |
+| `TestRunSelectedChecksBindingRefusalAndUnreadableConfig` (`cmd/vp`) | `vp check --check` errors on a binding refusal, and runs with a leading Config row on an unreadable config |
+| `TestGatherCheckResultsSkipsSurfaceOnRejectedBinding` (`cmd/vp`) | The full `vp check` skips the Surface row for a rejected binding |
+| `TestPlansScanStatesARejectedBinding` (`cmd/vp`) | `vp plans scan --json` states the rejected binding |
+| `TestVaultPlanNamesARejectedBinding` (`internal/reconcile`) | `vp config sync`'s vault tier names the rejection, not the `vp init` remedy |
 
 ### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
 

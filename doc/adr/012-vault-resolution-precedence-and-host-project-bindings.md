@@ -77,15 +77,30 @@ of files, and remote-derived names are known to pick the wrong slug
 **4. Resolution fails closed.** Each of the following refuses, and never falls
 through to a lower tier, because the lowest tier is the live vault:
 
+- a found `.vibe-palace.toml` that cannot be read or parsed, or whose
+  `vault_path` is not a string (once a committed marker plus a host binding
+  decides the vault, one bad commit must not reroute every host's capture);
 - tiers 1 and 2 naming different vaults (the refusal names both sources; the
   same root is allowed);
-- a tier-2 target that is not an existing directory holding
-  `.vibe-palace/vault.toml`;
-- a `[project_vaults]` table that cannot be read: a non-ENOENT stat error, a
-  parse error, a key differing from `project_vaults` only in case, a key that is
-  not a slug, or a value that is not a non-empty string;
+- a tier-2 target that is not an absolute path (after `~` expansion) to an
+  existing directory holding `.vibe-palace/vault.toml`;
+- a `[project_vaults]` table that is malformed: a key differing from
+  `project_vaults` only in case, a key that is not a slug, or a value that is
+  not a non-empty string;
 - a checkout whose marker names no project while its git-origin slug is bound on
-  this host.
+  this host, or while `git` cannot be asked (missing, failed, timed out after
+  5 s) on a host that binds anything.
+
+A global config that is present but cannot be read or parsed also fails
+resolution closed (it may hide a binding), with its own error
+(`ErrHostConfigUnreadable`), and `vp check` still runs its rows and reports it.
+An absent config, or a dangling symlink, means "no bindings".
+
+**4a. One marker walk and one reader.** Vault resolution and project detection
+find and read the marker through the same function (`project.LocateMarker`:
+symlink-resolved walk, bounded at the resolved `$HOME`; name trimmed), so the
+vault a session writes and the project it is labelled with cannot come from
+different files.
 
 A marker name that is unbound while its git-origin slug is bound is not refused:
 the marker is the identity. It resolves tier 3, and `vp status` prints a warning
