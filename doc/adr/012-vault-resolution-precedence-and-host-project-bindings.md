@@ -139,7 +139,11 @@ vault's departure record then refuses the write.
   <dir>...]` or the stdio MCP tool `vp_config_bind` (both over
   `storage.BindProjectVault`, task `checkout-rebind-entry-point`). It checks the
   split landed (a moved-to-vault record whose destination equals a remote of the
-  target) or, with `--new`, that the default vault never held the project; it
-  never re-points an existing binding, never writes a checkout, and restores the
-  config if any named checkout does not then resolve through it. A checkout
-  rebind's split kind binds this way; its rename kind moves the binding key.
+  target, compared as host/path in any URL spelling) or, with `--new`, that the
+  default vault never held the project; it never re-points an existing
+  binding, never writes a checkout, keeps the config's mode and writes through
+  a symlinked config, and restores the config (compare-and-set) if any named
+  checkout does not then resolve through it. A checkout rebind's split kind
+  binds this way; its rename kind ADDS `[project_vaults].<to>` and keeps
+  `<from>`, so other checkouts still naming `<from>` stay on the bound vault,
+  whose `renamed` departure record refuses and redirects them.
