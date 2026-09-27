@@ -762,7 +762,13 @@ fixtures with a real git remote on the target vault.
 | `TestVaultRemoteURLs` | No remotes is `(nil, nil)`; not-a-repo and git-missing are errors |
 | `TestBindDryRunWritesNothing` | A dry run reports the change and writes nothing |
 | `TestRebindCheckoutSplitBindsWithoutTouchingTheMarker` | A split binds, leaves the marker byte-identical, prints no git commands, and refuses (restoring the config) a disagreeing or swallowed `vault_path` |
-| `TestRebindRenameMovesTheBindingKey` / `TestRebindRenameRefusesABindingConflict` | A rename moves `[project_vaults].<from>` to `<to>`, and refuses a conflicting key or a binding into another vault |
+| `TestRebindRenameAddsTheBindingKeyAndKeepsTheOld` / `TestRebindRenameRefusesABindingConflict` | A rename adds `[project_vaults].<to>` and keeps `<from>` (a second checkout still naming `<from>` stays bound), and refuses a conflicting key or a binding into another vault before any write |
+| `TestBindCannotBeRacedIntoARepoint` / `TestRebindRenameCannotBeRaced` / `TestSpliceNeverRepoints` | Bindings are parsed from the bytes the compare-and-set checks, so a concurrent writer's binding is never overwritten |
+| `TestBindRefusesAHeaderlessTable` | A dotted or inline `project_vaults` table refuses instead of taking an invalid appended header |
+| `TestNormaliseRemoteURL` / `TestBindMatchesRemoteSpellings` | ssh://, scp-like and https spellings of one repository match (host case-folded, path not); another repository or a non-URL label refuses |
+| `TestBindKeepsConfigModeAndSymlink` / `TestWriteHostLocalWithBackup` | A 0600 config and its `.bak` stay 0600; a symlinked config is written through to its target |
+| `TestBindRestoreDoesNotOverwriteAnotherWriter` / `TestRestoreHostLocalCAS` | The post-verify restore is a compare-and-set against the bytes the bind wrote |
+| `TestBindRefusesATargetThatRecordsTheSlugDeparted`, `TestBindPostconditionRunsBeforeTheWrite`, `TestRebindRenameVerifiesAfterWriting`, `TestBindVerifyRequiresTheBindingSource` | The target-departed guard, the pre-write postcondition, the rename's post-write verification, and verification requiring a `binding:` source each fire |
 | `TestRebindRenameRestoresTheConfigWhenTheTomlWriteFails` | A failed toml write restores the config key already moved |
 | `TestRebindCheckoutUsesTheSharedMarker` / `TestRebindRenameToleratesAWrongTypedTag` | `RebindCheckout` reads through `project.ReadMarker` and refuses a marker the resolver does not read |
 | `TestGateLeavesBindToolAlone` (`internal/tools`) | The departed-project seam lets `vp_config_bind` bind a departed slug |
