@@ -194,8 +194,9 @@ func (d Departure) Redirect() string {
 			short = short[:12]
 		}
 		return fmt.Sprintf("Projects/%s/ was removed from the vault (last touched by %s %q). Where it went is not "+
-			"recorded: if it was renamed, set [project].name to the new slug; if it moved to another vault, bind it to that vault on this host: vp config bind <slug> --vault <path> (or vp_config_bind)",
-			d.Slug, short, d.Subject)
+			"recorded: if it was renamed, set [project].name to the new slug; if it moved to another vault, bind it to that vault on this host with --new, since no departure is recorded for it here: "+
+			"vp config bind %s --vault <path> --new (or vp_config_bind with mode new)",
+			d.Slug, short, d.Subject, d.Slug)
 	case d.Malformed != "":
 		return fmt.Sprintf("it departed this vault, but %s cannot be read (%s)", departure.RelPath(d.Slug), d.Malformed)
 	case d.Kind == departure.Renamed:
@@ -204,6 +205,12 @@ func (d Departure) Redirect() string {
 		dest := "a destination that was not recorded"
 		if d.To != "" {
 			dest = fmt.Sprintf("%q", d.To)
+		}
+		if d.To == "" {
+			// Moved mode matches the target against the recorded destination;
+			// with none recorded, the bind needs --allow-unlabelled.
+			return fmt.Sprintf("it moved to another vault, %s%s%s; bind it to that vault on this host: "+
+				"vp config bind %s --vault <path> --allow-unlabelled (or vp_config_bind with allow_unlabelled)", dest, via, on, d.Slug)
 		}
 		return fmt.Sprintf("it moved to another vault, %s%s%s; bind it to that vault on this host: "+
 			"vp config bind %s --vault <path> (or vp_config_bind)", dest, via, on, d.Slug)

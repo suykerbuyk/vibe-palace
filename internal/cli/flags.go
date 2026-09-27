@@ -21,13 +21,13 @@ func (f *FlagValues) Get(name string) string {
 	return f.flags[name]
 }
 
-// Bool returns true if a boolean flag was set.
 // GetAll returns every value a repeated value flag was given, in order (nil
 // when it was not given), for flags documented as repeatable.
 func (f *FlagValues) GetAll(name string) []string {
 	return f.multi[name]
 }
 
+// Bool returns true if a boolean flag was set.
 func (f *FlagValues) Bool(name string) bool {
 	return f.bools[name]
 }
