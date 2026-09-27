@@ -169,6 +169,10 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// (a failed fetch/merge or a conflict) aborts before we push over it.
 	pull, _ := pullCore(vaultPath, remotes)
 	result.Pull = pull
+	// Right after the merge and BEFORE the verdict gate below, so a sync that
+	// merged a departure removes the moved project's embed cache even when a
+	// later remote fails. The pass skips itself while a merge is unfinished.
+	sweepDepartedAfterPull(vaultPath)
 	if v := RemoteVerdict(OpPull, pull.RemoteResults, ""); v != "" {
 		return result, errors.New(v)
 	}

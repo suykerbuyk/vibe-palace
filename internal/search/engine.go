@@ -152,17 +152,25 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 // A build failure for any one project still fails the whole search, naming the
 // project. A cross-project result that silently dropped a project would present
 // itself as complete.
-func (e *Engine) ensureAllIndexes(ctx context.Context) error {
+//
+// It returns the set it listed, and that set — not e.indexes — is what the
+// cross-project search reads. A long-lived engine keeps the in-memory index of
+// a project that has since moved to another vault (ListAllProjects stops
+// listing it; nothing evicts the index), and searching every index would serve
+// it.
+func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, error) {
 	projects, err := e.vault.ListAllProjects()
 	if err != nil {
-		return fmt.Errorf("list projects: %w", err)
+		return nil, fmt.Errorf("list projects: %w", err)
 	}
+	listed := make(map[string]bool, len(projects))
 	for _, p := range projects {
 		if err := e.ensureIndex(ctx, p.Slug); err != nil {
-			return fmt.Errorf("build index for %s: %w", p.Slug, err)
+			return nil, fmt.Errorf("build index for %s: %w", p.Slug, err)
 		}
+		listed[p.Slug] = true
 	}
-	return nil
+	return listed, nil
 }
 
 // HasIndex reports whether project already has a non-empty in-memory index.
@@ -218,10 +226,13 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 		if err := e.ensureIndex(ctx, f.Project); err != nil {
 			return nil, fmt.Errorf("build index for %s: %w", f.Project, err)
 		}
-	} else if err := e.ensureAllIndexes(ctx); err != nil {
+		return e.searchReady(ctx, query, f, nil)
+	}
+	listed, err := e.ensureAllIndexes(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return e.searchReady(ctx, query, f)
+	return e.searchReady(ctx, query, f, listed)
 }
 
 // SearchReady is Search without ensureIndex/Rebuild. If the project index is
@@ -237,10 +248,25 @@ func (e *Engine) SearchReady(ctx context.Context, query string, f SearchFilters)
 	if !e.EmbedderReady() || !e.HasIndex(f.Project) {
 		return nil, nil
 	}
-	return e.searchReady(ctx, query, f)
+	// The same membership predicate Search applies, so a long-lived engine
+	// never serves the in-memory index of a project that has since left the
+	// vault. Unlike Search, "not a member" is no results, not an error: this is
+	// bootstrap's best-effort path, which degrades rather than refuses.
+	exists, err := ProjectExists(e.vault, f.Project)
+	if err != nil || !exists {
+		return nil, err
+	}
+	return e.searchReady(ctx, query, f, nil)
 }
 
-func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters) ([]SearchResult, error) {
+// searchReady searches the in-memory indexes. A project-scoped search reads
+// f.Project's index; a cross-project search reads the indexes of exactly the
+// projects in listed (ensureAllIndexes' result) and refuses to run without it,
+// so no caller can reach every index unfiltered.
+func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters, listed map[string]bool) ([]SearchResult, error) {
+	if f.Project == "" && listed == nil {
+		return nil, fmt.Errorf("cross-project search needs the listed project set")
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = e.config.SearchDefaultLimit
@@ -270,7 +296,10 @@ func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters)
 		}
 		candidates = c
 	} else {
-		for _, idx := range e.indexes {
+		for project, idx := range e.indexes {
+			if !listed[project] {
+				continue
+			}
 			c, err := idx.Search(queryVec, limit*3)
 			if err != nil {
 				return nil, fmt.Errorf("vector search: %w", err)

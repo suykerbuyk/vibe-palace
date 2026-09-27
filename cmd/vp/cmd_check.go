@@ -257,6 +257,11 @@ func gatherCheckResults() []check.Result {
 				// deletion leaves behind. Report-only, never Fail.
 				results = append(results, check.CheckPalaceLocalOnly(vault))
 
+				// Vault-wide, host-local: embed caches of projects that moved
+				// to another vault and are still on this host. Report-only,
+				// never Fail; the same predicate a pull deletes by.
+				results = append(results, check.CheckDepartedCaches(vault))
+
 				// Vault-wide: list every retired Projects/<slug>/config.toml
 				// still on disk, committed or not. Report-only, never Fail.
 				results = append(results, check.CheckVaultProjectConfig(vaultPath))
