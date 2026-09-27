@@ -194,7 +194,7 @@ func (d Departure) Redirect() string {
 			short = short[:12]
 		}
 		return fmt.Sprintf("Projects/%s/ was removed from the vault (last touched by %s %q). Where it went is not "+
-			"recorded: if it was renamed, set [project].name to the new slug; if it moved to another vault, point vault_path at it",
+			"recorded: if it was renamed, set [project].name to the new slug; if it moved to another vault, bind it to that vault on this host: vp config bind <slug> --vault <path> (or vp_config_bind)",
 			d.Slug, short, d.Subject)
 	case d.Malformed != "":
 		return fmt.Sprintf("it departed this vault, but %s cannot be read (%s)", departure.RelPath(d.Slug), d.Malformed)
@@ -205,7 +205,8 @@ func (d Departure) Redirect() string {
 		if d.To != "" {
 			dest = fmt.Sprintf("%q", d.To)
 		}
-		return fmt.Sprintf("it moved to another vault, %s%s%s; point vault_path at that vault", dest, via, on)
+		return fmt.Sprintf("it moved to another vault, %s%s%s; bind it to that vault on this host: "+
+			"vp config bind %s --vault <path> (or vp_config_bind)", dest, via, on, d.Slug)
 	}
 }
 

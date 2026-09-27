@@ -208,7 +208,8 @@ func (e *DepartedWorkError) Error() string {
 			if d.To != "" {
 				dest = fmt.Sprintf("%q", d.To)
 			}
-			fmt.Fprintf(&b, "  2. This work belongs in the vault %q moved to, %s: carry it there, not here. Then\n", d.Slug, dest)
+			fmt.Fprintf(&b, "  2. This work belongs in the vault %q moved to, %s: carry it there, not here "+
+				"(bind this host to it first: vp config bind %s --vault <path>). Then\n", d.Slug, dest, d.Slug)
 		default:
 			fmt.Fprintf(&b, "  2. Where %q went is not recorded here; find out from whoever removed it and carry the work there. Then\n", d.Slug)
 		}
