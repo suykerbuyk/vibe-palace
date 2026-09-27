@@ -11,10 +11,11 @@ import (
 	"testing"
 )
 
-// TestWriteHostLocalWithBackup pins what `vp config upgrade` has always done to
-// a host-local file, now that the checkout rebind shares it: the .bak holds the
-// pre-image, every file is 0644, no .tmp survives, and each failure keeps the
-// error prefix config upgrade reported.
+// TestWriteHostLocalWithBackup pins what `vp config upgrade`, `vp config bind`
+// and the checkout rebind do to a host-local file: the .bak holds the
+// pre-image, the file and its .bak keep the file's own mode (a 0600 config
+// stays 0600 — it used to be forced to 0644), no .tmp survives, and each
+// failure keeps the error prefix config upgrade reported.
 func TestWriteHostLocalWithBackup(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".vibe-palace.toml")
@@ -33,8 +34,8 @@ func TestWriteHostLocalWithBackup(t *testing.T) {
 		if err != nil || string(got) != want {
 			t.Errorf("%s = %q (err %v), want %q", path, got, err, want)
 		}
-		if st, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && st.Mode().Perm() != 0o644 {
-			t.Errorf("%s mode %v, want 0644", path, st.Mode().Perm())
+		if st, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %v, want 0600 (the original file's)", path, st.Mode().Perm())
 		}
 	}
 	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
