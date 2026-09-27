@@ -106,8 +106,13 @@ type DepartedCacheSweep struct {
 	// Departed names every slug whose cache still holds vectors (or the
 	// fingerprint sidecar) and whose departure chain ends moved-to-vault.
 	Departed []string
-	// Removed names the caches this pass removed (act only).
+	// Removed names the caches this pass removed at least one vector from (act
+	// only), whether or not their directory could go too: a directory holding
+	// anything that is not a cache file stays, and its vectors are gone all the same.
 	Removed []string
+	// Kept names the Removed caches whose directory stayed because it holds
+	// files that are not cache files (removeCacheDir never removes those).
+	Kept []string
 	// Undecidable is set when a guard stopped the pass before any slug was
 	// judged. A reporter must show it, never "0".
 	Undecidable string
@@ -168,10 +173,13 @@ func (v *Vault) departedPass(scan cacheScan, act bool, res *DepartedCacheSweep) 
 		if !act {
 			continue
 		}
-		removed, errs := removeCacheDir(dir, name)
+		vectors, dirGone, errs := removeCacheDir(dir, name)
 		res.Errors = append(res.Errors, errs...)
-		if removed {
+		if vectors > 0 {
 			res.Removed = append(res.Removed, name)
+			if !dirGone {
+				res.Kept = append(res.Kept, name)
+			}
 		}
 	}
 }
@@ -206,32 +214,37 @@ func countCacheFiles(dir string) (int, error) {
 // removeCacheDir removes a cache directory's own files and then the directory,
 // non-recursively: anything that is not a cache file stays and keeps the
 // directory in place. It is the orphan reap's removal and the departed pass's.
-func removeCacheDir(dir, name string) (bool, []string) {
+// It returns how many cache files it removed and whether the directory went.
+func removeCacheDir(dir, name string) (int, bool, []string) {
 	var errs []string
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, fmt.Sprintf("%s: read cache: %v", name, err))
 		}
-		return false, errs
+		return 0, false, errs
 	}
+	n := 0
 	for _, f := range files {
 		if !isCacheFile(f) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, f.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		switch err := os.Remove(filepath.Join(dir, f.Name())); {
+		case err == nil:
+			n++
+		case !errors.Is(err, fs.ErrNotExist):
 			errs = append(errs, fmt.Sprintf("%s: remove vector: %v", name, err))
 		}
 	}
 	err = os.Remove(dir)
 	switch {
 	case err == nil:
-		return true, errs
+		return n, true, errs
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrExist):
 	default:
 		errs = append(errs, fmt.Sprintf("%s: remove cache: %v", name, err))
 	}
-	return false, errs
+	return n, false, errs
 }
 
 // departedOperationInProgress is operationInProgress, the package's one probe
@@ -281,7 +294,10 @@ func (v *Vault) gitOperationInProgress() string {
 func sweepDepartedAfterPull(vaultPath string) {
 	res := NewVault(vaultPath).DepartedCaches(true)
 	if len(res.Removed) > 0 {
-		slog.Info("embed cache: removed the caches of projects that moved to another vault", "projects", res.Removed)
+		// kept: caches whose vectors went but whose directory stays, because it
+		// holds files that are not cache files.
+		slog.Info("embed cache: removed the caches of projects that moved to another vault",
+			"projects", res.Removed, "kept", res.Kept)
 	}
 	for _, e := range res.Errors {
 		slog.Warn("embed cache: departed cache", "err", e)

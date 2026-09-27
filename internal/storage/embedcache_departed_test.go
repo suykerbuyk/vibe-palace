@@ -93,6 +93,53 @@ func TestDepartedCaches_MovedToVaultNoResidue(t *testing.T) {
 	}
 }
 
+// D1 (split-and-sweep-reporting-defects-found-by-rehearsal-a2): a departed
+// cache that also holds a file which is not a cache file — the live specimen is
+// the one-shot migration's .project-slug-cache-done — loses every vector but
+// keeps its directory. The pass must still report it as removed (and say why
+// the directory stayed), not stay silent about the largest deletion on the host.
+func TestDepartedCaches_ReportsVectorsRemovedFromAKeptDirectory(t *testing.T) {
+	root := departedVault(t)
+	writeRecord(t, root, "qms", departure.MovedToVault, departedLabel)
+	writeRecord(t, root, "orch", departure.MovedToVault, departedLabel)
+	seedCache(t, root, "qms")
+	seedCache(t, root, "orch")
+	marker := "palace/.local/embed-cache/qms/.project-slug-cache-done"
+	sweepFile(t, root, marker, "done\n")
+
+	r := (&Vault{Root: root}).DepartedCaches(true)
+	if len(r.Errors) != 0 || r.Undecidable != "" {
+		t.Fatalf("errors %v undecidable %q", r.Errors, r.Undecidable)
+	}
+	if !slices.Equal(r.Removed, []string{"orch", "qms"}) {
+		t.Errorf("Removed = %q, want both: every cache that lost a vector", r.Removed)
+	}
+	if !slices.Equal(r.Kept, []string{"qms"}) {
+		t.Errorf("Kept = %q, want [qms]: only its directory stayed", r.Kept)
+	}
+	if n, err := countCacheFiles(filepath.Join(root, "palace/.local/embed-cache/qms")); err != nil || n != 0 {
+		t.Errorf("qms still holds %d cache files (%v)", n, err)
+	}
+	if !sweepExists(root, marker) {
+		t.Error("the non-cache marker must stay (reaping it is not this pass's job)")
+	}
+	if cacheExists(root, "orch") {
+		t.Error("a cache of vectors only must lose its directory")
+	}
+}
+
+// D1, the search-process stage: SweepEmbedCaches counts the kept-directory
+// cache as departed too.
+func TestSweepEmbedCaches_CountsAKeptDirectoryAsDeparted(t *testing.T) {
+	root := departedVault(t)
+	writeRecord(t, root, "qms", departure.MovedToVault, departedLabel)
+	seedCache(t, root, "qms")
+	sweepFile(t, root, "palace/.local/embed-cache/qms/.project-slug-stray.list", "x\n")
+	if res := mustSweep(t, &Vault{Root: root}); res.Departed != 1 {
+		t.Errorf("Departed = %d, want 1", res.Departed)
+	}
+}
+
 // T4. A chain renamed -> moved-to-vault, with residue under the FIRST slug so the
 // orphan reap cannot mask a revert: the first slug's cache goes.
 func TestDepartedCaches_ChainEndingMovedToVault(t *testing.T) {
