@@ -348,9 +348,12 @@ func TestBindDryRunWritesNothing(t *testing.T) {
 	}
 }
 
-// Test 19: a rename moves the [project_vaults] key, so the renamed checkout
-// keeps resolving the vault it was bound to.
-func TestRebindRenameMovesTheBindingKey(t *testing.T) {
+// Test 19 (K1): a rename ADDS [project_vaults].<to> with <from>'s value and
+// keeps <from>, so the renamed checkout resolves through <to> and every other
+// checkout still naming <from> (another worktree, a second clone) keeps
+// resolving the bound vault instead of dropping to the live one. MUTATION
+// CONTRACT: remove <from> and the second checkout goes RED (global:).
+func TestRebindRenameAddsTheBindingKeyAndKeepsTheOld(t *testing.T) {
 	home := rebindEnv(t)
 	global := rebindVault(t, filepath.Join(home, "global-vault"))
 	quantum := rebindVault(t, filepath.Join(home, "quantum-vault"), "new-slug")
@@ -358,20 +361,25 @@ func TestRebindRenameMovesTheBindingKey(t *testing.T) {
 	rebindWrite(t, cfg, "vault_path = \""+global+"\"\n\n[project_vaults]\nold-slug = \"~/quantum-vault\"\n")
 	co := filepath.Join(home, "code", "proj")
 	rebindWrite(t, filepath.Join(co, ".vibe-palace.toml"), rebindToml)
+	co2 := filepath.Join(home, "code", "proj-other-branch")
+	rebindWrite(t, filepath.Join(co2, ".vibe-palace.toml"), rebindToml)
 
 	rep, err := RebindCheckout(rebindRename(co, quantum))
 	if err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	got := bindRead(t, cfg)
-	if strings.Contains(got, "old-slug") || !strings.Contains(got, "new-slug = \"~/quantum-vault\"") {
-		t.Errorf("the binding key did not move:\n%s", got)
+	if !strings.Contains(got, "old-slug = \"~/quantum-vault\"") || !strings.Contains(got, "new-slug = \"~/quantum-vault\"") {
+		t.Errorf("want <to> added and <from> kept:\n%s", got)
 	}
 	if rep.BindingChange == "" {
-		t.Error("the report does not state the moved key")
+		t.Error("the report does not state the added key")
 	}
 	if p, src, err := ResolveVaultPath(co); err != nil || p != quantum || src != "binding:"+cfg+"#new-slug" {
 		t.Errorf("renamed checkout resolves (%q, %q, %v)", p, src, err)
+	}
+	if p, src, err := ResolveVaultPath(co2); err != nil || p != quantum || src != "binding:"+cfg+"#old-slug" {
+		t.Errorf("the second checkout, still naming old-slug, resolves (%q, %q, %v); it must stay on the bound vault", p, src, err)
 	}
 }
 

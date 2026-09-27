@@ -54,62 +54,81 @@ var ErrHostConfigUnreadable = errors.New("host config unreadable")
 //   - project_vaults that is not a table, a key that is not a valid slug, or a
 //     value that is not a non-empty string.
 func readProjectVaults() (map[string]string, string, error) {
+	bindings, cfgPath, _, err := readProjectVaultsBytes()
+	return bindings, cfgPath, err
+}
+
+// readProjectVaultsBytes is readProjectVaults that also returns the bytes it
+// parsed (nil when the config is absent), so a WRITER can splice exactly the
+// bytes its checks were made against and compare-and-set on them.
+func readProjectVaultsBytes() (map[string]string, string, []byte, error) {
 	cfgPath, err := VaultConfigFilePath()
 	if err != nil {
-		return nil, "", nil
-	}
-	rejected := func(format string, a ...any) error {
-		return fmt.Errorf("%w: [%s] in %s: %s", ErrVaultBindingRejected, projectVaultsKey, cfgPath, fmt.Sprintf(format, a...))
+		return nil, "", nil, nil
 	}
 	unreadable := func(format string, a ...any) error {
 		return fmt.Errorf("%w: %s: %s", ErrHostConfigUnreadable, cfgPath, fmt.Sprintf(format, a...))
 	}
 	if _, err := os.Lstat(cfgPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, cfgPath, nil
+			return nil, cfgPath, nil, nil
 		}
-		return nil, cfgPath, unreadable("cannot stat the config: %v", err)
+		return nil, cfgPath, nil, unreadable("cannot stat the config: %v", err)
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// Lstat found the entry, the read found nothing: a dangling symlink.
-			return nil, cfgPath, nil
+			return nil, cfgPath, nil, nil
 		}
-		return nil, cfgPath, unreadable("cannot read the config: %v", err)
+		return nil, cfgPath, nil, unreadable("cannot read the config: %v", err)
+	}
+	bindings, err := parseProjectVaults(cfgPath, data)
+	if err != nil {
+		return nil, cfgPath, nil, err
+	}
+	return bindings, cfgPath, data, nil
+}
+
+// parseProjectVaults reads the [project_vaults] table out of a global
+// config's bytes, with readProjectVaults' refusals (ErrHostConfigUnreadable
+// for bytes that do not parse, ErrVaultBindingRejected for a malformed table).
+func parseProjectVaults(cfgPath string, data []byte) (map[string]string, error) {
+	rejected := func(format string, a ...any) error {
+		return fmt.Errorf("%w: [%s] in %s: %s", ErrVaultBindingRejected, projectVaultsKey, cfgPath, fmt.Sprintf(format, a...))
 	}
 	var top map[string]any
 	if _, err := toml.Decode(string(data), &top); err != nil {
-		return nil, cfgPath, unreadable("the config does not parse: %v", err)
+		return nil, fmt.Errorf("%w: %s: the config does not parse: %v", ErrHostConfigUnreadable, cfgPath, err)
 	}
 	for key := range top {
 		if key != projectVaultsKey && strings.EqualFold(key, projectVaultsKey) {
-			return nil, cfgPath, rejected("key %q differs from %s only in case", key, projectVaultsKey)
+			return nil, rejected("key %q differs from %s only in case", key, projectVaultsKey)
 		}
 	}
 	raw, ok := top[projectVaultsKey]
 	if !ok {
-		return nil, cfgPath, nil
+		return nil, nil
 	}
 	table, ok := raw.(map[string]any)
 	if !ok {
-		return nil, cfgPath, rejected("%s = %v is a %T, not a table", projectVaultsKey, raw, raw)
+		return nil, rejected("%s = %v is a %T, not a table", projectVaultsKey, raw, raw)
 	}
 	out := make(map[string]string, len(table))
 	for key, v := range table {
 		if err := slug.Validate(key); err != nil {
-			return nil, cfgPath, rejected("key %q is not a project slug: %v", key, err)
+			return nil, rejected("key %q is not a project slug: %v", key, err)
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, cfgPath, rejected("%s = %v is a %T, not a path string", key, v, v)
+			return nil, rejected("%s = %v is a %T, not a path string", key, v, v)
 		}
 		if strings.TrimSpace(s) == "" {
-			return nil, cfgPath, rejected("%s is an empty string, not a vault path", key)
+			return nil, rejected("%s is an empty string, not a vault path", key)
 		}
 		out[key] = s
 	}
-	return out, cfgPath, nil
+	return out, nil
 }
 
 // boundVaultRoot expands a tier-2 target and proves it is an existing vault: a

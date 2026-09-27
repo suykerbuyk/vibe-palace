@@ -77,6 +77,10 @@ type BindReport struct {
 // writer.
 var bindBeforeWrite = func() {}
 
+// bindBeforeVerify runs between the write and its verification; a test
+// replaces it to change the file after the bind wrote it.
+var bindBeforeVerify = func() {}
+
 // BindProjectVault binds a project to a vault on THIS host: one
 // `[project_vaults].<slug>` line in the global config (ADR-012, tier 2). It
 // is the one writer of that table, behind both `vp config bind` and the MCP
@@ -102,7 +106,11 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 		return refuse("mode %q is neither %q nor %q", req.Mode, BindMoved, BindNew)
 	}
 
-	bindings, cfgPath, err := readProjectVaults()
+	// ONE read: the bindings the checks below use are parsed from exactly the
+	// bytes the splice edits and the compare-and-set compares against, so a
+	// concurrent writer cannot slip a binding in between the check and the
+	// write.
+	bindings, cfgPath, old, err := readProjectVaultsBytes()
 	if err != nil {
 		return refuse("the host config cannot be used: %v", err)
 	}
@@ -110,9 +118,7 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 	if cfgPath == "" {
 		return refuse("the host config directory cannot be resolved")
 	}
-	if present, perr := configFilePresent("global config", cfgPath); perr != nil {
-		return refuse("%v", perr)
-	} else if !present {
+	if old == nil {
 		return refuse("there is no global config at %s; run `vp init` first — a bind never creates it", cfgPath)
 	}
 	target, err := boundVaultRoot(cfgPath, req.Slug, req.VaultPath)
@@ -158,12 +164,17 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 			}
 			rep.Warnings = append(rep.Warnings, "the departure record names no destination; bound without checking")
 		} else {
+			want, ok := normaliseRemoteURL(rec.To)
+			if !ok {
+				return refuse("its departure record names %q, which is not a git URL, so no remote of %s can be matched "+
+					"against it; bind it by hand-editing [%s] in %s", rec.To, target, projectVaultsKey, cfgPath)
+			}
 			urls, uerr := VaultRemoteURLs(target)
 			if uerr != nil {
 				return refuse("%v", uerr)
 			}
-			if !slices.Contains(urls, rec.To) {
-				return refuse("it moved to %q, and no remote of %s is that URL (remotes: %v)", rec.To, target, urls)
+			if !slices.ContainsFunc(urls, func(u string) bool { n, ok := normaliseRemoteURL(u); return ok && n == want }) {
+				return refuse("it moved to %q, and no remote of %s is that repository (remotes: %v)", rec.To, target, urls)
 			}
 		}
 	case BindNew:
@@ -216,10 +227,6 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 		return rep, nil
 	}
 
-	old, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return refuse("read %s: %v", cfgPath, err)
-	}
 	next, change, err := spliceProjectVault(string(old), req.Slug, req.VaultPath)
 	if err != nil {
 		return refuse("%v", err)
@@ -236,8 +243,9 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 	if err := casWriteHostConfig(cfgPath, old, []byte(next), &rep.BackupPath); err != nil {
 		return refuse("%v", err)
 	}
+	bindBeforeVerify()
 	if err := verifyBind(&rep, cfgPath, req, target); err != nil {
-		if rerr := restoreHostLocal(cfgPath, old); rerr != nil {
+		if rerr := restoreHostLocalCAS(cfgPath, []byte(next), old); rerr != nil {
 			return rep, fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", err, cfgPath, rerr, rep.BackupPath)
 		}
 		return rep, fmt.Errorf("%w; %s was restored to its previous bytes", err, cfgPath)
@@ -306,26 +314,16 @@ func casWriteHostConfig(path string, old, next []byte, backup *string) error {
 	return nil
 }
 
-// restoreHostLocal puts data back at path, temp-then-rename, leaving the .bak
-// (the pre-image a failed restore points at) untouched.
-func restoreHostLocal(path string, data []byte) error {
-	tmp := path + ".restore"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-// spliceProjectVault sets [project_vaults].<slug> = "<value>" and changes no
-// other byte: it replaces a plain `slug = "…"` line in place, else inserts the
-// line after the last key of an existing [project_vaults] section, else
-// appends the table at the END of the file — where its header cannot swallow
-// top-level keys. A line for slug that is not a plain assignment refuses.
+// spliceProjectVault ADDS [project_vaults].<key> = "<value>" and changes no
+// other byte: it inserts the line after the last key of an existing
+// [project_vaults] section, else appends the table at the END of the file —
+// where its header cannot swallow top-level keys.
+//
+// It never re-points: a line already naming key refuses, whatever its value,
+// so a binding that appeared since the caller's checks cannot be overwritten
+// by the splice itself. A table written without a [project_vaults] header (the
+// dotted `project_vaults.x = …` form, or an inline table) refuses too:
+// appending a header for a table already defined is invalid TOML.
 func spliceProjectVault(text, key, value string) (string, string, error) {
 	lines := strings.Split(text, "\n")
 	newLine := key + " = " + rebindQuote(value)
@@ -340,19 +338,19 @@ func spliceProjectVault(text, key, value string) (string, string, error) {
 				continue
 			}
 			insertAt = i + 1
-			if k != key {
-				continue
+			if k == key {
+				return "", "", fmt.Errorf("line %d %q already binds %s; re-pointing a binding is refused — edit it by hand", i+1, lines[i], key)
 			}
-			indent, _, plain := rebindAssignment(lines[i], key)
-			if !plain {
-				return "", "", fmt.Errorf("line %d %q is not a plain %s = \"…\"; edit it by hand", i+1, lines[i], key)
-			}
-			oldLine := lines[i]
-			lines[i] = indent + newLine
-			return strings.Join(lines, "\n"), "- " + oldLine + "\n+ " + lines[i], nil
 		}
 		lines = slices.Insert(lines, insertAt, newLine)
 		return strings.Join(lines, "\n"), "+ " + newLine, nil
+	}
+	var top map[string]any
+	if _, err := toml.Decode(text, &top); err == nil {
+		if _, defined := top[projectVaultsKey]; defined {
+			return "", "", fmt.Errorf("[%s] is written without a [%s] header (dotted keys or an inline table); "+
+				"a header cannot be added to it — edit it by hand", projectVaultsKey, projectVaultsKey)
+		}
 	}
 	out := text
 	if out != "" && !strings.HasSuffix(out, "\n") {
@@ -360,25 +358,6 @@ func spliceProjectVault(text, key, value string) (string, string, error) {
 	}
 	out += "\n[" + projectVaultsKey + "]\n" + newLine + "\n"
 	return out, "+ [" + projectVaultsKey + "]\n+ " + newLine, nil
-}
-
-// removeProjectVault deletes the plain [project_vaults].<key> line.
-func removeProjectVault(text, key string) (string, error) {
-	lines := strings.Split(text, "\n")
-	for _, sr := range FindSectionRanges(text) {
-		if sr.Name != projectVaultsKey {
-			continue
-		}
-		for i := sr.StartLine + 1; i < sr.EndLine && i < len(lines); i++ {
-			if k, ok := parseKeyAssignment(trimLeftSpace(lines[i]), false); ok && k == key {
-				if _, _, plain := rebindAssignment(lines[i], key); !plain {
-					return "", fmt.Errorf("line %d %q is not a plain %s = \"…\"; edit it by hand", i+1, lines[i], key)
-				}
-				return strings.Join(slices.Delete(lines, i, i+1), "\n"), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no plain [%s] line for %q", projectVaultsKey, key)
 }
 
 // projectVaultsPostcondition refuses, before any write, unless next differs
