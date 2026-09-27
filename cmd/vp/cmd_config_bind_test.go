@@ -123,7 +123,8 @@ func TestConfigBindVaultOnceAndTildeCheckout(t *testing.T) {
 	cfg, quantum, cos := cliBindHost(t)
 	before, _ := os.ReadFile(cfg)
 	var out, errOut bytes.Buffer
-	if code := runConfigBind([]string{"qa", "--vault", "~/quantum-vault", "--vault", "~/other"}, &out, &errOut); code != cli.ExitUser {
+	// The same, valid vault twice: only the repeat guard can refuse this.
+	if code := runConfigBind([]string{"qa", "--vault", "~/quantum-vault", "--vault", "~/quantum-vault"}, &out, &errOut); code != cli.ExitUser {
 		t.Errorf("a repeated --vault exited %d, want ExitUser", code)
 	}
 	if after, _ := os.ReadFile(cfg); !bytes.Equal(after, before) {
