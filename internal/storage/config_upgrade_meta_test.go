@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,7 @@ overlap = 100
 	if !containsActiveLine(upgraded, "version_major = 1") {
 		t.Errorf("version_major should be active (uncommented) after upgrade:\n%s", upgraded)
 	}
-	if !containsActiveLine(upgraded, "version_minor = 1") {
+	if !containsActiveLine(upgraded, fmt.Sprintf("version_minor = %d", CurrentVersionMinor)) {
 		t.Errorf("version_minor should be active (uncommented) after upgrade:\n%s", upgraded)
 	}
 	// kind stays commented (documentation, not an enforced value).

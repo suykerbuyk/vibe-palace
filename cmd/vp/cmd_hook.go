@@ -94,15 +94,17 @@ func runHook(info cli.BuildInfo) int {
 	// Open vault from the hook's CWD.
 	//
 	// The global fallback is for an ABSENT cwd override. It must NEVER run for a
-	// REJECTED one: this is the capture path that caused iteration 210, and the
+	// REJECTED binding — a swallowed vault_path, or a [project_vaults] entry the
+	// resolver refused (ErrVaultBindingRejected covers both, ADR-012): this is
+	// the capture path that caused iteration 210, and the
 	// global vault is the LIVE vault. An operator who wrote a vault_path meant
 	// their work to go somewhere else; falling back here writes the throwaway
-	// session into real project history — the precise defect readCwdVaultPath
+	// session into real project history — the precise defect readCwdMarker
 	// now refuses, re-entered through the back door. Refuse and capture nothing:
 	// a lost capture is recoverable, a polluted history is not.
 	vault, err := storage.OpenVaultFromCwd(payload.CWD)
 	if err != nil {
-		if errors.Is(err, storage.ErrSwallowedVaultPath) {
+		if errors.Is(err, storage.ErrVaultBindingRejected) {
 			// Alarm through the two sanctioned channels — the log and the result
 			// body — never the exit code, per the ruling below.
 			//

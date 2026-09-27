@@ -5,7 +5,7 @@ log_level = "info"
 
 [meta]
 version_major = 1
-version_minor = 1
+version_minor = 2
 kind = "global"
 
 [embedder]
@@ -85,3 +85,8 @@ overlap = 100
 # base_url = "https://api.x.ai/v1"
 # max_tokens = 4096
 # timeout_seconds = 30
+
+# Per-host project -> vault bindings (ADR-012). Empty by default; see
+# template.toml. Kept last: every key below a [table] header belongs to it.
+# [project_vaults]
+# my-project = "~/other-vault"

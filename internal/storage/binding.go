@@ -20,15 +20,17 @@ type StaleBindingError struct {
 	Bound string
 	// Resolved is what the same launch directory resolves to now.
 	Resolved string
-	// Source names the config that supplies Resolved ("cwd:<file>" or
-	// "global:<file>"), so the operator knows which file to look at.
+	// Source names the config that supplies Resolved ("cwd:<file>",
+	// "binding:<configfile>#<slug>" or "global:<file>"), so the operator knows
+	// which file to look at.
 	Source string
 }
 
 func (e *StaleBindingError) Error() string {
 	return fmt.Sprintf(
 		"vault binding is stale: this server bound %s at startup, but %s now resolves to %s. "+
-			"A running MCP server resolves vault_path ONCE, at startup — a mid-session config change "+
+			"A running MCP server resolves its vault ONCE, at startup — a mid-session config change "+
+			"(a vault_path, or a [project_vaults] binding) "+
 			"does not re-bind it, so continuing would write this project's history into the vault you "+
 			"have already moved away from, while the CLI and every new `vp hook` write the other one. "+
 			"Refusing. Fix: restart the MCP server by reloading it in your AI host — killing the server "+

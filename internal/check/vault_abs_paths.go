@@ -199,8 +199,9 @@ func CheckVaultAbsPaths(v *storage.Vault) Result {
 		"resume.md and workflow.md are synced to every machine, so an absolute host path in one is a fact "+
 			"about the host that wrote it and is false everywhere else — and a stale path that still EXISTS "+
 			"as an empty directory reads as plausible instead of failing loudly (the iter 188 bug).",
-		"RESOLVE, DON'T RECALL: `vp check` prints the resolved vault_path AND its source; `vault_path` lives in "+
-			"the global config (per-tree override: .vibe-palace.toml). Write the CONSTRAINT (POSIX filesystem, "+
+		"RESOLVE, DON'T RECALL: `vp check` prints the resolved vault_path AND its source; the vault is chosen by "+
+			"a checkout's untracked .vibe-palace.toml vault_path, then the host's [project_vaults] entry for the "+
+			"project, then the global vault_path (ADR-012). Write the CONSTRAINT (POSIX filesystem, "+
 			"never NTFS/exFAT), never the PATH.",
 		"Scope is the ADR-009 core only — iterations.md and tasks/ may "+
 			"quote host paths as specimens and are deliberately not scanned.")

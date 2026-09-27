@@ -30,7 +30,7 @@ import (
 // forward-compatible. See the [meta] block in defaults.toml.
 const (
 	CurrentVersionMajor = 1
-	CurrentVersionMinor = 1
+	CurrentVersionMinor = 2
 )
 
 // MetaKind values identify which config-file schema a [meta] block belongs to.
@@ -163,9 +163,14 @@ type tomlMeta struct {
 type tomlConfig struct {
 	Meta      tomlMeta `toml:"meta"`
 	VaultPath string   `toml:"vault_path"`
-	HTTPPort  int      `toml:"http_port"`
-	LogLevel  string   `toml:"log_level"`
-	Embedder  struct {
+	// ProjectVaults is [project_vaults], this host's slug -> vault bindings
+	// (ADR-012). Decoded here only so LoadConfig does not leave the table
+	// undecoded; the resolver reads it itself (readProjectVaults), with the
+	// fail-closed rules a vault choice needs.
+	ProjectVaults map[string]string `toml:"project_vaults"`
+	HTTPPort      int               `toml:"http_port"`
+	LogLevel      string            `toml:"log_level"`
+	Embedder      struct {
 		Model             string `toml:"model"`
 		MaxSequenceLength int    `toml:"max_sequence_length"`
 		BatchSize         int    `toml:"batch_size"`

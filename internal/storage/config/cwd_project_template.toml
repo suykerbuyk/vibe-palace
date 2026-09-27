@@ -13,6 +13,9 @@
 
 # Override the palace vault for this source-dir and descendants. The
 # walk stops at $HOME; a file at $HOME/.vibe-palace.toml is ignored.
+# If this file is COMMITTED to the project repo, do not set vault_path
+# here: a path is a fact about one host. Bind the project to its vault in
+# each host's global config instead, under [project_vaults] (ADR-012).
 # vault_path = "~/work-palace-vault"
 
 # Managed by vp. The version fields drive schema migration — do not

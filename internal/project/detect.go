@@ -207,11 +207,8 @@ func DetectProjectHighConfidence(cwd string) (string, error) {
 	}
 
 	// Strategy 2: git remote heuristics.
-	if name, err := gitRemoteName(cwd); err == nil {
-		slug := slugify(name)
-		if slug != "" && slugpkg.Validate(slug) == nil {
-			return slug, nil
-		}
+	if slug := GitRemoteSlug(cwd); slug != "" {
+		return slug, nil
 	}
 
 	return "", fmt.Errorf("no high-confidence project signal at %q (need %s [project].name or a git origin remote); pass project explicitly or call vp_list_projects", cwd, ConfigFileName)
@@ -438,6 +435,22 @@ func findFileUpward(dir, filename string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// GitRemoteSlug is the slug the origin remote of the git repository containing
+// dir names, or "" when there is none or it does not slugify to a valid slug.
+// It is DetectProjectHighConfidence's second strategy on its own, exported for
+// the vault resolver, which must key a refusal on the same derivation.
+func GitRemoteSlug(dir string) string {
+	name, err := gitRemoteName(dir)
+	if err != nil {
+		return ""
+	}
+	slug := slugify(name)
+	if slug == "" || slugpkg.Validate(slug) != nil {
+		return ""
+	}
+	return slug
 }
 
 // gitRemoteName extracts the repository name from the origin remote URL of
