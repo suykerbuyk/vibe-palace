@@ -360,17 +360,6 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 	}
 }
 
-// ParseProjectConfig parses a .vibe-palace.toml file and returns the project
-// configuration. Returns an error if the file cannot be read or is invalid TOML.
-// Unknown top-level keys are tolerated.
-func ParseProjectConfig(path string) (ProjectConfig, error) {
-	pf, err := ParseProjectFile(path)
-	if err != nil {
-		return ProjectConfig{}, err
-	}
-	return pf.Project, nil
-}
-
 // ParseProjectFile parses a .vibe-palace.toml file and returns the full
 // file contents, including any top-level vault_path override. Unknown
 // top-level keys are tolerated.
