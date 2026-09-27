@@ -391,10 +391,16 @@ below, by `storage.ResolveVaultBinding` (`ResolveVaultPath` wraps it):
 Resolution fails closed, with one error type (`storage.ErrVaultBindingRejected`)
 that `vp hook` treats as "capture nothing", never as "fall back to the global
 vault". It refuses when:
+- a found `.vibe-palace.toml` cannot be read or parsed;
 - tiers 1 and 2 name different vaults;
-- a binding's target is not an existing vault;
+- a binding's target is not an absolute path to an existing vault;
 - the table is malformed;
-- a checkout names no project while its git-origin slug is bound.
+- a checkout names no project while its git-origin slug is bound, or while git
+  cannot be asked on a host that binds anything.
+
+An unreadable global config fails with `ErrHostConfigUnreadable` (a broken host
+config, which `vp check` reports as a row). The marker is found and read by
+`project.LocateMarker`, the one walk and reader project detection also uses.
 
 The host menu shims and the vault git family (`vp vault pull/push/…`, which
 take `--vault`) resolve tier 3 only. `vp status` and `vp check` print the
