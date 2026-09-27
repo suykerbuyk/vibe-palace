@@ -100,6 +100,18 @@ func runSelectedChecks(filter string) ([]check.Result, error) {
 		vaultRoot = vp
 	case errors.Is(perr, storage.ErrVaultBindingRejected):
 		return nil, perr
+	case errors.Is(perr, storage.ErrHostConfigUnreadable):
+		// A host config that is there and unreadable is not "unconfigured",
+		// and not a binding refusal either: run the preflight anyway and lead
+		// with a row that names the file, so the report is never silent about
+		// why every vault-backed row below degraded.
+		rows, err := check.RunSelected("", filter)
+		if err != nil {
+			return nil, err
+		}
+		config := check.Result{Name: "Config", Status: check.Fail,
+			Summary: "host config unreadable", Details: []string{perr.Error()}}
+		return append([]check.Result{config}, rows...), nil
 	}
 	return check.RunSelected(vaultRoot, filter)
 }

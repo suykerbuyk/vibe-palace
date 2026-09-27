@@ -4,12 +4,15 @@
 package project
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
@@ -185,26 +188,20 @@ func DetectProjectHighConfidence(cwd string) (string, error) {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
 
-	// Strategy 1: config file walk, bounded at $HOME so a stray
-	// ~/.vibe-palace.toml does not name every directory under the home tree
-	// (see the home-marker hardening). The walk is symlink-resolved to match
-	// the resolved home boundary; git strategy below keeps using the
-	// unresolved cwd, preserving existing behavior.
-	markerStart := cwd
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		markerStart = filepath.Clean(resolved)
-	}
-	homeBoundary, _ := resolvedHome()
-	if configPath, err := findMarkerUpward(markerStart, homeBoundary); err == nil {
-		cfg, err := ParseProjectConfig(configPath)
-		if err == nil && cfg.Name != "" {
-			if err := slugpkg.Validate(cfg.Name); err != nil {
-				return "", fmt.Errorf("project name from config: %w", err)
-			}
-			return cfg.Name, nil
+	// Strategy 1: the marker, found and read by the SAME walk and reader the
+	// vault resolver uses (LocateMarker), so the project label and the vault
+	// binding keyed on it can never come from different files or disagree on
+	// the name (ADR-012). The walk is bounded at $HOME so a stray
+	// ~/.vibe-palace.toml does not name every directory under the home tree;
+	// the git strategy below keeps using the unresolved cwd.
+	if m, err := LocateMarker(cwd); err == nil && m.Name != "" {
+		if m.NameErr != nil {
+			return "", fmt.Errorf("project name from config: %w", m.NameErr)
 		}
-		// Config exists but has no usable name — fall through to git.
+		return m.Name, nil
 	}
+	// No marker, one that cannot be read, or one with no usable name — fall
+	// through to git.
 
 	// Strategy 2: git remote heuristics.
 	if slug := GitRemoteSlug(cwd); slug != "" {
@@ -314,17 +311,19 @@ func RequireKnownProject(slug, vaultRoot, repoRoot string) error {
 	if isForceSkipDir(resolved) {
 		return fmt.Errorf("refusing to write vault artifacts for %q: it is the home directory or filesystem root, not a project — run `vp init` in a project directory", repoRoot)
 	}
-	homeBoundary, _ := resolvedHome()
-	markerPath, markerErr := findMarkerUpward(resolved, homeBoundary)
 	// A marker authorizes the project it NAMES and no other. An empty,
 	// unreadable or invalid-slug name names nothing, so markerName stays empty
-	// and the arm contributes no evidence.
+	// and the arm contributes no evidence. Found and read by the one walk and
+	// reader (LocateMarker) the resolver and detection share.
+	markerPath, _ := FindMarker(resolved)
+	var markerErr error
+	if markerPath == "" {
+		markerErr = fmt.Errorf("%s not found", ConfigFileName)
+	}
 	markerName := ""
 	if markerErr == nil {
-		if cfg, err := ParseProjectConfig(markerPath); err == nil {
-			if name := strings.TrimSpace(cfg.Name); slugpkg.Validate(name) == nil {
-				markerName = name
-			}
+		if m, err := ReadMarker(markerPath); err == nil && m.Name != "" && m.NameErr == nil {
+			markerName = m.Name
 		}
 	}
 	if markerName != "" && markerName == slug {
@@ -438,39 +437,72 @@ func findFileUpward(dir, filename string) (string, error) {
 }
 
 // GitRemoteSlug is the slug the origin remote of the git repository containing
-// dir names, or "" when there is none or it does not slugify to a valid slug.
-// It is DetectProjectHighConfidence's second strategy on its own, exported for
-// the vault resolver, which must key a refusal on the same derivation.
+// dir names, or "" when there is none, it cannot be read, or it does not
+// slugify to a valid slug. It is DetectProjectHighConfidence's second strategy
+// on its own; a caller that must not mistake "could not tell" for "none"
+// uses GitRemoteSlugChecked.
 func GitRemoteSlug(dir string) string {
-	name, err := gitRemoteName(dir)
-	if err != nil {
-		return ""
-	}
-	slug := slugify(name)
-	if slug == "" || slugpkg.Validate(slug) != nil {
-		return ""
-	}
+	slug, _ := GitRemoteSlugChecked(dir)
 	return slug
 }
 
+// GitRemoteSlugChecked is GitRemoteSlug that says when it could not tell.
+//
+// ("", nil) means there is definitely no origin slug: dir is in no git
+// repository, the repository has no origin remote, or the origin's name does
+// not slugify. Any other failure — git missing from PATH, a failed or timed-out
+// exec, a repository git refuses to read — is an error, because the vault
+// resolver keys a refusal on the answer and must not read "could not run git"
+// as "no binding applies" (ADR-012).
+func GitRemoteSlugChecked(dir string) (string, error) {
+	name, found, err := gitRemoteName(dir)
+	if err != nil || !found {
+		return "", err
+	}
+	slug := slugify(name)
+	if slug == "" || slugpkg.Validate(slug) != nil {
+		return "", nil
+	}
+	return slug, nil
+}
+
+// gitRemoteTimeout bounds the one git exec behind the origin lookup: it runs
+// on every vault resolution in a checkout whose host binds a project, and a
+// hung git (a stale lock on a network mount) must not hang the hook.
+const gitRemoteTimeout = 5 * time.Second
+
+// gitNoSuchRemoteExit is `git remote get-url`'s exit status for a remote that
+// does not exist ("error: No such remote 'origin'").
+const gitNoSuchRemoteExit = 2
+
 // gitRemoteName extracts the repository name from the origin remote URL of
 // the git repository containing dir. It walks upward to find .git first.
-func gitRemoteName(dir string) (string, error) {
+// found is false, with no error, when there is no repository or no origin.
+func gitRemoteName(dir string) (name string, found bool, err error) {
 	// Find the git root by walking upward for .git.
-	gitDir, err := findFileUpward(dir, ".git")
-	if err != nil {
-		return "", fmt.Errorf("not a git repository")
+	gitDir, ferr := findFileUpward(dir, ".git")
+	if ferr != nil {
+		return "", false, nil
 	}
 	repoRoot := filepath.Dir(gitDir)
 
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	ctx, cancel := context.WithTimeout(context.Background(), gitRemoteTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
 	cmd.Dir = repoRoot
 	cmd.Env = gitenv.SafeGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git remote: %w", err)
+		var ee *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &ee) && ee.ExitCode() == gitNoSuchRemoteExit {
+			return "", false, nil
+		}
+		if ctx.Err() != nil {
+			return "", false, fmt.Errorf("git remote get-url origin in %s: timed out after %s", repoRoot, gitRemoteTimeout)
+		}
+		return "", false, fmt.Errorf("git remote get-url origin in %s: %w", repoRoot, err)
 	}
-	return extractRepoName(strings.TrimSpace(string(out))), nil
+	return extractRepoName(strings.TrimSpace(string(out))), true, nil
 }
 
 // extractRepoName extracts the repository name from a git remote URL.
