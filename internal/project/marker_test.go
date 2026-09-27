@@ -75,3 +75,42 @@ func TestReadMarkerTrimsAndTolerates(t *testing.T) {
 		}
 	}
 }
+
+// FindMarker never returns $HOME's own marker, however the walk reaches home.
+func TestFindMarkerStopsAtHome(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "realhome")
+	if err := os.MkdirAll(filepath.Join(realHome, "code", "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realHome, ConfigFileName), []byte("[project]\nname = \"home\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	homeLink := filepath.Join(root, "homelink")
+	alias := filepath.Join(root, "alias")
+	for _, l := range []string{homeLink, alias} {
+		if err := os.Symlink(realHome, l); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+	}
+	t.Setenv("HOME", homeLink)
+
+	// The cwd reaches home through a symlink that is neither $HOME nor its
+	// target, so only the symlink-resolved walk meets the boundary.
+	// MUTATION CONTRACT: drop EvalSymlinks from FindMarker and this goes RED.
+	t.Run("home_reached_through_another_symlink", func(t *testing.T) {
+		got, err := FindMarker(filepath.Join(alias, "code", "proj"))
+		if err != nil || got != "" {
+			t.Errorf("FindMarker = (%q, %v), want no marker ($HOME's own must never count)", got, err)
+		}
+	})
+	// A deleted cwd cannot be resolved, so the walk climbs the logical path
+	// and reaches $HOME as given. MUTATION CONTRACT: drop the unresolved-$HOME
+	// boundary and this goes RED.
+	t.Run("deleted_cwd_under_symlinked_home", func(t *testing.T) {
+		got, err := FindMarker(filepath.Join(homeLink, "code", "gone"))
+		if err != nil || got != "" {
+			t.Errorf("FindMarker = (%q, %v), want no marker ($HOME's own must never count)", got, err)
+		}
+	})
+}

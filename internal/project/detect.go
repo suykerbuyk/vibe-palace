@@ -384,15 +384,17 @@ func ParseProjectFile(path string) (ProjectFile, error) {
 // entire home tree into auto-capture.
 //
 // dir must already be symlink-resolved by the caller so the boundary comparison
-// is exact. A zero homeBoundary disables the stop (used only when the home
-// directory cannot be determined), degrading to findFileUpward's walk-to-root.
+// is exact. Each non-empty boundary stops the walk; with none (the home
+// directory cannot be determined) it degrades to findFileUpward's walk-to-root.
 // This bound applies to the marker walk ONLY; the .git walk in gitRemoteName
 // still climbs to the filesystem root, since a project legitimately lives above
 // $HOME on some hosts.
-func findMarkerUpward(dir, homeBoundary string) (string, error) {
+func findMarkerUpward(dir string, homeBoundaries ...string) (string, error) {
 	for {
-		if homeBoundary != "" && dir == homeBoundary {
-			return "", fmt.Errorf("%s not found (stopped at home boundary)", ConfigFileName)
+		for _, b := range homeBoundaries {
+			if b != "" && dir == b {
+				return "", fmt.Errorf("%s not found (stopped at home boundary)", ConfigFileName)
+			}
 		}
 		candidate := filepath.Join(dir, ConfigFileName)
 		if _, err := os.Stat(candidate); err == nil {

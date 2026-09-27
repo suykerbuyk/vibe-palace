@@ -225,3 +225,30 @@ func TestPlansScanStatesARejectedBinding(t *testing.T) {
 		t.Errorf("plans scan does not state the rejected binding:\n%s", out)
 	}
 }
+
+// R2-1: a host config that is there and unreadable captures nothing and exits
+// 0 — never ExitSystem, which blocks the turn, and never the global fallback.
+// MUTATION CONTRACT: drop ErrHostConfigUnreadable from runHook's refusal arm
+// and this goes RED on the exit code.
+func TestHookUnreadableConfigCapturesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	e := newBindingHostEnv(t)
+	writeTestFile(t, filepath.Join(e.proj, ".vibe-palace.toml"), "[project]\nname = \"qa\"\n")
+	if err := os.Chmod(e.cfg, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(e.cfg, 0o644) })
+
+	code := runHookPayload(t, e.tmp, map[string]string{"hook_event_name": "Stop", "session_id": "unreadable", "cwd": e.proj})
+
+	if code != cli.ExitOK {
+		t.Errorf("exit %d, want ExitOK: a hook must never block the turn on an unreadable config", code)
+	}
+	for _, v := range []string{e.live, e.bound} {
+		if n := countFiles(t, filepath.Join(v, "Projects")); n != 0 {
+			t.Errorf("an unreadable config captured %d file(s) into %s", n, v)
+		}
+	}
+}

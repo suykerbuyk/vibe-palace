@@ -40,9 +40,13 @@ type Marker struct {
 }
 
 // FindMarker is the one marker walk: from the symlink-resolved cwd toward the
-// root, never inspecting or climbing above the symlink-resolved $HOME (the
-// home-marker hardening). It returns the marker's path, or "" when there is
-// none.
+// root, never inspecting or climbing above $HOME (the home-marker hardening).
+// It returns the marker's path, or "" when there is none.
+//
+// It stops at $HOME in BOTH spellings, symlink-resolved and as given. The
+// resolved one is what a resolved walk meets; the unresolved one is what the
+// walk meets when the cwd cannot be resolved (it was deleted), so the walk
+// climbs the logical path and would otherwise read $HOME's own marker.
 func FindMarker(cwd string) (string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
@@ -53,7 +57,13 @@ func FindMarker(cwd string) (string, error) {
 		start = filepath.Clean(resolved)
 	}
 	homeBoundary, _ := resolvedHome()
-	path, err := findMarkerUpward(start, homeBoundary)
+	homeAsGiven := ""
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if a, err := filepath.Abs(home); err == nil {
+			homeAsGiven = filepath.Clean(a)
+		}
+	}
+	path, err := findMarkerUpward(start, homeBoundary, homeAsGiven)
 	if err != nil {
 		return "", nil
 	}

@@ -104,7 +104,12 @@ func runHook(info cli.BuildInfo) int {
 	// a lost capture is recoverable, a polluted history is not.
 	vault, err := storage.OpenVaultFromCwd(payload.CWD)
 	if err != nil {
-		if errors.Is(err, storage.ErrVaultBindingRejected) {
+		// ErrHostConfigUnreadable joins it: a host config that is there and
+		// cannot be read may hold the binding that should have applied. The
+		// global fallback below would exit ExitSystem, which blocks the turn,
+		// or — if a second read of the same file succeeds — capture a bound
+		// project into the live vault.
+		if errors.Is(err, storage.ErrVaultBindingRejected) || errors.Is(err, storage.ErrHostConfigUnreadable) {
 			// Alarm through the two sanctioned channels — the log and the result
 			// body — never the exit code, per the ruling below.
 			//
