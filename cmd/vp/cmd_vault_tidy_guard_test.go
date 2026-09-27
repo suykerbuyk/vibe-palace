@@ -17,8 +17,7 @@ import (
 // D2 (split-and-sweep-reporting-defects-found-by-rehearsal-a2): on a vault with
 // something to sweep and an uncommitted departure record, `vp vault tidy
 // --dry-run` must predict the real run — the same refusal and exit code — while
-// still printing what it would have swept. `vp vault sync --dry-run` stops at
-// the same point a real sync's tidy step does, before any network preview.
+// still printing what it would have swept.
 func pendingDepartureCLIVault(t *testing.T) (string, string) {
 	t.Helper()
 	vaultDir := setupTestVaultEnv(t)
@@ -87,22 +86,53 @@ func TestVaultTidyDryRunPredictsTheCommitGuardRefusal(t *testing.T) {
 	}
 }
 
-func TestVaultSyncDryRunStopsAtTheCommitGuard(t *testing.T) {
-	vaultDir, _ := pendingDepartureCLIVault(t)
-	cmd := exec.Command("git", "-C", vaultDir, "remote", "add", "origin", "https://example.com/repo.git")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("remote add: %v\n%s", err, out)
+// SF1 (code review round 1): `vp vault sync --dry-run` must predict the real
+// sync's verdict and exit code on the same state. A pending departure record is
+// genuine dirt, so the real sync refuses on dirt with ExitUser before any
+// network I/O — never at the U1 guard — and the preview must say exactly that.
+func TestVaultSyncDryRunPredictsTheRealSyncVerdict(t *testing.T) {
+	sync := func(t *testing.T, args ...string) (int, string, string) {
+		t.Helper()
+		var code int
+		var out string
+		errOut := captureStderr(t, func() {
+			out = captureStdout(t, func() { code = cmdVaultSync().Run(args) })
+		})
+		return code, out, errOut
 	}
-	var code int
-	var out string
-	errOut := captureStderr(t, func() {
-		out = captureStdout(t, func() { code = cmdVaultSync().Run([]string{"--dry-run"}) })
+	t.Run("pending record: both refuse on genuine dirt", func(t *testing.T) {
+		vaultDir := setupVaultWithOrigin(t)
+		mkfile(t, vaultDir, "Projects/vibe-palace/sessions/2026-09-27.md", "session\n")
+		b, err := (departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: "q"}).Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		mkfile(t, vaultDir, departure.RelPath("alpha"), string(b))
+
+		dryCode, dryOut, dryErr := sync(t, "--dry-run")
+		realCode, _, realErr := sync(t)
+		if realCode != cli.ExitUser || !strings.Contains(realErr, "vp vault sync: refusing to sync: 1 uncommitted non-artifact file(s)") {
+			t.Fatalf("test premise: a real sync refuses on dirt with exit %d; got %d:\n%s", cli.ExitUser, realCode, realErr)
+		}
+		if dryCode != realCode {
+			t.Errorf("dry-run exit %d, real sync %d", dryCode, realCode)
+		}
+		realMsg := strings.TrimSpace(strings.TrimPrefix(realErr[strings.Index(realErr, "vp vault sync: "):], "vp vault sync: "))
+		if !strings.Contains(dryErr, "vp vault sync: a real run would refuse: "+realMsg) {
+			t.Errorf("dry-run must predict the real refusal %q; got:\n%s", realMsg, dryErr)
+		}
+		// pullAll/pushAll's dry-run preview prints "would run: git -C <root> pull|push ...".
+		if strings.Contains(dryOut+dryErr, "would run:") {
+			t.Errorf("the preview went on to the network after the refusal:\n%s%s", dryOut, dryErr)
+		}
 	})
-	if code != cli.ExitSystem || !strings.Contains(errOut, "vp vault sync: a real run would refuse: refusing to commit") {
-		t.Fatalf("sync --dry-run exit %d, want %d with the refusal; stderr:\n%s\nstdout:\n%s", code, cli.ExitSystem, errOut, out)
-	}
-	// pullAll/pushAll's dry-run preview prints "would run: git -C <root> pull|push ...".
-	if strings.Contains(out+errOut, "would run:") {
-		t.Errorf("the preview went on to the network after the refusal:\n%s%s", out, errOut)
-	}
+	t.Run("only a sweepable artifact: neither refuses", func(t *testing.T) {
+		vaultDir := setupVaultWithOrigin(t)
+		mkfile(t, vaultDir, "Projects/vibe-palace/sessions/2026-09-27.md", "session\n")
+		dryCode, _, dryErr := sync(t, "--dry-run")
+		realCode, _, realErr := sync(t)
+		if dryCode != cli.ExitOK || realCode != cli.ExitOK {
+			t.Errorf("dry-run exit %d (%s), real sync %d (%s); want both %d", dryCode, dryErr, realCode, realErr, cli.ExitOK)
+		}
+	})
 }
