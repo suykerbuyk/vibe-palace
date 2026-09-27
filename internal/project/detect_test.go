@@ -311,12 +311,14 @@ name = ""
 	}
 }
 
-// --- ParseProjectConfig tests ---
+// --- ReadMarker tests (the one marker reader; ParseProjectConfig's former
+// callers all read the marker through it) ---
 
-func TestParseProjectConfig_Valid(t *testing.T) {
+func TestReadMarker_Valid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
-	content := `[project]
+	content := `vault_path = "/v"
+[project]
 name = "test-proj"
 domain = "personal"
 tags = ["go", "cli"]
@@ -325,54 +327,50 @@ tags = ["go", "cli"]
 		t.Fatal(err)
 	}
 
-	cfg, err := ParseProjectConfig(path)
+	m, err := ReadMarker(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Name != "test-proj" {
-		t.Errorf("Name = %q, want %q", cfg.Name, "test-proj")
-	}
-	if cfg.Domain != "personal" {
-		t.Errorf("Domain = %q, want %q", cfg.Domain, "personal")
-	}
-	if len(cfg.Tags) != 2 || cfg.Tags[0] != "go" || cfg.Tags[1] != "cli" {
-		t.Errorf("Tags = %v, want [go cli]", cfg.Tags)
+	if m.Name != "test-proj" || m.NameErr != nil || m.VaultPath != "/v" || m.Path != path {
+		t.Errorf("ReadMarker = %+v", m)
 	}
 }
 
-func TestParseProjectConfig_MissingFile(t *testing.T) {
-	_, err := ParseProjectConfig("/nonexistent/.vibe-palace.toml")
+func TestReadMarker_MissingFile(t *testing.T) {
+	m, err := ReadMarker("/nonexistent/.vibe-palace.toml")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
+	if m.Path == "" {
+		t.Error("an unreadable marker must still name its path")
+	}
 }
 
-func TestParseProjectConfig_InvalidTOML(t *testing.T) {
+func TestReadMarker_InvalidTOML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
 	if err := os.WriteFile(path, []byte("not valid [[[toml"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := ParseProjectConfig(path)
-	if err == nil {
+	if _, err := ReadMarker(path); err == nil {
 		t.Fatal("expected error for invalid TOML")
 	}
 }
 
-func TestParseProjectConfig_EmptyFile(t *testing.T) {
+func TestReadMarker_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ConfigFileName)
 	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := ParseProjectConfig(path)
+	m, err := ReadMarker(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Name != "" {
-		t.Errorf("expected empty name, got %q", cfg.Name)
+	if m.Name != "" {
+		t.Errorf("expected empty name, got %q", m.Name)
 	}
 }
 
