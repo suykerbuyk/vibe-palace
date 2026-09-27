@@ -743,6 +743,33 @@ refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
 | `TestPlansScanStatesARejectedBinding` (`cmd/vp`) | `vp plans scan --json` states the rejected binding |
 | `TestVaultPlanNamesARejectedBinding` (`internal/reconcile`) | `vp config sync`'s vault tier names the rejection, not the `vp init` remedy |
 
+### `internal/storage/`, `internal/tools/`, `cmd/vp/` — Binding a Project to a Vault (`vp config bind`)
+
+Covers `storage.BindProjectVault` (the one `[project_vaults]` writer), its CLI
+(`vp config bind`) and MCP (`vp_config_bind`, stdio only) front ends, and
+`RebindCheckout` (split binds, rename moves the key). Hermetic HOME/XDG
+fixtures with a real git remote on the target vault.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBindMovedBindsEveryCheckout` | A moved bind makes every named checkout, and a fresh worktree, resolve through the binding |
+| `TestBindRefusals` | No departure record, label mismatch, unlabelled, relative/missing/wrong-format/empty target, the default vault, a live slug, an unreadable or malformed config, a re-point, a checkout naming another project, git missing: each refuses and leaves the config byte-identical |
+| `TestBindAllowUnlabelledAndAlreadyBound` | `allow_unlabelled` binds; the same root again is "already bound" with no write and no `.bak` |
+| `TestBindNewMode` | Mode new binds a slug the default vault never held, and refuses one it holds |
+| `TestBindChangesOnlyItsKey` | The splice appends the table at EOF, or inserts into an existing one, byte-preserving the rest |
+| `TestBindRefusesConcurrentConfigChange` | The write is a compare-and-set on bytes; another writer's change survives |
+| `TestBindRestoresPreImageWhenACheckoutShadows` | A checkout whose own `vault_path` disagrees fails verification and the config is restored |
+| `TestVaultRemoteURLs` | No remotes is `(nil, nil)`; not-a-repo and git-missing are errors |
+| `TestBindDryRunWritesNothing` | A dry run reports the change and writes nothing |
+| `TestRebindCheckoutSplitBindsWithoutTouchingTheMarker` | A split binds, leaves the marker byte-identical, prints no git commands, and refuses (restoring the config) a disagreeing or swallowed `vault_path` |
+| `TestRebindRenameMovesTheBindingKey` / `TestRebindRenameRefusesABindingConflict` | A rename moves `[project_vaults].<from>` to `<to>`, and refuses a conflicting key or a binding into another vault |
+| `TestRebindRenameRestoresTheConfigWhenTheTomlWriteFails` | A failed toml write restores the config key already moved |
+| `TestRebindCheckoutUsesTheSharedMarker` / `TestRebindRenameToleratesAWrongTypedTag` | `RebindCheckout` reads through `project.ReadMarker` and refuses a marker the resolver does not read |
+| `TestGateLeavesBindToolAlone` (`internal/tools`) | The departed-project seam lets `vp_config_bind` bind a departed slug |
+| `TestOnlyTheBindToolTargetsAProjectBySlug` (`internal/tools`) | The `slug` exemption is scoped to exactly `vp_config_bind` |
+| `TestStdioOnlyToolsAreAbsentOnServe` (`cmd/vp`) | `vp_config_bind` is never served over HTTP, even with `--allow-writes` |
+| `TestConfigBindVaultCallsBind` / `TestConfigBindRefusesAndValidatesUsage` (`cmd/vp`) | The CLI binds and verifies every repeated `--checkout`; refusals and usage errors exit `ExitUser` |
+
 ### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
 
 Covers the host-qualified `<date>-<fp8>-<NN>` session-id scheme (see
