@@ -10,6 +10,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 func cmdMemory() *cli.Command {
@@ -71,7 +72,13 @@ func cmdMemoryHarvest() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)
 				return cli.ExitUser
 			}
-			root, err := vaultRoot()
+			// The PROJECT's vault, resolved from the checkout (ADR-012) — never
+			// the global vault alone. Harvest writes Projects/<slug>/memory,
+			// deletes the host originals, then commits and pushes: a bound
+			// project's memory written into the global vault is a leak into the
+			// wrong vault's remote, and is not recoverable by a re-run. A
+			// rejected binding is refused here like everywhere else.
+			root, _, err := storage.ResolveVaultPath(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp memory harvest: %v\n", err)
 				return cli.ExitUser
