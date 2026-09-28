@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 const (
@@ -315,7 +317,7 @@ func TestSlugApplyEndToEnd(t *testing.T) {
 	if !strings.Contains(bl, `"`+Q+`transcripts/2026-08-22-aaaa.manifest.json"`) || !strings.Contains(bl, "see Projects/quantum-ng/transcripts/") {
 		t.Errorf("baseline rewrite wrong:\n%s", bl)
 	}
-	if !strings.Contains(slugRead(t, root, "Audits/.surface"), "7") {
+	if !strings.Contains(slugRead(t, root, "Audits/.surface"), strconv.Itoa(surface.MCPSurfaceVersion)) {
 		t.Error("Audits/.surface not stamped")
 	}
 	if got := slugRead(t, root, Q+"workflow.md"); !strings.HasPrefix(got, "# "+slugTo+" — Workflow") {
