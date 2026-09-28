@@ -39,9 +39,17 @@ func inventoryDigestFixture(t *testing.T, root string) {
 // BEFORE split's inventory rules were delegated to storage.ClassifyProjectPath
 // (main at 93d4c90). They pin that the delegation changed no manifest: an
 // outstanding plan digest an operator holds must still bind.
+//
+// Re-pinned ONCE, deliberately, by lc-u1-commit-log-anchor-is-project-content:
+// commit-log.anchor now travels by design (it names a commit of the project's
+// own repository, not of the vault), so the fixture's
+// Projects/alpha/notes/commit-log.anchor joins both manifests. That is the only
+// row that changed. The 93d4c90 values were
+// 68432f828318c95153ee9e1ab3af0c8ad216481dd9586ec59b68da91df7b2759 (split) and
+// d96533bf43f42d14fabab314d9f98edefb3f66682f2a09f918c1f1d878fb5c4f (merge).
 const (
-	goldenSplitDigest = "68432f828318c95153ee9e1ab3af0c8ad216481dd9586ec59b68da91df7b2759"
-	goldenMergeDigest = "d96533bf43f42d14fabab314d9f98edefb3f66682f2a09f918c1f1d878fb5c4f"
+	goldenSplitDigest = "a62929d94bb95f1f06d6eb87f38834e40a375ed2f0c7a3dbe9468ccb1d0c5ab6"
+	goldenMergeDigest = "d5400a969190e5ef3dbf8661108d8e9f99b76ad0af78fcdf4b5114b941f1bbeb"
 )
 
 // TestSplitManifestDigestIsUnchangedByInventorySwitch is a guard that is green
@@ -127,7 +135,13 @@ func TestSplitSubtractedEqualsProjectInventory(t *testing.T) {
 		"Knowledge/learnings/l.md", "Knowledge/.surface", ".surface", "config.toml",
 	}
 	for _, rel := range corpus {
-		if got, want := splitSubtracted(rel), legacySplitSubtracted(rel); got != want {
+		want := legacySplitSubtracted(rel)
+		if strings.HasSuffix("/"+rel, "/commit-log.anchor") {
+			// The one intended divergence from the frozen rule: the anchor now
+			// travels by design (lc-u1-commit-log-anchor-is-project-content).
+			want = false
+		}
+		if got := splitSubtracted(rel); got != want {
 			t.Errorf("splitSubtracted(%q) = %v, the rule it replaced said %v (class %s)",
 				rel, got, want, storage.ClassifyProjectPath(rel))
 		}

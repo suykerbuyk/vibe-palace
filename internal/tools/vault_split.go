@@ -46,8 +46,7 @@ import (
 // writer.
 
 // splitSubtractSet names the paths that are hashed by NOBODY and copied by
-// NOBODY: {.surface, **/.local, .vp-locks, commit-log.anchor,
-// Projects/*/config.toml}.
+// NOBODY: {.surface, **/.local, .vp-locks, Projects/*/config.toml}.
 //
 // 🔴 THE MINUS-SET AND THE DO-NOT-COPY LIST ARE THE SAME SET, and that identity
 // is the invariant. Leaving a path in the manifest while skipping its copy
@@ -67,15 +66,17 @@ import (
 //     only imported-sessions.jsonl, plus any embed-cache left from before the
 //     cache moved. Caches rebuild; they never travel.
 //   - .vp-locks  — host-local advisory write locks.
-//   - commit-log.anchor — the SHA of a source-vault commit. A fresh destination
-//     has no such commit, so the value is a dangling reference on arrival.
-//     commit-log.md itself DOES travel; only the anchor is false there.
 //   - Projects/*/config.toml — the retired per-project vault config. Nothing
 //     reads it as input, so carrying it would only plant a survivor in the
 //     destination for the vault-project-config check to report. Matched by
 //     path DEPTH (vaultfs.IsVaultProjectConfigPath: exactly three segments),
 //     never by base name, so Projects/<slug>/doc/config.toml still travels.
-var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "commit-log.anchor", "Projects/*/config.toml"}
+//
+// commit-log.anchor is NOT in the set: it travels with commit-log.md. It names
+// the commit of the PROJECT's own repository through which commit-log.md is up
+// to date (storage.CommitLogAnchorFile), not a vault commit, so it is as true in
+// the destination as in the source.
+var splitSubtractSet = []string{".surface", "**/.local", ".vp-locks", "Projects/*/config.toml"}
 
 // splitPrunedDirs are the subtract-set entries that are DIRECTORIES, and are
 // pruned rather than merely skipped.
@@ -117,9 +118,8 @@ func splitDepartureRecords(vrel string) bool {
 // Everything that is not storage.ProjectContent (vault-bound stamps, the
 // retired per-project config, machine-local state) stays behind, for the
 // reasons above; storage.ClassifyProjectPath holds the rule, including the
-// depth-anchored config.toml match and the any-depth .surface and
-// commit-log.anchor matches, so a rename and a split can never disagree about
-// what a project is.
+// depth-anchored config.toml match and the any-depth .surface match, so a
+// rename and a split can never disagree about what a project is.
 func splitSubtracted(rel string) bool {
 	return storage.ClassifyProjectPath(rel) != storage.ProjectContent
 }
@@ -242,7 +242,7 @@ func VaultSplitTool(vault *storage.Vault) mcp.Tool {
 			"palace/<slug> and Projects/<slug> trees, refuses any non-regular " +
 			"file it finds there rather than skipping or following it, hashes " +
 			"what would travel minus {.surface, **/.local, .vp-locks, " +
-			"commit-log.anchor, Projects/*/config.toml}, reports every vault-global artifact left behind " +
+			"Projects/*/config.toml}, reports every vault-global artifact left behind " +
 			"and every slug present in only one of the two trees, and returns a " +
 			"manifest_sha256; it writes nothing and creates no destination. " +
 			"\"apply\" re-hashes the source against that digest, scaffolds the " +
@@ -396,8 +396,8 @@ func splitPlanNotes(m *splitManifest) []string {
 // buildSplitManifest is the whole of plan: validate, refuse, walk, hash.
 //
 // It is separate from the handler so tests can assert on the ROWS — that
-// commit-log.anchor is absent from the hashed inventory is a claim about
-// entries, and the payload deliberately does not carry them.
+// .surface is absent from the hashed inventory is a claim about entries, and
+// the payload deliberately does not carry them.
 func buildSplitManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifest, error) {
 	root := vault.Root
 	if root == "" {

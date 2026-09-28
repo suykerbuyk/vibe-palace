@@ -35,11 +35,13 @@ type ProjectPathClass int
 const (
 	// ProjectContent is the project itself: it travels with every relocation.
 	// Ignored backups (transcripts/*.manifest.json.<hash>.bak) are Content.
+	// So is commit-log.anchor: it names the commit of the PROJECT's own repo
+	// through which commit-log.md is up to date (CommitLogAnchorFile), not a
+	// vault commit, so it stays true in any vault that holds commit-log.md.
 	ProjectContent ProjectPathClass = iota
 	// ProjectVaultBound is meaningful only inside the vault repository that
-	// holds it: the .surface stamp (the binary that last wrote THIS vault) and
-	// commit-log.anchor (a commit SHA of THIS vault). A destination vault has
-	// no such commit and stamps itself, so neither crosses a vault.
+	// holds it: the .surface stamp, naming the binary that last wrote THIS
+	// vault. A destination vault stamps itself, so it never crosses a vault.
 	ProjectVaultBound
 	// ProjectRetired is Projects/<slug>/config.toml, the retired per-project
 	// vault config that nothing reads as input. Matched by path depth
@@ -81,7 +83,7 @@ var MachineLocalDirNames = departure.MachineLocalDirNames
 // It is defined for vault-global paths too (Audits/.surface is VaultBound),
 // because split and merge apply the same rule to the global artifacts they
 // carry. The order is fixed: a machine-local component wins over everything,
-// then the depth-anchored retired config, then the vault-bound base names.
+// then the depth-anchored retired config, then the vault-bound .surface base name.
 func ClassifyProjectPath(rel string) ProjectPathClass {
 	for _, comp := range strings.Split(rel, "/") {
 		if MachineLocalDirNames[comp] {
@@ -97,7 +99,7 @@ func ClassifyProjectPath(rel string) ProjectPathClass {
 	if i := strings.LastIndex(rel, "/"); i >= 0 {
 		base = rel[i+1:]
 	}
-	if base == ".surface" || base == "commit-log.anchor" {
+	if base == ".surface" {
 		return ProjectVaultBound
 	}
 	return ProjectContent
