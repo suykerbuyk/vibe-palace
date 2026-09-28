@@ -359,9 +359,11 @@ func initReport(path string, req InitVaultRequest) *InitVaultReport {
 }
 
 func initRerun(path string, rs []RecordedRemote) string {
-	parts := []string{"vp", "vault", "init", path}
+	// Printed for pasting: every value is shell-quoted (a path may hold a
+	// space).
+	parts := []string{"vp", "vault", "init", shellQuote(path)}
 	for _, r := range rs {
-		parts = append(parts, "--remote", r.Name+"="+redactURL(r.URL))
+		parts = append(parts, "--remote", shellQuote(r.Name+"="+redactURL(r.URL)))
 	}
 	return strings.Join(parts, " ")
 }
