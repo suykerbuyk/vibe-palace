@@ -196,15 +196,20 @@ func (r DeleteRequest) kind() departure.Kind {
 
 // commandLine renders the command, for the dry run and the marker's re-run.
 func (r DeleteRequest) commandLine(vaultRoot, expect string) string {
-	parts := append([]string{"vp", "vault", "project", "delete"}, r.Projects...)
+	// The line is for pasting, so it must run as printed: every value is
+	// shell-quoted (a vault path may hold a space).
+	parts := []string{"vp", "vault", "project", "delete"}
+	for _, p := range r.Projects {
+		parts = append(parts, shellQuote(p))
+	}
 	if r.Discard {
 		parts = append(parts, "--discard")
 	} else {
-		parts = append(parts, "--moved-to", r.MovedTo)
+		parts = append(parts, "--moved-to", shellQuote(r.MovedTo))
 	}
-	parts = append(parts, "--vault", vaultRoot)
+	parts = append(parts, "--vault", shellQuote(vaultRoot))
 	if expect != "" {
-		parts = append(parts, "--expect", expect)
+		parts = append(parts, "--expect", shellQuote(expect))
 	}
 	return strings.Join(parts, " ")
 }
