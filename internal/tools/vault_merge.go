@@ -165,7 +165,7 @@ func VaultMergeTool(vault *storage.Vault) mcp.Tool {
 			"the allow-listed palace/<slug> and Projects/<slug> trees in the " +
 			"source, refuses any non-regular file it finds there rather than " +
 			"skipping or following it, hashes what would travel minus " +
-			"{.surface, **/.local, .vp-locks, commit-log.anchor, " +
+			"{.surface, **/.local, .vp-locks, " +
 			"Projects/*/config.toml}, records the " +
 			"destination state the merge must not disturb, and returns a " +
 			"manifest_sha256; it writes nothing. \"apply\" re-binds that digest, " +
@@ -321,8 +321,8 @@ func mergePlanNotes(m *mergeManifest, remotes []string) []string {
 	notes := []string{
 		"Git history does not travel. The source's per-commit vault diff for these " +
 			"projects stays in the source repository; iterations.md, tasks/done/ and " +
-			"commit-log.md travel as files. commit-log.anchor does NOT travel — it names " +
-			"a commit that does not exist in the destination.",
+			"commit-log.md and commit-log.anchor travel as files; the anchor names a commit " +
+			"of the project's own repository, not of either vault.",
 		"Writer identity will change. The fingerprint is derived from hostname and " +
 			"vault path, so future writes to these projects carry the DESTINATION's " +
 			"fingerprint while historical session filenames keep the source's. A merged " +

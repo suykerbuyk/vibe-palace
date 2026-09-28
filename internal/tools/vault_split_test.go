@@ -51,8 +51,9 @@ func splitFixtureVault(t *testing.T, slugs ...string) string {
 		writeSplitFile(t, root, "Projects/"+s+"/config.toml", "[palace.scoring]\n")
 		writeSplitFile(t, root, "Projects/"+s+"/iterations.md", "# iterations\n")
 		writeSplitFile(t, root, "Projects/"+s+"/commit-log.md", "landed commits\n")
-		// Subtract-set specimens on the history side. commit-log.anchor is the
-		// one this slice must prove absent from the hashed inventory.
+		// commit-log.anchor travels by design: it names a commit of the
+		// project's own repository. .surface is the subtract-set specimen on
+		// the history side.
 		writeSplitFile(t, root, "Projects/"+s+"/commit-log.anchor", "b35abe3\n")
 		writeSplitFile(t, root, "Projects/"+s+"/.surface", "surface = 1\n")
 	}
@@ -206,17 +207,19 @@ func TestVaultSplitPlan_SymlinkUnderPrunedDirDoesNotRefuse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mutation proof 3: commit-log.anchor is ABSENT from the hashed inventory.
+// Mutation proof 3: the subtract set is ABSENT from the hashed inventory, and
+// commit-log.anchor is PRESENT in it.
 // ---------------------------------------------------------------------------
 
 // TestVaultSplitPlan_SubtractSetIsAbsentFromInventory pins the minus-set.
 //
-// commit-log.anchor holds the SHA of a source-vault commit. A destination is a
-// fresh repository, so that SHA does not exist there and the file is a dangling
-// reference the moment it lands. commit-log.md — the history it anchors — DOES
-// travel; only the anchor is false in the destination.
+// commit-log.anchor travels by design (lc-u1-commit-log-anchor-is-project-content):
+// it names the commit of the project's own repository through which
+// commit-log.md is up to date, not a vault commit, so it is as true in the
+// destination as in the source. Earlier code subtracted it as a "source-vault
+// commit"; the live qms anchor resolves in the project repo and not in the vault.
 //
-// The mutation this kills is dropping the anchor from the minus-set while
+// The mutation this kills is dropping an entry from the minus-set while
 // leaving it on the do-not-copy list. The two are the SAME set: a path in the
 // manifest but not copied fails verify, and a path copied to satisfy the
 // manifest lands bytes that are false. This asserts on the manifest rows
@@ -235,8 +238,10 @@ func TestVaultSplitPlan_SubtractSetIsAbsentFromInventory(t *testing.T) {
 		got[e.Path] = true
 	}
 
+	if !got["Projects/alpha/commit-log.anchor"] {
+		t.Error("Projects/alpha/commit-log.anchor is missing from the hashed inventory; it travels by design")
+	}
 	for _, subtracted := range []string{
-		"Projects/alpha/commit-log.anchor",
 		"Projects/alpha/.surface",
 		"palace/alpha/.surface",
 		"palace/alpha/.local/embed-cache/d1.vec",

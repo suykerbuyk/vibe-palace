@@ -390,10 +390,9 @@ func TestVaultSplitApply_DestinationTreesAreExactlyTheAllowList(t *testing.T) {
 // TestVaultSplitApply_CopiesTheManifestAndNothingElse pins the subtract set
 // across the copy, and pins that the source is untouched.
 //
-// commit-log.anchor is the sharp one: it names a SHA in the source's git
-// history, and the destination is a fresh repository where that SHA does not
-// exist. Copying it would land a dangling reference that reads as authoritative.
-// commit-log.md — the history itself — does travel.
+// commit-log.anchor travels with commit-log.md, by design: it names a commit of
+// the project's own repository, not of the source vault
+// (lc-u1-commit-log-anchor-is-project-content).
 func TestVaultSplitApply_CopiesTheManifestAndNothingElse(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
 	dest := splitDest(t)
@@ -419,6 +418,7 @@ func TestVaultSplitApply_CopiesTheManifestAndNothingElse(t *testing.T) {
 		"Projects/alpha/resume.md",
 		"Projects/alpha/iterations.md",
 		"Projects/alpha/commit-log.md",
+		"Projects/alpha/commit-log.anchor",
 	} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("%s did not travel: %v", rel, err)
@@ -428,7 +428,6 @@ func TestVaultSplitApply_CopiesTheManifestAndNothingElse(t *testing.T) {
 	// The subtract set. Every one of these is a file that EXISTS in the source
 	// fixture, so its absence here is a decision and not an accident.
 	for _, rel := range []string{
-		"Projects/alpha/commit-log.anchor",
 		"palace/alpha/.local/embed-cache/d1.vec",
 	} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err == nil {
@@ -567,7 +566,7 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 	}
 	// Including the subtract-set files inside them: those never travelled, but
 	// the tree containing them is going away, so they go too.
-	if _, err := os.Stat(filepath.Join(root, "Projects", "alpha", "commit-log.anchor")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "Projects", "alpha", ".surface")); !os.IsNotExist(err) {
 		t.Error("purge must remove subtract-set files inside a purged tree")
 	}
 

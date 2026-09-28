@@ -505,6 +505,8 @@ func TestVaultMergeApply_DestinationTreesArePreMergeUnionAllowList(t *testing.T)
 	for _, rel := range []string{
 		"Projects/alpha/resume.md",
 		"Projects/alpha/commit-log.md",
+		// Travels by design (lc-u1-commit-log-anchor-is-project-content).
+		"Projects/alpha/commit-log.anchor",
 		"palace/alpha/kg/entities.jsonl",
 	} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err != nil {
@@ -512,7 +514,6 @@ func TestVaultMergeApply_DestinationTreesArePreMergeUnionAllowList(t *testing.T)
 		}
 	}
 	for _, rel := range []string{
-		"Projects/alpha/commit-log.anchor",
 		"palace/alpha/.local/embed-cache/d1.vec",
 	} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err == nil {

@@ -17,6 +17,10 @@ func TestClassifyProjectPath(t *testing.T) {
 		{"Projects/alpha/transcripts/x.manifest.json.1234.bak", ProjectContent},
 		{"Projects/alpha/tasks/done/t.md", ProjectContent},
 		{"Projects/alpha/commit-log.md", ProjectContent},
+		// commit-log.anchor names a commit of the project's own repo, not of
+		// the vault, so it travels with commit-log.md.
+		{"Projects/alpha/commit-log.anchor", ProjectContent},
+		{"Projects/alpha/notes/commit-log.anchor", ProjectContent},
 		{"palace/alpha/kg/entities.jsonl", ProjectContent},
 		{"palace/alpha/ingested-archives.jsonl", ProjectContent},
 		{"Knowledge/learnings/l.md", ProjectContent},
@@ -29,8 +33,6 @@ func TestClassifyProjectPath(t *testing.T) {
 		{"Projects/alpha/notes/.surface", ProjectVaultBound},
 		{"palace/alpha/.surface", ProjectVaultBound},
 		{"Audits/.surface", ProjectVaultBound},
-		{"Projects/alpha/commit-log.anchor", ProjectVaultBound},
-		{"Projects/alpha/notes/commit-log.anchor", ProjectVaultBound},
 		{"Projects/alpha/surface", ProjectContent},
 		// Machine-local: any .local or .vp-locks component, and it wins.
 		{"palace/alpha/.local/imported-sessions.jsonl", ProjectMachineLocal},

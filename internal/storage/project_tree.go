@@ -368,7 +368,7 @@ func RemovePurgeTree(root string, set PurgeSet, hashes map[string]string) (int, 
 		// Three classes, and the caller refused the third before any tree was
 		// touched. A manifest row is deleted under its hash, the compare-and-set
 		// guard for a file that travelled. A subtract-set file (.surface,
-		// .local/**, .vp-locks/**, commit-log.anchor, Projects/<slug>/config.toml)
+		// .local/**, .vp-locks/**, Projects/<slug>/config.toml)
 		// was excluded from the manifest by the same predicate, ClassifyProjectPath,
 		// so it legitimately has no hash and is removed unguarded because the
 		// tree it lives in is going away. Anything else was written after the

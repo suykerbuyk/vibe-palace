@@ -88,7 +88,6 @@ func TestVaultSplitPurge_SubtractSetFilesNeedNoHash(t *testing.T) {
 		"palace/alpha/.local/imported-sessions.jsonl",
 		"palace/alpha/.surface",
 		"Projects/alpha/.surface",
-		"Projects/alpha/commit-log.anchor",
 		"Projects/alpha/config.toml",
 		"Projects/alpha/sessions/.local/scratch.txt",
 	}
