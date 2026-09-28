@@ -341,9 +341,11 @@ func initPublish(held *vaultlock.Held, rep *InitVaultReport, m lifecycleMarker, 
 	if _, err := gitCmd(path, 10*time.Second, "branch", "--set-upstream-to="+order[0]+"/"+initBranch, initBranch); err != nil {
 		return rep, fmt.Errorf("vault init: published, but setting upstream %s failed: %w", order[0], err)
 	}
-	rep.Undo = []string{"rm -rf " + path}
+	// Pasteable exactly as printed: the path is shell-quoted, and the steps
+	// that happen on the git host, not in a shell, are comments.
+	rep.Undo = []string{"rm -rf " + shellQuote(path)}
 	for _, r := range remotes {
-		rep.Undo = append(rep.Undo, fmt.Sprintf("delete branch %s on %s (%s), on the git host", initBranch, r.Name, redactURL(r.URL)))
+		rep.Undo = append(rep.Undo, fmt.Sprintf("# then delete branch %s on %s (%s), on the git host", initBranch, r.Name, redactURL(r.URL)))
 	}
 	return rep, nil
 }
