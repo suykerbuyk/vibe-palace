@@ -39,6 +39,10 @@ import "encoding/json"
 // is not gated in the first place refines nothing, and reads as though it does.
 var ParamAwareToolNames = []string{
 	"vp_audit_vault",
+	// vp_vault_project_delete admits its plan action, the dry run, which reads
+	// the vault and the destination's remote and writes nothing
+	// (vaultProjectDeleteReadOnly, vault_project_delete_tool.go).
+	"vp_vault_project_delete",
 	"vp_vault_sync",
 	"vp_vault_tidy",
 	// vp_vault_split admits two of its four actions: plan, which walks and

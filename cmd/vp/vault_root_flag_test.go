@@ -387,12 +387,13 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 	// Arguments that get each command past its own validation to vaultRootFor.
 	// Every mutating row must leave copyDir untouched if the gate fires.
 	argsFor := map[string][]string{
-		"vault pull":   {"--dry-run"},
-		"vault push":   {"--dry-run"},
-		"vault sync":   {"--dry-run"},
-		"vault commit": {"--paths", flagTestArtifact, "--message", "rehearse"},
-		"vault tidy":   {"--no-push"},
-		"vault status": {"--no-fetch"},
+		"vault pull":    {"--dry-run"},
+		"vault push":    {"--dry-run"},
+		"vault sync":    {"--dry-run"},
+		"vault commit":  {"--paths", flagTestArtifact, "--message", "rehearse"},
+		"vault tidy":    {"--no-push"},
+		"vault status":  {"--no-fetch"},
+		"vault project": {"delete", "vibe-palace", "--discard"},
 	}
 	const gateMsg = "this binary supports MCP surface"
 

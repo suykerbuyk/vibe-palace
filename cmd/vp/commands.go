@@ -213,6 +213,9 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(mutates(cmdVaultWrite()))
 	reg.Register(mutates(cmdVaultEdit()))
 	reg.Register(mutates(cmdVaultDelete()))
+	// `vault project delete` removes projects and publishes the commit: a
+	// vault writer, gated like the other vault writers.
+	reg.Register(mutates(cmdVaultProject()))
 	reg.Register(mutates(cmdVaultMove()))
 	reg.Register(cmdVaultExists())
 	reg.Register(cmdVaultSha256())

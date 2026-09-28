@@ -257,6 +257,10 @@ type SplitPurgeCommit struct {
 	Records    []string // the departure records purge wrote, vault-relative
 	Message    string   // the commit subject and body; the hostname line is appended
 	ExpectHead string   // the HEAD SplitPurgePreflight returned
+	// Trailers, when set, is the message's final paragraph, after the hostname
+	// line (stampedCommitMessage): git reads trailers only from the last
+	// paragraph. The split purge sets none, so its message is unchanged.
+	Trailers string
 }
 
 // SplitPurgeCommitResult reports the commit.
@@ -391,11 +395,7 @@ func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPur
 		}
 	}
 
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	if err := commitPathspec(vaultPath, fmt.Sprintf("%s\n\n[%s]", c.Message, hostname), pathspecs); err != nil {
+	if err := commitPathspec(vaultPath, stampedCommitMessage(c.Message, c.Trailers), pathspecs); err != nil {
 		return nil, rollback(err)
 	}
 

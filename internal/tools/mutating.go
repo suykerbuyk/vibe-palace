@@ -93,6 +93,10 @@ var MutatingToolNames = []string{
 	// at the moment a writer lands is a gate that is forgotten. See
 	// vault_split.go and vault_split_apply.go.
 	"vp_vault_split",
+	// vp_vault_project_delete removes projects from the vault and publishes the
+	// commit. Its plan action writes nothing and is admitted per invocation by
+	// vaultProjectDeleteReadOnly.
+	"vp_vault_project_delete",
 	// vp_vault_merge is gated on the TOOL, which writes on one of its three
 	// actions: apply copies a project's whole history out of another vault and
 	// into this one. plan and verify write nothing and are admitted
