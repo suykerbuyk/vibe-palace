@@ -148,6 +148,32 @@ func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool,
 	return releaser(f), true, nil
 }
 
+// TryAcquireFile is TryAcquire on a lock file the caller names: lockPath
+// itself, created if needed, not a hashed sidecar under a vault's .vp-locks/.
+// It is for a lock that must exist before there is any vault to hold it (a
+// clone, whose vault does not exist yet). The file is left in place on
+// release: removing a lock file while another process may have it open would
+// let two holders lock two different files.
+func TryAcquireFile(lockPath string) (release func() error, ok bool, err error) {
+	if !filepath.IsAbs(lockPath) {
+		return nil, false, fmt.Errorf("vaultlock: lock path must be absolute, got %q", lockPath)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, false, fmt.Errorf("vaultlock: open lock file: %w", err)
+	}
+	got, err := flockTryExclusive(f)
+	if err != nil {
+		f.Close()
+		return nil, false, fmt.Errorf("vaultlock: try acquire lock: %w", err)
+	}
+	if !got {
+		f.Close()
+		return nil, false, nil
+	}
+	return releaser(f), true, nil
+}
+
 // AcquireWithTimeout is the bounded-wait form of Acquire: it polls for the
 // exclusive lock (via the same non-blocking primitive TryAcquire uses) and
 // gives up with ErrLockWaitTimeout once timeout has elapsed, instead of

@@ -118,7 +118,7 @@ type remoteHead struct {
 func lsRemoteHead(url string) (remoteHead, error) {
 	// A neutral directory, never the process cwd: ls-remote needs no
 	// repository, and a cwd inside one would lend it that repo's config.
-	out, err := lifecycleGit(os.TempDir(), lifecycleNetTimeout, "ls-remote", "--symref", url, "HEAD")
+	out, err := lifecycleGit(os.TempDir(), lifecycleNetTimeout, "ls-remote", "--symref", "--", url, "HEAD")
 	if err != nil {
 		return remoteHead{}, withCredentialHint(fmt.Errorf("read %s: %w", url, err))
 	}
