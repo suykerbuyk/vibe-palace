@@ -5,11 +5,8 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -404,65 +401,6 @@ func splitScaffoldDestination(ctx context.Context, dest string) error {
 				"host path before retrying)", errors.Join(rep.Errors...))
 	}
 
-	return nil
-}
-
-// splitCopyEntry copies one manifest row into the destination.
-//
-// 🔴 Lstat FIRST, AND A NON-REGULAR SOURCE REFUSES — the same contract plan
-// enforced, re-enforced here because plan and apply are separate calls and the
-// tree can change between them. os.Open follows symlinks, so a check made only
-// at plan time is a check made against a different filesystem than the one
-// being read.
-//
-// The content is hashed WHILE it streams, and the result is compared to the
-// manifest row. That costs nothing — the bytes are already passing through — and
-// it closes the last gap the digest bind cannot: buildSplitManifest hashed this
-// file moments ago, and this is the read that proves the bytes landing in the
-// destination are those same bytes and not a racing rewrite.
-//
-// atomicfile.WriteStream is the streaming half of the whole-file primitive: it
-// creates parents, writes a temp file beside the target and renames. Passing
-// vaultRoot = dest makes the DESTINATION stamp itself (atomicfile.go:166), which
-// is why no .surface file ever has to travel.
-func splitCopyEntry(srcRoot, destRoot string, e splitEntry) error {
-	src := filepath.Join(srcRoot, filepath.FromSlash(e.Path))
-
-	st, err := os.Lstat(src)
-	if err != nil {
-		return fmt.Errorf("lstat %s: %w", e.Path, err)
-	}
-	if st.Mode().Type() != 0 {
-		return fmt.Errorf(
-			"%s is not a regular file (mode %s): it was regular when the manifest was "+
-				"taken, so the source changed under this call", e.Path, st.Mode().Type())
-	}
-
-	f, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", e.Path, err)
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	var n int64
-	dst := filepath.Join(destRoot, filepath.FromSlash(e.Path))
-	if err := atomicfile.WriteStream(destRoot, dst, func(w io.Writer) error {
-		var cerr error
-		n, cerr = io.Copy(io.MultiWriter(w, h), f)
-		return cerr
-	}); err != nil {
-		return fmt.Errorf("copy %s: %w", e.Path, err)
-	}
-
-	if got := hex.EncodeToString(h.Sum(nil)); got != e.SHA256 {
-		return fmt.Errorf(
-			"copy %s: content hashed %s, manifest says %s — the source changed while it "+
-				"was being read", e.Path, got, e.SHA256)
-	}
-	if n != e.Size {
-		return fmt.Errorf("copy %s: copied %d bytes, manifest says %d", e.Path, n, e.Size)
-	}
 	return nil
 }
 
@@ -885,7 +823,7 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 			if err != nil {
 				return nil, err
 			}
-			for _, rel := range set.files {
+			for _, rel := range set.Files {
 				if hashes[rel] == "" && !splitSubtracted(rel) {
 					unaccounted = append(unaccounted, rel)
 				}
@@ -939,7 +877,7 @@ var splitPurgeBeforeCleanup func()
 func splitPurgeCommitted(vault *storage.Vault, p vaultSplitParams, m *splitManifest, trees []splitPurgeSet, hashes map[string]string) (*vaultSplitPurgeResult, error) {
 	collected := make(map[string]bool)
 	for _, set := range trees {
-		for _, rel := range set.files {
+		for _, rel := range set.Files {
 			collected[rel] = true
 		}
 	}
@@ -1117,7 +1055,7 @@ func splitPurgeUncommitted(vault *storage.Vault, p vaultSplitParams, m *splitMan
 func splitPurgeBytes(trees []splitPurgeSet) int64 {
 	var n int64
 	for _, set := range trees {
-		n += set.bytes
+		n += set.Bytes
 	}
 	return n
 }
@@ -1133,178 +1071,27 @@ func splitPurgeCommitMessage(m *splitManifest, to string, records []string) stri
 		strings.Join(m.Slugs, ", "), where, m.SHA256, strings.Join(records, ", "))
 }
 
-// splitPurgeCleanupEntry is one path step 4 of a committed purge left behind.
-type splitPurgeCleanupEntry struct {
-	Path string `json:"path"`
-	// Class is "ignored", "machine-local" or "untracked". An untracked
-	// (non-ignored) leftover is a resurrection risk: it reads as project
-	// content, and tidy would commit it back.
-	Class  string `json:"class"`
-	Reason string `json:"reason,omitempty"`
+// splitCopyEntry and the purge collect, cleanup and remove helpers are the
+// storage project-tree primitives. See internal/storage/project_tree.go.
+type (
+	splitPurgeSet          = storage.PurgeSet
+	splitPurgeCleanupEntry = storage.PurgeCleanupEntry
+)
+
+func splitCopyEntry(srcRoot, destRoot string, e splitEntry) error {
+	return storage.CopyProjectTreeEntry(srcRoot, destRoot, e)
 }
 
-// splitPurgeCleanup removes, after the purge commit, exactly the files purge
-// COLLECTED that git did not remove (untracked and ignored rows, and the embed
-// cache), then the directories bottom-up. A file written after the collect is
-// never removed. Nothing here fails the purge: every path left is reported.
-func splitPurgeCleanup(root string, trees []splitPurgeSet, hashes map[string]string) (files, dirs int, left []splitPurgeCleanupEntry) {
-	collected := map[string]bool{}
-	for _, set := range trees {
-		for _, rel := range set.files {
-			collected[rel] = true
-			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-				continue // git rm removed it
-			}
-			if _, err := vaultfs.Delete(root, rel, hashes[rel]); err != nil {
-				left = append(left, splitPurgeCleanupEntry{Path: rel, Reason: err.Error()})
-				continue
-			}
-			files++
-		}
-		dirAbs := append([]string(nil), set.dirs...)
-		sort.Slice(dirAbs, func(i, j int) bool { return len(dirAbs[i]) > len(dirAbs[j]) })
-		for _, d := range dirAbs {
-			if err := vaultfs.RemoveNoLock(d); err == nil {
-				dirs++
-			}
-		}
-	}
-	// Whatever is still under a purged tree — a failed removal above, or a file
-	// nobody collected — is reported with its class.
-	seen := map[string]bool{}
-	for _, l := range left {
-		seen[l.Path] = true
-	}
-	for _, set := range trees {
-		if len(set.dirs) == 0 {
-			continue // the tree was absent
-		}
-		// set.dirs[0] is the tree root: splitPurgeCollect's walk records it first.
-		_ = filepath.WalkDir(set.dirs[0], func(fp string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if rel := vaultRel(root, fp); !seen[rel] {
-				seen[rel] = true
-				left = append(left, splitPurgeCleanupEntry{Path: rel})
-			}
-			return nil
-		})
-	}
-	for i := range left {
-		switch ignored, err := storage.GitPathIgnored(root, left[i].Path); {
-		case storage.ClassifyProjectPath(left[i].Path) == storage.ProjectMachineLocal:
-			left[i].Class = "machine-local"
-		case err == nil && ignored:
-			left[i].Class = "ignored"
-		default:
-			left[i].Class = "untracked"
-		}
-		if left[i].Reason == "" && !collected[left[i].Path] {
-			left[i].Reason = "written under the purged tree after purge collected it"
-		}
-	}
-	sort.Slice(left, func(i, j int) bool { return left[i].Path < left[j].Path })
-	return files, dirs, left
-}
-
-// splitPurgeSet is one source slug tree as purge found it: every regular file
-// (vault-relative) and every directory (absolute), collected before anything is
-// removed from any tree.
-type splitPurgeSet struct {
-	files []string
-	dirs  []string
-	bytes int64
-}
-
-// splitPurgeCollect walks one source slug tree without changing it.
-//
-// A non-regular entry ANYWHERE in the tree refuses the whole purge, including
-// inside the machine-local subtrees plan prunes rather than scans. Plan may
-// ignore a symlink in an embed cache because that cache was never going to
-// travel; purge may not, because it is about to remove the directory containing
-// it and neither named primitive can classify what it would be removing.
 func splitPurgeCollect(root, treeRel string) (splitPurgeSet, error) {
-	var set splitPurgeSet
-	dir := filepath.Join(root, filepath.FromSlash(treeRel))
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Drift: this slug lives in only one of the two trees. Nothing to
-			// remove on this side, and that is not an error.
-			return set, nil
-		}
-		return set, fmt.Errorf("stat %s: %w", treeRel, err)
-	}
-	if !info.IsDir() {
-		return set, fmt.Errorf(
-			"%s is not a directory (mode %s): purge refuses it", treeRel, info.Mode().Type())
-	}
-
-	// Collect first, mutate second. A walk that deleted as it went would be
-	// mutating the tree it is enumerating, and the failure mode of that is a
-	// partial purge that reports success.
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		if d.IsDir() {
-			set.dirs = append(set.dirs, p)
-			return nil
-		}
-		rel := vaultRel(root, p)
-		st, lerr := os.Lstat(p)
-		if lerr != nil {
-			return fmt.Errorf("lstat %s: %w", rel, lerr)
-		}
-		if st.Mode().Type() != 0 {
-			return fmt.Errorf(
-				"%s is not a regular file (mode %s): purge refuses a tree it cannot "+
-					"classify entry by entry, because neither vaultfs.Delete nor "+
-					"RemoveNoLock is a recursive primitive and there is no third one",
-				rel, st.Mode().Type())
-		}
-		set.files = append(set.files, rel)
-		set.bytes += st.Size()
-		return nil
-	})
-	return set, err
+	return storage.CollectPurgeTree(root, treeRel)
 }
 
-// splitPurgeRemove removes one collected tree: every regular file through
-// vaultfs.Delete, then every directory bottom-up through vaultfs.RemoveNoLock.
-// The caller has already proved that every file is accounted for.
-func splitPurgeRemove(root string, set splitPurgeSet, hashes map[string]string) (int, int, error) {
-	var files int
-	for _, rel := range set.files {
-		// Three classes, and the caller refused the third before any tree was
-		// touched. A manifest row is deleted under its hash, the compare-and-set
-		// guard for a file that travelled. A subtract-set file (.surface,
-		// .local/**, .vp-locks/**, commit-log.anchor, Projects/<slug>/config.toml)
-		// was excluded from the manifest by the same predicate, splitSubtracted,
-		// so it legitimately has no hash and is removed unguarded because the
-		// tree it lives in is going away. Anything else was written after the
-		// bind and never copied.
-		if _, derr := vaultfs.Delete(root, rel, hashes[rel]); derr != nil {
-			return files, 0, fmt.Errorf("purge %s: %w", rel, derr)
-		}
-		files++
-	}
+func splitPurgeCleanup(root string, trees []splitPurgeSet, hashes map[string]string) (files, dirs int, left []splitPurgeCleanupEntry) {
+	return storage.CleanupPurgedTrees(root, trees, hashes)
+}
 
-	// Bottom-up: a child's path is always strictly longer than its parent's, so
-	// ordering by descending length removes every directory only after its
-	// contents. RemoveNoLock is os.Remove, which refuses a non-empty directory —
-	// so a miscount here fails loudly instead of removing something unexamined.
-	dirAbs := append([]string(nil), set.dirs...)
-	sort.Slice(dirAbs, func(i, j int) bool { return len(dirAbs[i]) > len(dirAbs[j]) })
-	var dirs int
-	for _, d := range dirAbs {
-		if rerr := vaultfs.RemoveNoLock(d); rerr != nil {
-			return files, dirs, fmt.Errorf("purge directory %s: %w", vaultRel(root, d), rerr)
-		}
-		dirs++
-	}
-	return files, dirs, nil
+func splitPurgeRemove(root string, set splitPurgeSet, hashes map[string]string) (int, int, error) {
+	return storage.RemovePurgeTree(root, set, hashes)
 }
 
 // splitPurgeUnaccountedError is the refusal for files that are neither manifest

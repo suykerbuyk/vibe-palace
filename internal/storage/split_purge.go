@@ -277,11 +277,23 @@ func (e *SplitPurgeHeadMovedError) Error() string {
 // or removes the records. After the commit lands, a failed assertion is an
 // error naming the commit.
 func CommitSplitPurge(vaultPath string, c SplitPurgeCommit) (*SplitPurgeCommitResult, error) {
-	release, err := vaultlock.Acquire(vaultPath, vaultPath)
+	held, err := vaultlock.AcquireHeld(vaultPath, vaultPath)
 	if err != nil {
 		return nil, fmt.Errorf("acquire vault commit lock: %w", err)
 	}
-	defer release()
+	defer held.Release()
+	return CommitSplitPurgeLocked(held, c)
+}
+
+// CommitSplitPurgeLocked is CommitSplitPurge for a caller that already holds
+// the vault root commit lock: the vault is held.Root(), and the lock is not
+// taken again (vaultlock.Acquire is not reentrant). A token that is not a live
+// root lock refuses before any git runs.
+func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPurgeCommitResult, error) {
+	if err := held.RequireRoot(); err != nil {
+		return nil, err
+	}
+	vaultPath := held.Root()
 
 	head, err := gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
 	if err != nil {

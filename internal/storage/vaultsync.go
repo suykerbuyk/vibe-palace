@@ -237,29 +237,9 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 // commitAndPushPathsCore is CommitAndPushPaths after its git_enabled gate,
 // for storage-internal composition (the downgrade wrapper).
 func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no paths specified")
-	}
-	if err := RefuseIfNestedVaultGit(vaultPath, "commit"); err != nil {
-		return nil, err
-	}
-
-	result := &PushResult{}
-
-	// Drop paths that match nothing in BOTH the worktree and the index; `git
-	// add -- <path>` fatals (exit 128) on such a no-match and would abort the
-	// whole commit for one absent path (e.g. a never-written memory/ dir).
-	// Tracked-but-deleted paths survive the filter so their deletion is staged.
-	keep, skipped := filterStageablePaths(vaultPath, paths)
-	result.SkippedPaths = skipped
-	if len(keep) == 0 {
-		// Non-empty input filtered to nothing: benign no-op, not an error.
-		// (The zero-input case errored at the guard above.)
-		return result, nil
-	}
-
-	if err := checkIdentity(vaultPath); err != nil {
-		return nil, err
+	result, keep, err := prepareCommitPaths(vaultPath, paths)
+	if err != nil || len(keep) == 0 {
+		return result, err
 	}
 
 	// Serialize the .git index critical section (reconcile + stage + commit)
@@ -325,10 +305,74 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 	}
 
+	committed, err := stageAndCommitLocked(vaultPath, message, keep)
+	if err != nil {
+		return nil, err
+	}
+	if !committed {
+		return result, nil
+	}
+
+	// The index critical section is done — release before the network push so
+	// pushes across committers run concurrently.
+	releaseCommitLock()
+
+	// Get commit SHA.
+	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
+	result.CommitSHA = sha
+
+	// Local-only commit: skip the push loop entirely.
+	if !push {
+		return result, nil
+	}
+
+	// Push to all remotes. branch was resolved up front (before the
+	// already-ahead guard) and is reused here.
+	pushCommitted(vaultPath, remotes, branch, reconcileErrs, result)
+	return result, nil
+}
+
+// prepareCommitPaths is the unlocked prologue every path committer shares:
+// refuse an empty path list and a nested vault git, drop paths git cannot
+// stage, and check the commit identity. An empty keep with a nil error is the
+// benign no-op: every path matched nothing.
+func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string, error) {
+	if len(paths) == 0 {
+		return nil, nil, fmt.Errorf("no paths specified")
+	}
+	if err := RefuseIfNestedVaultGit(vaultPath, "commit"); err != nil {
+		return nil, nil, err
+	}
+
+	result := &PushResult{}
+
+	// Drop paths that match nothing in BOTH the worktree and the index; `git
+	// add -- <path>` fatals (exit 128) on such a no-match and would abort the
+	// whole commit for one absent path (e.g. a never-written memory/ dir).
+	// Tracked-but-deleted paths survive the filter so their deletion is staged.
+	keep, skipped := filterStageablePaths(vaultPath, paths)
+	result.SkippedPaths = skipped
+	if len(keep) == 0 {
+		// Non-empty input filtered to nothing: benign no-op, not an error.
+		// (The zero-input case errored at the guard above.)
+		return result, nil, nil
+	}
+
+	if err := checkIdentity(vaultPath); err != nil {
+		return nil, nil, err
+	}
+	return result, keep, nil
+}
+
+// stageAndCommitLocked stages keep and commits exactly those paths, stamped
+// with the hostname. The caller holds the vault root commit lock and has run
+// the pending-departure guard. committed is false when none of keep differs
+// from HEAD: a no-op, not an error.
+func stageAndCommitLocked(vaultPath, message string, keep []string) (committed bool, err error) {
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
 	if err := stageInBatches(vaultPath, keep); err != nil {
-		return nil, fmt.Errorf("git add: %w", err)
+		return false, fmt.Errorf("git add: %w", err)
 	}
 
 	// Check if anything to commit — ASKED ABOUT OUR PATHS, not the whole index.
@@ -350,10 +394,10 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 	// `var GIT_AUTHOR_IDENT`) are the same shape.
 	staged, derr := stagedChangesIn(vaultPath, keep)
 	if derr != nil {
-		return nil, derr
+		return false, derr
 	}
 	if !staged {
-		return result, nil
+		return false, nil
 	}
 
 	// Stamp with hostname.
@@ -370,25 +414,38 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 			// between the first check and the commit): leave nothing staged.
 			_, _ = gitCmd(vaultPath, 30*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...)
 		}
+		return false, err
+	}
+	return true, nil
+}
+
+// commitPathsLocked is commitAndPushPathsCore's local commit for a caller that
+// already holds the vault root commit lock: the vault is held.Root(), and the
+// lock is not taken again (vaultlock.Acquire is not reentrant). It never pushes
+// and never reconciles, so nothing under it re-acquires the lock either; the
+// caller publishes. Like the core, it does not read git_enabled — the caller
+// gates that. A token that is not a live root lock refuses before any git runs.
+func commitPathsLocked(held *vaultlock.Held, message string, paths []string) (*PushResult, error) {
+	if err := held.RequireRoot(); err != nil {
 		return nil, err
 	}
-
-	// The index critical section is done — release before the network push so
-	// pushes across committers run concurrently.
-	releaseCommitLock()
-
-	// Get commit SHA.
-	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
-	result.CommitSHA = sha
-
-	// Local-only commit: skip the push loop entirely.
-	if !push {
+	vaultPath := held.Root()
+	result, keep, err := prepareCommitPaths(vaultPath, paths)
+	if err != nil || len(keep) == 0 {
+		return result, err
+	}
+	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+		return nil, err
+	}
+	committed, err := stageAndCommitLocked(vaultPath, message, keep)
+	if err != nil {
+		return nil, err
+	}
+	if !committed {
 		return result, nil
 	}
-
-	// Push to all remotes. branch was resolved up front (before the
-	// already-ahead guard) and is reused here.
-	pushCommitted(vaultPath, remotes, branch, reconcileErrs, result)
+	sha, _ := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD")
+	result.CommitSHA = sha
 	return result, nil
 }
 
