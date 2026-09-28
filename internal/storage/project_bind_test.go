@@ -142,10 +142,6 @@ func TestBindRefusals(t *testing.T) {
 			r.VaultPath = global
 			return r
 		}, "default vault"},
-		{"slug_still_present_in_default", func(t *testing.T, home, global, quantum, cfg string) BindRequest {
-			rebindWrite(t, filepath.Join(global, "Projects", "qa", "resume.md"), "# live\n")
-			return movedReq("qa")
-		}, "holds no departure record"},
 		{"unreadable_config", func(t *testing.T, home, global, quantum, cfg string) BindRequest {
 			rebindWrite(t, cfg, "vault_path = \""+global+"\"\n[project_vaults\n")
 			return movedReq("qa")
@@ -476,5 +472,20 @@ func TestRebindRenameToleratesAWrongTypedTag(t *testing.T) {
 	rebindWrite(t, filepath.Join(co, ".vibe-palace.toml"), body)
 	if _, err := RebindCheckout(rebindRename(co, vault)); err != nil {
 		t.Errorf("rename with a wrong-typed tags: %v", err)
+	}
+}
+
+// Reversed by the U15 ruling (formerly the refusal case
+// slug_still_present_in_default): the default vault's record wins over a
+// directory still there, so the project has moved and the bind succeeds.
+func TestBindMovedOverAStaleDirectoryInTheDefault(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git unavailable")
+	}
+	home := rebindEnv(t)
+	global, _ := splitHost(t, home, "qa")
+	rebindWrite(t, filepath.Join(global, "Projects", "qa", "resume.md"), "# stale\n")
+	if _, err := BindProjectVault(movedReq("qa")); err != nil {
+		t.Fatalf("the record says qa moved, whatever Projects/qa holds: %v", err)
 	}
 }

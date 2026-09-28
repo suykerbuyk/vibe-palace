@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -47,6 +48,15 @@ type PendingDepartureError struct {
 	// Committed are the records HEAD already holds (a re-departure overwrote
 	// one); undo restores them rather than removing them.
 	Committed map[string]bool
+	// Removed are committed records missing from the working tree. Their
+	// removal is never offered as a commit: without its record a departed
+	// project reopens, and the next push would publish that.
+	Removed map[string]bool
+	// StagedRemoved are the Trees whose every tracked file already has its
+	// removal staged (the purge's own git rm ran). Only these may be
+	// committed by hand: advice never removes a tree that still holds
+	// tracked files, which could be a live project under a forged record.
+	StagedRemoved map[string]bool
 }
 
 func (e *PendingDepartureError) Unwrap() error { return ErrPendingDeparture }
@@ -56,21 +66,46 @@ func (e *PendingDepartureError) Error() string {
 	for _, r := range e.Records {
 		slugs = append(slugs, strings.TrimSuffix(path.Base(r), ".json"))
 	}
-	recs := strings.Join(e.Records, " ")
-	trees := strings.Join(e.Trees, " ")
-	var b strings.Builder
-	fmt.Fprintf(&b, "refusing to commit: %s %s uncommitted — a split purge of %s did not finish, and committing anything now could publish half of it. Recover with raw git, then retry:\n",
-		strings.Join(e.Records, ", "), map[bool]string{true: "is", false: "are"}[len(e.Records) == 1], strings.Join(slugs, ", "))
-	// Finish: one commit for every pending slug, the shape purge's own commit has.
-	fin := fmt.Sprintf("git -C %s add -- %s && git -C %s commit -m \"vault split: purge %s (finished by hand)\" -- %s",
-		e.Vault, recs, e.Vault, strings.Join(slugs, ", "), recs)
-	if trees != "" {
-		fin = fmt.Sprintf("git -C %s rm -r -q --ignore-unmatch -- %s && ", e.Vault, trees) + fin + " " + trees
+	var present, removed, staged, unstaged []string
+	for _, r := range e.Records {
+		if e.Removed[r] {
+			removed = append(removed, r)
+		} else {
+			present = append(present, r)
+		}
 	}
-	fmt.Fprintf(&b, "  - finish it: %s\n", fin)
+	for _, t := range e.Trees {
+		if e.StagedRemoved[t] {
+			staged = append(staged, t)
+		} else {
+			unstaged = append(unstaged, t)
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "refusing to commit: %s %s uncommitted — a departure of %s did not finish, and committing anything now could publish half of it. Recover with raw git, then retry:\n",
+		strings.Join(e.Records, ", "), map[bool]string{true: "is", false: "are"}[len(e.Records) == 1], strings.Join(slugs, ", "))
+	// Finish: only what is already staged — the records, and trees whose
+	// removal the departure's own git rm already staged. Never a git rm of a
+	// tree still holding tracked files, and never a record's removal.
+	switch {
+	case len(present) == 0:
+		// Nothing to finish: every pending record is a removal, and that is
+		// restored, never committed.
+	case len(unstaged) > 0:
+		fmt.Fprintf(&b, "  - finish it: re-run the command that departed %s (vp vault project delete, or vp_vault_split's purge); it removes %s itself and commits the record with them. Never remove those trees by hand: under a record that is not the command's own, they are a live project\n",
+			strings.Join(slugs, ", "), strings.Join(unstaged, " "))
+	default:
+		recs := strings.Join(present, " ")
+		fmt.Fprintf(&b, "  - finish it: git -C %s add -- %s && git -C %s commit -m \"vault split: purge %s (finished by hand)\" -- %s\n",
+			e.Vault, recs, e.Vault, strings.Join(slugs, ", "), strings.TrimSpace(recs+" "+strings.Join(staged, " ")))
+	}
 	var undo []string
-	if trees != "" {
-		undo = append(undo, fmt.Sprintf("git -C %s checkout HEAD -- %s", e.Vault, trees))
+	if len(e.Trees) > 0 {
+		// Unstage, and bring back only what git rm removed: a plain checkout
+		// of the tree would overwrite a live project's uncommitted edits.
+		trees := strings.Join(e.Trees, " ")
+		undo = append(undo, fmt.Sprintf("git -C %s reset -q -- %s && git -C %s ls-files -z --deleted -- %s | xargs -0 -r git -C %s checkout HEAD --",
+			e.Vault, trees, e.Vault, trees, e.Vault))
 	}
 	var restore, remove []string
 	for _, r := range e.Records {
@@ -86,8 +121,16 @@ func (e *PendingDepartureError) Error() string {
 	if len(remove) > 0 {
 		undo = append(undo, fmt.Sprintf("git -C %s rm -q --cached --ignore-unmatch -- %s && rm -f -- %s", e.Vault, strings.Join(remove, " "), strings.Join(prefixAll(e.Vault+"/", remove), " ")))
 	}
-	fmt.Fprintf(&b, "  - or undo it: %s\n", strings.Join(undo, " && "))
-	b.WriteString("Finishing leaves the untracked leftovers (ignored rows, the embed cache, empty directories); they are inert, because a departed slug's residue is treated as absent, and the cache is left to the reaper. ")
+	label := "or undo it"
+	if len(present) == 0 {
+		label = "restore it"
+	}
+	fmt.Fprintf(&b, "  - %s: %s\n", label, strings.Join(undo, " && "))
+	if len(removed) > 0 {
+		fmt.Fprintf(&b, "%s %s missing from the working tree; restore %s — committing a record's removal reopens its project in this vault and would publish that. ",
+			strings.Join(removed, ", "), map[bool]string{true: "is", false: "are"}[len(removed) == 1], map[bool]string{true: "it", false: "them"}[len(removed) == 1])
+	}
+	b.WriteString("Finishing leaves the untracked leftovers (ignored rows, the embed cache, empty directories); they are inert, because the record decides a departed slug whatever its directory holds, and the cache is left to the reaper. ")
 	b.WriteString("Until then every vp commit on this vault refuses. Files vp's typed writers write meanwhile (tasks, memory, sessions) are kept on disk but stay uncommitted until recovery; task files are not swept by tidy, so they stay dirty until their next typed write or a manual commit.")
 	return b.String()
 }
@@ -154,15 +197,22 @@ func refuseOnPendingDeparturesFor(vaultPath string, caller *vaultlock.Held) erro
 	if err != nil || len(recs) == 0 {
 		return err
 	}
-	e := &PendingDepartureError{Vault: vaultPath, Records: recs, Committed: map[string]bool{}}
+	e := &PendingDepartureError{Vault: vaultPath, Records: recs, Committed: map[string]bool{}, Removed: map[string]bool{}, StagedRemoved: map[string]bool{}}
 	for _, r := range recs {
 		if _, found, err := ReadCommittedBlob(vaultPath, r); err == nil && found {
 			e.Committed[r] = true
+			if _, serr := os.Lstat(filepath.Join(vaultPath, filepath.FromSlash(r))); errors.Is(serr, os.ErrNotExist) {
+				e.Removed[r] = true
+			}
 		}
 		s := strings.TrimSuffix(path.Base(r), ".json")
 		for _, tree := range ProjectTrees(s) {
 			if out, err := gitCmd(vaultPath, 10*time.Second, "ls-tree", "-r", "--name-only", "HEAD", "--", tree); err == nil && out != "" {
 				e.Trees = append(e.Trees, tree)
+				// Fully staged for removal: the index holds nothing of it.
+				if idx, err := gitCmd(vaultPath, 10*time.Second, "ls-files", "--", tree); err == nil && idx == "" {
+					e.StagedRemoved[tree] = true
+				}
 			}
 		}
 	}

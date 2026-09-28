@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/giterr"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -410,9 +411,10 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, tra
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
 	if err := commitOnlyPathsFor(vaultPath, caller, fullMsg, keep); err != nil {
-		if errors.Is(err, ErrPendingDeparture) {
-			// The guard's backstop fired after staging (a record appeared
-			// between the first check and the commit): leave nothing staged.
+		if errors.Is(err, ErrPendingDeparture) || errors.Is(err, vaultfs.ErrDepartedProject) {
+			// A backstop fired after staging (a record appeared between the
+			// first check and the commit, or a path lies under a departed
+			// project's tree): leave nothing staged.
 			_, _ = gitCmd(vaultPath, 30*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...)
 		}
 		return false, err
@@ -1117,7 +1119,50 @@ func commitOnlyPathsFor(vaultPath string, caller *vaultlock.Held, message string
 	if err := refuseOnPendingDeparturesFor(vaultPath, caller); err != nil {
 		return err
 	}
+	// The departed-project backstop: a file that reached a departed project's
+	// tree some other way than vaultfs (a raw editor write, a copy by hand) is
+	// not committed either. Deletions pass: removing a leftover mutates no
+	// project, and the delete's own commit does not come through here.
+	if err := refuseDepartedInCommit(vaultPath, paths); err != nil {
+		return err
+	}
 	return commitPathspec(vaultPath, message, paths)
+}
+
+// refuseDepartedInCommit refuses a commit of paths that would add or modify a
+// file under a project tree whose project has a departure record
+// (vaultfs.RefuseDepartedWrite). It asks git exactly what `git commit <paths>`
+// would take — every change against HEAD under the pathspec, deletions excepted
+// — so a directory pathspec covering a departed tree is caught too.
+func refuseDepartedInCommit(vaultPath string, paths []string) error {
+	base := []string{"-c", "core.quotepath=off", "diff", "HEAD", "--name-only", "-z", "--diff-filter=d"}
+	if _, herr := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--verify", "-q", "HEAD^{commit}"); herr != nil {
+		// Unborn: the first commit takes what is staged.
+		base = []string{"-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--diff-filter=d"}
+	}
+	// git diff takes no --pathspec-from-file, so the pathspecs go after "--",
+	// in batches that keep argv well under the platform limit.
+	const batch = 256
+	for start := 0; start < len(paths); start += batch {
+		end := min(start+batch, len(paths))
+		args := append(append(append([]string{}, base...), "--"), paths[start:end]...)
+		cmd := exec.Command("git", args...)
+		cmd.Dir = vaultPath
+		cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("check departed trees: git diff: %w", err)
+		}
+		for _, rel := range strings.Split(string(out), "\x00") {
+			if rel == "" {
+				continue
+			}
+			if err := vaultfs.RefuseDepartedWrite(vaultPath, rel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // commitPathspec is commitOnlyPaths without the commit guard. Its only other

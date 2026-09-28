@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -884,7 +885,9 @@ func splitPurgeCommitted(vault *storage.Vault, p vaultSplitParams, m *splitManif
 			r := records[i]
 			var err error
 			if r.created {
-				_, err = vaultfs.Delete(vault.Root, r.rel, "")
+				// The one privileged removal of a record this purge wrote,
+				// under the root lock (released by CommitSplitPurge by now).
+				err = removeOwnDepartureRecord(vault.Root, strings.TrimSuffix(path.Base(r.rel), ".json"))
 			} else {
 				err = storage.RestoreFromHEAD(vault.Root, r.rel)
 			}
@@ -1079,4 +1082,16 @@ func splitPurgeUnaccountedError(rels []string) error {
 		"destination lacks these files, so it cannot verify against a new plan. Removing " +
 		"the old destination afterwards is optional cleanup.")
 	return apperr.Caller(errors.New(b.String()))
+}
+
+// removeOwnDepartureRecord removes a departure record the split purge wrote and
+// is rolling back, through vaultfs.RemoveDepartureRecord under the root lock:
+// an ordinary vaultfs.Delete of a record is refused.
+func removeOwnDepartureRecord(root, slug string) error {
+	held, err := vaultlock.AcquireHeld(root, root)
+	if err != nil {
+		return err
+	}
+	defer held.Release()
+	return vaultfs.RemoveDepartureRecord(held, slug)
 }

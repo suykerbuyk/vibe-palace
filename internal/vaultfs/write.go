@@ -55,6 +55,10 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 	if IsVaultProjectConfigPath(relPath) {
 		return WriteResult{}, vaultProjectConfigRefusal(relPath)
 	}
+	// A departed project's trees are not written (departed.go).
+	if err := refuseDepartedWrite(vaultPath, relPath); err != nil {
+		return WriteResult{}, err
+	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
 		return WriteResult{}, err
@@ -142,6 +146,10 @@ func Create(vaultPath, relPath, content string) (WriteResult, error) {
 	if IsVaultProjectConfigPath(relPath) {
 		return WriteResult{}, vaultProjectConfigRefusal(relPath)
 	}
+	// See Write: a departed project's trees are not written.
+	if err := refuseDepartedWrite(vaultPath, relPath); err != nil {
+		return WriteResult{}, err
+	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
 		return WriteResult{}, err
@@ -189,6 +197,10 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 	// See Write: the vault's per-project config has moved host-local.
 	if IsVaultProjectConfigPath(relPath) {
 		return EditResult{}, vaultProjectConfigRefusal(relPath)
+	}
+	// See Write: a departed project's trees are not written.
+	if err := refuseDepartedWrite(vaultPath, relPath); err != nil {
+		return EditResult{}, err
 	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
@@ -261,6 +273,12 @@ func Edit(vaultPath, relPath, oldString, newString string, replaceAll bool, expe
 func Delete(vaultPath, relPath, expectedSha256 string) (DeleteResult, error) {
 	if IsRefusedWritePath(relPath) {
 		return DeleteResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, relPath)
+	}
+	// A departure record is never deleted by an ordinary caller: removing one
+	// reopens its departed project (departed.go). A departed tree's leftovers
+	// may be deleted; that mutates no project.
+	if err := refuseRecordChange(vaultPath, relPath); err != nil {
+		return DeleteResult{}, err
 	}
 	abs, err := ResolveSafePath(vaultPath, relPath)
 	if err != nil {
@@ -372,6 +390,16 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	// added.
 	if IsVaultProjectConfigPath(toPath) {
 		return MoveResult{}, vaultProjectConfigRefusal(toPath)
+	}
+	// A departed project's trees, at BOTH ends: moving in re-creates the tree
+	// (the resurrection this refuses), and moving out lifts its content into
+	// another tree while the project lives on elsewhere. Delete stays
+	// ungated, as above: removing a leftover mutates no project.
+	if err := refuseDepartedWrite(vaultPath, fromPath); err != nil {
+		return MoveResult{}, err
+	}
+	if err := refuseDepartedWrite(vaultPath, toPath); err != nil {
+		return MoveResult{}, err
 	}
 	if filepath.Clean(fromPath) == filepath.Clean(toPath) {
 		return MoveResult{}, fmt.Errorf("vaultfs: move source and destination are the same path: %s", fromPath)

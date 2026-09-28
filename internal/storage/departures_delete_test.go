@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // RecordDepartureForDelete writes every lifecycle field, derives the
@@ -42,7 +43,7 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 
 	// First departure: generation 1, every field as given, written while the
 	// tree is still here (the delete removes it afterwards).
-	rel, created, _, err := v.RecordDepartureForDelete("old", departure.MovedToVault, label, facts)
+	rel, created, _, err := recordForDelete(t, v, "old", departure.MovedToVault, label, facts)
 	if err != nil || !created || rel != departure.RelPath("old") {
 		t.Fatalf("RecordDepartureForDelete = (%q, %v, %v)", rel, created, err)
 	}
@@ -52,7 +53,7 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 		t.Fatalf("record = %+v", rec)
 	}
 	// A re-run over its own uncommitted record derives the same generation.
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.MovedToVault, label, facts); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.MovedToVault, label, facts); err != nil {
 		t.Fatal(err)
 	}
 	if g := read().Generation; g != 1 {
@@ -61,7 +62,7 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 
 	// A later departure, over the committed one: generation 2, kind deleted.
 	commitRecord()
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{Footprint: facts.Footprint}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{Footprint: facts.Footprint}); err != nil {
 		t.Fatal(err)
 	}
 	if rec := read(); rec.Kind != departure.Deleted || rec.Generation != 2 || rec.CopyCommit != "" || rec.To != "" {
@@ -79,7 +80,7 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 		}
 	}
 	commitRecord()
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{}); err != nil {
 		t.Fatal(err)
 	}
 	if g := read().Generation; g != 2 {
@@ -87,16 +88,16 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 	}
 
 	// Refusals: a rename is not a delete, and deleted names no destination.
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Renamed, "new", DepartureFacts{}); err == nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Renamed, "new", DepartureFacts{}); err == nil {
 		t.Error("a delete must refuse kind renamed")
 	}
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, label, DepartureFacts{}); err == nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, label, DepartureFacts{}); err == nil {
 		t.Error("a deleted record must refuse a destination")
 	}
 	// A committed record that cannot be parsed leaves the generation unknown.
 	writeFile(t, root, departure.RelPath("old"), "{not json\n")
 	commitRecord()
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{}); err == nil ||
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{}); err == nil ||
 		!strings.Contains(err.Error(), "generation is unknown") {
 		t.Errorf("over an unreadable committed record: err = %v", err)
 	}
@@ -169,7 +170,7 @@ func TestRecordDepartureForDeleteAfterARevertIsTheNextGeneration(t *testing.T) {
 		return departure.Parse("old", b).Generation
 	}
 
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{}); err != nil {
 		t.Fatal(err)
 	}
 	if g := gen(); g != 1 {
@@ -183,7 +184,7 @@ func TestRecordDepartureForDeleteAfterARevertIsTheNextGeneration(t *testing.T) {
 		t.Fatalf("the revert must remove the record: %v", err)
 	}
 
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{}); err != nil {
 		t.Fatal(err)
 	}
 	if g := gen(); g != 2 {
@@ -203,13 +204,13 @@ func TestRecordDepartureForDeleteIsAboveTheDestinationGeneration(t *testing.T) {
 	const label = "git@example.invalid:team/b.git"
 
 	// Local history: generation 1, committed.
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.MovedToVault, label, DepartureFacts{}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.MovedToVault, label, DepartureFacts{}); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, root, "add", "-A")
 	gitRun(t, root, "commit", "-q", "-m", "record")
 
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.MovedToVault, label, DepartureFacts{DestinationGeneration: 4}); err != nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.MovedToVault, label, DepartureFacts{DestinationGeneration: 4}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(departure.RelPath("old"))))
@@ -220,7 +221,7 @@ func TestRecordDepartureForDeleteIsAboveTheDestinationGeneration(t *testing.T) {
 		t.Fatalf("over a destination at generation 4 and local history at 1: generation %d, want 5", g)
 	}
 
-	if _, _, _, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{DestinationGeneration: 4}); err == nil {
+	if _, _, _, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{DestinationGeneration: 4}); err == nil {
 		t.Error("a deleted record has no destination, so a destination generation must refuse")
 	}
 }
@@ -260,7 +261,19 @@ func TestDepartureGenerationSkipsAnUnreadableOlderVersion(t *testing.T) {
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipped unreadable record at "+broken) {
 		t.Fatalf("warnings = %q, want one naming %s", warnings, broken)
 	}
-	if _, _, w, err := v.RecordDepartureForDelete("old", departure.Deleted, "", DepartureFacts{}); err != nil || len(w) != 1 {
+	if _, _, w, err := recordForDelete(t, v, "old", departure.Deleted, "", DepartureFacts{}); err != nil || len(w) != 1 {
 		t.Fatalf("the writer must return the same warning: %q, %v", w, err)
 	}
+}
+
+// recordForDelete calls RecordDepartureForDelete under a root-lock token taken
+// for the one call, as the delete holds one for its whole run.
+func recordForDelete(t *testing.T, v *Vault, slug string, kind departure.Kind, to string, f DepartureFacts) (string, bool, []string, error) {
+	t.Helper()
+	held, err := vaultlock.AcquireHeld(v.Root, v.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	return v.RecordDepartureForDelete(held, slug, kind, to, f)
 }

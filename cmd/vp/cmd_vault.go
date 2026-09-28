@@ -381,6 +381,9 @@ func printTidyReported(res *storage.TidyResult) {
 	if len(res.ReportedUserContent) > 0 {
 		printTidyList("User-memory pending commit (committed by wrap/SessionEnd)", res.ReportedUserContent)
 	}
+	if len(res.LeftDeparted) > 0 {
+		printTidyList("Left untouched — under a departed project (the departure record wins; this vault never commits them)", res.LeftDeparted)
+	}
 	// In-flight transcript halves are neither dirt nor swept: their manifest is
 	// still pending, so they are left for the next sweep. One-line notice only.
 	if n := len(res.Deferred); n > 0 {

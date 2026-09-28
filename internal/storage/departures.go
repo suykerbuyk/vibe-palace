@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -39,7 +38,7 @@ import (
 // the departure is made against — a commit cannot name its own SHA, and
 // `git log -- <path>` recovers the departing one). Neither is a parameter.
 func (v *Vault) RecordDeparture(slug string, kind departure.Kind, to string) (string, error) {
-	rel, _, err := v.writeDeparture(departure.Record{Slug: slug, Kind: kind, To: to}, true)
+	rel, _, err := v.writeDeparture(nil, departure.Record{Slug: slug, Kind: kind, To: to}, true)
 	return rel, err
 }
 
@@ -54,7 +53,7 @@ func (v *Vault) RecordDeparture(slug string, kind departure.Kind, to string) (st
 // created record is removed, an overwritten (committed) one is restored from
 // HEAD.
 func (v *Vault) RecordDepartureForPurge(slug string, kind departure.Kind, to string) (rel string, created bool, err error) {
-	return v.writeDeparture(departure.Record{Slug: slug, Kind: kind, To: to}, false)
+	return v.writeDeparture(nil, departure.Record{Slug: slug, Kind: kind, To: to}, false)
 }
 
 // DepartureFacts are what a project delete verified and records beside the
@@ -83,12 +82,18 @@ type DepartureFacts struct {
 // never the working tree, so a re-run over a crashed run's own uncommitted
 // record derives the same number. See DepartureGeneration for what refuses and
 // what is only a warning; the warnings are returned for the caller to print.
-func (v *Vault) RecordDepartureForDelete(slug string, kind departure.Kind, to string, f DepartureFacts) (rel string, created bool, warnings []string, err error) {
+//
+// held is the delete's own root-lock token (it holds the vault for the whole
+// run): the record is written through vaultfs.WriteDepartureRecord under it.
+func (v *Vault) RecordDepartureForDelete(held *vaultlock.Held, slug string, kind departure.Kind, to string, f DepartureFacts) (rel string, created bool, warnings []string, err error) {
+	if held == nil {
+		return "", false, nil, fmt.Errorf("a project delete records its departure under its own root-lock token")
+	}
 	gen, warnings, err := v.DepartureGeneration(slug, kind, f.DestinationGeneration)
 	if err != nil {
 		return "", false, nil, err
 	}
-	rel, created, err = v.writeDeparture(departure.Record{
+	rel, created, err = v.writeDeparture(held, departure.Record{
 		Slug: slug, Kind: kind, To: to,
 		Generation: gen, CopyCommit: f.CopyCommit, Footprint: f.Footprint,
 	}, false)
@@ -166,7 +171,10 @@ func (v *Vault) highestDepartureGeneration(slug string) (int, []string, error) {
 
 // writeDeparture stores rec, adding the date and base commit. The caller sets
 // every other field.
-func (v *Vault) writeDeparture(rec departure.Record, requireAbsent bool) (string, bool, error) {
+// writeDeparture stores rec through vaultfs.WriteDepartureRecord, the one
+// entry point for records, under held — the caller's root-lock token, or, when
+// held is nil, one taken here (the caller must then not hold the root lock).
+func (v *Vault) writeDeparture(held *vaultlock.Held, rec departure.Record, requireAbsent bool) (string, bool, error) {
 	slug := rec.Slug
 	rec.Date = v.CalendarDay(time.Now())
 	if err := rec.Validate(); err != nil {
@@ -195,16 +203,17 @@ func (v *Vault) writeDeparture(rec departure.Record, requireAbsent bool) (string
 		return "", false, err
 	}
 	rel := departure.RelPath(slug)
-	abs := filepath.Join(v.Root, filepath.FromSlash(rel))
-	release, err := vaultlock.Acquire(v.Root, abs)
-	if err != nil {
-		return "", false, fmt.Errorf("lock %s: %w", rel, err)
+	if held == nil {
+		h, err := vaultlock.AcquireHeld(v.Root, v.Root)
+		if err != nil {
+			return "", false, fmt.Errorf("acquire vault commit lock: %w", err)
+		}
+		defer h.Release()
+		held = h
 	}
-	defer release()
-	_, statErr := os.Lstat(abs)
-	created := errors.Is(statErr, fs.ErrNotExist)
-	if err := atomicfile.Write(v.Root, abs, data, atomicfile.WithFsync()); err != nil {
-		return "", false, fmt.Errorf("write %s: %w", rel, err)
+	created, err := vaultfs.WriteDepartureRecord(held, slug, data)
+	if err != nil {
+		return "", false, err
 	}
 	return rel, created, nil
 }

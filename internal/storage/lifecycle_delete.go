@@ -295,7 +295,7 @@ func ApplyDelete(vaultRoot string, req DeleteRequest) (*DeleteResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		out, rm, err := redoLifecycle(held, deleteCommand, branchOrMain(root), remotes, deleteRollback(root, req.Projects))
+		out, rm, err := redoLifecycle(held, deleteCommand, branchOrMain(root), remotes, deleteRollback(held, req.Projects))
 		if err != nil {
 			return nil, err
 		}
@@ -781,7 +781,7 @@ func applyFullDelete(held *vaultlock.Held, req DeleteRequest, plan *DeletePlan) 
 	if err := writeLifecycleMarker(held, m); err != nil {
 		return "", err
 	}
-	rollback := deleteRollback(root, req.Projects)
+	rollback := deleteRollback(held, req.Projects)
 	abandon := func(cause error) error {
 		if rerr := rollback(); rerr != nil {
 			return fmt.Errorf("%w; and the rollback failed: %v (the marker is kept; re-run the same command: %s)", cause, rerr, m.Rerun)
@@ -795,7 +795,7 @@ func applyFullDelete(held *vaultlock.Held, req DeleteRequest, plan *DeletePlan) 
 	v := NewVault(root)
 	var records []string
 	for _, pp := range plan.Projects {
-		rel, _, _, err := v.RecordDepartureForDelete(pp.Project, plan.Kind, plan.To, DepartureFacts{
+		rel, _, _, err := v.RecordDepartureForDelete(held, pp.Project, plan.Kind, plan.To, DepartureFacts{
 			CopyCommit: pp.CopyCommit, Footprint: pp.Footprint, DestinationGeneration: pp.DestinationGeneration,
 		})
 		if err != nil {
@@ -864,14 +864,26 @@ func deleteTrailers(plan *DeletePlan, runID string) string {
 	return b.String()
 }
 
+// departedTreeIsResidue: Projects/<p>/ is absent or holds only residue git
+// would not carry (departure.OnlyResidue).
+func departedTreeIsResidue(root, p string) bool {
+	if _, err := os.Lstat(filepath.Join(root, "Projects", p)); errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return departure.OnlyResidue(root, p)
+}
+
 // deletePostcheck is § Delete step 8: every project departed, and nothing
 // uncommitted over the footprint, the records and Audits/.surface. Other
 // projects' dirt is expected and ignored.
 func deletePostcheck(root string, plan *DeletePlan, records []string) error {
 	var paths []string
 	for _, pp := range plan.Projects {
-		if _, ok := departure.Find(root, pp.Project); !ok {
-			return fmt.Errorf("%q does not read as departed after the commit", pp.Project)
+		// The record makes it departed (departure.Find); what must also hold
+		// is that nothing git would carry is left under its trees, or the
+		// delete removed less than the project.
+		if _, ok := departure.Find(root, pp.Project); !ok || !departedTreeIsResidue(root, pp.Project) {
+			return fmt.Errorf("%q does not read as departed after the commit: something git would carry is left under its trees", pp.Project)
 		}
 		paths = append(paths, ProjectTrees(pp.Project)...)
 	}
@@ -891,7 +903,8 @@ func deletePostcheck(root string, plan *DeletePlan, records []string) error {
 // any git rm removed are restored, and each record and Audits/.surface are
 // restored from HEAD, or the record removed when HEAD has none. It restores
 // only paths git removed, so it never overwrites an edit.
-func deleteRollback(root string, projects []string) func() error {
+func deleteRollback(held *vaultlock.Held, projects []string) func() error {
+	root := held.Root()
 	return func() error {
 		var errs []string
 		for _, p := range projects {
@@ -916,10 +929,9 @@ func deleteRollback(root string, projects []string) func() error {
 				}
 			} else {
 				_, _ = gitCmd(root, 10*time.Second, "reset", "-q", "--", rel)
-				if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
-					if _, err := vaultfs.Delete(root, rel, ""); err != nil {
-						errs = append(errs, fmt.Sprintf("%s: %v", rel, err))
-					}
+				// The one privileged removal: this run wrote the record.
+				if err := vaultfs.RemoveDepartureRecord(held, p); err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", rel, err))
 				}
 			}
 		}
