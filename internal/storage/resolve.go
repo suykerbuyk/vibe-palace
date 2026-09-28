@@ -106,6 +106,9 @@ func ResolveVaultBinding(cwd string) (Resolution, error) {
 			if err != nil {
 				return Resolution{}, err
 			}
+			if err := staleProjectBinding(cfgPath, name, bound); err != nil {
+				return Resolution{}, err
+			}
 		}
 	}
 

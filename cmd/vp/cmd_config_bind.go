@@ -29,11 +29,12 @@ var configBindFlags = []cli.FlagDef{
 func cmdConfigBind() *cli.Command {
 	return &cli.Command{
 		Name:     "config bind",
-		Synopsis: "vp config bind <slug> --vault <path> [--checkout <dir>...] [--new] [--allow-unlabelled] [--dry-run] [--json]",
-		Description: "Bind a project to a vault on THIS host: one [project_vaults].<slug> line in the global config " +
+		Synopsis: "vp config bind <slug>... --vault <path> [--checkout <dir>...] [--new] [--allow-unlabelled] [--dry-run] [--json]",
+		Description: "Bind projects to a vault on THIS host: one [project_vaults].<slug> line per slug in the global config, all in ONE write " +
 			"(ADR-012), so every checkout of the project on this host resolves that vault. After a vault split the " +
 			"host's default vault must record the project as moved away, and one of the target vault's git remotes " +
-			"must equal the recorded destination; --new binds a project born in another vault instead. It never " +
+			"must equal the recorded destination; --new binds a project born in another vault instead. It refuses a " +
+			"target vault that holds any departure record for the project. It never " +
 			"writes a checkout (a committed .vibe-palace.toml never carries vault_path), never re-points an existing " +
 			"binding, and never creates the global config. The write is verified through the resolver from every " +
 			"--checkout, and any failure restores the file. Reload your AI host afterwards: a running MCP server " +
@@ -55,8 +56,8 @@ func runConfigBind(args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "vp config bind: %v\n", err)
 		return cli.ExitUser
 	}
-	if len(fv.Args()) != 1 {
-		fmt.Fprintln(errOut, "vp config bind: exactly one project slug is required")
+	if len(fv.Args()) == 0 {
+		fmt.Fprintln(errOut, "vp config bind: name at least one project slug")
 		return cli.ExitUser
 	}
 	if fv.Get("--vault") == "" {
@@ -90,8 +91,8 @@ func runConfigBind(args []string, out, errOut io.Writer) int {
 	if fv.Bool("--new") {
 		mode = storage.BindNew
 	}
-	rep, err := storage.BindProjectVault(storage.BindRequest{
-		Slug: fv.Args()[0], VaultPath: fv.Get("--vault"), Mode: mode, Checkouts: checkouts,
+	rep, err := storage.BindProjectVaults(storage.BindVaultsRequest{
+		Slugs: fv.Args(), VaultPath: fv.Get("--vault"), Mode: mode, Checkouts: checkouts,
 		AllowUnlabelled: fv.Bool("--allow-unlabelled"), DryRun: fv.Bool("--dry-run"),
 	})
 	if err != nil {

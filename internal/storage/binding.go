@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 )
@@ -24,9 +25,17 @@ type StaleBindingError struct {
 	// "binding:<configfile>#<slug>" or "global:<file>"), so the operator knows
 	// which file to look at.
 	Source string
+	// Reason, when set, is a stale [project_vaults] binding: the bound vault
+	// no longer holds the project (StaleProjectBindingError), even though the
+	// root has not changed since startup.
+	Reason string
 }
 
 func (e *StaleBindingError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("vault binding is stale: this server serves %s, and %s. Refusing writes. "+
+			"Fix the binding, then reload the MCP server in your AI host", e.Bound, e.Reason)
+	}
 	return fmt.Sprintf(
 		"vault binding is stale: this server bound %s at startup, but %s now resolves to %s. "+
 			"A running MCP server resolves its vault ONCE, at startup — a mid-session config change "+
@@ -43,11 +52,15 @@ func (e *StaleBindingError) Error() string {
 //
 // Returns:
 //   - nil when they agree, or when the check is unarmed (either argument empty)
-//   - *StaleBindingError when both resolve and the roots DIFFER — the one
-//     condition this guard exists for
+//   - *StaleBindingError when both resolve and the roots DIFFER — the
+//     condition this guard exists for — or when the resolution refuses a
+//     stale [project_vaults] binding (StaleProjectBindingError)
 //   - the wrapped resolution error otherwise
 //
-// A resolution failure is NOT drift and callers must not treat it as such. An
+// A resolution failure is NOT drift and callers must not treat it as such —
+// with one exception, a stale [project_vaults] binding, reported above as a
+// StaleBindingError because the binding still names a vault that no longer
+// holds the project. An
 // absent global config, an unreadable file, or a vault_path swallowed by a
 // table all mean the new config governs NOTHING — it is refused everywhere it
 // is read — so boundRoot remains the only vault in effect and refusing writes
@@ -58,6 +71,14 @@ func CheckVaultBinding(boundRoot, launchCwd string) error {
 	}
 	resolved, source, err := ResolveVaultPath(launchCwd)
 	if err != nil {
+		// A stale project binding IS drift, unlike every other resolution
+		// failure: the binding still names a vault, and that vault no longer
+		// holds the project, so writing on would plant a fresh copy of it there.
+		var stale *StaleProjectBindingError
+		if errors.As(err, &stale) {
+			return &StaleBindingError{Bound: boundRoot, Resolved: stale.Target,
+				Source: "binding:" + stale.CfgPath + "#" + stale.Slug, Reason: stale.Error()}
+		}
 		return err
 	}
 	if sameVaultRoot(boundRoot, resolved) {

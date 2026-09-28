@@ -54,7 +54,7 @@
     {
       "name": "vp_config_bind",
       "mutating": true,
-      "schema_sha256": "6bf6296a38a3adf63a6a74ff1dd3e780dd457123d3504613dac0c49fb26a879b"
+      "schema_sha256": "66eb90d0e9176bd5ba46183533515dc44186a3a1e9bce7cef4b8dbae853a7234"
     },
     {
       "name": "vp_enqueue_iteration_summary",

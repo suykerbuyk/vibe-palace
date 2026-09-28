@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -152,4 +154,18 @@ func TestOnlyTheBindToolTargetsAProjectBySlug(t *testing.T) {
 			t.Errorf("the allow-list must admit vp_config_bind and nothing else, got violations %v", bad)
 		}
 	})
+}
+
+// vp_config_bind takes slug or slugs, never both, and at least one.
+func TestConfigBindToolSlugOrSlugs(t *testing.T) {
+	for name, params := range map[string]string{
+		"both":    `{"slug":"qa","slugs":["qa"],"vault_path":"/v"}`,
+		"neither": `{"vault_path":"/v"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := configBindHandler(context.Background(), json.RawMessage(params)); !apperr.IsCaller(err) {
+				t.Fatalf("err = %v, want a caller error", err)
+			}
+		})
+	}
 }

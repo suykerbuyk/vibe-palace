@@ -274,7 +274,7 @@ func TestBindRefusesATargetThatRecordsTheSlugDeparted(t *testing.T) {
 	if _, err := NewVault(quantum).RecordDeparture("qa", departure.MovedToVault, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BindProjectVault(movedReq("qa")); err == nil || !strings.Contains(err.Error(), "as departed from it") {
+	if _, err := BindProjectVault(movedReq("qa")); err == nil || !strings.Contains(err.Error(), "holds a departure record for it") {
 		t.Errorf("want a refusal for a target that records the slug departed, got %v", err)
 	}
 }
