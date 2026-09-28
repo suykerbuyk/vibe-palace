@@ -132,7 +132,24 @@ func pendingDepartures(vaultPath string) ([]string, error) {
 // backstop. Only the split purge's own commit is exempt, and not because it
 // "carries the record": a commit that merely includes a pending record would,
 // after a crashed purge, publish the record without its deletions.
+//
+// It also refuses while a lifecycle command's pending marker stands
+// (lifecycle_marker.go), so every committer that already runs this guard
+// before staging is blocked from stacking on, rebasing or publishing an
+// unfinished lifecycle commit.
 func refuseOnPendingDepartures(vaultPath string) error {
+	return refuseOnPendingDeparturesFor(vaultPath, nil)
+}
+
+// refuseOnPendingDeparturesFor is the commit guard for a committer that holds
+// the vault root lock as caller. The lifecycle marker does not refuse it only
+// when caller is the very live token that wrote the marker: the lifecycle
+// command's own commit. Every other committer passes nil through
+// refuseOnPendingDepartures.
+func refuseOnPendingDeparturesFor(vaultPath string, caller *vaultlock.Held) error {
+	if err := refuseOnLifecyclePending(vaultPath, caller); err != nil {
+		return err
+	}
 	recs, err := pendingDepartures(vaultPath)
 	if err != nil || len(recs) == 0 {
 		return err

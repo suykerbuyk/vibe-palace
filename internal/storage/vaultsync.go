@@ -305,7 +305,7 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 	}
 
-	committed, err := stageAndCommitLocked(vaultPath, message, keep)
+	committed, err := stageAndCommitLocked(vaultPath, nil, message, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +368,11 @@ func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string
 // with the hostname. The caller holds the vault root commit lock and has run
 // the pending-departure guard. committed is false when none of keep differs
 // from HEAD: a no-op, not an error.
-func stageAndCommitLocked(vaultPath, message string, keep []string) (committed bool, err error) {
+//
+// caller is the committer's own root-lock token when it has one
+// (commitPathsLocked), or nil: the backstop guard exempts a lifecycle marker
+// only for the very token that wrote it.
+func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message string, keep []string) (committed bool, err error) {
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
 	if err := stageInBatches(vaultPath, keep); err != nil {
@@ -408,7 +412,7 @@ func stageAndCommitLocked(vaultPath, message string, keep []string) (committed b
 	fullMsg := fmt.Sprintf("%s\n\n[%s]", message, hostname)
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
-	if err := commitOnlyPaths(vaultPath, fullMsg, keep); err != nil {
+	if err := commitOnlyPathsFor(vaultPath, caller, fullMsg, keep); err != nil {
 		if errors.Is(err, ErrPendingDeparture) {
 			// The guard's backstop fired after staging (a record appeared
 			// between the first check and the commit): leave nothing staged.
@@ -434,10 +438,10 @@ func commitPathsLocked(held *vaultlock.Held, message string, paths []string) (*P
 	if err != nil || len(keep) == 0 {
 		return result, err
 	}
-	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+	if err := refuseOnPendingDeparturesFor(vaultPath, held); err != nil {
 		return nil, err
 	}
-	committed, err := stageAndCommitLocked(vaultPath, message, keep)
+	committed, err := stageAndCommitLocked(vaultPath, held, message, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -1103,8 +1107,14 @@ func stagedChangesIn(vaultPath string, paths []string) (bool, error) {
 // silent no-op is the wrong direction for a function whose whole job is making a
 // write durable.
 func commitOnlyPaths(vaultPath, message string, paths []string) error {
+	return commitOnlyPathsFor(vaultPath, nil, message, paths)
+}
+
+// commitOnlyPathsFor is commitOnlyPaths for a committer holding the root lock
+// as caller (see refuseOnPendingDeparturesFor).
+func commitOnlyPathsFor(vaultPath string, caller *vaultlock.Held, message string, paths []string) error {
 	// The commit guard's backstop: every caller also runs it before staging.
-	if err := refuseOnPendingDepartures(vaultPath); err != nil {
+	if err := refuseOnPendingDeparturesFor(vaultPath, caller); err != nil {
 		return err
 	}
 	return commitPathspec(vaultPath, message, paths)

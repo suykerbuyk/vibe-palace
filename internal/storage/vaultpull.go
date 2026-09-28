@@ -166,6 +166,12 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	if err := RefuseIfNestedVaultGit(vaultPath, "pull"); err != nil {
 		return result, err
 	}
+	// A lifecycle command's unfinished commit must never be merged onto: the
+	// merge would carry unseen writes into it, which its own publish then
+	// could not see (lifecycle_marker.go). Pull and SyncVault both come here.
+	if err := refuseOnLifecyclePendingStrict(vaultPath); err != nil {
+		return result, err
+	}
 	branch := branchOrMain(vaultPath)
 
 	// Scan the dirty Templates/commands/*.md set ONCE, before the loop. The set
