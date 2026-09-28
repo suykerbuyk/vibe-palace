@@ -81,29 +81,70 @@ var bindBeforeWrite = func() {}
 // replaces it to change the file after the bind wrote it.
 var bindBeforeVerify = func() {}
 
-// BindProjectVault binds a project to a vault on THIS host: one
-// `[project_vaults].<slug>` line in the global config (ADR-012, tier 2). It
-// is the one writer of that table, behind both `vp config bind` and the MCP
-// tool vp_config_bind, and the split kind of RebindCheckout.
-//
-// Every precondition is checked before the first write. It never creates the
-// global config, never writes a checkout, never re-points an existing binding
-// (a mistaken bind is corrected by hand), and never takes a vaultlock:
-// host-local writes take none (WriteHostLocalWithBackup), and `vp config
-// upgrade` does not lock either, so a lock here would exclude nothing. The
-// write is a compare-and-set on the file's bytes instead, and it is verified
-// through ResolveVaultBinding from every named checkout — any failure restores
-// the file byte-for-byte.
+// BindVaultsRequest binds several projects to ONE vault in one host-config
+// write (§ Clone › Bind core). BindRequest is its one-slug form.
+type BindVaultsRequest struct {
+	Slugs []string
+	// VaultPath is written into [project_vaults] exactly as given, for every
+	// slug; it must be absolute after ~ expansion.
+	VaultPath string
+	// CheckRoot is the tree every check inspects. Empty means VaultPath. A
+	// caller that has not yet put the vault at VaultPath (a clone's dry run
+	// over its scratch directory) names the scratch here; a real bind must
+	// check the vault it writes, so CheckRoot then has to be VaultPath.
+	CheckRoot       string
+	Mode            BindMode
+	Checkouts       []string
+	AllowUnlabelled bool
+	DryRun          bool
+}
+
+// BindProjectVault binds one project; it is BindProjectVaults with one slug.
 func BindProjectVault(req BindRequest) (BindReport, error) {
+	return BindProjectVaults(BindVaultsRequest{
+		Slugs: []string{req.Slug}, VaultPath: req.VaultPath, Mode: req.Mode, Checkouts: req.Checkouts,
+		AllowUnlabelled: req.AllowUnlabelled, DryRun: req.DryRun,
+	})
+}
+
+// BindProjectVaults binds projects to a vault on THIS host: one
+// `[project_vaults].<slug>` line per slug in the global config (ADR-012, tier
+// 2), all written by ONE compare-and-set, so config.toml.bak is the true
+// pre-image and the bind is all-or-nothing. It is the one writer of that
+// table, behind `vp config bind`, the MCP tool vp_config_bind, `vp vault clone
+// --bind` and the split kind of RebindCheckout.
+//
+// Every precondition, for every slug, is checked before the first write. It
+// never creates the global config, never writes a checkout, never re-points an
+// existing binding (a mistaken bind is corrected by hand), and never takes a
+// vaultlock: host-local writes take none (WriteHostLocalWithBackup), and `vp
+// config upgrade` does not lock either, so a lock here would exclude nothing.
+// The write is a compare-and-set on the file's bytes instead, and it is
+// verified through ResolveVaultBinding from every named checkout — any failure
+// restores the file byte-for-byte.
+//
+// Rule 1 (§ Clone › Primary): the target holds NO departure record for the
+// slug, of any kind, whatever its directory holds — a record in a vault means
+// "not primary here". It is read with departure.Read, not departure.Find, whose
+// "the directory wins" would pass a record standing over real content.
+func BindProjectVaults(req BindVaultsRequest) (BindReport, error) {
 	rep := BindReport{DryRun: req.DryRun}
-	refuse := func(format string, a ...any) (BindReport, error) {
-		return rep, fmt.Errorf("refusing to bind project %q: %s", req.Slug, fmt.Sprintf(format, a...))
+	refuseAll := func(format string, a ...any) (BindReport, error) {
+		return rep, fmt.Errorf("refusing to bind %s: %s", bindSubject(req.Slugs), fmt.Sprintf(format, a...))
 	}
-	if err := slug.Validate(req.Slug); err != nil {
-		return refuse("%v", err)
+	if len(req.Slugs) == 0 {
+		return refuseAll("no project was named")
+	}
+	for i, s := range req.Slugs {
+		if err := slug.Validate(s); err != nil {
+			return rep, fmt.Errorf("refusing to bind project %q: %v", s, err)
+		}
+		if slices.Contains(req.Slugs[:i], s) {
+			return rep, fmt.Errorf("refusing to bind project %q: it is named twice", s)
+		}
 	}
 	if req.Mode != BindMoved && req.Mode != BindNew {
-		return refuse("mode %q is neither %q nor %q", req.Mode, BindMoved, BindNew)
+		return refuseAll("mode %q is neither %q nor %q", req.Mode, BindMoved, BindNew)
 	}
 
 	// ONE read: the bindings the checks below use are parsed from exactly the
@@ -112,39 +153,159 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 	// write.
 	bindings, cfgPath, old, err := readProjectVaultsBytes()
 	if err != nil {
-		return refuse("the host config cannot be used: %v", err)
+		return refuseAll("the host config cannot be used: %v", err)
 	}
 	rep.ConfigPath = cfgPath
 	if cfgPath == "" {
-		return refuse("the host config directory cannot be resolved")
+		return refuseAll("the host config directory cannot be resolved")
 	}
 	if old == nil {
-		return refuse("there is no global config at %s; run `vp init` first — a bind never creates it", cfgPath)
+		return refuseAll("there is no global config at %s; run `vp init` first — a bind never creates it", cfgPath)
 	}
-	target, err := boundVaultRoot(cfgPath, req.Slug, req.VaultPath)
-	if err != nil {
-		return refuse("%v", err)
+
+	// The target: the written path, and the tree the checks inspect.
+	var target string
+	if req.CheckRoot == "" {
+		target, err = boundVaultRoot(cfgPath, bindSubject(req.Slugs), req.VaultPath)
+		if err != nil {
+			return refuseAll("%v", err)
+		}
+	} else {
+		written, xerr := expandTilde(req.VaultPath)
+		if xerr != nil || !filepath.IsAbs(written) {
+			return refuseAll("vault path %q is not absolute after ~ expansion", req.VaultPath)
+		}
+		target, err = boundVaultRoot(cfgPath, bindSubject(req.Slugs), req.CheckRoot)
+		if err != nil {
+			return refuseAll("%v", err)
+		}
+		if !req.DryRun && !sameVaultRoot(target, filepath.Clean(written)) {
+			return refuseAll("a real bind checks the vault it writes: check root %s is not %s", req.CheckRoot, req.VaultPath)
+		}
 	}
 	rep.Vault = target
 	if format, ferr := surface.ReadFormat(target); ferr != nil {
-		return refuse("%s is not a readable vault: %v", target, ferr)
+		return refuseAll("%s is not a readable vault: %v", target, ferr)
 	} else if format != surface.RequiredDataFormat {
-		return refuse("%s is at data format %d; this binary requires %d", target, format, surface.RequiredDataFormat)
+		return refuseAll("%s is at data format %d; this binary requires %d", target, format, surface.RequiredDataFormat)
 	}
 	global, _, err := ResolveGlobalVaultPath()
 	if err != nil {
-		return refuse("the host default vault cannot be resolved: %v", err)
+		return refuseAll("the host default vault cannot be resolved: %v", err)
 	}
 	if sameVaultRoot(global, target) {
-		return refuse("%s is this host's default vault (vault_path); a binding names a DIFFERENT vault", target)
+		return refuseAll("%s is this host's default vault (vault_path); a binding names a DIFFERENT vault", target)
 	}
-	if _, departed := departure.Find(target, req.Slug); departed {
-		return refuse("%s records %q as departed from it; bind the project where it lives now", target, req.Slug)
+
+	var toWrite []string
+	var changes []string
+	for _, s := range req.Slugs {
+		already, err := checkBindSlug(&rep, req, s, cfgPath, bindings, target, global)
+		if err != nil {
+			return rep, err
+		}
+		if already {
+			changes = append(changes, s+": already bound")
+		} else {
+			toWrite = append(toWrite, s)
+		}
+	}
+
+	for _, c := range req.Checkouts {
+		if !filepath.IsAbs(c) {
+			return refuseAll("checkout %q is not an absolute path", c)
+		}
+		m, merr := project.LocateMarker(c)
+		switch {
+		case merr != nil:
+			return refuseAll("checkout %s: its marker cannot be read: %v", c, merr)
+		case m.Path == "":
+			return refuseAll("checkout %s has no .vibe-palace.toml", c)
+		case !slices.Contains(req.Slugs, m.Name):
+			return refuseAll("checkout %s names project %q (%s), which this bind does not name", c, m.Name, m.Path)
+		}
+		hits, total, warns := rebindGrep(CheckoutRebind{Kind: RebindSplit, Checkout: c, FromSlug: m.Name}, global)
+		rep.GrepHits = append(rep.GrepHits, hits...)
+		rep.GrepTotal += total
+		rep.Warnings = append(rep.Warnings, warns...)
+	}
+
+	if len(toWrite) == 0 {
+		rep.Change = strings.Join(changes, "\n")
+		if len(req.Slugs) == 1 {
+			rep.Change = "already bound"
+		}
+		if !req.DryRun {
+			if err := verifyBind(&rep, cfgPath, req, target); err != nil {
+				return rep, err
+			}
+		}
+		return rep, nil
+	}
+
+	next := string(old)
+	want := map[string]string{}
+	for _, s := range toWrite {
+		var change string
+		next, change, err = spliceProjectVault(next, s, req.VaultPath)
+		if err != nil {
+			return rep, fmt.Errorf("refusing to bind project %q: %v", s, err)
+		}
+		changes = append(changes, change)
+		want[s] = req.VaultPath
+	}
+	if err := projectVaultsPostcondition(string(old), next, want); err != nil {
+		return refuseAll("%v", err)
+	}
+	rep.Change = strings.Join(changes, "\n")
+	if req.DryRun {
+		return rep, nil
+	}
+
+	bindBeforeWrite()
+	if err := casWriteHostConfig(cfgPath, old, []byte(next), &rep.BackupPath); err != nil {
+		return refuseAll("%v", err)
+	}
+	bindBeforeVerify()
+	if err := verifyBind(&rep, cfgPath, req, target); err != nil {
+		if rerr := restoreHostLocalCAS(cfgPath, []byte(next), old); rerr != nil {
+			return rep, fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", err, cfgPath, rerr, rep.BackupPath)
+		}
+		return rep, fmt.Errorf("%w; %s was restored to its previous bytes", err, cfgPath)
+	}
+	rep.Warnings = append(rep.Warnings, "a running MCP server resolved its vault at startup and will refuse writes "+
+		"(StaleBindingError) until your AI host reloads it")
+	return rep, nil
+}
+
+// bindSubject names the projects of a bind in a refusal.
+func bindSubject(slugs []string) string {
+	if len(slugs) == 1 {
+		return fmt.Sprintf("project %q", slugs[0])
+	}
+	return fmt.Sprintf("projects %q", slugs)
+}
+
+// checkBindSlug runs every per-slug precondition. already reports that the
+// host already binds s to target, so it needs no line.
+func checkBindSlug(rep *BindReport, req BindVaultsRequest, s, cfgPath string, bindings map[string]string, target, global string) (already bool, err error) {
+	refuse := func(format string, a ...any) (bool, error) {
+		return false, fmt.Errorf("refusing to bind project %q: %s", s, fmt.Sprintf(format, a...))
+	}
+	// Rule 1: any record in the target refuses, whatever its directory holds.
+	if rec, recorded := departure.Read(target, s); recorded {
+		why := string(rec.Kind)
+		if rec.Malformed != "" {
+			why = "unreadable (" + rec.Malformed + ")"
+		}
+		return refuse("%s holds a departure record for it (%s, %s): a vault that records a project as departed is "+
+			"not its primary, whatever its directory still holds; bind the project where it lives now",
+			target, departure.RelPath(s), why)
 	}
 
 	switch req.Mode {
 	case BindMoved:
-		rec, departed := departure.Find(global, req.Slug)
+		rec, departed := departure.Find(global, s)
 		switch {
 		case !departed:
 			return refuse("the default vault %s holds no departure record for it: the split has not landed there "+
@@ -154,15 +315,15 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 		case rec.Kind != departure.MovedToVault:
 			return refuse("it was %s in %s, not moved to another vault", rec.Kind, global)
 		}
-		if !vaultHoldsProject(target, req.Slug) {
-			return refuse("%s holds neither palace/%s nor Projects/%s", target, req.Slug, req.Slug)
+		if !vaultHoldsProject(target, s) {
+			return refuse("%s holds neither palace/%s nor Projects/%s", target, s, s)
 		}
 		if rec.To == "" {
 			if !req.AllowUnlabelled {
 				return refuse("its departure record names no destination, so nothing proves %s is where it went; "+
 					"pass allow_unlabelled to bind anyway", target)
 			}
-			rep.Warnings = append(rep.Warnings, "the departure record names no destination; bound without checking")
+			rep.Warnings = append(rep.Warnings, s+": the departure record names no destination; bound without checking")
 		} else {
 			want, ok := normaliseRemoteURL(rec.To)
 			if !ok {
@@ -178,102 +339,51 @@ func BindProjectVault(req BindRequest) (BindReport, error) {
 			}
 		}
 	case BindNew:
-		for _, tree := range ProjectTrees(req.Slug) {
+		for _, tree := range ProjectTrees(s) {
 			if _, lerr := os.Lstat(filepath.Join(global, filepath.FromSlash(tree))); lerr == nil {
 				return refuse("the default vault %s has %s: it is not a project born elsewhere", global, tree)
 			}
 		}
-		if _, recorded := departure.Read(global, req.Slug); recorded {
+		if _, recorded := departure.Read(global, s); recorded {
 			return refuse("the default vault %s records a departure for it; use mode %q", global, BindMoved)
 		}
 	}
 
-	already := false
-	if cur, ok := bindings[req.Slug]; ok {
-		curRoot, cerr := boundVaultRoot(cfgPath, req.Slug, cur)
+	if cur, ok := bindings[s]; ok {
+		curRoot, cerr := boundVaultRoot(cfgPath, s, cur)
 		if cerr != nil || !sameVaultRoot(curRoot, target) {
 			return refuse("%s already binds it to %q; re-pointing a binding is refused — edit the config by hand "+
 				"if the old binding is wrong", cfgPath, cur)
 		}
-		already = true
-		rep.Change = "already bound"
+		return true, nil
 	}
-
-	for _, c := range req.Checkouts {
-		if !filepath.IsAbs(c) {
-			return refuse("checkout %q is not an absolute path", c)
-		}
-		m, merr := project.LocateMarker(c)
-		switch {
-		case merr != nil:
-			return refuse("checkout %s: its marker cannot be read: %v", c, merr)
-		case m.Path == "":
-			return refuse("checkout %s has no .vibe-palace.toml", c)
-		case m.Name != req.Slug:
-			return refuse("checkout %s names project %q (%s), not %q", c, m.Name, m.Path, req.Slug)
-		}
-		hits, total, warns := rebindGrep(CheckoutRebind{Kind: RebindSplit, Checkout: c, FromSlug: req.Slug}, global)
-		rep.GrepHits = append(rep.GrepHits, hits...)
-		rep.GrepTotal += total
-		rep.Warnings = append(rep.Warnings, warns...)
-	}
-
-	if already {
-		if !req.DryRun {
-			if err := verifyBind(&rep, cfgPath, req, target); err != nil {
-				return rep, err
-			}
-		}
-		return rep, nil
-	}
-
-	next, change, err := spliceProjectVault(string(old), req.Slug, req.VaultPath)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	if err := projectVaultsPostcondition(string(old), next, map[string]string{req.Slug: req.VaultPath}); err != nil {
-		return refuse("%v", err)
-	}
-	rep.Change = change
-	if req.DryRun {
-		return rep, nil
-	}
-
-	bindBeforeWrite()
-	if err := casWriteHostConfig(cfgPath, old, []byte(next), &rep.BackupPath); err != nil {
-		return refuse("%v", err)
-	}
-	bindBeforeVerify()
-	if err := verifyBind(&rep, cfgPath, req, target); err != nil {
-		if rerr := restoreHostLocalCAS(cfgPath, []byte(next), old); rerr != nil {
-			return rep, fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", err, cfgPath, rerr, rep.BackupPath)
-		}
-		return rep, fmt.Errorf("%w; %s was restored to its previous bytes", err, cfgPath)
-	}
-	rep.Warnings = append(rep.Warnings, "a running MCP server resolved its vault at startup and will refuse writes "+
-		"(StaleBindingError) until your AI host reloads it")
-	return rep, nil
+	return false, nil
 }
 
-// verifyBind proves the binding took, through the resolver itself.
-func verifyBind(rep *BindReport, cfgPath string, req BindRequest, target string) error {
-	wantSource := "binding:" + cfgPath + "#" + req.Slug
-	if len(req.Checkouts) == 0 {
-		bindings, _, err := readProjectVaults()
-		if err != nil {
-			return fmt.Errorf("verify: %w", err)
-		}
-		got, ok := bindings[req.Slug]
+// verifyBind proves every binding took, through the resolver itself: each
+// slug's entry resolves to target, and each named checkout resolves target
+// through its own slug's binding.
+func verifyBind(rep *BindReport, cfgPath string, req BindVaultsRequest, target string) error {
+	bindings, _, err := readProjectVaults()
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+	for _, s := range req.Slugs {
+		got, ok := bindings[s]
 		if !ok {
-			return fmt.Errorf("verify: %s has no [project_vaults] entry for %q after the write", cfgPath, req.Slug)
+			return fmt.Errorf("verify: %s has no [project_vaults] entry for %q after the write", cfgPath, s)
 		}
-		if root, err := boundVaultRoot(cfgPath, req.Slug, got); err != nil || !sameVaultRoot(root, target) {
-			return fmt.Errorf("verify: the written entry does not resolve to %s (err %v)", target, err)
+		if root, err := boundVaultRoot(cfgPath, s, got); err != nil || !sameVaultRoot(root, target) {
+			return fmt.Errorf("verify: the written entry for %q does not resolve to %s (err %v)", s, target, err)
 		}
-		return nil
 	}
 	rep.Checkouts = rep.Checkouts[:0]
 	for _, c := range req.Checkouts {
+		m, merr := project.LocateMarker(c)
+		if merr != nil {
+			return fmt.Errorf("verify: checkout %s: %w", c, merr)
+		}
+		wantSource := "binding:" + cfgPath + "#" + m.Name
 		res, err := ResolveVaultBinding(c)
 		if err != nil {
 			return fmt.Errorf("verify: checkout %s does not resolve after the bind: %w", c, err)

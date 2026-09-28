@@ -373,7 +373,7 @@ func TestResidue_ProbeHonoursItsDeadline(t *testing.T) {
 	residueGit, residueTimeout = p, 200*time.Millisecond
 	captureWarnings(t)
 	start := time.Now()
-	v, _ := probeResidue(root, "alpha")
+	v, _ := probeResidue(root, "Projects/alpha/")
 	if v != residueFault {
 		t.Errorf("a hung git is a fault, got %v", v)
 	}

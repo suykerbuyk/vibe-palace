@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -167,4 +168,114 @@ func boundVaultRoot(cfgPath, name, target string) (string, error) {
 		return "", rejected("holds no vault manifest (.vibe-palace/vault.toml)")
 	}
 	return abs, nil
+}
+
+// ErrStaleProjectBinding marks a [project_vaults] binding whose target no
+// longer holds the project while the host's default vault shows the project
+// is not simply elsewhere-born: it holds the project's trees again (a move was
+// undone) or records its departure (B's copy was reverted). Every such refusal
+// also wraps ErrVaultBindingRejected, so `vp hook` captures nothing rather than
+// fall back to the global vault, and CheckVaultBinding reports it as a
+// StaleBindingError, so a running MCP server refuses mutating tools.
+var ErrStaleProjectBinding = errors.New("stale project binding")
+
+// StaleProjectBindingError is the stale-binding refusal (§ Undo › Hosts bound
+// to B).
+type StaleProjectBindingError struct {
+	CfgPath string
+	Slug    string
+	Target  string // the bound vault, which holds none of the slug's content
+	Default string // the host's default vault
+	// Recorded is true when the default vault records the slug's departure
+	// (the binding outlived an undone move); false when the default vault
+	// holds tracked content for it instead.
+	Recorded bool
+	Why      string
+}
+
+func (e *StaleProjectBindingError) Error() string {
+	if e.Recorded {
+		return fmt.Sprintf("%s: %s: %s binds project %q to %s, which holds no content for it, while %s. "+
+			"The binding outlived the move it was made for (the copy there was reverted); writing there would start "+
+			"a fresh %q in the wrong vault. Remove its [%s] line (or restore config.toml.bak), and re-bind if the "+
+			"move is redone",
+			ErrVaultBindingRejected, ErrStaleProjectBinding, e.CfgPath, e.Slug, e.Target, e.Why, e.Slug, projectVaultsKey)
+	}
+	return fmt.Sprintf("%s: %s: %s binds project %q to %s, which holds no content for it, while %s. "+
+		"The binding and the default vault disagree about where %q lives: its content may have been created in the "+
+		"default vault by a host that does not bind it, or a move was undone. Refusing to guess; move the content "+
+		"to %s, or remove the [%s] line if the default vault is now its home",
+		ErrVaultBindingRejected, ErrStaleProjectBinding, e.CfgPath, e.Slug, e.Target, e.Why, e.Slug, e.Target, projectVaultsKey)
+}
+
+func (e *StaleProjectBindingError) Unwrap() []error {
+	return []error{ErrVaultBindingRejected, ErrStaleProjectBinding}
+}
+
+// projectTreeContent is what git would carry under vault's tree: the rule of
+// departure.OnlyResidue, through departure.TreeHoldsContent, so ignored *.bak
+// files, machine-local .local/ state and empty directories count as nothing.
+// An absent tree holds nothing and runs no git. decided is false when git
+// cannot answer.
+func projectTreeContent(vault, tree string) (holds, decided bool) {
+	if _, err := os.Lstat(filepath.Join(vault, filepath.FromSlash(tree))); err != nil {
+		return false, true
+	}
+	return departure.TreeHoldsContent(vault, tree)
+}
+
+// staleProjectBinding refuses a binding of name to target when target holds
+// NO content for name (by what git would carry: a tree kept alive only by
+// ignored or machine-local residue, as a reverted copy leaves on every host,
+// holds nothing) AND the host's default vault records a departure for name or
+// holds tracked content for it.
+//
+// A project bound with --new is never refused on account of residue: that bind
+// required the default vault to hold neither tree nor record, and an empty or
+// residue-only tree appearing there later is not evidence. Tracked content for
+// name reaching the default vault later (from a host that does not bind it) IS
+// refused, with its own message: the binding and the default vault disagree.
+//
+// Fail-open where git cannot answer: an undecided target counts as holding the
+// project, and undecided default-vault content counts as no evidence. A
+// default vault that cannot be resolved supplies no evidence either.
+func staleProjectBinding(cfgPath, name, target string) error {
+	global, _, err := ResolveGlobalVaultPath()
+	if err != nil || global == "" || sameVaultRoot(global, target) {
+		return nil
+	}
+	// Cheap first: with no record and no tree in the default vault there is
+	// no evidence at all, and no git runs.
+	rec, recorded := departure.Read(global, name)
+	anyTree := false
+	for _, tree := range ProjectTrees(name) {
+		if _, err := os.Lstat(filepath.Join(global, filepath.FromSlash(tree))); err == nil {
+			anyTree = true
+		}
+	}
+	if !recorded && !anyTree {
+		return nil
+	}
+	for _, tree := range ProjectTrees(name) {
+		if holds, decided := projectTreeContent(target, tree); holds || !decided {
+			return nil
+		}
+	}
+	e := &StaleProjectBindingError{CfgPath: cfgPath, Slug: name, Target: target, Default: global}
+	if recorded {
+		kind := string(rec.Kind)
+		if rec.Malformed != "" {
+			kind = "unreadable"
+		}
+		e.Recorded = true
+		e.Why = fmt.Sprintf("the default vault %s records its departure (%s, %s)", global, departure.RelPath(name), kind)
+		return e
+	}
+	for _, tree := range ProjectTrees(name) {
+		if holds, decided := projectTreeContent(global, tree); holds && decided {
+			e.Why = fmt.Sprintf("the default vault %s holds tracked content under %s", global, tree)
+			return e
+		}
+	}
+	return nil
 }

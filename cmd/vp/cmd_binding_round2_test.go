@@ -127,6 +127,9 @@ func TestMemoryHarvestCLIWritesTheBoundVault(t *testing.T) {
 	live, cfgPath := harvestCLIFixture(t, "git_enabled = false")
 	bound := filepath.Join(t.TempDir(), "bound-vault")
 	mustVault(t, bound)
+	// The bound vault holds the project: a binding to a vault holding none of
+	// its trees, while the live vault holds it, is refused as stale.
+	writeTestFile(t, filepath.Join(bound, "Projects", "harvp", "resume.md"), "# harvp\n")
 	writeTestFile(t, cfgPath, "vault_path = \""+live+"\"\ngit_enabled = false\n\n[project_vaults]\nharvp = \""+bound+"\"\n")
 
 	stdout, stderr, code := runVaultCmdCapturingBoth(t, cmdMemoryHarvest())

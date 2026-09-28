@@ -82,7 +82,7 @@ const (
 // (git missing, an error, a timeout, any stderr, output of the wrong shape)
 // logs one warning per slug and cause per residueWarnTTL.
 func OnlyResidue(vaultRoot, slug string) bool {
-	v, cause := probeResidue(vaultRoot, slug)
+	v, cause := probeResidue(vaultRoot, "Projects/"+slug+"/")
 	switch v {
 	case residueOnly:
 		return true
@@ -92,9 +92,30 @@ func OnlyResidue(vaultRoot, slug string) bool {
 	return false
 }
 
-// probeResidue runs the two git calls behind OnlyResidue and classifies the
-// answer. cause is set for residueFault only.
-func probeResidue(vaultRoot, slug string) (residueVerdict, string) {
+// TreeHoldsContent applies OnlyResidue's rule to any tree: whether git would
+// carry something under treeRel/ in vaultRoot (a tracked file, or an
+// untracked file that is not ignored, machine-local paths set aside). An
+// absent, empty or residue-only tree holds nothing. decided is false when git
+// cannot answer (the vault is not its own repository, or a fault); a fault
+// logs one warning per tree and cause per residueWarnTTL. The caller chooses
+// what an undecided answer means.
+func TreeHoldsContent(vaultRoot, treeRel string) (holds, decided bool) {
+	v, cause := probeResidue(vaultRoot, strings.TrimSuffix(treeRel, "/")+"/")
+	switch v {
+	case residueContent:
+		return true, true
+	case residueOnly:
+		return false, true
+	case residueFault:
+		warnResidueUndecidable(treeRel, cause)
+	}
+	return false, false
+}
+
+// probeResidue runs the two git calls behind OnlyResidue and TreeHoldsContent
+// for the tree prefix (a vault-relative path ending in "/"), and classifies
+// the answer. cause is set for residueFault only.
+func probeResidue(vaultRoot, prefix string) (residueVerdict, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), residueTimeout)
 	defer cancel()
 
@@ -118,7 +139,6 @@ func probeResidue(vaultRoot, slug string) (residueVerdict, string) {
 		return residueNoRepo, ""
 	}
 
-	prefix := "Projects/" + slug + "/"
 	out, errOut, err := residueGitRun(ctx, vaultRoot,
 		"-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", prefix)
 	switch {

@@ -145,3 +145,37 @@ func TestConfigBindVaultOnceAndTildeCheckout(t *testing.T) {
 		t.Errorf("a ~/ --checkout was not expanded and verified: %+v (%v)", rep.Checkouts, err)
 	}
 }
+
+// `vp config bind` takes several slugs and binds them in one write.
+func TestConfigBindSeveralSlugsInOneWrite(t *testing.T) {
+	cfg, quantum, _ := cliBindHost(t)
+	global, _, err := storage.ResolveGlobalVaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(quantum, "Projects", "orch", "resume.md"), "# orch\n")
+	b, err := (departure.Record{Slug: "orch", Kind: departure.MovedToVault, To: cliBindLabel, Date: "2026-09-27"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(global, filepath.FromSlash(departure.RelPath("orch"))), string(b))
+	pre, _ := os.ReadFile(cfg)
+
+	var out, errOut bytes.Buffer
+	if code := runConfigBind([]string{"qa", "orch", "--vault", "~/quantum-vault", "--json"}, &out, &errOut); code != cli.ExitOK {
+		t.Fatalf("exit %d\nstderr: %s", code, errOut.String())
+	}
+	var rep storage.BindReport
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(cfg)
+	for _, s := range []string{"qa", "orch"} {
+		if !strings.Contains(string(body), s+" = \"~/quantum-vault\"") {
+			t.Errorf("%s not bound:\n%s", s, body)
+		}
+	}
+	if bak, _ := os.ReadFile(rep.BackupPath); !bytes.Equal(bak, pre) {
+		t.Errorf("config.toml.bak is not the pre-bind config")
+	}
+}
