@@ -299,6 +299,43 @@ import (
 // The floor rises at the first v7 stamped write anywhere in the vault; run the
 // retirement only after that stamp has been pushed and pulled everywhere.
 //
+// Bumped 7->8 (2026-09-28, operator decision on
+// lc-u16-bump-mcp-surface-for-the-lifecycle-commands). The project lifecycle
+// commands (vp vault init, copy, project delete, clone --bind) and the
+// departure records they write changed what a vault holds, and — the reason
+// the gate must enforce the upgrade — only a v8 binary refuses to write into
+// a departed project:
+//
+//   - DEPARTURE RECORDS, Audits/departures/<p>.json (5284734, then e43cb65):
+//     a v7 binary from before 5284734 never reads them at all, and every v7
+//     binary misreads kind `deleted` and ignores `generation`, `copy_commit`
+//     and `footprint`.
+//   - THE RECORD WINS OVER THE DIRECTORY, and only lifecycle commands may
+//     write a record (dfb010c). A v7 binary lets a stale session re-create a
+//     moved project's tree — the directory won there — and its raw file tools
+//     can forge or remove a record: after the quantum split a lagging host
+//     would write qa-metabuild-system back into the personal vault and its
+//     next wrap would publish it. Only the gate stops that binary.
+//   - A NEW TRACKED FILE, .vibe-palace/remotes.toml (642efb2), written by vp
+//     vault init and read by vp vault clone; a v7 binary neither writes nor
+//     knows it.
+//   - commit-log.anchor NOW TRAVELS WITH ITS PROJECT (ac51907): it names the
+//     project repository's commit, so a copy carries it; a v7 split drops it.
+//   - LIFECYCLE COMMITS carry Vp-Copy-*, Vp-Delete-* and Vp-Run trailers that
+//     the delete's copy check and the redo's adoption read.
+//
+// The three standing queries above, re-run over ad544b1..this change, return
+// nothing. The data format does NOT move: nothing already on disk needs
+// migrating, record fields are optional (Parse accepts unknown fields), and an
+// older binary already reads kind `deleted` as malformed-but-departed. The
+// next release tag is therefore v8.2.0 (v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>,
+// build restarting at 0 on a new surface/format pair).
+//
+// Rollout: `make install` on every host, then restart every AI harness on it,
+// BEFORE the quantum split (run-sheet step B1, which this bump turns from a
+// request into an enforced rule). The floor rises at the first v8 stamped
+// write anywhere in the vault.
+//
 // 🔴 A BUMP STRANDS EVERY HOST THAT HAS NOT RUN `make install`, vault-wide and
 // at once: CheckCompatible takes the MAX across every stamp, so the first v3
 // write anywhere raises the floor for everybody. That is the intended effect,
@@ -306,7 +343,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 7
+const MCPSurfaceVersion int = 8
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

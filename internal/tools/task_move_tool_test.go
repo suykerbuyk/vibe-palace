@@ -561,11 +561,13 @@ const manageTaskGoldenPath = "../mcp/tool_surface.golden.json"
 // coupled vault write-shape changes (the open extensible header parser, the
 // widened Status vocabulary, and the CreateTime/ModTime header fields), and
 // 6 -> 7 by move-per-project-config-out-of-the-shared-vault, for retiring the
-// per-project vault config — none of which touch `move`. The ruling this test pins still holds: `move`
+// per-project vault config, and 7 -> 8 by
+// lc-u16-bump-mcp-surface-for-the-lifecycle-commands, for the lifecycle
+// commands' departure records and remotes.toml — none of which touch `move`. The ruling this test pins still holds: `move`
 // itself does not bump the surface.
 const (
 	manageTaskSchemaSHAAtHEAD = "4fb44b92cffff09f17e7b4561eb3344e38aaeb734cf9c0748eebea37cef65832"
-	surfaceVersionAtHEAD      = 7
+	surfaceVersionAtHEAD      = 8
 )
 
 // goldenToolSurface is the subset of the manifest these assertions read.
