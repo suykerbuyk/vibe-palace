@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -125,24 +124,21 @@ func splitSubtracted(rel string) bool {
 	return storage.ClassifyProjectPath(rel) != storage.ProjectContent
 }
 
-// splitEntry is one file that will travel: its vault-relative slash path, the
-// sha256 of its content, and its size.
-type splitEntry struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
+// splitEntry, splitTreeReport, walkSplitTree, vaultRel and hashFile are the
+// storage project-tree primitives under the names split and merge were written
+// against. See internal/storage/project_tree.go.
+type (
+	splitEntry      = storage.ProjectTreeEntry
+	splitTreeReport = storage.ProjectTreeReport
+)
+
+func walkSplitTree(root, dir string) (splitTreeReport, []splitEntry, error) {
+	return storage.WalkProjectTree(root, dir)
 }
 
-// splitTreeReport is the per-tree shape of the manifest: how many files travel
-// from palace/{slug} or Projects/{slug}, how many bytes, and how many paths the
-// subtract set removed.
-type splitTreeReport struct {
-	Tree       string `json:"tree"`
-	Present    bool   `json:"present"`
-	Files      int    `json:"files"`
-	Bytes      int64  `json:"bytes"`
-	Subtracted int    `json:"subtracted"`
-}
+func vaultRel(root, p string) string { return storage.VaultRel(root, p) }
+
+func hashFile(p string) (string, int64, error) { return storage.HashFile(p) }
 
 // splitGlobalReport is one vault-global artifact class, with its size, and
 // whether it travels. Vault-global artifacts do not partition by slug — they
@@ -554,97 +550,6 @@ func normalizeSplitSlugs(in []string) ([]string, error) {
 	return out, nil
 }
 
-// walkSplitTree inventories one allow-listed tree.
-//
-// 🔴 Lstat FIRST, AND A NON-REGULAR FILE REFUSES. Not skip, not follow.
-//
-//   - FOLLOW is a leak. A symlink under an allow-listed slug can point at a
-//     project that is not in the allow-list, or outside the vault entirely.
-//     Reading through it files another project's bytes under this slug's name,
-//     and the destination-side membership gate only ever sees the allow-listed
-//     slug — so the leak passes every check downstream of here. This is why
-//     migrate.copyTree/copyOne are not called: they os.Stat and os.ReadFile,
-//     which both follow.
-//   - SKIP is a silent hole. The path would be absent from the manifest and
-//     absent from the destination, and nothing downstream would ever say so.
-//
-// filepath.WalkDir does not descend through a symlinked directory, but a
-// symlinked FILE is still handed over as a DirEntry — so the refusal has to be
-// made here, per entry, and not inferred from the walk's own behaviour.
-func walkSplitTree(root, dir string) (splitTreeReport, []splitEntry, error) {
-	var report splitTreeReport
-	var entries []splitEntry
-
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// A slug present in only one tree is drift, not an error. It is
-			// reported as such; the missing side simply contributes nothing.
-			return report, nil, nil
-		}
-		return report, nil, fmt.Errorf("stat %s: %w", vaultRel(root, dir), err)
-	}
-	if !info.IsDir() {
-		return report, nil, fmt.Errorf(
-			"%s is not a directory (mode %s): an allow-listed project tree must be a real directory",
-			vaultRel(root, dir), info.Mode().Type())
-	}
-	report.Present = true
-
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel := vaultRel(root, p)
-
-		// Machine-local trees are pruned, not scanned. They never travel, so
-		// their contents are not this tool's business — and scanning them would
-		// let a symlink in a cache directory refuse an otherwise clean plan.
-		if d.IsDir() {
-			if splitPrunedDirs[d.Name()] {
-				report.Subtracted++
-				return fs.SkipDir
-			}
-			return nil
-		}
-
-		st, lerr := os.Lstat(p)
-		if lerr != nil {
-			return fmt.Errorf("lstat %s: %w", rel, lerr)
-		}
-		if st.Mode().Type() != 0 {
-			return fmt.Errorf(
-				"%s is not a regular file (mode %s): split refuses a tree containing "+
-					"symlinks, devices or sockets rather than skipping them (a silent hole "+
-					"in the manifest) or following them (bytes from outside the allow-list "+
-					"filed under an allow-listed slug)",
-				rel, st.Mode().Type())
-		}
-
-		// The subtract set is applied AFTER the non-regular refusal, on purpose.
-		// A symlink named .surface is still a symlink in an allow-listed tree,
-		// and the reason to refuse it has nothing to do with whether its path
-		// would later be hashed.
-		if splitSubtracted(rel) {
-			report.Subtracted++
-			return nil
-		}
-
-		sum, size, herr := hashFile(p)
-		if herr != nil {
-			return fmt.Errorf("hash %s: %w", rel, herr)
-		}
-		entries = append(entries, splitEntry{Path: rel, SHA256: sum, Size: size})
-		report.Files++
-		report.Bytes += size
-		return nil
-	})
-	if err != nil {
-		return report, nil, err
-	}
-	return report, entries, nil
-}
-
 // walkSplitGlobal reports every vault-global artifact class and hashes the ones
 // the caller affirmatively included.
 //
@@ -726,35 +631,6 @@ func walkSplitGlobal(root string, p vaultSplitParams) ([]splitGlobalReport, []sp
 		reports = append(reports, report)
 	}
 	return reports, entries, nil
-}
-
-// vaultRel renders a host path as a vault-relative, slash-separated path. Every
-// manifest row and every error message uses it, so neither leaks the host's
-// absolute vault location and neither varies by platform separator.
-func vaultRel(root, p string) string {
-	rel, err := filepath.Rel(root, p)
-	if err != nil {
-		return filepath.ToSlash(p)
-	}
-	return filepath.ToSlash(rel)
-}
-
-// hashFile returns the sha256 and size of a regular file. It streams rather
-// than reading whole: a transcript archive is large, and a plan over a real
-// vault opens thousands of them.
-func hashFile(p string) (string, int64, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	n, err := io.Copy(h, f)
-	if err != nil {
-		return "", 0, err
-	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 // splitManifestDigest canonicalises a manifest and returns its sha256.
