@@ -239,6 +239,11 @@ func resetToParent(held *vaultlock.Held, m lifecycleMarker) error {
 		return &PublishError{Kind: PublishStateUnknown, Vault: vaultPath, Commit: m.Commit, Rerun: m.Rerun,
 			Detail: fmt.Sprintf("HEAD is %s, not the run's %s; refusing to reset", shortSHA(head), shortSHA(want))}
 	}
+	if m.Parent == "" {
+		// A root commit (vault init) has no parent to reset to; its caller
+		// rolls back by removing the new vault.
+		return nil
+	}
 	// --keep, never --hard: V holds other projects' uncommitted edits (tidy
 	// leaves dirt by design), and --hard would revert them. --keep moves HEAD,
 	// updates only the paths that differ between the commit and its parent,

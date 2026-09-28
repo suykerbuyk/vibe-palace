@@ -41,7 +41,10 @@ type lifecycleMarker struct {
 	Parent  string `json:"parent"`           // HEAD before the command wrote anything
 	Commit  string `json:"commit,omitempty"` // the lifecycle commit, once it exists
 	Rerun   string `json:"rerun"`            // the command line that finishes or redoes the run
-	Created string `json:"created"`
+	// Remotes are the run's remotes as name=url, for a command whose re-run
+	// must match them (vault init).
+	Remotes []string `json:"remotes,omitempty"`
+	Created string   `json:"created"`
 }
 
 // LifecyclePendingError is the refusal while a marker stands.
@@ -100,7 +103,7 @@ func readLifecycleMarker(vaultPath string) (lifecycleMarker, bool, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return lifecycleMarker{}, true, fmt.Errorf("parse the lifecycle marker: %w", err)
 	}
-	if m.RunID == "" || m.Parent == "" {
+	if m.RunID == "" || (m.Parent == "" && m.Command != initMarkerCommand) {
 		return m, true, fmt.Errorf("the lifecycle marker names no run id or parent")
 	}
 	return m, true, nil
@@ -114,7 +117,8 @@ func writeLifecycleMarker(held *vaultlock.Held, m lifecycleMarker) error {
 		return err
 	}
 	vaultPath := held.Root()
-	if m.RunID == "" || m.Parent == "" || m.Command == "" {
+	// Only `vault init` has no parent: its commit is the vault's root commit.
+	if m.RunID == "" || m.Command == "" || (m.Parent == "" && m.Command != initMarkerCommand) {
 		return fmt.Errorf("lifecycle marker needs a command, a run id and a parent")
 	}
 	if m.Created == "" {

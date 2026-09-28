@@ -535,6 +535,13 @@ func ResolveStampDir(vaultPath, writePath string) (string, error) {
 	if len(parts) == 1 && parts[0] == vaultGitignoreName {
 		return "", nil
 	}
+	// .vibe-palace/remotes.toml is the vault's record of its own remotes
+	// (`vp vault init`, read by `vp vault clone`): vault metadata beside
+	// vault.toml, not schema content, so nothing to stamp and nothing to warn
+	// about. Matched by exact path.
+	if len(parts) == 2 && parts[0] == ".vibe-palace" && parts[1] == "remotes.toml" {
+		return "", nil
+	}
 
 	top := parts[0]
 	switch top {
