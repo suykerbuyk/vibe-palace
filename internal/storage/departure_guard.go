@@ -210,6 +210,9 @@ func (e *DepartedWorkError) Error() string {
 			}
 			fmt.Fprintf(&b, "  2. This work belongs in the vault %q moved to, %s: carry it there, not here "+
 				"(bind this host to it first: vp config bind %s --vault <path>). Then\n", d.Slug, dest, d.Slug)
+		case d.Kind == departure.Deleted && d.Malformed == "":
+			fmt.Fprintf(&b, "  2. %q was deleted from this vault and continues nowhere: keep the work only if someone "+
+				"restores the project (git revert of its delete commit). Then\n", d.Slug)
 		default:
 			fmt.Fprintf(&b, "  2. Where %q went is not recorded here; find out from whoever removed it and carry the work there. Then\n", d.Slug)
 		}
@@ -230,6 +233,8 @@ func departureWhere(d departure.Record) string {
 		return fmt.Sprintf("moved to another vault, %q", d.To)
 	case d.Kind == departure.MovedToVault:
 		return "moved to another vault"
+	case d.Kind == departure.Deleted:
+		return "deleted from this vault"
 	default:
 		return "removed; where it went is not recorded"
 	}

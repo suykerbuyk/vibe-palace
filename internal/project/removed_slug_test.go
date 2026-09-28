@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 )
 
@@ -217,5 +218,15 @@ func TestRemovedSlug_IgnoresAnEnclosingRepository(t *testing.T) {
 	}
 	if err := RequireKnownProject("ghost", vault, markerRepo(t, "ghost")); err != nil {
 		t.Errorf("a nested vault with no history of its own must keep authorizing: %v", err)
+	}
+}
+
+// A deleted departure redirects to nowhere: never "moved to another vault",
+// and never a bind command.
+func TestRedirectOfADeletedDeparture(t *testing.T) {
+	got := Departure{Slug: "old", Source: "record", Kind: departure.Deleted, Date: "2026-09-27"}.Redirect()
+	if !strings.Contains(got, "deleted from this vault on 2026-09-27 and continues nowhere") ||
+		strings.Contains(got, "moved to another vault") || strings.Contains(got, "vp config bind") {
+		t.Fatalf("Redirect() = %q", got)
 	}
 }

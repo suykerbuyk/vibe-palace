@@ -166,3 +166,88 @@ func TestParse_SameVerdictsAsRead(t *testing.T) {
 		}
 	}
 }
+
+// A binary that predates kind "deleted" still treats the slug as departed. Its
+// Parse had only renamed and moved-to-vault, so it marks the record Malformed
+// — which every consumer reads as "departed, destination unreadable" — and its
+// Find reports found for any record file that exists, whatever the kind.
+func TestAnOlderBinaryReadsADeletedRecordAsDeparted(t *testing.T) {
+	data, err := (Record{Slug: "old", Kind: Deleted, Date: "2026-09-27", Generation: 1,
+		Footprint: "v1:" + strings.Repeat("ab", 32)}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preDeleted := func(k Kind) bool { return k == Renamed || k == MovedToVault }
+	old := parseKinds("old", data, preDeleted)
+	if old.Slug != "old" || old.Kind != Deleted || !strings.Contains(old.Malformed, `unknown kind "deleted"`) {
+		t.Fatalf("an older binary's parse = %+v; want slug old, kind deleted, Malformed set", old)
+	}
+	if cur := Parse("old", data); cur.Malformed != "" {
+		t.Fatalf("this binary must understand kind deleted: %+v", cur)
+	}
+
+	root := t.TempDir()
+	p := filepath.Join(root, filepath.FromSlash(RelPath("old")))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A kind no binary knows yet goes down the same tolerant path.
+	future := strings.Replace(string(data), `"deleted"`, `"merged-away"`, 1)
+	if err := os.WriteFile(p, []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec, departed := Find(root, "old")
+	if !departed || rec.Malformed == "" {
+		t.Fatalf("an unknown kind must read as departed and Malformed: departed=%v rec=%+v", departed, rec)
+	}
+}
+
+// The lifecycle fields round-trip, are omitted when unset (so an existing
+// writer's bytes do not change), and are validated.
+func TestLifecycleFieldsRoundTripAndValidate(t *testing.T) {
+	sha := strings.Repeat("0123456789", 4)
+	fp := "v1:" + strings.Repeat("cd", 32)
+	in := Record{Slug: "old", Kind: MovedToVault, To: "git@example.invalid:team/b.git", Date: "2026-09-27",
+		Generation: 3, CopyCommit: sha, Footprint: fp}
+	data, err := in.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"generation": 3`, `"copy_commit": "` + sha + `"`, `"footprint": "` + fp + `"`} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("encoded record lacks %s:\n%s", key, data)
+		}
+	}
+	in.Format = Format
+	if got := Parse("old", data); got != in {
+		t.Fatalf("round trip:\n got %+v\nwant %+v", got, in)
+	}
+
+	plain, err := (Record{Slug: "old", Kind: MovedToVault, To: "q", Date: "2026-09-27"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"generation", "copy_commit", "footprint"} {
+		if strings.Contains(string(plain), key) {
+			t.Errorf("an unset %s must be omitted:\n%s", key, plain)
+		}
+	}
+
+	for name, r := range map[string]Record{
+		"deleted names a destination": {Slug: "old", Kind: Deleted, To: "git@example.invalid:team/b.git"},
+		"negative generation":         {Slug: "old", Kind: Deleted, Generation: -1},
+		"copy commit on deleted":      {Slug: "old", Kind: Deleted, CopyCommit: sha},
+		"copy commit on renamed":      {Slug: "old", Kind: Renamed, To: "new", CopyCommit: sha},
+		"short copy commit":           {Slug: "old", Kind: MovedToVault, CopyCommit: "abc1234"},
+		"upper-case copy commit":      {Slug: "old", Kind: MovedToVault, CopyCommit: strings.ToUpper("abcdef" + sha[6:])},
+		"footprint without v1":        {Slug: "old", Kind: Deleted, Footprint: strings.Repeat("cd", 32)},
+		"short footprint":             {Slug: "old", Kind: Deleted, Footprint: "v1:abcd"},
+	} {
+		if err := r.Validate(); err == nil {
+			t.Errorf("%s: Validate accepted %+v", name, r)
+		}
+	}
+	if err := (Record{Slug: "old", Kind: Deleted, Generation: 1, Footprint: fp}).Validate(); err != nil {
+		t.Errorf("a well-formed deleted record refused: %v", err)
+	}
+}
