@@ -471,3 +471,30 @@ func TestAcquirePairReleasesFirstOnSecondFailure(t *testing.T) {
 	}
 	_ = r()
 }
+
+// TryAcquireFile excludes a second holder of the same named file until the
+// first releases, and leaves the file in place.
+func TestTryAcquireFileExcludes(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), ".v.vp-clone.lock")
+	rel, ok, err := TryAcquireFile(lock)
+	if err != nil || !ok {
+		t.Fatalf("first: ok=%v err=%v", ok, err)
+	}
+	if _, ok2, err := TryAcquireFile(lock); err != nil || ok2 {
+		t.Fatalf("second while held: ok=%v err=%v", ok2, err)
+	}
+	if err := rel(); err != nil {
+		t.Fatal(err)
+	}
+	rel2, ok3, err := TryAcquireFile(lock)
+	if err != nil || !ok3 {
+		t.Fatalf("after release: ok=%v err=%v", ok3, err)
+	}
+	_ = rel2()
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatal("the lock file was removed")
+	}
+	if _, _, err := TryAcquireFile("relative.lock"); err == nil {
+		t.Fatal("a relative lock path was accepted")
+	}
+}

@@ -279,6 +279,7 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// (storage.SyncVault, vaultsyncflow.go:120), so gating it gated the very
 		// operation `vault pull` is left ungated to protect. See the rationale at
 		// its registration site in commands.go.
+		"vault clone":          true,
 		"vault commit":         true,
 		"vault tidy":           true,
 		"vault write":          true,

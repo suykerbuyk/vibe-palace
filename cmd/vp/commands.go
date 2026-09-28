@@ -152,6 +152,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// new one). It is a different command from `vp init` (project
 	// onboarding), and shares none of its flags or its host-config writes.
 	reg.Register(cmdVaultInit())
+	// mutates(), unlike vault init: clone --bind writes the host config and so
+	// decides which vault every later write lands in, the reason `vp config
+	// bind` is gated.
+	reg.Register(mutates(cmdVaultClone()))
 	// Registered UNWRAPPED (no mutates()) DELIBERATELY: `vault pull` and `vault
 	// push` are TRANSPORT, not authorship. Neither writes vault content bearing
 	// this binary's schema — pull applies commits authored elsewhere (its only
