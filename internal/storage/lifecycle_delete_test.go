@@ -170,7 +170,7 @@ func TestDeleteMovedCommitsFootprintAndRecordAndPublishes(t *testing.T) {
 	if markerFound(t, f.Dir) {
 		t.Fatal("the marker was not cleared")
 	}
-	if len(res.Undo) != 3 || !strings.Contains(res.Undo[0], "revert "+commit) {
+	if len(res.Undo) != 3 || !strings.Contains(res.Undo[0], "revert --no-edit "+commit) {
 		t.Fatalf("undo lines = %q", res.Undo)
 	}
 }

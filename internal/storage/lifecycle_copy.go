@@ -822,7 +822,7 @@ func removeCopyTrees(vaultPath string, projects []string) error {
 func copyUndoLines(vaultPath, sha string, remotes []string, branch string) []string {
 	lines := []string{fmt.Sprintf("git -C %s revert --no-edit %s", shellQuote(vaultPath), sha)}
 	for _, r := range remotes {
-		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", shellQuote(vaultPath), r, branch))
+		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", shellQuote(vaultPath), shellQuote(r), branch))
 	}
 	return lines
 }

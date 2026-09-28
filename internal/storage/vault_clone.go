@@ -394,7 +394,7 @@ func finishClone(rep *CloneReport, req CloneRequest, path, ownRun string) (*Clon
 	}
 	rep.Undo = []string{"rm -rf " + shellQuote(path)}
 	if len(req.Bind) > 0 {
-		rep.Undo = append(rep.Undo, fmt.Sprintf("cp %s %s   (or delete the [%s] lines printed above)", shellQuote(rep.BackupPath), shellQuote(rep.ConfigPath), projectVaultsKey))
+		rep.Undo = append(rep.Undo, fmt.Sprintf("cp -- %s %s   # or delete the [%s] lines printed above", shellQuote(rep.BackupPath), shellQuote(rep.ConfigPath), projectVaultsKey))
 		rep.Warnings = append(rep.Warnings, "restart every `vp mcp` on this host: a running server resolved its vault at startup")
 	}
 	return rep, nil

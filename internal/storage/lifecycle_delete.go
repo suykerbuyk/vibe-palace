@@ -963,10 +963,13 @@ func removeDeleteLeftovers(root string, plan *DeletePlan) (files, dirs int, kept
 }
 
 // deleteUndoLines are § Undo's lines for this run.
+// Each line is pasteable exactly as printed: the vault path is shell-quoted
+// (it may hold a space), and the revert takes --no-edit so it never opens an
+// editor.
 func deleteUndoLines(root, commit string, remotes []string) []string {
-	lines := []string{fmt.Sprintf("git -C %s revert %s", root, commit)}
+	lines := []string{fmt.Sprintf("git -C %s revert --no-edit %s", shellQuote(root), commit)}
 	for _, r := range remotes {
-		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", root, r, branchOrMain(root)))
+		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", shellQuote(root), shellQuote(r), branchOrMain(root)))
 	}
 	return lines
 }
