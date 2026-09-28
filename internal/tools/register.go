@@ -61,7 +61,7 @@ func WithLaunch(launch detachlaunch.LaunchFunc) RegisterOption {
 // transport only (never on `vp mcp serve`, which passes
 // WithRequireExplicitProject), because they write the host the process runs
 // on. Pinned by TestStdioOnlyToolsAreAbsentOnServe.
-var StdioOnlyToolNames = []string{"vp_config_bind"}
+var StdioOnlyToolNames = []string{"vp_config_bind", "vp_vault_project_delete"}
 
 // RegisterAll registers all tools with the MCP registry.
 // If engine is nil, search tools and capture tools are not registered.
@@ -123,6 +123,9 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	// `vp mcp serve` that state belongs to the server host.
 	if !o.requireExplicitProject {
 		reg.MustRegister(ConfigBindTool())
+		// vp_vault_project_delete: operator ruling Q2, delete is stdio and CLI
+		// only in v1.
+		reg.MustRegister(VaultProjectDeleteTool(vault))
 	}
 	reg.MustRegister(VaultSyncTool(vault))
 	reg.MustRegister(VaultTidyTool(vault))

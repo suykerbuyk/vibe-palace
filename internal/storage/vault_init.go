@@ -204,7 +204,7 @@ func initFresh(ctx context.Context, path string, req InitVaultRequest) (*InitVau
 		names[i] = r.Name
 	}
 	msg := fmt.Sprintf("vault init: %s\n\nRemotes: %s", filepath.Base(path), strings.Join(names, ", "))
-	if _, err := commitPathsLocked(held, msg, rep.Files); err != nil {
+	if _, err := commitPathsLocked(held, msg, lifecycleRunTrailerLine(m.RunID), rep.Files); err != nil {
 		removeNew()
 		return nil, fmt.Errorf("vault init: commit: %w", err)
 	}

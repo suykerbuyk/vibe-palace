@@ -305,7 +305,7 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 	}
 
-	committed, err := stageAndCommitLocked(vaultPath, nil, message, keep)
+	committed, err := stageAndCommitLocked(vaultPath, nil, message, "", keep)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +372,7 @@ func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string
 // caller is the committer's own root-lock token when it has one
 // (commitPathsLocked), or nil: the backstop guard exempts a lifecycle marker
 // only for the very token that wrote it.
-func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message string, keep []string) (committed bool, err error) {
+func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, trailers string, keep []string) (committed bool, err error) {
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
 	if err := stageInBatches(vaultPath, keep); err != nil {
@@ -404,12 +404,9 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message stri
 		return false, nil
 	}
 
-	// Stamp with hostname.
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	fullMsg := fmt.Sprintf("%s\n\n[%s]", message, hostname)
+	// Stamp with hostname, and put any trailers AFTER the stamp: git reads
+	// trailers only from the last paragraph (stampedCommitMessage).
+	fullMsg := stampedCommitMessage(message, trailers)
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
 	if err := commitOnlyPathsFor(vaultPath, caller, fullMsg, keep); err != nil {
@@ -429,7 +426,10 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message stri
 // and never reconciles, so nothing under it re-acquires the lock either; the
 // caller publishes. Like the core, it does not read git_enabled — the caller
 // gates that. A token that is not a live root lock refuses before any git runs.
-func commitPathsLocked(held *vaultlock.Held, message string, paths []string) (*PushResult, error) {
+// trailers, when set, is the commit's final paragraph, after the hostname
+// stamp, so git parses it: a lifecycle copy's Vp-Copy-* block goes there, never
+// in message.
+func commitPathsLocked(held *vaultlock.Held, message, trailers string, paths []string) (*PushResult, error) {
 	if err := held.RequireRoot(); err != nil {
 		return nil, err
 	}
@@ -441,7 +441,7 @@ func commitPathsLocked(held *vaultlock.Held, message string, paths []string) (*P
 	if err := refuseOnPendingDeparturesFor(vaultPath, held); err != nil {
 		return nil, err
 	}
-	committed, err := stageAndCommitLocked(vaultPath, held, message, keep)
+	committed, err := stageAndCommitLocked(vaultPath, held, message, trailers, keep)
 	if err != nil {
 		return nil, err
 	}

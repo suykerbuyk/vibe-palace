@@ -282,6 +282,7 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"vault write":          true,
 		"vault edit":           true,
 		"vault delete":         true,
+		"vault project":        true,
 		"vault move":           true,
 		"memory harvest":       true,
 		"migrate":              true,

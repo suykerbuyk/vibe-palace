@@ -362,6 +362,11 @@
       "schema_sha256": "1680621c5d8ce90bc633cc4da2def2b2fd6deb59fc6b53aad93f5fbf0db4cb93"
     },
     {
+      "name": "vp_vault_project_delete",
+      "mutating": true,
+      "schema_sha256": "62f1f69aa450259be4e81453aa5bc10d999c0f1b58a0bf899ae2f89c72fe4826"
+    },
+    {
       "name": "vp_vault_read",
       "mutating": false,
       "schema_sha256": "4f768bb46ff73962a783d9d88aea245f2c629888dca4b990ca8d12d95c3848fe"

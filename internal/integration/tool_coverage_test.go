@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1894,6 +1895,56 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 			if !out.Complete {
 				t.Error("complete is not true")
+			}
+		},
+	},
+
+	"vp_vault_project_delete": {
+		// plan only: the dry run writes nothing. It needs the bound vault to be
+		// a git repository in sync with a remote, and the project tracked.
+		build: func(t *testing.T, h *testHarness) any {
+			const project = "cov-projectdelete"
+			covGitVault(t, h)
+			bare := t.TempDir()
+			git := func(dir string, args ...string) {
+				t.Helper()
+				cmd := exec.Command("git", args...)
+				cmd.Dir = dir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+			}
+			git(bare, "init", "-q", "--bare")
+			projDir := filepath.Join(h.Vault.Root, "Projects", project)
+			if err := os.MkdirAll(projDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(projDir, "resume.md"), []byte("deletable content\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(h.Vault.Root, "add", "--", "Projects/"+project)
+			git(h.Vault.Root, "commit", "-q", "-m", "a project to delete")
+			git(h.Vault.Root, "remote", "add", "origin", "file://"+filepath.ToSlash(bare))
+			git(h.Vault.Root, "push", "-q", "origin", "HEAD")
+			return map[string]any{"action": "plan", "slugs": []string{project}, "discard": true}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				Mode     string `json:"mode"`
+				Kind     string `json:"kind"`
+				Digest   string `json:"digest"`
+				Projects []struct {
+					Tracked []struct {
+						Path string `json:"path"`
+					} `json:"tracked"`
+				} `json:"projects"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Mode != "delete" || out.Kind != "deleted" || out.Digest == "" {
+				t.Errorf("plan = %+v", out)
+			}
+			if len(out.Projects) != 1 || len(out.Projects[0].Tracked) != 1 {
+				t.Errorf("tracked footprint = %+v, want the one file", out.Projects)
 			}
 		},
 	},
