@@ -157,6 +157,46 @@
       "reason": "BUILT AHEAD OF ITS CALLER, by the lifecycle-commands-design-plan unit plan: U2 extracts the lock-held commit variant (commitAndPushPathsCore's local commit without its vaultlock.Acquire, taking a vaultlock.Held token that carries the root) so vp vault copy (U5, ApplyCopy step 7) can commit while it already holds the root lock, which it must not re-acquire (non-reentrant flock, the round-1 deadlock). commitAndPushPathsCore is not rewritten as a wrapper of it because its already-ahead reconcile sits between the guard and the stage, and U2 is hash-neutral. Exercised by internal/storage/lock_held_variants_test.go. This entry is TEMPORARY: the unit that adds the first non-test caller (U5) must delete it, and the gate will then report it as a fixed finding if it is left behind."
     },
     {
+      "id": "uninvoked storage.commitsWithTrailer",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U6 (vault project delete: the copy check searches every ancestor of the destination for the copy commit). REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.footprintHash",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5 (copy), U6 (delete) and U9 (rename): F is every one of their postchecks and digests. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.lifecycleRemoteOrder",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U4 (vault init), U5, U6 and U9: the push order of exact publish. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.lifecycleRunTrailerLine",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5, U6 and U9: the Vp-Run trailer each puts in its lifecycle commit, which a redo checks before adopting it. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.lsRemoteHead",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5 (copy: resolve the source branch), U6 (delete: resolve the destination branch) and U14 (clone: probe the remote). REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.newRemoteSnapshot",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5 (copy: the source snapshot) and U6 (delete: the destination snapshot). REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.redoLifecycle",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5, U6 and U9: the re-run of an unfinished copy, delete or rename. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.remoteSnapshot.checkoutFootprint",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5 (copy: the footprint-only checkout it copies from). REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.requireHeadAtEveryRemote",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5, U6 and U9: the before-commit check of exact publish. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
+      "id": "uninvoked storage.writeLifecycleMarker",
+      "reason": "LIBRARY UNIT AHEAD OF ITS CALLERS, not dead code. Unit U3 of task lifecycle-commands-design-plan (git plumbing for the project lifecycle commands) lands this with no CLI or MCP surface; it is exercised by the U3 tests on file:// bare remotes. Its consumer: U5, U6 and U9: the pending marker before their first write. REMOVE THIS ENTRY when that consumer lands: the gate then reports it stale, which is the ratchet working as intended."
+    },
+    {
       "id": "uninvoked testinfra.CLIResult.Must",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-e2e-migration-to-go-runcli alongside RunCLI/RetainOnFailure below as the fatal-on-nonzero convenience the retired runVP (template_reconcile_test.go) used to provide inline. Takes *testing.T, so by design its only callers are test files: internal/integration/e2e_init_test.go, e2e_githook_test.go, e2e_walkthrough_test.go, e2e_workflows_test.go, and cli_dispatch_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
