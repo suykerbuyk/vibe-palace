@@ -58,6 +58,9 @@ var ParamAwareToolNames = []string{
 	// digest, and verify, which re-derives that digest and compares the
 	// destination against it. apply writes and is never admitted.
 	"vp_vault_merge",
+	// vp_vault_copy admits plan, which snapshots the source remote into
+	// private scratch and writes nothing to the vault. apply is never admitted.
+	"vp_vault_copy",
 }
 
 // readOnlyIf adapts a typed decision over a tool's own params struct into the

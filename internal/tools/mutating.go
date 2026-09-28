@@ -105,6 +105,11 @@ var MutatingToolNames = []string{
 	// call graph agrees with it from the first commit and no baseline entry was
 	// ever needed. See vault_merge.go.
 	"vp_vault_merge",
+	// vp_vault_copy is gated on the TOOL, which writes on one of its two
+	// actions: apply copies projects into the served vault, commits and
+	// publishes. plan writes nothing to the vault and is admitted
+	// per-invocation by vaultCopyReadOnly. See vault_copy.go.
+	"vp_vault_copy",
 	// vp_palace_backfill_decisions appends decision drawers recovered from
 	// historical session notes (AppendDrawers -> appendUnderLock, family F4).
 	// It is gated on the TOOL, dry run included, and deliberately carries NO
