@@ -86,12 +86,10 @@ func (v *Vault) ListAllProjects() ([]ProjectPresence, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list Projects entries: %w", err)
 	}
-	// A DEPARTED slug is not a project here even when its Projects/ directory
-	// survived a pull holding only ignored residue (departure.Find). Dropped on
-	// the Projects/ side only: listProjectDirs also feeds listPalaceStores, and
-	// the palace side already has its own presence rule. departure.List reads
-	// the records once and asks git only for a recorded slug whose directory
-	// is still there.
+	// A DEPARTED slug is not a project here, whatever its Projects/ directory
+	// still holds: the record wins (departure.Find). Dropped on the Projects/
+	// side only: listProjectDirs also feeds listPalaceStores, and the palace
+	// side already has its own presence rule.
 	if gone := departure.List(v.Root); len(gone) > 0 {
 		departed := make(map[string]bool, len(gone))
 		for _, rec := range gone {

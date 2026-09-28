@@ -72,9 +72,11 @@ const (
 //
 // It asks git rather than a hand-written ignore matcher, because git is the
 // thing that decided what the pull left: this is the pull guard's own rule
-// (departure_guard.go asks git what this host would carry). It is consulted
-// only when a departure record exists AND the directory exists, so the hot
-// path — a live project with no record — never runs git.
+// (departure_guard.go asks git what this host would carry).
+//
+// It no longer decides WHETHER a slug is departed — the record alone does
+// (Find, departedpath.RecordExists). It answers what is left under a departed
+// tree, for the delete's postcheck and for reports.
 //
 // FAIL-OPEN: every answer other than a clean, empty listing is false ("not
 // only residue", so the slug stays live), exactly as before this probe

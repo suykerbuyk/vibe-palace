@@ -88,12 +88,13 @@ func TestRebindCheckoutRenameLandsOverResidue(t *testing.T) {
 		t.Errorf("the checkout must now name new-slug:\n%s", got)
 	}
 
-	// Real content under the old slug is a rename that has NOT landed.
+	// The record wins over the directory (the U15 ruling): content left under
+	// the old slug does not make the landed rename un-landed.
 	vault2 := residueRenamedVault(t)
-	rebindWrite(t, filepath.Join(vault2, "Projects/old-slug/memory/new-work.md"), "unmoved\n")
+	rebindWrite(t, filepath.Join(vault2, "Projects/old-slug/memory/new-work.md"), "stale\n")
 	co2 := t.TempDir()
 	rebindWrite(t, filepath.Join(co2, ".vibe-palace.toml"), rebindToml)
-	if _, err := RebindCheckout(rebindRename(co2, vault2)); err == nil || !strings.Contains(err.Error(), "has not landed") {
-		t.Errorf("content under the old slug must still refuse, got %v", err)
+	if _, err := RebindCheckout(rebindRename(co2, vault2)); err != nil {
+		t.Errorf("the record says the rename landed, whatever the old directory holds: %v", err)
 	}
 }

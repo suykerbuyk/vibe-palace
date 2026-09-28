@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 )
 
 // TidyResult reports the outcome of a TidyVault sweep.
@@ -28,6 +30,7 @@ type TidyResult struct {
 	Reported            []string         // dirt that needs human eyes; never staged (full catch-all)
 	ReportedUserContent []string         // subset of Reported that is user memory (Projects/<slug>/memory/...); expected, not dirt
 	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk; left untracked, not committed, not blocking
+	LeftDeparted        []string         // "<path>: left untouched: departed project <p>" — artifacts under a departed project's trees, never committed, never blocking the rest
 	Committed           bool             // true if a commit was created
 	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
 	RemoteResults       map[string]error // per-remote push result (nil = success)
@@ -345,12 +348,33 @@ func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, 
 		return nil, err
 	}
 	swept, reported, deferred := classifyDirty(vaultPath, parsePorcelainZ(raw))
+	swept, leftDeparted := splitDepartedSweep(vaultPath, swept)
 	return &TidyResult{
 		Swept:               swept,
+		LeftDeparted:        leftDeparted,
 		Reported:            reported,
 		ReportedUserContent: classifyReportedUserContent(reported),
 		Deferred:            deferred,
 	}, nil
+}
+
+// splitDepartedSweep takes out of the sweep every artifact that lies under a
+// departed project's trees (departedpath, the record wins): the commit
+// backstop would refuse the whole batch for it, stranding every other
+// project's artifacts behind one stale host's write. Each is reported as left
+// untouched instead. A deletion stays in the sweep — removing a file mutates no
+// project, and the backstop lets deletions through.
+func splitDepartedSweep(vaultPath string, swept []string) (kept, left []string) {
+	for _, rel := range swept {
+		if _, err := os.Lstat(filepath.Join(vaultPath, filepath.FromSlash(rel))); err == nil {
+			if s, departed := departedpath.DepartedTree(vaultPath, rel); departed {
+				left = append(left, fmt.Sprintf("%s: left untouched: departed project %s", rel, s))
+				continue
+			}
+		}
+		kept = append(kept, rel)
+	}
+	return kept, left
 }
 
 // TidyPreview is a DRY RUN's verdict: TidyScan plus the one check a real tidy

@@ -159,6 +159,12 @@ const (
 	// consolidated away. See envIsolationBypass.
 	KindEnvIsolationBypass = "env-isolation-bypass"
 
+	// KindDepartureRecordWriter: a caller of a privileged departure-record entry
+	// point (vaultfs.WriteDepartureRecord and its siblings). Every caller is a
+	// finding; each allowed one is a reviewed baseline entry. See
+	// departureRecordWriter.
+	KindDepartureRecordWriter = "departure-record-writer"
+
 	// KindGitEnabledOwner: git_enabled read, or its refusal forged, somewhere
 	// other than the one owner (storage.RefuseIfGitDisabled) and the reporting
 	// readers it allow-lists. See gitEnabledOwner.
@@ -255,6 +261,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)
 	findings = append(findings, gitEnabledOwner(files)...)
+	findings = append(findings, departureRecordWriter(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

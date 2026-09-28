@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 )
 
 // SyncResult reports a full vault sync run (classify → refuse-on-dirt → commit
@@ -18,12 +20,15 @@ type SyncResult struct {
 	Reported            []string
 	ReportedUserContent []string
 	Deferred            []string
-	GenuineDirt         []string // Reported minus ReportedUserContent — the set that BLOCKS a sync
-	Refused             bool     // true iff GenuineDirt blocked the sync BEFORE any network I/O
-	Committed           bool
-	CommitSHA           string
-	Pull                *PullResult
-	Push                *PlainPushResult
+	// LeftDeparted are artifacts under a departed project's trees, left
+	// untouched and never committed (TidyResult.LeftDeparted).
+	LeftDeparted []string
+	GenuineDirt  []string // Reported minus ReportedUserContent — the set that BLOCKS a sync
+	Refused      bool     // true iff GenuineDirt blocked the sync BEFORE any network I/O
+	Committed    bool
+	CommitSHA    string
+	Pull         *PullResult
+	Push         *PlainPushResult
 }
 
 // genuineDirt returns the set difference reported \ userContent — the reported
@@ -74,13 +79,24 @@ func (r *TidyResult) GenuineDirt() []string {
 // refuseSyncOnDirt is SyncVault's refuse-on-dirt gate (step 2), the one
 // definition that both the real sync and its dry run (SyncPreview) apply, so
 // the two cannot order or word it differently.
-func refuseSyncOnDirt(scan *TidyResult) error {
-	if dirt := scan.GenuineDirt(); len(dirt) > 0 {
-		return fmt.Errorf(
-			"refusing to sync: %d uncommitted non-artifact file(s) need review: %s",
-			len(dirt), strings.Join(dirt, ", "))
+func refuseSyncOnDirt(vaultPath string, scan *TidyResult) error {
+	dirt := scan.GenuineDirt()
+	if len(dirt) == 0 {
+		return nil
 	}
-	return nil
+	msg := fmt.Sprintf("refusing to sync: %d uncommitted non-artifact file(s) need review: %s", len(dirt), strings.Join(dirt, ", "))
+	// A stray under a departed project's trees is never committed here (the
+	// departure record wins), so reviewing it can only end one way.
+	var departed []string
+	for _, rel := range dirt {
+		if s, ok := departedpath.DepartedTree(vaultPath, rel); ok {
+			departed = append(departed, fmt.Sprintf("%s (project %s departed; remove it — if it matters, carry it to the vault %s lives in now first)", rel, s, s))
+		}
+	}
+	if len(departed) > 0 {
+		msg += ". Under a departed project, nothing is ever committed in this vault: " + strings.Join(departed, "; ")
+	}
+	return errors.New(msg)
 }
 
 // SyncPreview is a sync DRY RUN's verdict on the working tree: SyncVault's
@@ -103,7 +119,7 @@ func SyncPreview(vaultPath string) (scan *TidyResult, refused bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if err := refuseSyncOnDirt(scan); err != nil {
+	if err := refuseSyncOnDirt(vaultPath, scan); err != nil {
 		return scan, true, err
 	}
 	return scan, false, previewCommitGuard(vaultPath, scan)
@@ -162,12 +178,13 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	result.Swept = scan.Swept
 	result.Reported = scan.Reported
 	result.ReportedUserContent = scan.ReportedUserContent
+	result.LeftDeparted = scan.LeftDeparted
 	result.Deferred = scan.Deferred
 
 	// 2. Refuse-on-dirt BEFORE any network I/O (finding L1). Genuine dirt is
 	// reported paths that are not deliberately-pending user memory.
 	result.GenuineDirt = scan.GenuineDirt()
-	if err := refuseSyncOnDirt(scan); err != nil {
+	if err := refuseSyncOnDirt(vaultPath, scan); err != nil {
 		result.Refused = true
 		return result, err
 	}

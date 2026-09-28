@@ -43,11 +43,17 @@ func TestDeparted_ResidueOnlyDirectoryIsDeparted(t *testing.T) {
 	}
 }
 
-func TestDeparted_BringBackIsLive(t *testing.T) {
+// Reversed by the U15 ruling: the record wins over the directory, so a vp init
+// re-scaffold no longer reopens the slug; only a revert of the departure (which
+// removes the record) does.
+func TestDeparted_BringBackStaysDeparted(t *testing.T) {
 	vault := residueVault(t)
 	vaultFile(t, vault, "Projects/alpha/commands/README.md", "re-inited\n")
-	if _, ok := Departed(vault, "alpha"); ok {
-		t.Error("a vp init scaffold is content: the slug is live again")
+	if _, ok := Departed(vault, "alpha"); !ok {
+		t.Error("a vp init scaffold must not reopen a slug whose record exists")
+	}
+	if err := RequireKnownProject("alpha", vault, ""); err == nil {
+		t.Error("a writer must still refuse the re-scaffolded slug")
 	}
 }
 
@@ -109,9 +115,14 @@ func TestDeparted_NoGitForAPresentProjectWithoutARecord(t *testing.T) {
 	if n := calls(); n != 0 {
 		t.Errorf("a present project with no record ran git %d time(s); want 0", n)
 	}
+	// A recorded slug is departed on the record alone: no git either.
 	if _, ok := Departed(vault, "alpha"); !ok {
 		t.Fatal("alpha is departed")
 	}
+	if n := calls(); n != 0 {
+		t.Errorf("a recorded slug ran git %d time(s); want 0 (the record decides)", n)
+	}
+	departure.OnlyResidue(vault, "alpha")
 	if n := calls(); n == 0 {
 		t.Error("positive control: the residue probe must run git through the shim, or this test counts nothing")
 	}

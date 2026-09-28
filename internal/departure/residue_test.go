@@ -5,6 +5,8 @@ package departure
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -97,7 +99,7 @@ func TestResidue_IgnoredFilesOnlyIsDeparted(t *testing.T) {
 			if name == "two-classes" {
 				put(t, root, "Projects/alpha/.local/imported-sessions.jsonl", "{}\n")
 			}
-			rec, ok := Find(root, "alpha")
+			rec, ok := probeDeparted(root, "alpha")
 			if !ok || rec.Kind != MovedToVault {
 				t.Fatalf("Projects/alpha/ holds only residue: Find = %+v %v, want the departure", rec, ok)
 			}
@@ -120,7 +122,7 @@ func TestResidue_HonoursEveryIgnoreSource(t *testing.T) {
 		rgit(t, root, "add", "Projects/.gitignore")
 		rgit(t, root, "commit", "-q", "-m", "ignore tmp")
 		put(t, root, "Projects/alpha/x.tmp", "scratch\n")
-		if _, ok := Find(root, "alpha"); !ok {
+		if _, ok := probeDeparted(root, "alpha"); !ok {
 			t.Error("a file a Projects/.gitignore ignores is residue")
 		}
 	})
@@ -128,14 +130,15 @@ func TestResidue_HonoursEveryIgnoreSource(t *testing.T) {
 		root := departedVault(t)
 		put(t, root, ".git/info/exclude", "*.scratch\n")
 		put(t, root, "Projects/alpha/x.scratch", "scratch\n")
-		if _, ok := Find(root, "alpha"); !ok {
+		if _, ok := probeDeparted(root, "alpha"); !ok {
 			t.Error("a file info/exclude ignores is residue")
 		}
 	})
 }
 
-// The directory wins: anything git would carry keeps the slug live — a vp init
-// bring-back's untracked scaffold, a lone untracked stamp, residue beside it.
+// The residue probe calls anything git would carry content — a vp init
+// bring-back's untracked scaffold, a lone untracked stamp, residue beside it —
+// though the record, not this probe, decides departure (the U15 ruling).
 func TestResidue_ContentKeepsTheSlugLive(t *testing.T) {
 	for name, rel := range map[string]string{
 		"bring-back":     "Projects/alpha/commands/README.md",
@@ -146,11 +149,12 @@ func TestResidue_ContentKeepsTheSlugLive(t *testing.T) {
 			root := departedVault(t)
 			put(t, root, "Projects/alpha/transcripts/a.manifest.json.0.bak", "residue\n")
 			put(t, root, rel, "content\n")
-			if _, ok := Find(root, "alpha"); ok {
+			if _, ok := probeDeparted(root, "alpha"); ok {
 				t.Errorf("%s is content git would carry: the slug is live", rel)
 			}
-			if got := List(root); len(got) != 0 {
-				t.Errorf("List = %+v, want nothing", got)
+			// The record still wins over that content (the U15 ruling).
+			if got := List(root); len(got) != 1 {
+				t.Errorf("List = %+v, want alpha: the record wins over the directory", got)
 			}
 		})
 	}
@@ -166,7 +170,7 @@ func TestResidue_NoRecordIsLiveWithoutAskingGit(t *testing.T) {
 	residueGit = filepath.Join(t.TempDir(), "must-not-run")
 	buf := captureWarnings(t)
 
-	if _, ok := Find(root, "beta"); ok {
+	if _, ok := probeDeparted(root, "beta"); ok {
 		t.Error("no record: never departed")
 	}
 	if warnings(buf) != 0 {
@@ -203,7 +207,7 @@ func TestResidue_TracingIsSilenced(t *testing.T) {
 			put(t, root, "Projects/alpha/a.bak", "residue\n")
 			t.Setenv(env[0], env[1])
 			buf := captureWarnings(t)
-			if _, ok := Find(root, "alpha"); !ok {
+			if _, ok := probeDeparted(root, "alpha"); !ok {
 				t.Errorf("with %s=%s a residue-only slug must still be departed; warnings:\n%s", env[0], env[1], buf)
 			}
 		})
@@ -308,14 +312,14 @@ func TestResidue_CannotTellIsLive(t *testing.T) {
 			defer func(g string, d time.Duration) { residueGit, residueTimeout = g, d }(residueGit, residueTimeout)
 			root := r.setup(t)
 			buf := captureWarnings(t)
-			if _, ok := Find(root, "alpha"); ok {
+			if _, ok := probeDeparted(root, "alpha"); ok {
 				t.Fatalf("cannot tell: the slug must stay live")
 			}
 			if got := warnings(buf); got != r.warns {
 				t.Errorf("warnings = %d, want %d:\n%s", got, r.warns, buf)
 			}
 			// Once per slug and cause: a second call inside the TTL is silent.
-			Find(root, "alpha")
+			probeDeparted(root, "alpha")
 			if got := warnings(buf); got != r.warns {
 				t.Errorf("a second call warned again (%d, want %d):\n%s", got, r.warns, buf)
 			}
@@ -410,7 +414,7 @@ func TestResidue_NonGitVaultIsSilentUnderATranslatedLocale(t *testing.T) {
 	record(t, root, Record{Slug: "alpha", Kind: MovedToVault})
 	put(t, root, "Projects/alpha/a.bak", "residue\n")
 	buf := captureWarnings(t)
-	if _, ok := Find(root, "alpha"); ok {
+	if _, ok := probeDeparted(root, "alpha"); ok {
 		t.Error("a non-git vault cannot judge residue: the slug stays live")
 	}
 	if n := warnings(buf); n != 0 {
@@ -434,7 +438,7 @@ func TestResidue_NonDirectoryAtTheSlugIsLiveAndSilent(t *testing.T) {
 			t.Fatal(err)
 		}
 		buf := captureWarnings(t)
-		if _, ok := Find(root, "alpha"); ok {
+		if _, ok := probeDeparted(root, "alpha"); ok {
 			t.Error("a symlink at Projects/alpha is not a departed residue tree")
 		}
 		if n := warnings(buf); n != 0 {
@@ -447,7 +451,7 @@ func TestResidue_NonDirectoryAtTheSlugIsLiveAndSilent(t *testing.T) {
 		rgit(t, root, "add", "Projects/alpha")
 		rgit(t, root, "commit", "-q", "-m", "a file at the slug")
 		buf := captureWarnings(t)
-		if _, ok := Find(root, "alpha"); ok {
+		if _, ok := probeDeparted(root, "alpha"); ok {
 			t.Error("a regular file at Projects/alpha is not a departed residue tree")
 		}
 		if n := warnings(buf); n != 0 {
@@ -466,7 +470,7 @@ func TestResidue_NewlineInAFilenameIsNotAFault(t *testing.T) {
 		root := departedVault(t)
 		put(t, root, "Projects/alpha/we\nird.bak", "residue\n")
 		buf := captureWarnings(t)
-		if _, ok := Find(root, "alpha"); !ok {
+		if _, ok := probeDeparted(root, "alpha"); !ok {
 			t.Errorf("an ignored file with a newline in its name is residue: want departed; warnings:\n%s", buf)
 		}
 		if n := warnings(buf); n != 0 {
@@ -477,11 +481,30 @@ func TestResidue_NewlineInAFilenameIsNotAFault(t *testing.T) {
 		root := departedVault(t)
 		put(t, root, "Projects/alpha/we\nird.md", "real work\n")
 		buf := captureWarnings(t)
-		if _, ok := Find(root, "alpha"); ok {
+		if _, ok := probeDeparted(root, "alpha"); ok {
 			t.Error("a carried file with a newline in its name is content: want live")
 		}
 		if n := warnings(buf); n != 0 {
 			t.Errorf("warnings = %d, want 0:\n%s", n, buf)
 		}
 	})
+}
+
+// probeDeparted is the residue probe's own verdict over a recorded slug — the
+// rule departure.Find applied before the U15 ruling (the record plus an absent
+// or residue-only directory) — kept here so the probe's classification stays
+// pinned now that Find reads the record alone.
+func probeDeparted(root, slug string) (Record, bool) {
+	rec, found := Read(root, slug)
+	if !found {
+		return Record{}, false
+	}
+	fi, err := os.Lstat(filepath.Join(root, "Projects", slug))
+	if errors.Is(err, fs.ErrNotExist) {
+		return rec, true
+	}
+	if err != nil || !fi.IsDir() || !OnlyResidue(root, slug) {
+		return Record{}, false
+	}
+	return rec, true
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -123,6 +124,16 @@ func LockedUpdate(vaultRoot, absPath string, transform func(current []byte) ([]b
 // every wrap. If one of them ever needs it, add it as an explicit option with a
 // caller that uses it, rather than as a default nobody asked for.
 func (v *Vault) appendUnderLock(absPath string, data []byte) error {
+	// The append half of the write funnel refuses a departed project's trees
+	// like atomicfile.Write does (departedpath).
+	if err := departedpath.RefuseAbs(v.Root, absPath); err != nil {
+		return err
+	}
+	// And never a departure record: those are written whole, only by the
+	// lifecycle commands (vaultfs.WriteDepartureRecord).
+	if err := departedpath.RefuseRecordAbs(v.Root, absPath); err != nil {
+		return err
+	}
 	// O_APPEND rather than O_RDWR + Seek(0, io.SeekEnd): both land at EOF under
 	// a held lock, but O_APPEND positions atomically at write time, so it is the
 	// one that is still correct if a future caller's lock discipline slips.

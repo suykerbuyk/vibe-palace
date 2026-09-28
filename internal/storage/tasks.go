@@ -18,6 +18,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	"github.com/suykerbuyk/vibe-palace/internal/mdfence"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
@@ -1911,6 +1912,14 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 		return err
 	}
 	destPath := filepath.Join(destDir, slug+".md")
+	// Neither end may lie under a departed project's trees: the move lands
+	// through EnsureDir and vaultfs.RenameNoLock, which sit below the write
+	// funnel's departed check (departedpath).
+	for _, p := range []string{srcPath, destPath} {
+		if err := departedpath.RefuseAbs(v.Root, p); err != nil {
+			return err
+		}
+	}
 
 	// 🔴 THE PAIR: both ends, from here to the rename. Every remaining step — the
 	// authoritative source read, the edge check, the refuse-existing check and

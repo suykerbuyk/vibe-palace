@@ -143,6 +143,15 @@ func TestPendingDepartureRecoveriesWorkAsWritten(t *testing.T) {
 			if err == nil {
 				t.Fatal("test premise: records are pending")
 			}
+			if !rmStaged {
+				// Before its git rm, a crashed purge looks exactly like a record
+				// forged over a live project: the advice never removes a tree
+				// that still holds tracked files. It says to re-run instead.
+				if fin := cmdOf(t, err.Error(), "finish it"); !strings.HasPrefix(fin, "re-run the command") || strings.Contains(err.Error(), "git -C "+dir+" rm -r") {
+					t.Fatalf("finish advice before git rm must be a re-run, never a git rm -r:\n%s", err)
+				}
+				return
+			}
 			run(t, cmdOf(t, err.Error(), "finish it"))
 			if got := gitRun(t, dir, "status", "--porcelain=v1", "-uall"); got != "M  Projects/keep/resume.md" {
 				t.Errorf("after finish it:\n%s", got)
@@ -221,7 +230,7 @@ func TestPendingDepartureNamesATwiceListedRecordOnce(t *testing.T) {
 			t.Errorf("no %q line in:\n%s", prefix, msg)
 		}
 	}
-	if !strings.Contains(msg, "a split purge of alpha did not finish") || !strings.Contains(msg, `"vault split: purge alpha (finished by hand)"`) {
+	if !strings.Contains(msg, "a departure of alpha did not finish") || !strings.Contains(msg, `"vault split: purge alpha (finished by hand)"`) {
 		t.Errorf("slug list or subject names alpha more than once:\n%s", msg)
 	}
 }

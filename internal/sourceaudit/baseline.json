@@ -1,6 +1,34 @@
 {
   "entries": [
     {
+      "id": "departure-record-writer storage.Vault.writeDeparture",
+      "reason": "THE ONE RECORD WRITER in storage. RecordDeparture, RecordDepartureForPurge and RecordDepartureForDelete all funnel here; it validates and encodes the record, derives date and base commit, and writes it through vaultfs.WriteDepartureRecord under the caller's root-lock token (or one it takes when the caller holds none). Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer storage.applyFullDelete",
+      "reason": "vp vault project delete (U6), step 7: records each project's departure with RecordDepartureForDelete under the delete's own root-lock token, before its one commit removes the footprint. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer storage.deleteRollback",
+      "reason": "vp vault project delete (U6) rollback: removes the record THIS run wrote (not in HEAD) through vaultfs.RemoveDepartureRecord under the delete's root-lock token; a committed record is restored from HEAD by git instead. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer tools.removeOwnDepartureRecord",
+      "reason": "vp_vault_split purge rollback: removes a record the purge itself created, under a root-lock token it takes (CommitSplitPurge has released the lock by then). The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer tools.splitPurgeCommitted",
+      "reason": "vp_vault_split purge on a vault that commits: records each purged slug with RecordDepartureForPurge before CommitSplitPurge commits the removal and the records together. The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer tools.splitPurgeUncommitted",
+      "reason": "vp_vault_split purge on a vault that cannot commit (no repository of its own, or nested): records each purged slug with RecordDeparture after the trees are gone. The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
+      "id": "departure-record-writer vaultfs.WriteDepartureRecord",
+      "reason": "THE PRIVILEGED ENTRY POINT itself: it passes atomicfile.ForDepartureRecord with the live root-lock token it was given, which is what admits a write under Audits/departures/ past the funnel's refusal. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+    },
+    {
       "id": "derived-gate-divergence cli.cmdCheck",
       "reason": "FALSE POSITIVE via closure attribution, and the SAME artifact the sibling entry `ungated-vault-writer main.cmdCheck` records — reproduced here independently by a type-checked call graph, which is worth noting: two analyses with different anchor sets and different resolution models produce the same wrong answer for the same structural reason. The witness runs cmdCheck -> runCheck -> binaryInfo -> registeredToolCount -> tools.RegisterAll -> IngestCommitMsgTool -> [closure] -> atomicfile.Write. `vp check` COUNTS registered tools; it never invokes one. The derivation cannot tell registration from invocation because it deliberately attributes a closure's calls to the function that BUILDS it — without that edge no MCP handler is visible at all (see reachesSink). DECLARED WINS: the only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-*, and gating a diagnostic against a newer vault removes the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
     },

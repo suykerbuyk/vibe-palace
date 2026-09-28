@@ -437,12 +437,13 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 // git history (project.Departed) — is refused with the redirect instead of
 // lazily re-creating Projects/<old>/.
 //
-// 🔴 ONE SITE, NOT A GATE PER TOOL. There is no storage-level choke point for
-// "a project tree is being created": atomicfile deliberately does not gate
-// (ADR-010), appenders stamp after writing, and there is no shared scaffolder.
-// This seam is where ADR-010 already puts the fail-stop, it sees the params of
-// every mutating call, and it replaced the two per-handler checks
-// vp_capture_session and vp_memory_harvest carried. The CLI writers are
+// 🔴 THE FIRST OF TWO LAYERS. The record decides (departure.Find reads the
+// record alone: it wins over whatever Projects/<p>/ holds). This seam refuses
+// before the writer runs, with the redirect; underneath it, the write funnel
+// (atomicfile, the append writer, vaultfs — internal/departedpath) refuses
+// any write under a departed project's trees as a backstop, whatever the
+// caller. It replaced the two per-handler checks vp_capture_session and
+// vp_memory_harvest carried. The CLI writers are
 // covered where they resolve their slug (RequireKnownProject, the archive
 // helper) and the hook by its own stale-checkout skip.
 //

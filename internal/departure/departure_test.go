@@ -47,21 +47,22 @@ func TestRead_RecordWithDirAbsentIsDeparted(t *testing.T) {
 	}
 }
 
-// G2. The directory wins: a re-scaffolded project is not departed, whatever
-// its old record says, and List leaves it out.
-func TestRead_DirPresentIsNotDeparted(t *testing.T) {
+// G2 (reversed by the U15 ruling). The record wins over the directory: a
+// re-scaffolded project, content and all, is still departed while its record
+// exists; a slug with no record never is.
+func TestRead_RecordWinsOverTheDirectory(t *testing.T) {
 	root := t.TempDir()
 	record(t, root, Record{Slug: "old", Kind: Renamed, To: "new", Date: "2026-09-23"})
 	put(t, root, "Projects/old/commands/README.md", "re-inited\n")
 
-	if _, ok := Find(root, "old"); ok {
-		t.Error("Projects/old/ exists: the slug is not departed")
+	if rec, ok := Find(root, "old"); !ok || rec.To != "new" {
+		t.Error("a record over real content must still read as departed")
 	}
-	if got := List(root); len(got) != 0 {
-		t.Errorf("List = %+v, want none", got)
+	if got := List(root); len(got) != 1 || got[0].Slug != "old" {
+		t.Errorf("List = %+v, want old", got)
 	}
 	if _, ok := Find(root, "never"); ok {
-		t.Error("no record and no directory is not a departure")
+		t.Error("no record is never a departure")
 	}
 }
 

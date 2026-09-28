@@ -216,14 +216,17 @@ func TestDepartedCaches_UntrustedChainEndsAreLeftAsToday(t *testing.T) {
 }
 
 // T7. A re-created slug (record plus scaffold content git would carry) is live.
-func TestDepartedCaches_RecreatedSlugIsUntouched(t *testing.T) {
+// Reversed by the U15 ruling: the record wins over the directory, so a
+// re-created Projects/qms/ does not reopen the slug, and its moved-to-vault
+// cache is dropped like any departed project's.
+func TestDepartedCaches_RecreatedSlugIsStillDeparted(t *testing.T) {
 	root := departedVault(t)
 	writeRecord(t, root, "qms", departure.MovedToVault, departedLabel)
 	sweepFile(t, root, "Projects/qms/resume.md", "re-created\n")
 	seedCache(t, root, "qms")
 	mustSweep(t, &Vault{Root: root})
-	if !cacheExists(root, "qms") {
-		t.Fatal("a re-created project lost its cache")
+	if cacheExists(root, "qms") {
+		t.Fatal("a re-created Projects/qms/ must not keep the departed slug's cache")
 	}
 }
 

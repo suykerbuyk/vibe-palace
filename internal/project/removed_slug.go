@@ -48,10 +48,12 @@ type Departure struct {
 	Commit, Subject string
 }
 
-// Departed reports a slug whose Projects/<slug>/ is ABSENT from the vault — or,
-// when its departure record exists, holds only residue git would not carry
-// (departure.OnlyResidue) — and which is known to have LEFT it: renamed to
-// another slug, or moved to another vault.
+// Departed reports a slug known to have LEFT the vault: renamed to another
+// slug, or moved to another vault. A departure record decides it whatever
+// Projects/<slug>/ holds (the record wins, departure.Find); without a record,
+// an ABSENT Projects/<slug>/ with git history of removal does. A
+// Projects/<slug>/ that cannot be inspected fails CLOSED: it is reported as
+// departed, unreadable, rather than let a write through.
 //
 // 🔴 THIS IS WHAT A STALE CHECKOUT LOOKS LIKE. A checkout whose
 // .vibe-palace.toml still names a departed slug would otherwise lazily
@@ -93,16 +95,8 @@ func Departed(vaultRoot, slug string) (Departure, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Departure{}, false
 	}
-	_, lerr := os.Lstat(filepath.Join(vaultRoot, "Projects", slug))
-	present := lerr == nil
-	if lerr != nil && !os.IsNotExist(lerr) {
-		// Not inspectable: not evidence of departure.
-		return Departure{}, false
-	}
-	// A PRESENT directory can still be a departure: a pull removes only tracked
-	// files, so a departed project's directory survives holding ignored
-	// residue. departure.Find (under Resolve) decides that from the record and
-	// git, and only when a record exists, so a live project costs no git here.
+	// The record first, and alone: it wins over whatever the directory holds,
+	// and costs one failed open for a live project.
 	if chain, ok := departure.Resolve(vaultRoot, slug); ok {
 		last := chain[len(chain)-1]
 		d := Departure{Slug: slug, Source: "record", Kind: last.Kind, To: last.To, Date: last.Date, Malformed: last.Malformed}
@@ -110,6 +104,13 @@ func Departed(vaultRoot, slug string) (Departure, bool) {
 			d.Via = append(d.Via, r.To)
 		}
 		return d, true
+	}
+	_, lerr := os.Lstat(filepath.Join(vaultRoot, "Projects", slug))
+	present := lerr == nil
+	if lerr != nil && !os.IsNotExist(lerr) {
+		// Not inspectable: fail CLOSED. Whether it departed cannot be told,
+		// and a write must not be the way to find out.
+		return Departure{Slug: slug, Source: "record", Malformed: "Projects/" + slug + "/ cannot be inspected: " + lerr.Error()}, true
 	}
 	if present {
 		// The git-history fallback is for an ABSENT directory only: asking git

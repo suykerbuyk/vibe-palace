@@ -98,8 +98,10 @@ func TestBindRefusesATargetWithARecordOverRealContent(t *testing.T) {
 	if _, _, err := NewVault(quantum).RecordDepartureForPurge("qa", departure.MovedToVault, "git@example.com:elsewhere/vault.git"); err != nil {
 		t.Fatal(err)
 	}
-	if _, found := departure.Find(quantum, "qa"); found {
-		t.Fatal("fixture: Find must NOT call this slug departed (the directory wins), or the test proves nothing")
+	// Since the U15 ruling the record wins over the directory everywhere, so
+	// Find agrees with rule 1 here: qa is departed from the target.
+	if _, found := departure.Find(quantum, "qa"); !found {
+		t.Fatal("fixture: a record over real content is departed (the record wins)")
 	}
 	pre := bindRead(t, cfg)
 	if _, err := BindProjectVaults(batchReq("qa")); err == nil || !strings.Contains(err.Error(), "holds a departure record for it") {

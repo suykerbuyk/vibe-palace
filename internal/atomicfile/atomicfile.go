@@ -19,13 +19,21 @@
 // whole-file replace primitive; they call surface.StampForPath directly after a
 // successful write instead.
 //
-// Neither primitive GATES. The MCP surface-compatibility fail-stop lives at the
-// dispatch seam and stays there (doc/adr/010-surface-gate-at-the-dispatch-seam.md);
-// a write primitive that refused would put a fail-stop underneath every CLI
-// path and every recovery path at once.
+// Neither primitive gates on the MCP SURFACE version. That fail-stop lives at
+// the dispatch seam and stays there (doc/adr/010-surface-gate-at-the-dispatch-seam.md);
+// a write primitive that refused on it would put a fail-stop underneath every
+// CLI path and every recovery path at once.
 //
-// atomicfile imports surface (a leaf). Nothing surface depends on imports
-// atomicfile, so the dependency graph stays acyclic.
+// They DO refuse two things, because every vault writer funnels through them
+// (internal/departedpath, task lc-u15-vaultfs-refuses-writes-into-a-departed-project):
+//
+//   - any write under a departed project's trees — the departure record wins
+//     over whatever the directory holds;
+//   - any write under Audits/departures/, except by the lifecycle commands,
+//     which pass ForDepartureRecord with the vault's live root-lock token.
+//
+// atomicfile imports surface, departedpath and vaultlock (all leaves). None of
+// them imports atomicfile, so the dependency graph stays acyclic.
 package atomicfile
 
 import (
@@ -36,7 +44,9 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // config holds resolved write options.
@@ -44,6 +54,9 @@ type config struct {
 	perm        os.FileMode
 	inheritPerm bool
 	fsync       bool
+	// recordHeld admits a write under Audits/departures/: the vault root lock
+	// token of a lifecycle command (ForDepartureRecord).
+	recordHeld *vaultlock.Held
 }
 
 // Option configures a Write call.
@@ -63,6 +76,13 @@ func WithInheritPerm() Option { return func(c *config) { c.inheritPerm = true } 
 // WithFsync makes Write fsync the temp file before rename, for callers that
 // want durability beyond rename atomicity.
 func WithFsync() Option { return func(c *config) { c.fsync = true } }
+
+// ForDepartureRecord admits a write under Audits/departures/. held must be the
+// live root-lock token of the vault written: only a lifecycle command holding
+// the whole vault may write a departure record (vaultfs.WriteDepartureRecord).
+func ForDepartureRecord(held *vaultlock.Held) Option {
+	return func(c *config) { c.recordHeld = held }
+}
 
 // writeObserver, when non-nil, is called with the absolute path of every
 // content write this package completes.
@@ -167,6 +187,16 @@ func WriteStream(vaultRoot, absPath string, fill func(io.Writer) error) error {
 // fill's error is returned UNWRAPPED. Each caller therefore keeps its own error
 // vocabulary, and the temp file is removed on every failure path.
 func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) error) error {
+	// No write lands under a departed project's trees (departedpath): this is
+	// the funnel every storage writer and vaultfs write goes through.
+	if err := departedpath.RefuseAbs(vaultRoot, absPath); err != nil {
+		return err
+	}
+	if err := departedpath.RefuseRecordAbs(vaultRoot, absPath); err != nil {
+		if h := cfg.recordHeld; h == nil || h.RequireRoot() != nil || !sameDir(h.Root(), vaultRoot) {
+			return err
+		}
+	}
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create dir: %w", err)
@@ -227,4 +257,14 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 	// construction and stays true for the NEXT entry point somebody adds.
 	notifyWrite(absPath)
 	return nil
+}
+
+// sameDir reports whether a and b name one directory, symlinks resolved.
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
 }

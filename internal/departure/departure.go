@@ -40,6 +40,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -245,33 +246,28 @@ func parseKinds(slug string, data []byte, known func(Kind) bool) Record {
 	return rec
 }
 
-// Find reports whether slug is DEPARTED: its record exists AND
-// Projects/<slug>/ is absent, or holds only residue git would not carry
-// (OnlyResidue). The directory wins — a deliberate `vp init` re-scaffold
-// reopens the slug without anyone deleting the record (its scaffold is content
-// git would carry), and a later departure simply overwrites it.
+// Find reports whether slug is DEPARTED: its departure record exists, of any
+// kind, readable or not — whatever Projects/<slug>/ holds.
+//
+// 🔴 THE RECORD WINS OVER THE DIRECTORY (Chair ruling, U15). It used to be the
+// other way round: a directory holding anything git would carry reopened the
+// slug, so one stray file — an editor write, a stale host's capture, a `vp
+// init` re-scaffold — made a moved project live again in the vault it left.
+// Now the only way back is a git revert of the departure's commit (which
+// removes the record in the same commit), or a future adopt. The existence
+// test is departedpath.RecordExists, the one rule every write funnel refuses
+// by; OnlyResidue remains for callers that REPORT what is left behind.
 func Find(vaultRoot, slug string) (Record, bool) {
 	if vaultRoot == "" || slugpkg.Validate(slug) != nil {
 		return Record{}, false
 	}
-	if fi, err := os.Lstat(filepath.Join(vaultRoot, "Projects", slug)); !errors.Is(err, fs.ErrNotExist) {
-		if err != nil || !fi.IsDir() {
-			// Not inspectable, or not a directory (a symlink, a regular
-			// file): not evidence of departure, and not a tree the residue
-			// probe's Projects/<slug>/ pathspec can judge.
-			return Record{}, false
-		}
-		// Present. The record is read FIRST, so a live project with none —
-		// the common case, on every dispatch — costs one failed open and no
-		// git. Only a recorded slug whose directory survived asks git whether
-		// anything in it is more than a pull's leftovers.
-		rec, found := Read(vaultRoot, slug)
-		if !found || !OnlyResidue(vaultRoot, slug) {
-			return Record{}, false
-		}
+	if !departedpath.RecordExists(vaultRoot, slug) {
+		return Record{}, false
+	}
+	if rec, found := Read(vaultRoot, slug); found {
 		return rec, true
 	}
-	return Read(vaultRoot, slug)
+	return Record{Slug: slug, Malformed: "the record exists but cannot be inspected"}, true
 }
 
 // maxHops bounds Resolve's walk.
@@ -306,8 +302,8 @@ func Resolve(vaultRoot, slug string) (chain []Record, ok bool) {
 	return chain, true
 }
 
-// List returns every DEPARTED slug's record (record present, Projects/<slug>/
-// absent or residue only; see Find), sorted by slug. Entries that are not <valid-slug>.json are skipped:
+// List returns every DEPARTED slug's record (its record present, whatever its
+// directory holds; see Find), sorted by slug. Entries that are not <valid-slug>.json are skipped:
 // one stray file cannot hide the others.
 func List(vaultRoot string) []Record {
 	if vaultRoot == "" {
