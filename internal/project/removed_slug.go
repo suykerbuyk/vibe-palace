@@ -201,6 +201,8 @@ func (d Departure) Redirect() string {
 		return fmt.Sprintf("it departed this vault, but %s cannot be read (%s)", departure.RelPath(d.Slug), d.Malformed)
 	case d.Kind == departure.Renamed:
 		return fmt.Sprintf("it was renamed to %q%s%s; set [project].name = %q", d.To, via, on, d.To)
+	case d.Kind == departure.Deleted:
+		return fmt.Sprintf("it was deleted from this vault%s%s and continues nowhere; to bring it back, revert its delete commit", via, on)
 	default: // departure.MovedToVault
 		dest := "a destination that was not recorded"
 		if d.To != "" {

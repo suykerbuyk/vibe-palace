@@ -58,6 +58,16 @@ const (
 	// free-text label for it (never a host path: this file syncs to every
 	// host).
 	MovedToVault Kind = "moved-to-vault"
+	// Deleted: the project was discarded from this vault (vp vault project
+	// delete --discard) and continues nowhere. To is always empty: there is no
+	// destination to name, and a label would read as one.
+	//
+	// A binary older than this kind reads it as unknown, so its Parse sets
+	// Malformed — and Malformed still means departed (Record.Malformed): Read
+	// and Find report found for any record file that exists, whatever its
+	// kind. An older bind refuses it as unreadable; an older pull guard
+	// refuses incoming work under it like any departure.
+	Deleted Kind = "deleted"
 )
 
 // Dir is the vault-relative directory holding the records.
@@ -71,6 +81,16 @@ type Record struct {
 	To         string `json:"to"`
 	Date       string `json:"date"`
 	BaseCommit string `json:"base_commit,omitempty"`
+
+	// Generation counts this slug's departures from this vault: 1 on the
+	// first, +1 on each later one. Zero (absent) is a record written before
+	// the field existed. The lifecycle commands key primary eligibility on it.
+	Generation int `json:"generation,omitempty"`
+	// CopyCommit is the destination's copy commit a moved-to-vault delete
+	// verified. Informational only: the checks compare footprints, not shas.
+	CopyCommit string `json:"copy_commit,omitempty"`
+	// Footprint is the departing project's footprint digest, "v1:<hex>".
+	Footprint string `json:"footprint,omitempty"`
 
 	// Malformed is set, never stored, when the file exists but does not parse
 	// or names an unknown kind. It STILL means departed: the file exists only
@@ -102,10 +122,39 @@ func (r Record) Validate() error {
 		if err := ValidateLabel(r.To); err != nil {
 			return err
 		}
+	case Deleted:
+		if r.To != "" {
+			return fmt.Errorf("departure: a deleted project continues nowhere, so it names no destination (got %q)", r.To)
+		}
 	default:
-		return fmt.Errorf("departure kind %q: want %q or %q", r.Kind, Renamed, MovedToVault)
+		return fmt.Errorf("departure kind %q: want %q, %q or %q", r.Kind, Renamed, MovedToVault, Deleted)
+	}
+	if r.Generation < 0 {
+		return fmt.Errorf("departure generation %d: want 1 or more (or absent)", r.Generation)
+	}
+	if r.CopyCommit != "" {
+		if r.Kind != MovedToVault {
+			return fmt.Errorf("departure copy_commit: only a %q record names a copy commit, not %q", MovedToVault, r.Kind)
+		}
+		if !isLowerHex(r.CopyCommit) || (len(r.CopyCommit) != 40 && len(r.CopyCommit) != 64) {
+			return fmt.Errorf("departure copy_commit %q: want a full lowercase hex commit id", r.CopyCommit)
+		}
+	}
+	if r.Footprint != "" {
+		if d, ok := strings.CutPrefix(r.Footprint, "v1:"); !ok || len(d) != 64 || !isLowerHex(d) {
+			return fmt.Errorf("departure footprint %q: want v1:<64 lowercase hex>", r.Footprint)
+		}
 	}
 	return nil
+}
+
+func isLowerHex(s string) bool {
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // MaxLabelLen bounds a moved-to-vault label. A remote URL fits comfortably;
@@ -173,6 +222,15 @@ func Read(vaultRoot, slug string) (Record, bool) {
 // does not parse, names another slug or has an unknown kind comes back with
 // Malformed set — still a departure, per Record.Malformed.
 func Parse(slug string, data []byte) Record {
+	return parseKinds(slug, data, knownKind)
+}
+
+// knownKind reports whether this binary understands k.
+func knownKind(k Kind) bool { return k == Renamed || k == MovedToVault || k == Deleted }
+
+// parseKinds is Parse against a given set of known kinds, so a test can read a
+// record the way a binary that predates a kind reads it.
+func parseKinds(slug string, data []byte, known func(Kind) bool) Record {
 	var rec Record
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return Record{Slug: slug, Malformed: err.Error()}
@@ -181,7 +239,7 @@ func Parse(slug string, data []byte) Record {
 		// The file's name is the key; a body naming another slug is damage.
 		return Record{Slug: slug, Malformed: fmt.Sprintf("record names slug %q", rec.Slug)}
 	}
-	if rec.Kind != Renamed && rec.Kind != MovedToVault {
+	if !known(rec.Kind) {
 		rec.Malformed = fmt.Sprintf("unknown kind %q", rec.Kind)
 	}
 	return rec
