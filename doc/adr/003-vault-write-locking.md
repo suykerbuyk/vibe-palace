@@ -1,9 +1,12 @@
 # ADR 003: Vault Write Locking
 
-**Status:** Accepted (2026-06-07); amended 2026-07-11 (see *Amendment: the
-resume.md lost-update hole*, then *Amendment: compare-and-set on blind
-whole-file overwrites*, then *Amendment: the surgical editors and `EditResume`
-are deleted* — *read that one first if you are here to write to `resume.md`*)
+**Status:** Accepted (2026-06-07); amended 2026-07-11 (×2: *the resume.md
+lost-update hole*, then *compare-and-set on blind whole-file overwrites*),
+2026-07-12 (*the surgical editors and `EditResume` are deleted* — *read that one
+first if you are here to write to `resume.md`*), 2026-08-18 (Windows
+`LockFileEx` and the atomic-rename retry), 2026-09-19 (one ordered pair
+acquisition, `AcquirePair`), 2026-09-27 (what the repo-root key covers); dated
+in-place corrections 2026-09-28
 **Deciders:** Project owner
 **Context:** Vibe-palace vault-write-concurrency — serializing vault read-modify-write
 
@@ -83,7 +86,10 @@ routes them all through `vaultlock.Acquire(v.Root, path)`:
 - A `lockedWrite` helper wraps blind whole-file writes.
 - RMW sites (`DeleteDrawer`, `InvalidateTriple`, `UpdateTaskStatus`,
   `WriteScoringConfig`) acquire the lock at the top, spanning their read, then
-  call raw `atomicfile.Write` under it.
+  call raw `atomicfile.Write` under it. *(Amended 2026-09-28: `WriteScoringConfig`
+  no longer exists. Its replacement, `WriteHostScoringConfig`, writes a
+  host-local file outside every vault, so the live RMW sites here are the first
+  three.)*
 - Append writers (`AppendIterationOwned`, `AppendDrawers`, `AddEntities`) acquire
   the sidecar lock instead of flocking the target fd — so an append and
   `DeleteDrawer` finally interlock on the same lock object. `AppendDrawer` and
@@ -192,6 +198,15 @@ vault path, not just this one.
   `applyUpgrade` (CWD project config, global config, `vaultRoot == ""`) is
   deliberately outside all of this — those files are not vault files, so they
   take no lock and keep their own raw backup-and-rename.
+
+  > **Amended 2026-09-28.** The vault branch of `applyUpgrade` is gone: it went
+  > with the per-project vault `config.toml` it existed for (task
+  > `move-per-project-config-out-of-the-shared-vault`, 2026-09-21), and
+  > `applyUpgrade` now reaches only host-local configs
+  > (`internal/reconcile/upgrade.go`). The live `storage.LockedUpdate` caller is
+  > `TopUpVaultGitignore` (`internal/storage/git.go`), which appends missing
+  > canonical lines to the vault `.gitignore` — the same read-modify-write shape,
+  > under the same no-double-acquire prohibition.
 - Protection is unix-only (**historical** — superseded 2026-08-18, the Windows
   lock is real; see the final amendment). On Windows the lock is a no-op, so concurrent
   writers there remain unprotected.
@@ -423,10 +438,15 @@ belongs.
 
 ### Read-path contract: the digest is of the RAW pre-expansion bytes
 
-`vpctx.Resolver.ResolveDigest` hashes the bytes **as they sit on disk**, before
+`vpctx.Resolver.ResolveDigest` (package `internal/context`; amended 2026-09-28) hashes the bytes **as they sit on disk**, before
 template expansion. `vp_get_resume` / `vp_get_workflow` return that as
 `sha256`; `vp_bootstrap_context` returns `resume_sha256` (of the full body,
 computed pre-excerpt so a truncated preview still yields a usable guard).
+
+> **Amended 2026-09-28.** Bootstrap no longer carries an excerpt or preview:
+> since 2026-08-18 it is an index that inlines no document body, and the resume
+> is fetched with `vp_read_resource` via `resume_uri`. `resume_sha256` is still
+> the digest of the full raw resume (`internal/tools/context_tools.go`).
 
 This is not an implementation detail — it is a correctness requirement. The
 resolver runs `expandScoped` (`{{PROJECT}}`, `{{DATE}}`, …) over what it
@@ -551,7 +571,8 @@ more specific, never by broadening it until something matches.**
 
 *Read-path contract* above says the digest is of the RAW pre-expansion bytes.
 That is now a **write-path** correctness requirement as well. `vp_get_resume` /
-`vp_bootstrap_context` serve placeholder-**expanded** bodies while hashing the
+`vp_bootstrap_context` (amended 2026-09-28: historical — bootstrap has inlined
+no body since 2026-08-18) serve placeholder-**expanded** bodies while hashing the
 **raw** ones, so text taken from them is poison for a write-back: an `old_string`
 spanning a placeholder will not match disk (loud, harmless), and a whole-file body
 composed from them **passes CAS and silently bakes the expanded values onto disk**,
@@ -840,11 +861,16 @@ purge writing its records and committing them, which no lock can span.
 - Compare-and-set writer (2nd Amendment): `internal/storage/project_dirs.go`
   (`(*Vault).WriteResume`, `ResumeConflictError`); the conflict sentinel
   `internal/vaultfs` (`ErrShaConflict`); the required guard in
-  `internal/tools/context_tools.go` (`vp_update_resume`); the read-path digest
+  `internal/tools/context_query_tools.go` (`vp_update_resume`; amended
+  2026-09-28, was `context_tools.go`); the read-path digest
   in `internal/context` (`Resolver.ResolveDigest`, hashing RAW pre-expansion
   bytes) surfaced by `vp_get_resume` / `vp_get_workflow` (`sha256`) and
   `vp_bootstrap_context` (`resume_sha256`); the templates that thread it
   through: `internal/templates/templates/commands/{wrap,cancel-plan}.md`
-- Still open: `windows-lockfileex` (real locking on Windows) and
+- Formerly listed as still open, both closed (amended 2026-09-28):
+  `windows-lockfileex` (real locking on Windows) — closed by the 2026-08-18
+  amendment (`internal/vaultlock/flock_windows.go`); and
   `unlocked-rmw-writers-beyond-resume` (absorb's `workflow.md` / `knowledge.md`
-  / `doc/*.md` writes still take no `vaultlock`)
+  / `doc/*.md` writes took no `vaultlock`) — absorb now holds `vaultlock.Acquire`
+  across each destination's read-dedup-append (`internal/absorb/writer.go`,
+  since 2026-07-22)

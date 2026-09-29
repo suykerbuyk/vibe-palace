@@ -1,6 +1,6 @@
 # ADR 007: The Vault Audit and the Archive Backfill
 
-**Status:** Accepted (2026-07-17)
+**Status:** Accepted (2026-07-17). **Amended 2026-09-28** — see *Amendment (2026-09-28): three stale claims corrected*.
 **Deciders:** Project owner
 **Context:** The `honest-instruments` epic — the system reports success for work it did not do — and its longest-lived specimen, `capture-note-archive-link-never-closes`
 
@@ -63,7 +63,10 @@ Three properties are load-bearing, and each is a scar:
   "there was nothing there" — the exact `vp_health` bug of 201, and the reason
   `auditArchiveRoundTrip` probes `os.ReadDir` before `archive.ListEntries` (whose
   underlying `filepath.Glob` swallows permission errors and would report an unreadable
-  tree as empty).
+  tree as empty). *(Corrected 2026-09-28 — see Amendment (2026-09-28): there is no
+  separate probe any more. `archive.ListEntries` itself is now built on `os.ReadDir` and
+  returns an error for a transcripts directory it cannot read; the `filepath.Glob` that
+  swallowed the permission error is gone.)*
 
 **Where it sits on the ADR-006 line: REPORT + DEFER.** The audit surfaces facts and
 names options; it never repairs. Its 19-projects-in-one-tree finding — index the
@@ -76,7 +79,8 @@ Known, owned debt lives in `Audits/baseline.json`. A finding whose `(Dimension,
 Artifact)` pair is accepted there is reported as **accepted**, not **new**, and does
 not fail the dimension. This is not a suppression list — it is the artifact
 **declaring an intent the code cannot express**, the same shape as ADR-006's
-`vp:pin` marker and `internal/sourceaudit`'s baseline reasons. Every accepted entry
+`vp:pin` marker (amended 2026-09-28: since deleted with the rest of ADR-009's marker vocabulary) and
+`internal/sourceaudit`'s baseline reasons. Every accepted entry
 carries a `reason` naming why the debt is tolerated and which task owns paying it
 down.
 
@@ -171,6 +175,8 @@ visibly broken rather than papered over with a guess.
 
 **What it costs.** The audit is another thing to run, and its staleness nag is another
 bootstrap signal (the fourth; ADR-006's "revisit before adding a fifth" rule stands).
+*(Corrected 2026-09-28 — see Amendment (2026-09-28): the ordinal was stale, the rule
+is not a headcount, and it was never ADR-006's.)*
 The backfill keeps a human in a per-pair loop they might have preferred to leave —
 which is the point.
 
@@ -193,7 +199,43 @@ asks the artifact so a human does not have to remember to.
   link this audit checks and this backfill repairs. ADR-001 predates the link ever
   failing to close; this ADR is where that story is told.
 - `doc/adr/003-vault-write-locking.md` — `storage.BackfillArchiveLink` holds the
-  sessions-directory lock exactly as `LinkArchiveToSessions` does; the lock order is
-  that ADR's.
+  sessions-directory lock (`vaultlock.Acquire`, directory before file) for the whole
+  scan-and-write; the lock order is that ADR's. *(Corrected 2026-09-28: the blocking
+  `LinkArchiveToSessions` this line named was deleted; its successor
+  `TryLinkArchiveToSessions` is the non-blocking, retrying form the capture hook uses,
+  and `BackfillArchiveLink` deliberately does not call it, since it would re-acquire the
+  directory lock it already holds.)*
 - `internal/vaultaudit` — the audit, the baseline, the staleness nag, and the backfill
   predicate. `internal/storage.BackfillArchiveLink` — the applier's write path.
+
+## Amendment (2026-09-28): three stale claims corrected
+
+The decisions on this page are unchanged. Three statements about the code had gone
+stale and are marked in place:
+
+1. **Blindness now lives in `archive.ListEntries`.** It is built on `os.ReadDir` and
+   returns an error for an unreadable transcripts directory (a genuinely absent one is
+   still an empty listing). `auditArchiveRoundTrip` records that error as an `unknown`;
+   it no longer needs its own probe. See the comment above the `archive.ListEntries`
+   call in `internal/vaultaudit/archive.go`.
+2. **The bootstrap-alert rule is "silent when healthy", not a headcount.** Calling the
+   staleness nag "the fourth" signal was stale when written into code and is stale
+   here. Every bootstrap alert must be silent on a healthy vault, and a new one must
+   also name which side of the advisory gate in `assembleBootstrap` it sits on (that
+   gate is the priority order the set needed once it outgrew the region). Derive the
+   current set rather than counting it:
+   `grep -n "alerts = append" internal/tools/context_tools.go`. The rule is stated on
+   the `AuditStaleness` field in the same file. The original sentence also credited a
+   "revisit before adding a fifth" rule to ADR-006; ADR-006 has never contained it
+   (`git log -S'fifth' -- doc/adr/006-derive-dont-ask.md` finds nothing). The rule
+   lives on that field comment, not in ADR-006.
+3. **The lock sentence named a deleted function.** See the correction under *Related*;
+   the reasoning is in the doc comments on `TryLinkArchiveToSessions` and
+   `BackfillArchiveLink` in `internal/storage/sessions.go`.
+
+One addition, which leaves the shrink-only principle intact: dimensions that carry a
+measurement also ratchet on **magnitude**. An accepted artifact's measurement is
+recorded in the baseline (`DimensionBaseline.Measured`, `internal/vaultaudit/baseline.go`)
+and may only shrink, so a grown artifact keeps reporting until a human re-records it
+with `vp audit vault --accept --raise`; re-accepting an artifact that dropped out and
+crossed again needs `--reaccept` (`vp audit vault --help`).

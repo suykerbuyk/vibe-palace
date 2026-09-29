@@ -1,6 +1,7 @@
 # ADR 002: Wrap-State Anchors
 
-**Status:** Accepted (2026-06-06)
+**Status:** Accepted (2026-06-06); amended 2026-08-29 (anchors are host-local;
+the reference point is `anchor_sha` in the snapshot — see Amendment)
 **Deciders:** Project owner
 **Context:** Vibe-palace restore-mcp-vault-surface — Phase D (wrap-state machinery)
 
@@ -154,7 +155,8 @@ the contradiction is why the anchor never advanced.
 
 **Two claims above are WITHDRAWN:**
 
-- `last-iter … (committed)` in the Decision's directory listing.
+- `last-iter … (committed)` in the Decision's directory listing (since
+  corrected in place to "(host-local)").
 - *"The anchors are plain files the project can commit, so the reference point
   travels with the repo across machines"* in the Consequences.
 
@@ -212,5 +214,8 @@ history and the anchor belongs beside the code; that reasoning is about
 - Wrap-state engine: `internal/wrapstate/` (`wrapstate.go`, `collect.go`,
   `gitprobe.go`, `stamp.go`)
 - Wrap-state tools: `internal/tools/wrapstate_tools.go`
-- The MCP-surface-version bump that advertises this expanded surface is
-  deferred to the `mcp-surface-handshake` task.
+- The MCP-surface-version bump that advertises this expanded surface was
+  deferred to the `mcp-surface-handshake` task. (Amended 2026-09-28: surface
+  versioning has since shipped; the wrap-state tools are advertised by the MCP
+  surface version, `MCPSurfaceVersion` in `internal/surface/version.go`, and
+  pinned in `internal/mcp/tool_surface.golden.json`.)

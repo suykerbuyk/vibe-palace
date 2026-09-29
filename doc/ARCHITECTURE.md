@@ -1,6 +1,6 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-07-28
+**Last updated:** 2026-09-28
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
@@ -40,11 +40,11 @@ over stdio JSON-RPC 2.0.
 | `internal/vplog` | Structured logging (slog to file) | `Init()`, `Close()` |
 | `internal/archive` | Transcript archive / copyright-provenance ledger (source adapters `claude-code`, `zed`, `inline`; manifests, signing) + the note↔manifest link (`LinkSessionNote`, `ResolveEntry`) | `Manifest`, `Entry`, `CreateOptions`, `LinkSessionNote` |
 | `internal/archive/zed` | Read-only Zed agent-panel thread DB parser → Claude-shape JSONL | `parser`, `messages`, `types` |
-| `internal/vaultaudit` | Vault audit (5 dimensions), accepted-debt baseline, staleness nag, and the archive-backfill remediation predicate (ADR-007) | `Run`, `Baseline`, `BackfillCandidates`, `ApplyBackfill` |
+| `internal/vaultaudit` | Vault audit (dimension registry `dimensions` in `audit.go`), accepted-debt baseline, staleness nag, and the archive-backfill remediation predicate (ADR-007) | `Run`, `Baseline`, `BackfillCandidates`, `ApplyBackfill` |
 | `internal/migrate` | Import VibeVault sessions + agentctx (resume/iterations/workflow/knowledge/tasks/memory + verbatim `migrated/` archive) and MemPalace data into the vault | `ImportVibeVault`, `ImportMemPalace`, `copyAgentctx` |
 | `internal/absorb` | Migrate legacy agent-context files (CLAUDE.md, AGENTS.md, .cursorrules) into the vault | `Planner`, `Classifier`, `Writer` |
 | `internal/agentfile` | Detect well-known agent instruction files and wire in a managed bootstrap block | `Detect`, `Wire`, `WireAll` |
-| `internal/shims` | Emit Claude Code slash-command shims into `.claude/commands/` | `Plan`, `Apply`, `Shim` |
+| `internal/shims` | Emit managed command and skill shims into project host surfaces (`.claude/commands/`, `.claude/skills/`, `.cursor/rules/`, `.grok/`) and user-global host plugin trees (see *Shim system* below) | `Plan`, `Apply`, `PlanSkills`, `PlanGrokCommands`, `InstallGlobalSurfaces` |
 | `internal/skills` | Directory-form persona artifacts: SKILL.md frontmatter parser/resolver | `Frontmatter` |
 | `internal/commands` | Shared command list/upgrade/reset surface over the Resolver | `List`, `Plan`, `Reset`, `RenderUnified` |
 | `internal/reconcile` | Check → Plan → Apply reconcilers for managed config-file tiers | (per-artifact reconcilers) |
@@ -52,6 +52,22 @@ over stdio JSON-RPC 2.0.
 | `internal/worktree` | Git-worktree isolation for plan execution (`vp worktree create\|remove\|list`) | `Create`, `Remove`, `List` |
 | `internal/check` | Doctor checks for config, vault, embedder, git, agent drift, resume.md caps, host-rooted paths, template drift and the deleted `vp-surface` merge driver | `Run`, `CheckConfig`, `CheckAgentDrift`, `CheckResumeCaps`, `CheckVaultAbsPaths`, `CheckSurfaceMergeDriver` |
 | `internal/slug` | Project-slug validation and normalization | `Slugify`, `Validate` |
+| `internal/surface` | MCP tool-surface `.surface` stamps and the vault data-format manifest (`.vibe-palace/vault.toml`); the fail-stop/warn gate primitives (see *Versioning and the surface gate*) | `MCPSurfaceVersion`, `RequiredDataFormat`, `CheckCompatible`, `EnforceFailStop` |
+| `internal/vaultfs` | Safe vault-relative file accessors behind the `vp_vault_*` tools and `vp vault read/write/…`: path validation, symlink-resolved containment, CAS | `ResolveSafePath`, `Edit`, `Delete` |
+| `internal/vaultlock` | Per-path exclusive advisory locks (sidecars under `.vp-locks/`) for read→modify→write, plus the root-lock token lifecycle commands hold | `Acquire`, `AcquireHeld`, `Held` |
+| `internal/atomicfile` | Whole-file temp + rename write primitives every vault writer funnels through; stamps `.surface`, refuses writes into departed projects and under `Audits/departures/` | `Write`, `WriteStream`, `ForDepartureRecord` |
+| `internal/departure` | The tracked record that a project slug left a vault (renamed, moved to another vault, or deleted), one file per slug at `Audits/departures/<slug>.json` | `Record`, `Find`, `Resolve`, `List` |
+| `internal/departedpath` | The one rule for "has this project departed" (the record wins over the directory) and the write refusal every funnel applies | `RecordExists`, `Refuse`, `RefuseRecord` |
+| `internal/taskgraph` | Derives epic grouping, blockers and clearing order from flat task metadata; feeds `vp tasks`, `vp board` and bootstrap's head of queue | `Build`, `BuildFromVault`, `Graph`, `BoardView` |
+| `internal/onboard` | The single definition of what onboarding a project means, shared by `vp init` and `vp_init` | `Steps`, `Run`, `Scope` |
+| `internal/planscan` | Read-only reporter for orphaned Claude Code plan files | `Scan`, `Report` |
+| `internal/summarize` | Host-local background queue and drain plumbing for iteration and session-note summarization jobs (`internal/itersummary`, `internal/notesummary` implement its `Summarizer`) | `Summarizer` |
+| `internal/mcphost` | Cross-host registry for registering the MCP server with AI hosts (`vp mcp install/uninstall`) | (per-host registrars) |
+| `internal/plugin` | Generate and register vibe-palace as a Claude Code plugin from a local marketplace | (install helpers) |
+| `internal/sourceaudit` | Static analysis of this repository's own source for known defect classes (write-only fields, uninvoked functions, ungated vault writers, writes outside the funnel, …) | (rule kinds) |
+| `internal/wrapstate` | Wrap-state and anchor machinery behind `/wrap` and `/restart`: next iteration, commits and task deltas since the last anchor, dirty flags | (see `vp_collect_wrap_state`) |
+
+Other packages (`apperr`, `chunk`, `detachlaunch`, `gitenv`, `giterr`, `hostsession`, `jobqueue`, `mdfence`, `scopetoken`, and the test helpers `testinfra`, `testutil`, `memorytestutil` and `integration`) are small; all but `chunk` and `integration` carry a `// Package` comment that describes them. List every package with `find internal -mindepth 1 -maxdepth 1 -type d`.
 
 ---
 
@@ -92,47 +108,85 @@ where each open task sits on the line.
 
 ### Vault Concept
 
-The vault is an out-of-band directory separate from source repositories. A
-single vault holds knowledge and workflow state for all projects. The vault
-path is configured in `~/.config/vibe-palace/config.toml`:
+The vault is an out-of-band directory separate from source repositories. It
+holds knowledge and workflow state for many projects. A host has a **default
+vault**, configured in `~/.config/vibe-palace/config.toml`:
 
 ```toml
 vault_path = "/home/you/your-vault"
 ```
 
+Individual projects may be bound to **other** vaults on the same host through
+the `[project_vaults]` table of that file (ADR-012), so one host can serve
+several vaults, one per project. See *Vault resolution* below for how a command
+picks its vault, and *Vault lifecycle and departure records* for how bindings
+are written.
+
 ### Two Directory Trees
 
-The vault contains two top-level trees with different purposes:
+The vault contains two per-project top-level trees with different purposes,
+plus a few vault-global directories:
 
 ```
 {vault}/
 ├── palace/                         # Knowledge (content, vectors, models)
 │   ├── .local/                     # Vault-wide machine-local state (gitignored)
 │   │   ├── models/                 # ONNX model cache
-│   │   └── embed-cache/{project}/  # Embedding vectors, one .vec per chunk
+│   │   ├── embed-cache/{project}/  # Embedding vectors, one .vec per chunk
+│   │   └── vp.log                  # Structured log (see Structured Logging)
 │   └── {project}/
+│       ├── .surface                # MCP surface stamp (see Versioning)
 │       ├── drawers/{wing}/{room}/drawers.jsonl
 │       ├── kg/
 │       │   ├── entities.jsonl
 │       │   └── triples/{subj}--{pred}--{obj}.json
+│       ├── iteration-summaries/{n}.json  # Per-iteration LLM summaries
 │       └── .local/                 # Machine-local: imported-sessions.jsonl only
-└── Projects/                       # Workflow (sessions, tasks, config)
-    └── {project}/
-        ├── config.toml             # Project-level config overrides
-        ├── resume.md               # Project state
-        ├── iterations.md           # Append-only archive
-        ├── sessions/YYYY-MM-DD-NN.md
-        ├── tasks/
-        │   ├── {slug}.md
-        │   ├── done/{slug}.md
-        │   └── cancelled/{slug}.md
-        ├── commands/               # Project/wing/room commands
-        │   ├── {name}.md          # Project scope
-        │   └── {wing}/
-        │       ├── .wing/{name}.md   # Wing scope
-        │       └── {room}/{name}.md  # Room scope
-        └── skills/                 # Same layout as commands/
+├── Projects/                       # Workflow (sessions, tasks)
+│   └── {project}/
+│       ├── .surface
+│       ├── resume.md               # Project state
+│       ├── workflow.md             # Thin per-project workflow
+│       ├── iterations.md           # Append-only archive
+│       ├── knowledge.md
+│       ├── commit.msg, commit-log.md, commit-log.anchor
+│       ├── sessions/<date>-<fp8>-<NN>.md   # see Session Identity
+│       ├── transcripts/*.{manifest.json,jsonl.zst}
+│       ├── memory/                 # AI memory files (ADR-004)
+│       ├── tasks/
+│       │   ├── {slug}.md           # Open tasks (any non-terminal status, incl. icebox)
+│       │   ├── done/{slug}.md
+│       │   └── cancelled/{slug}.md
+│       ├── commands/               # Project/wing/room commands
+│       │   ├── {name}.md          # Project scope
+│       │   └── {wing}/
+│       │       ├── .wing/{name}.md   # Wing scope
+│       │       └── {room}/{name}.md  # Room scope
+│       └── skills/                 # Same layout as commands/
+├── Templates/                      # Operator overrides of built-ins only (ADR-008)
+│   ├── .surface
+│   ├── commands/
+│   └── skills/
+├── Knowledge/                      # Cross-project notes (e.g. learnings/)
+├── Audits/                         # Vault-global, walked by no project enumerator
+│   ├── .surface
+│   ├── baseline.json               # Vault-audit accepted-debt baseline
+│   ├── <date>-vault-audit.md       # Dated vault-audit reports
+│   └── departures/{project}.json   # Departure records (see Vault lifecycle)
+├── .vibe-palace/
+│   ├── vault.toml                  # Data-format manifest (format = N)
+│   └── remotes.toml                # The vault's own remotes (written by vp vault init)
+└── .vp-locks/                      # Host-local lock sidecars (gitignored)
 ```
+
+`remotes.toml` is written by `vp vault init`; a vault created before it has
+none, and every reader treats that as "records nothing". Each path above has
+one definition in code: `internal/storage/paths.go` for most per-project files
+(`internal/archive` for `transcripts/`, `cmd/vp/bootstrap.go` for `vp.log`),
+`internal/departure` (`Dir`) for `Audits/departures/`,
+`internal/surface/format.go` for `vault.toml`, and the `remotesFile` constant in
+`internal/storage/lifecycle_publish.go` (written by `vault_init.go`) for
+`remotes.toml`.
 
 **palace/** stores knowledge artifacts — content chunks in JSONL drawers,
 knowledge graph entities/triples, and machine-local caches. This data grows
@@ -451,7 +505,7 @@ overlap = 100
 keywords = ["keyword1", "keyword2"]
 
 [palace.scoring]               # weighted scoring overrides (Phase 12)
-min_score = 0.5
+min_score = 0.5                # an override; the built-in default is 0.6
 [palace.scoring.rooms.testing]
 high = ["integration test", "e2e test"]
 medium = ["spec"]
@@ -720,6 +774,113 @@ committing anything.
 
 ---
 
+## Vault lifecycle and departure records
+
+Usage and the operator procedure live in `doc/VAULT-LIFECYCLE.md`; the decisions
+are recorded in `doc/adr/013-vault-project-lifecycle-and-departure-records.md`.
+This section maps the mechanism onto the code.
+
+### The commands
+
+| Command | MCP tool | Code | What it does |
+|---|---|---|---|
+| `vp vault init <path> --remote name=url…` | — | `cmd/vp/cmd_vault_init.go`, `storage/vault_init.go` | New empty vault: records its remotes in the tracked `.vibe-palace/remotes.toml`, one commit on `main`, published to every remote (each must be reachable and empty) |
+| `vp vault clone <url> <path> [--bind <p>…]` | — | `cmd_vault_clone.go`, `storage/vault_clone.go` | Clone a published vault, adding and fetching every remote in `remotes.toml`; `--bind` makes it this host's vault for those projects. No commit, no push |
+| `vp vault copy <p>… --from <remote-url> [--at <sha>]` | `vp_vault_copy` | `cmd_vault_copy.go`, `storage/lifecycle_copy.go`, `tools/vault_copy.go` | Receiver-run copy from another vault's **published remote** (never a host path), through a private blobless snapshot; one commit with `Vp-Copy-*` trailers, footprint hash checked against the source |
+| `vp vault project delete <p>… (--moved-to <url> \| --discard)` | `vp_vault_project_delete` | `cmd_vault_project_delete.go`, `storage/lifecycle_delete.go`, `tools/vault_project_delete_tool.go` | One published commit that removes the projects and adds their departure records; `--moved-to` refuses unless the destination's remote holds a verified copy |
+| — | `vp_vault_split`, `vp_vault_merge` | `tools/vault_split.go`, `tools/vault_merge.go` | MCP-only (`plan` / `apply` / `verify`, plus `purge` for split) split of named slugs into a new standalone vault, or merge of disjoint slugs from one |
+| `vp config bind <slug>… --vault <path>` | `vp_config_bind` | `cmd/vp/cmd_config_bind.go`, `storage/project_bind.go`, `tools/config_bind_tool.go` | Write `[project_vaults]` lines (below) |
+
+`vp_config_bind` and `vp_vault_project_delete` are registered on the stdio
+transport only, never on `vp mcp serve`, because they write the host the
+process runs on (`StdioOnlyToolNames`, `internal/tools/register.go`).
+
+### Dry run, digest, `--expect`
+
+Copy, clone and project delete share one protocol. `--dry-run` (MCP: the plan
+action, which the tool's `ReadOnlyWhen` predicate classifies as a read) runs
+every check, writes nothing, and prints the plan, its **digest** and the exact
+real-run command line. That printed line carries `--expect <digest>`. Given
+it, the real run re-plans and refuses on any mismatch, because what would move
+changed since the human looked. `--expect` is optional (`if req.Expect != ""`
+in `lifecycle_copy.go`, `lifecycle_delete.go` and `vault_clone.go`), so a
+hand-typed run without it re-plans but binds nothing. The real runs of init,
+copy, clone and project delete each print their own undo lines, to paste as
+printed. Only copy's and delete's are a `git revert` plus one push per remote.
+Init's is `rm -rf <path>` plus comments naming the branch to delete on each
+remote's git host; clone's is `rm -rf <path>` plus, after `--bind`, a `cp` that
+restores the global config's backup. On another host, `vp vault pull`
+the default vault first, so it holds the moved-to-vault records that
+`vp vault clone --bind` checks. Init, copy and project delete each
+take the vault's root lock (`vaultlock.AcquireHeld`). Before its first write,
+each writes a host-local pending marker, `.git/vp-lifecycle-pending`
+(`storage/lifecycle_marker.go`). While the marker stands, every other vp
+commit and pull refuses (`ErrLifecyclePending`). Re-running the same command
+finishes or redoes the run. Clone keeps a marker of its own in the directory
+it is cloning into.
+
+### Exact publish
+
+A lifecycle commit is published by `storage/lifecycle_publish.go`, never by
+`CommitAndPushPaths`: no rebase, no realignment, and every remote the vault
+has (in `remotes.toml` order, then any other configured remote). Each push's
+outcome is decided by reading the live remote tip, not by git's exit code. A
+publish that stops is classified (`remote-moved`, `transport`,
+`mirror-diverged`, `state-unknown`). Only `remote-moved` (the first remote
+refused, so nothing was published) resets the commit, rolls the run back and
+asks for a fresh dry run. A later remote's failure does not roll back: the
+commit stays published where it landed and the pending marker is kept.
+`transport` and `state-unknown` say to re-run the same command, which pushes
+the same commit. `mirror-diverged` also keeps the marker, but it is an
+operator matter: the mirror has a writer other than vp. Project delete
+removes ignored leftovers (which `git revert` cannot restore) only after every
+remote holds the commit.
+
+### Departure records: the record wins over the directory
+
+A departure record, `Audits/departures/<slug>.json` (`internal/departure`), says
+a slug left this vault: kind `renamed` (to another slug here), `moved-to-vault`
+(with an optional destination label, never a host path) or `deleted`. It is one
+file per slug so two hosts only conflict when they record the same slug, and it
+sits under `Audits/` because no project enumerator walks that directory.
+
+`internal/departedpath` holds the one rule: **while a record exists, of any kind,
+readable or not, the project is departed, whatever `Projects/<slug>/` holds.**
+A re-scaffold does not reopen the slug. The only way back is to revert the
+departure commit: in v1 a project cannot be copied back over its own
+departure record (`copyDestinationRefusals`, `lifecycle_copy.go`). Every
+write funnel refuses a write under a departed project's trees: `vaultfs` (the raw file tools and CLI), `atomicfile.Write`/`WriteStream`,
+storage's append writer and the commit backstop. At the MCP seam
+`gateIfMutating` refuses any mutating tool naming a departed project, and
+bootstrap reports it in its `departed` field. The records are protected in turn:
+an ordinary write, edit, delete or move under `Audits/departures/` is refused
+(`departedpath.ErrRecordPath`). Only `vp vault project delete` and
+`vp_vault_split`'s purge write or remove one (copy, init and clone write none;
+the `departure-record-writer` source-audit rule pins every caller), through
+`vaultfs.WriteDepartureRecord`/`RemoveDepartureRecord`, which pass
+`atomicfile.ForDepartureRecord` with the live root-lock token.
+
+### Writing `[project_vaults]`
+
+*Vault resolution* above covers how the table is **read**. Binds are written
+by `storage.BindProjectVaults`, behind `vp config bind` (one or more slugs),
+`vp_config_bind` and `vp vault clone --bind`. `storage.RebindCheckout`, which
+no command calls yet, binds through it for its split kind; its rename kind
+instead adds `[project_vaults].<to>` with `<from>`'s value by its own
+compare-and-set (`checkout_rebind.go`) and never removes `<from>` (ADR-012).
+For a bind, every
+precondition for every slug is checked first. All lines go in one
+compare-and-set write of the global config, so the bind is all-or-nothing. It
+refuses a target vault that holds any departure record for the slug. It never
+re-points an existing binding, never writes a checkout and never creates the
+global config. The result is verified through `ResolveVaultBinding` from every
+`--checkout`, and any failure restores the file byte for byte. A running MCP
+server resolved its vault at startup. After a rebind, its mutating tools
+refuse with a stale-binding error (`Registry.staleBinding`) until the host is
+reloaded, and its reads carry a drift banner.
+
+---
+
 ## MCP Server (Phase 2)
 
 ### Protocol Layer
@@ -729,14 +890,14 @@ the protocol implementation. The `Server` wraps `mcp-go`'s `MCPServer` and
 injects the vault reference into every request context.
 
 ```
-cmd/vp/main.go
+cmd/vp/cmd_mcp.go serveMCP → bootstrap() in cmd/vp/bootstrap.go
 ├── storage.OpenVaultFromCwd(cwd) # resolve vault (3 tiers, ADR-012: cwd vault_path, [project_vaults], global)
 ├── embedder.NewLazy(NewONNX...)  # DEFER the ONNX model load — no I/O here
 ├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver
 ├── mcp.NewServer(v)              # create MCP server
 ├── tools.RegisterAll(...)        # register the full tool surface
-└── srv.Serve(ctx)                # start stdio transport
+└── srv.Listen(ctx, stdin, stdout) # start stdio transport (back in serveMCP)
 ```
 
 ### Cold Start: Nothing Expensive Before the Handshake
@@ -789,69 +950,35 @@ and operate on storage directly.
 
 ### MCP Tools
 
-| Tool | Source File | Category |
-|------|-----------|----------|
-| `vp_bootstrap_context` | context_tools.go | Context |
-| `vp_get_command` | command_tools.go | Context |
-| `vp_get_skill` | command_tools.go | Context |
-| `vp_list_commands` | command_tools.go | Context |
-| `vp_list_skills` | command_tools.go | Context |
-| `vp_cmd` | cmd_tools.go | Context |
-| `vp_skill` | cmd_tools.go | Context |
-| `vp_get_skill_section` | skill_section_tool.go | Context |
-| `vp_get_doctrine` | context_query_tools.go | Context |
-| `vp_manual` | manual_tool.go | Context |
-| `vp_palace_status` | palace_tools.go | Palace |
-| `vp_list_wings` | palace_tools.go | Palace |
-| `vp_list_rooms` | palace_tools.go | Palace |
-| `vp_traverse` | palace_tools.go | Palace |
-| `vp_find_tunnels` | palace_tools.go | Palace |
-| `vp_health` | health_tools.go | Health |
-| `vp_kg_query` | kg_tools.go | Knowledge Graph |
-| `vp_kg_add` | kg_tools.go | Knowledge Graph |
-| `vp_kg_invalidate` | kg_tools.go | Knowledge Graph |
-| `vp_kg_timeline` | kg_tools.go | Knowledge Graph |
-| `vp_kg_stats` | kg_tools.go | Knowledge Graph |
-| `vp_get_workflow` | workflow_tools.go | Workflow |
-| `vp_get_resume` | workflow_tools.go | Workflow |
-| `vp_update_resume` | workflow_tools.go | Workflow |
-| `vp_get_knowledge` | workflow_tools.go | Workflow |
-| `vp_list_projects` | workflow_tools.go | Workflow |
-| `vp_append_iteration` | workflow_tools.go | Workflow |
-| `vp_get_iteration` | get_iteration_tool.go | Workflow |
-| `vp_list_tasks` | task_tools.go | Tasks |
-| `vp_get_task` | task_tools.go | Tasks |
-| `vp_manage_task` | task_tools.go | Tasks |
-| `vp_init` | system_tools.go | Project |
-| `vp_vault_sync` | vault_tools.go | Vault |
-| `vp_vault_tidy` | system_tools.go | Vault |
-| `vp_vault_status` | system_tools.go | Vault |
-| `vp_search` | search_tools.go | Search |
-| `vp_search_cross_project` | search_tools.go | Search |
-| `vp_list_learnings` | learning_tools.go | Learnings |
-| `vp_get_learning` | learning_tools.go | Learnings |
-| `vp_capture_session` | session_tools.go | Session |
-| `vp_get_project_context` | session_query_tools.go | Session |
-| `vp_search_sessions` | session_query_tools.go | Session |
-| `vp_get_session_detail` | session_query_tools.go | Session |
-| `vp_get_effectiveness` | session_query_tools.go | Session |
-| `vp_get_friction_trends` | friction_tools.go | Session |
-| `vp_refresh_index` | search_tools.go | Search |
-| `vp_vault_read` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_list` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_exists` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_sha256` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_write` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_edit` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_delete` | vault_file_tools.go | Vault CRUD |
-| `vp_vault_move` | vault_file_tools.go | Vault CRUD |
-| `vp_ingest_commit_msg` | commit_msg_tools.go | Commit |
-| `vp_collect_wrap_state` | wrapstate_tools.go | Wrap state |
-| `vp_stamp_iter` | wrapstate_tools.go | Wrap state |
-| `vp_preflight_wrap` | wrapstate_tools.go | Wrap state |
-| `vp_surface_check` | surface_tools.go | Surface |
-| `vp_audit_vault` | audit_tools.go | Integrity |
-| `vp_archive_link` | archive_tools.go | Integrity |
+The authoritative list is the golden file, not this section:
+
+```sh
+jq -r '.tools[].name' internal/mcp/tool_surface.golden.json               # every tool
+jq -r '.tools[] | select(.mutating) | .name' internal/mcp/tool_surface.golden.json   # the mutating subset
+```
+
+It held **81 tools as of v8.2.0 (surface 8)**. Source files are under
+`internal/tools/`; `grep -l 'Name: *"vp_<tool>"' internal/tools/*.go` finds any one.
+The table groups them by category.
+
+| Category | Tools | Source files | Purpose |
+|---|---|---|---|
+| Context and instructions | `vp_bootstrap_context`, `vp_get_command`, `vp_get_skill`, `vp_list_commands`, `vp_list_skills`, `vp_cmd`, `vp_skill`, `vp_get_skill_section`, `vp_get_doctrine`, `vp_manual`, `vp_read_resource` | context_tools.go, command_tools.go, cmd_tools.go, skill_section_tool.go, context_query_tools.go, manual_tool.go, resource_read_tool.go | Session bootstrap index, command/skill resolution, doctrine, paging of `vibe-palace://` resources |
+| Workflow documents | `vp_get_workflow`, `vp_get_resume`, `vp_update_resume`, `vp_get_knowledge`, `vp_list_projects`, `vp_append_iteration`, `vp_get_iteration` | context_query_tools.go, project_tools.go, get_iteration_tool.go | resume / workflow / iterations read and write |
+| Tasks | `vp_list_tasks`, `vp_get_task`, `vp_manage_task` | task_tools.go | Task queue, epics, lifecycle (see *Tasks and the board*) |
+| Sessions and analytics | `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`, `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends` | session_tools.go, session_query_tools.go, friction_tools.go | Capture and session history |
+| Search | `vp_search`, `vp_search_cross_project`, `vp_refresh_index` | search_tools.go, system_tools.go | Hybrid semantic search |
+| Palace | `vp_palace_status`, `vp_list_wings`, `vp_list_rooms`, `vp_traverse`, `vp_find_tunnels`, `vp_palace_query`, `vp_palace_backfill_decisions` | palace_tools.go, palace_query_tools.go, palace_backfill_tools.go | Wing/room navigation; decision drawers |
+| Knowledge graph | `vp_kg_query`, `vp_kg_add`, `vp_kg_invalidate`, `vp_kg_timeline`, `vp_kg_stats` | kg_tools.go | Entity/triple facts |
+| Learnings | `vp_list_learnings`, `vp_get_learning` | learning_tools.go | Cross-project learnings under `Knowledge/` |
+| Memory | `vp_memory_list`, `vp_memory_read`, `vp_memory_write`, `vp_memory_delete`, `vp_memory_harvest` | memory_tools.go | Host-agnostic AI memory (ADR-004) |
+| Vault files | `vp_vault_read`, `vp_vault_list`, `vp_vault_exists`, `vp_vault_sha256`, `vp_vault_write`, `vp_vault_edit`, `vp_vault_delete`, `vp_vault_move` | vault_file_tools.go | Vault-relative CRUD through `vaultfs` |
+| Vault git and freshness | `vp_vault_sync`, `vp_vault_tidy`, `vp_vault_status`, `vp_repo_freshness` | system_tools.go, repo_tools.go | Pull/push/tidy, sync state of the vault, and of the project checkout |
+| Vault lifecycle | `vp_vault_copy`, `vp_vault_project_delete`, `vp_vault_split`, `vp_vault_merge`, `vp_config_bind` | vault_copy.go, vault_project_delete_tool.go, vault_split.go, vault_merge.go, config_bind_tool.go | See *Vault lifecycle and departure records* |
+| Onboarding | `vp_init` | system_tools.go | Project onboarding over `internal/onboard` |
+| Wrap and commit | `vp_collect_wrap_state`, `vp_stamp_iter`, `vp_preflight_wrap`, `vp_ingest_commit_msg`, `vp_archive_commit_log` | wrapstate_tools.go, commit_msg_tools.go, commit_log_tools.go | `/wrap` mechanics |
+| Summarization | `vp_enqueue_iteration_summary`, `vp_check_summarization_queue`, `vp_trigger_summarization_drain` | summarize_tools.go | Host-local summarization queue |
+| Diagnostics and integrity | `vp_health`, `vp_check`, `vp_surface_check`, `vp_audit_vault`, `vp_archive_link`, `vp_scan_plans` | health_tools.go, check_tool.go, surface_tools.go, audit_tools.go, archive_tools.go, scan_plans_tool.go | Runtime health, checks, audits, repair |
 
 All tools except the search-dependent ones are always registered. The nine
 search-gated tools — `vp_search`, `vp_search_cross_project`,
@@ -896,12 +1023,7 @@ way to carry. It returns `{status: "empty"}` for a fully drained queue, or
 `{status, summary, details[]}` otherwise; it never launches the detached
 `vp drain summaries` subprocess `vp_trigger_summarization_drain` does.
 
-The table above enumerates the primary tool surface; for brevity it omits
-several always-registered tools — the five `vp_memory_*` tools
-(`memory_tools.go`), `vp_read_resource` (`resource_read_tool.go`),
-`vp_archive_commit_log`, and the read-only probes documented in their own
-sections (`vp_check`, `vp_scan_plans`). The authoritative
-enumeration is the full tool surface versioned in
+The authoritative enumeration is the full tool surface versioned in
 `internal/mcp/tool_surface.golden.json` (its `surface_version` is
 `MCPSurfaceVersion` in `internal/surface/version.go`), pinned by
 `internal/tools/register_test.go` — the registry
@@ -964,6 +1086,62 @@ applies the filter there.
 
 ---
 
+## Versioning and the surface gate
+
+Two independent version axes live in `internal/surface`, and they answer
+different questions (the header comment of `format.go`):
+
+| Axis | Constant | On disk | Fires when | Hazard |
+|---|---|---|---|---|
+| Tool surface | `MCPSurfaceVersion` (`version.go`) | `.surface` stamps in `Projects/<p>/`, `palace/<p>/`, `Templates/`, `Audits/` | the vault is **ahead** of the binary (a newer binary wrote it) | write |
+| Data format | `RequiredDataFormat` (`format.go`) | `.vibe-palace/vault.toml` (`format = N`) | the vault is **behind** the binary (data not yet migrated) | read |
+
+**Stamps.** Every whole-file write through `internal/atomicfile` best-effort
+stamps the `.surface` of the stamp root the write falls under (`Projects/<p>/`,
+`palace/<p>/`, `Templates/` or `Audits/`; `surface.StampForPath` →
+`ResolveStampDir`). Writes outside those roots stamp nothing.
+A stamp is byte-stable per surface version, so it changes only when the
+version rises. `surface.CheckCompatible` scans every stamp root and takes the
+**maximum**. The first write by a newer binary anywhere in the vault therefore
+raises the floor for every host. `vp check --check surface` and
+`vp_surface_check` report the verdict.
+
+**Data format.** `vault.toml` is written only by a scaffold (a fresh vault is
+born current) or by the migration that advances it, never as a side effect of
+a write. `EnforceFormatFailStop` guards the KG-storage reads
+(`internal/storage/format_gate.go`). Format 2 exists because `vp board` needs
+task creation/modification times and the widened status vocabulary to be
+trustworthy vault-wide (`vp migrate task-board-fields` backfills them). The
+lifecycle commands check the data format of the vaults they read (clone
+refuses a vault that is not at this binary's format).
+
+**Release tags** are `v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>`
+(ADR-011). `.github/workflows/release.yml` enforces the scheme on a pushed
+tag, and `vp check --check release-version` checks it on a built binary.
+Derive the current pair from the two constants rather than from this document.
+
+**The gate.** On the MCP side the only surface gate is `Registry.gateIfMutating`
+(`internal/mcp/tools.go`). Both dispatch paths route through it, and
+ADR-010 records why it stays at the dispatch seam rather than in the write
+primitives. For a tool marked `Mutating`, unless its `ReadOnlyWhen`
+predicate says this invocation writes nothing, it refuses in this order:
+1. The server's startup vault binding is stale (see *Writing
+   `[project_vaults]`*).
+2. `surface.EnforceFailStop` fails: the vault is ahead of the binary, or there
+   is no reachable vault.
+3. The call names a departed project.
+
+The surface gate never refuses a read; the data-format gate above can still
+refuse KG reads on an unmigrated vault. There is no MCP startup gate, so the server stays up
+and the remediation arrives as a tool error. On the CLI, `surfaceGate`
+(`cmd/vp/main.go`, run from `preRun`) fail-stops commands registered as vault
+mutating and only warns for everything else. It gates only the configured
+vault; a mutating command writing to a root named by `--vault` gates that root
+itself (`enforceSurfaceOnRoot`, `cmd/vp/vault_root_flag.go`). `VP_SURFACE_GATE=warn` downgrades
+a version mismatch, and nothing else, to a warning.
+
+---
+
 ## CLI Framework (`internal/cli`)
 
 `Registry.Dispatch` routes argv to a registered `Command`. Two-word
@@ -1021,6 +1199,7 @@ dispatches the same map. Registered names:
 | `vault-filesystem` | `Vault filesystem` | Whole vault — does the filesystem accept `:` in filenames (NTFS/exFAT) |
 | `stray-scaffolds` | `Stray scaffolds` | Whole vault — scaffold-only orphan projects under `Projects/` |
 | `palace-local-only` | `Palace local-only` | Whole vault, this host only — `palace/<slug>/` directories holding no file outside machine-local `.local/` |
+| `vault-project-config` | `Vault project config` | Whole vault — retired `Projects/<slug>/config.toml` files still on disk |
 | `surface-merge-driver` | `Surface merge driver` | Whole vault — a `.gitattributes` naming the deleted `vp-surface` merge driver |
 | `resume-caps` | `Resume caps` | Whole vault — every `Projects/*/resume.md` |
 | `resume-refs` | `Resume refs` | Whole vault — host-local plan refs in every `Projects/*/resume.md` |
@@ -1030,11 +1209,13 @@ dispatches the same map. Registered names:
 | `host-surfaces` | `Host surfaces` | This host — plugin trees under `$HOME` |
 | `writer-identity` | `Writer identity` | This host — the writer fingerprint it writes under |
 | `stale-mcp` | `Stale MCP` | This host — running `vp mcp` processes whose image was replaced |
+| `release-version` | `Release version` | This binary — its stamped release version vs. `MCPSurfaceVersion`.`RequiredDataFormat` (ADR-011) |
 
 The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
-this table: it went stale once when `vault-filesystem` and `stray-scaffolds`
-joined the registry, and again as six more producers joined without a row here.
+this table (`awk '/ProducerOrder *=/,/}/' internal/check/selector.go`): it has
+gone stale three times as producers joined without a row here. It was last
+regenerated for v8.2.0.
 
 This table enumerates only the **vault-rooted, selector-registry** checks —
 the ones `check.Producers` can dispatch by name, because their signature takes
@@ -1227,6 +1408,48 @@ into the base branch with `merge --ff-only`, mirroring the epic-orchestrator's
 `../wt/<epic>` + ff-only convention one level down, at single-plan granularity.
 `List` enumerates the repo's worktrees, filtered to `plan/*` by default.
 
+### Tasks and the board (`internal/taskgraph`)
+
+A task is one markdown file under `Projects/<p>/tasks/`, written by
+`internal/storage` under the per-path lock (`vp_manage_task`: create, amend,
+overwrite, set_meta, update_status, set_relations, retire, cancel, move). Its
+header is a run of `**Field:** value` lines, an open schema (ADR-011). It
+carries only its own outbound links: `**Parent:**`, `**Depends:**` and, on a
+cancelled task, an optional `**SupersededBy:**` (set by `cancel` with
+`superseded_by`). Everything else, including the reverse views (children,
+supersedes), is **derived, never stored**, by `internal/taskgraph`. An
+epic is not a field. It is any task something names as its parent (a root
+epic heads its own chain, a story sits under one). Blockers, clearing order
+(a dependency always above what it blocks), orphans and cycles are computed
+from the set, and bad data is reported as findings rather than errors. The
+dependency is one-way: `internal/storage` never imports `taskgraph`, so a
+write is never validated against the whole vault and a child can be written
+before its epic.
+
+**Statuses** (`internal/storage/tasks.go`). The writable ones are
+`planning`, `reviewed`, `in_progress`, `blocked` and `icebox`. The terminal
+`done` and `cancelled` are reached only by **moving** the file into
+`tasks/done/` or `tasks/cancelled/` (retire / cancel), and the directory
+is authoritative. `icebox` means known but not scheduled: the file stays in
+`tasks/`, and the work-queue readers (`vp tasks`, `vp_list_tasks`, bootstrap's
+head of queue) hide it by default. Only the grouped `vp tasks` view says how
+many it hid; `vp board` always shows the icebox.
+
+**Readers**, all over one `taskgraph.Graph`:
+- `vp tasks` / `vp_list_tasks`: the work queue, grouped by epic, with
+  `--epic`, `--standalone`, `--flat`, `--all` (MCP: `epic`, `standalone`,
+  `epics_only`, `include_icebox`, `include_done`).
+- `vp tasks epics`: the root epics, with transitive open/total counts.
+- `vp board`: a history view (`Graph.Board()` → Active / Icebox / History
+  buckets, each decided by the root's own status alone; history is listed
+  most recent first, and nothing is filtered by default).
+- The bootstrap `head_of_queue` (`internal/tools/bootstrap_rank.go`):
+  unblocked work, in progress first, then priority, then topological order.
+
+The board's chronology needs each task's creation and modification days and
+the widened status vocabulary to be trustworthy across the vault. That is why
+data format 2 exists (see *Versioning and the surface gate*).
+
 ---
 
 ## Context Injection (Phase 3)
@@ -1291,13 +1514,14 @@ templates/
 ├── workflow.md                    # Thin per-project workflow (project-specific patterns + doctrine pointer)
 ├── doctrine.md                    # Generic agent operating manual (ADR-008, served on demand)
 ├── resume.md                      # Project state template
-└── commands/
-    ├── capture.md                 # Session capture instructions
-    ├── restart.md                 # Context restoration instructions
-    ├── review-plan.md             # Plan review instructions
-    ├── cancel-plan.md             # Plan cancellation instructions
-    └── wrap.md                    # Session wrap-up instructions
+├── enrichment.md                  # Session-enrichment system prompt (ADR-005)
+├── commands/{name}.md             # Built-in commands (capture, restart, wrap, …)
+└── skills/{name}/SKILL.md         # Built-in skills, each with optional references/*.md
 ```
+
+The command and skill sets change between releases. List them with
+`vp commands list` / `vp skills list`, or
+`find internal/templates/templates -maxdepth 2`.
 
 Templates support `{{PROJECT}}`, `{{DATE}}`, `{{WING}}`, and `{{ROOM}}`
 variable expansion. `internal/context/precedence.go` consumes the
@@ -1672,9 +1896,16 @@ committed override — restored from HEAD in place, undoing the reset.)
 ### Bootstrap Context
 
 `vp_bootstrap_context` is the primary entry point for AI context restoration.
-A single call assembles: workflow rules, project resume, active tasks, recent
-sessions, KG snapshot, and available commands/skills. This replaces the
-multi-file CLAUDE.md pattern used by legacy systems.
+A single call returns an **index plus instruments**, not documents. The index is
+the head of queue, a ranked session index, the memory index, a KG snapshot and
+the command and skill lists. The resume and workflow bodies are fetched through
+`resume_uri` / `workflow_uri` with `vp_read_resource`. Among the instruments are
+`departed` (the project named has left this vault, so every write for it is
+refused) and `project_repo_freshness` (opt-in: present only when the call
+passes the `project_repo_path` parameter and that checkout is behind, diverged
+from or unverified against its remote), alongside surface,
+vault-dirt, vault-staleness, health, audit and friction alerts. The field list
+is `BootstrapResult` in `internal/tools/context_tools.go`.
 
 #### The payload is an index (313, PRD §1.9)
 
@@ -1773,7 +2004,14 @@ the live-vault canary assert the property on real marshalled bytes.
 ##### The same contract across the rest of the surface
 
 The cap is a property of the **host**, not of bootstrap, so it applies to every
-tool result. A survey against the live vault
+tool result. The rule: **every result that can be large leads with its recovery
+handle and ends with a terminal `complete`.** The survey figures and struct
+lists below are a dated record (2026-08-12). Tools added since, such as copy,
+split, merge and the palace-query tools, follow the rule but are not in the
+lists; `grep -ln 'json:"complete"' internal/tools/*.go` gives the current set.
+`vp_vault_project_delete` does not follow it yet: its plan lists every tracked
+file before its digest and has no terminal `complete` (`storage.DeletePlan`).
+A survey against the live vault
 (`survey-mcp-surface-for-results-over-the-host-inline-cap`, 2026-08-12) measured
 all 47 non-mutating tools and found **19 over the 19,968-byte cap**, up to
 `vp_vault_read` at 189×. It also found that **every URI escape hatch on the
@@ -1886,8 +2124,9 @@ exists to delete.
 **`vp commands upgrade`, `vp skills upgrade` and the reset verbs are NOT
 callers of `internal/onboard`.** The upgrade commands are a separate
 *upgrade* policy layered over the shared writers in `internal/shims` and
-`internal/commands` — not over `reconcile.TemplateTree`, which only
-`vp config sync` and vault split drive: onboarding reconciles toward the
+`internal/commands` — not over the `Templates/` reconcile
+(`reconcile.NewTemplateTree` rooted at `Templates`), which only `vp config sync`
+drives: onboarding reconciles toward the
 current schema and is additive, while `vp commands upgrade` presents
 changes interactively and may REMOVE a stale shim. Neither upgrade command
 changes a vault `Templates/` file; only a named `vp commands reset` /
@@ -1908,11 +2147,12 @@ embedded) and can be listed or invoked by name. When wing/room are not
 specified, resolution falls back to the 3-tier project > vault > embedded
 chain.
 
-### Three-target shim system (`internal/shims/`)
+### Shim system (`internal/shims/`)
 
 vibe-palace emits native shim files into the editor's own surfaces so
 users can invoke commands and skills without leaving the tool they
-already know. One `TargetKind` enum drives three emission paths, all
+already know. One `TargetKind` enum (`internal/shims/target.go`) has four
+kinds — `ClaudeCommand`, `ClaudeSkill`, `CursorRule`, `GrokSkill` — all
 sharing the managed-hash atomic-write protocol (tmp + fsync + rename
 with a `<!-- vibe-palace:shim v=N sha=7hex -->` … `<!-- vibe-palace:shim-end -->`
 region that identifies vibe-palace-owned content; files without the
@@ -1920,10 +2160,19 @@ marker are "custom" and never touched).
 
 | Target          | Location                             | Body                                           |
 |-----------------|--------------------------------------|------------------------------------------------|
-| `ClaudeCommand` | `.claude/commands/vpc-<name>.md`     | Delegates to `vp_command` MCP tool             |
+| `ClaudeCommand` | `.claude/commands/vpc-<name>.md`     | Delegates to `vp_cmd` MCP tool                 |
 | `ClaudeSkill`   | `.claude/skills/vps-<name>/SKILL.md` | Delegates to `vp_skill`; teaches additive-stack contract; `vp skills show` CLI fallback when `vp_skill` cannot be loaded |
 | `CursorRule`    | `.cursor/rules/vps-<name>.mdc`       | Delegates to `vp_skill`, with a `vp skills show` CLI fallback when `vp_skill` cannot be loaded |
 | `GrokSkill`     | `.grok/skills/vps-<name>/SKILL.md`, and the `/vpc` hub at `.grok/skills/vpc/SKILL.md` | Persona: as `ClaudeSkill`, in Grok frontmatter. Hub: lists and dispatches commands through `vp_cmd`; no fallback |
+
+Two further emission paths reuse the same renderers. `PlanGrokCommands`
+(`plan.go`) writes command shims under `.grok/plugins/vibe-palace/commands/`
+with bodies byte-identical to the Claude ones. `InstallGlobalSurfaces`
+(`user_install.go`) writes user-global command and skill shims into host
+plugin trees under `$HOME` (the Claude Code plugin and its cache, and
+`~/.grok/plugins/vibe-palace`). `vp mcp install` drives it through
+`internal/plugin` and `internal/mcphost`, and the `host-surfaces` check row
+reports on those trees.
 
 - **Plan / Apply** for commands (`Plan` + `Apply`) and for skill-class
   targets (`PlanSkills` + `ApplySkills`) each classify on-disk files as
@@ -2040,7 +2289,7 @@ The `Embedder` interface:
 type Embedder interface {
     Embed(ctx context.Context, text string) ([]float32, error)
     EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
-    Dimensions() int
+    Dimensions() (int, error)
     Close() error
 }
 ```
@@ -2654,6 +2903,10 @@ rooms appearing in 2+ wings — these are cross-domain connections.
 - `vp_list_rooms` — rooms in a wing with drawer counts and hall distribution
 - `vp_traverse` — BFS graph walk from a starting room
 - `vp_find_tunnels` — cross-wing room connections
+- `vp_palace_query` — drawers filtered by hall / room / `source_type` /
+  substring / date range, newest first; `source_type` defaults to `decision`
+- `vp_palace_backfill_decisions` — files the frontmatter `decisions:` of past
+  session notes as decision drawers (a dry run unless `apply=true`)
 
 ---
 
@@ -2707,9 +2960,10 @@ rooms appearing in 2+ wings — these are cross-domain connections.
 ### Two Logging Domains
 
 The system distinguishes between **startup crashes** (stderr + exit) and
-**runtime degradation** (slog + continue). Five `fmt.Fprintf(os.Stderr, ...)`
-calls in `main.go` handle fatal startup errors before the logger is even
-initialized. The structured logger handles runtime best-effort failures.
+**runtime degradation** (slog + continue). Fatal startup errors are printed
+to stderr by the command that hit them (for example `serveMCP` in
+`cmd/vp/cmd_mcp.go`), with a non-zero exit, not only logged. The structured
+logger handles runtime best-effort failures.
 
 ### Log Infrastructure (`internal/vplog`)
 
@@ -2812,7 +3066,7 @@ All registered unconditionally (no embedder needed).
 
 ```
 make build      # go build ./...
-make test       # fast unit tests (-race -short, no model download) — depends on live-canary
+make test       # fast unit tests (-race -short, no model download) — then runs live-canary
 make live-canary # bootstrap canary, uncached (-count=1); skips cleanly with no vault
 make test-full  # full suite including ONNX integration
 make integration # integration tests only
@@ -2822,6 +3076,10 @@ make clean      # remove build artifacts (preserves model cache)
 make dist-clean # remove everything including model cache
 ```
 
+The list is partial. `make help` or `grep -E '^[a-zA-Z_-]+:' Makefile` lists
+every target. Others include `vet`, `fmt-check`, `source-audit`, `model-test`,
+`cover-full`, `release`, `snapshot` and `man`.
+
 Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 
 ---
@@ -2829,7 +3087,7 @@ Binary: `vp` installed to `${PREFIX}/bin/vp` (default `~/.local/bin/vp`).
 ## Adaptive Room Classification (Phase 12)
 
 Phase 12 adds a self-improving classification system built on the
-`RoomClassifier` and a thin OpenAI-compatible LLM client.
+`RoomClassifier` and the `internal/llm` client (see *LLM Client* below).
 
 ### Room Audit (`internal/palace/audit.go`)
 
@@ -2845,7 +3103,7 @@ takes `--project`; it is a different thing from the vault audit below.
 design intent and reports **pass / fail / unknown per dimension**. Full rationale
 in ADR-007; the mechanics:
 
-- **The dimensions** (the registry is `dims` in `internal/vaultaudit/audit.go`;
+- **The dimensions** (the registry is `dimensions` in `internal/vaultaudit/audit.go`;
   this list is derived from it, and the COUNT is deliberately not restated here —
   ADR-007 is exactly about not storing a value the registry already holds): `archive-roundtrip` (every transcript manifest
   back-links to a session note that exists), `project-tree-coherence` (every project
@@ -2867,7 +3125,12 @@ in ADR-007; the mechanics:
   first H2 — the region `vp_manage_task action: overwrite` exists to repair, disjoint
   by construction from `task-heading-markers`, which reads heading TEXT; the predicate
   is `storage.MovePreambleUnderContext`, whose rewritten string is discarded, and a
-  file with no usable first H2 is reported as its own degenerate class).
+  file with no usable first H2 is reported as its own degenerate class),
+  `task-status-directory` (a task file's `**Status:**` agrees with the directory
+  it sits in, which is authoritative: no non-terminal status in `done/` or
+  `cancelled/`, and no terminal status in `tasks/`, the signature of a
+  rewrite-then-rename crash), `task-file-validity` (every archived task file
+  passes the whole-file task validator `storage.ValidateWholeTaskFile`).
 - **Advisory — a FAIL exits 0.** It reports; it never blocks. An audit that
   failed the build is an audit people learn to disable.
 - **Vault-global — no `project` parameter.** Scoping it per-project is how a
@@ -2922,16 +3185,23 @@ content, then cross-validates each proposal by scanning all drawers
 (O(proposals × drawers), pure keyword matching). Proposals with negative
 scores (regressions outweigh captures) are filtered out.
 
-### LLM Client (`internal/llm/client.go`)
+### LLM Client (`internal/llm`)
 
-Thin OpenAI-compatible HTTP client (`POST {endpoint}/chat/completions`).
-Handles 429 rate limiting with exponential backoff. No external dependencies
-beyond stdlib. Used by both tune and discover workflows. Configured via
-`[palace.llm]` in TOML (independent of vibe-vault's enrichment config).
+LLM clients behind one `Completer` interface (`completer.go`): an
+OpenAI-compatible HTTP client (`client.go`, `POST {endpoint}/chat/completions`)
+and a native Anthropic backend (`anthropic.go`), with exponential backoff on
+transport errors, 429 and 5xx (`retry.go`). No external dependencies beyond stdlib. Used by tune and
+discover (configured via `[palace.llm]` in TOML), and also by session
+enrichment and the iteration and session-note summarizers.
 
 ---
 
 ## Roadmap
+
+> **Historical record (marked 2026-09-28).** This is the original phase plan. It
+> is not maintained and does not list later work (vault lifecycle, the task
+> board, summarization). It is superseded by the project's task files: run
+> `vp tasks` for the open backlog.
 
 Phases 7–10, 12–18 are complete (knowledge graph, migration, CLI,
 documentation, adaptive room classification, guided onboarding,

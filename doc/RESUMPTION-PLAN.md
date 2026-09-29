@@ -2,13 +2,20 @@
 
 **Date:** 2026-05-08
 **Revised:** 2026-05-09 (Phase C pre-execution review — verified against HEAD after Phases A + B merged in PR #1)
-**Status:** Decision made. Ready to resume.
+**Status:** Executed; closed 2026-06-06.
 **Authors:** John Suykerbuyk, Claude Opus 4.7 (1M context)
 
-> **Historical document (May 2026).** Preserved as the resumption decision
-> record. The plan it describes was executed and closed (see
-> `doc/PHASE-D-OPERATOR-BRIEF.md`); claims and counts here describe that
-> moment, not the current system.
+> **Historical record (2026-05-08, revised 2026-05-09; closed 2026-06-06).**
+> Preserved as the resumption decision record. The plan it describes was
+> executed and closed (see `doc/PHASE-D-OPERATOR-BRIEF.md`). Phase E shipped
+> by a different route than §3 describes: as the Claude Code
+> plugin/marketplace install (`vp mcp install --claude-plugin`, merged in
+> e71c85e on 2026-06-06), not as a hand edit of hook settings. Commands,
+> paths, line numbers and counts below describe May 2026, not the current
+> system: `vp serve` is now `vp mcp serve`, and `vp_bootstrap_context` now
+> returns an index whose resume/workflow bodies are fetched with
+> `vp_read_resource`. For current behaviour see `doc/ARCHITECTURE.md` and
+> `vp --help`.
 
 This document captures the decision to resume vibe-palace as the strategic
 successor to vibe-vault, the verification work done before that decision,
@@ -85,7 +92,7 @@ Test suite at HEAD: all packages pass `-short` (`internal/integration`,
 Command: `vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --dry-run --yes`
 Source: live VibeVault at `~/obsidian/VibeVault` (1880 notes, 926
 session-index entries, 232 vibe-vault iterations).
-Log: `/tmp/vp-migrate-dryrun.log` (940 lines).
+Log: `doc/migration-dryrun-2026-05-08.log` (originally written to `/tmp/vp-migrate-dryrun.log`) (940 lines).
 
 **Summary:**
 
@@ -559,6 +566,5 @@ plus the iter-velocity tax compounding every iteration.
 - `doc/ARCHITECTURE.md` — service layer, storage layout, KG model
 - vibe-vault iter 232 (`~/obsidian/VibeVault/Projects/vibe-vault/iterations.md`)
   — context for why this decision was made now
-- `/tmp/vp-migrate-dryrun.log` — full dry-run output (940 lines), retained
-  during this session; copy to `doc/migration-dryrun-2026-05-08.log` if
-  desired for historical reference
+- `doc/migration-dryrun-2026-05-08.log` — full dry-run output (940 lines),
+  originally written to `/tmp/vp-migrate-dryrun.log` and since copied here

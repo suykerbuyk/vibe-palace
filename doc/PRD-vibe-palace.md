@@ -4,6 +4,7 @@
 **Date:** 2026-04-06 (split 2026-08-15)
 **Authors:** John Suykerbuyk, Claude Opus 4.6
 **Status:** Phases 1–10, 12–18 Implemented | Phase 11 Planned
+**Current as of:** v8.2.0 (MCP surface 8, data format 2). `vp --version` reports the build.
 
 > **🔴 THIS DOCUMENT SPECIFIES, IT DOES NOT NARRATE (split 2026-08-15).** It grew
 > to 4,355 lines / 188 KB by fusing a specification with an implementation
@@ -54,7 +55,9 @@ from any specific AI provider's file system expectations.
 
 **What this preserves:**
 - VibeVault's 686+ sessions of captured knowledge (full migration path)
-- MemPalace's 96.6% retrieval accuracy (embedded HNSW + same embedding model)
+- MemPalace's retrieval approach (same embedding model; search is an exact
+  brute-force cosine index, HNSW deferred). The 96.6% figure is MemPalace's own
+  result, and the session/project counts above are 2026-04 figures.
 - VibeVault's workflow orchestration and pair programming paradigm
 - MemPalace's temporal knowledge graph with validity windows
 - Both systems' local-first, zero-cloud-dependency architecture
@@ -93,18 +96,26 @@ knowledge graph queries — is available via MCP tools. File system artifacts
 (session markdown files, task files, iteration narratives) are *generated outputs*
 of the MCP server, not inputs to it.
 
-**The project-local footprint is exactly one file:** `.vibe-palace.toml` at the
+**The project-local footprint is exactly one tracked file:** `.vibe-palace.toml` at the
 project root. This file contains only the project identity (name, domain, tags).
 It MAY be committed to the project repository; a committed copy never carries
 `vault_path`, because a path is a fact about one host. Which vault a project
 lives in on a given host is that host's own `[project_vaults]` binding in its
 global config (ADR-012).
+`vp init` also touches the working tree in other ways: it adds ignore lines to
+`.gitignore` (`/AGENTS.md`, `/CLAUDE.md`, `/.claude/`, `/.grok/`, `/.vibe-palace/`,
+`/commit.msg`), writes the untracked host artifacts those lines cover (the
+`AGENTS.md` block and, unless the user-global plugin already serves them, the
+`.claude/` / `.grok/` command and skill shims), and installs
+`.git/hooks/post-commit`. None of them is the project's identity.
 Everything else — workflow rules, behavioral calibration, commands, skills,
 templates — is delivered through the MCP interface on demand.
 
 No symlinks. No dual-git management. **Nothing host-specific is ever committed**
 — a host may keep its own untracked shims (a `.claude/` directory, a `CLAUDE.md`)
-so long as they only call MCP tools and the repo does not track them.
+so long as they only call MCP tools and the repo does not track them. `vp init`
+and `vp commands upgrade` create these shims themselves, and a skill shim carries
+only a menu label, never the skill's trigger text.
 
 **Write/wrap surface (complete).** The session *wrap* — updating `resume.md`,
 ingesting the commit message, recording the iteration, and committing/pushing
@@ -164,8 +175,9 @@ with Claude Code, Cursor, Windsurf, Cline, Zed, Ollama, or any future MCP client
 The compiled Go binary contains:
 - The MCP server (stdio transport, plus an optional bearer-authenticated, read-only-by-default Streamable-HTTP transport via `vp mcp serve`)
 - A CLI for human interaction
-- An embedded ONNX runtime for text embeddings
-- An embedded HNSW index for vector search
+- A pure-Go ONNX embedder (`hugot`, no CGO) for text embeddings; the model is
+  downloaded on first use, not embedded
+- An exact brute-force cosine vector index (HNSW deferred)
 - Embedded default templates for project initialization
 
 No Python. No Docker. No pip. No node_modules. Download, run, done.
@@ -322,8 +334,8 @@ count that the server could return, that is a missing field on a tool result.
 │                        vibe-palace binary                        │
 │                                                                  │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐                │
-│  │ MCP Server │  │ HTTP Server│  │    CLI     │                │
-│  │  (stdio)   │  │ (REST API) │  │            │                │
+│  │ MCP Server │  │ MCP Server │  │    CLI     │                │
+│  │  (stdio)   │  │  (HTTP)    │  │            │                │
 │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘                │
 │        │               │               │                        │
 │        └───────────────┬┘               │                        │
@@ -352,9 +364,9 @@ count that the server could return, that is a missing field on a tool result.
 │              │       Storage Layer         │                    │
 │              │                             │                    │
 │              │  ┌───────────┐ ┌─────────┐ │                    │
-│              │  │Filesystem │ │  HNSW   │ │                    │
-│              │  │(JSONL+JSON│ │ (vector │ │                    │
-│              │  │ + markdown│ │  index) │ │                    │
+│              │  │Filesystem │ │ Vector  │ │                    │
+│              │  │(JSONL+JSON│ │ index   │ │                    │
+│              │  │ + markdown│ │ (exact) │ │                    │
 │              │  └───────────┘ └─────────┘ │                    │
 │              │  ┌───────────────────────┐  │                    │
 │              │  │  ONNX Embedder       │  │                    │
@@ -375,18 +387,18 @@ count that the server could return, that is a missing field on a tool result.
 | Component | Responsibility |
 |-----------|---------------|
 | **MCP Server** | JSON-RPC 2.0 over stdio; tool registration and dispatch |
-| **HTTP Server** | REST API on localhost; same service layer, different transport |
-| **CLI** | Human-facing commands (init, search, status, vault sync) |
+| **MCP over HTTP** | `vp mcp serve`: the same MCP tools over Streamable HTTP (not a REST API); bearer-authenticated when the token variable is set, read-only unless `--allow-writes`, binds 127.0.0.1:7423 by default |
+| **CLI** | Human-facing commands; see `vp --help` for the list |
 | **Context Engine** | Precedence-aware context assembly; workflow/resume/template merging |
 | **Session Capture** | Model-agnostic session recording; metadata extraction; auto-indexing |
-| **Search Engine** | Hybrid semantic + structural search; HNSW queries + metadata filters |
+| **Search Engine** | Hybrid semantic + structural search; vector-index queries + metadata filters |
 | **Task Manager** | Task CRUD; lifecycle management; retirement on explicit human approval |
 | **Palace Graph** | Wing/hall/room navigation; tunnel discovery; structural filtering |
 | **Knowledge Graph** | Temporal entity-relationship triples; time-travel queries |
 | **Precedence Resolver** | Merge embedded defaults + vault templates + project overrides |
 | **Filesystem Store** | All structured data as JSONL/JSON/markdown in git-tracked vault |
-| **HNSW Index** | In-memory vector index for semantic search; rebuilt from drawer files |
-| **ONNX Embedder** | `all-MiniLM-L6-v2` inference; 384-dim embeddings; ~80MB model |
+| **Vector Index** | In-memory exact brute-force cosine index for semantic search (HNSW deferred); rebuilt from drawer files |
+| **ONNX Embedder** | `all-MiniLM-L6-v2` inference; 384-dim embeddings; ~90 MB model |
 | **Vault** | Git-managed directory tree; markdown artifacts; multi-machine sync |
 
 ---
@@ -400,18 +412,43 @@ stateDiagram-v2
     [*] --> Undetected : no .vibe-palace.toml
     Undetected --> Detected : vp init / auto-detect
     Detected --> Initialized : creates toml + vault dir
+    [*] --> Arrived : vp vault copy / vp_vault_merge
+    Arrived --> Active : first session or task
     Initialized --> Active : first session or task
     Active --> Active : work continues
-    Active --> Dormant : 90+ days idle
-    Dormant --> Active : new session
-    Active --> Archived : vp archive
-    Archived --> Active : vp unarchive
+    Active --> Departed : vp vault project delete --moved-to / --discard
+    Active --> Departed : vp_vault_split (moved to another vault)
+    Departed --> [*] : departure record kept
+    note right of Departed : git revert of the delete commit removes the record and restores the trees
 ```
 
 **State notes:**
-- **Detected:** Only `.vibe-palace.toml` exists in source tree. Everything else in vault.
+- **Detected:** Only `.vibe-palace.toml` is tracked in the source tree. Everything else is in the vault.
+- **Arrived:** The project came from another vault rather than from `vp init`: copied
+  (`vp vault copy <project>... --from <url>`) or merged (`vp_vault_merge`, MCP only).
+  When that vault is not the host's default, the host reaches it through its own
+  `[project_vaults]` binding (`vp config bind`, ADR-012). Another host reaches an arrived
+  project with `vp vault clone <url> <path> --bind <project>...` (pull the default vault
+  first, so it records the move) or `vp config bind`; that changes the host's binding, not
+  the vault, and `vp vault clone` makes no commit, so it is not an arrival.
 - **Active:** Semantic index live, KG updating, sessions captured.
-- **Archived:** Sessions compressed, embeddings retained, KG frozen (read-only).
+- **Departed:** The project's trees are gone from this vault and a tracked departure record
+  remains at `Audits/departures/<slug>.json` (`format: vp-departure/1`; kind
+  `moved-to-vault` or `deleted`, and readers also honor `renamed`). Writes into a departed project are refused. Only
+  `vp vault project delete` / `vp_vault_project_delete` and the purge step of
+  `vp_vault_split` write departure records. A project cannot be copied back over its
+  own departure record in v1, so Departed ends there unless a `git revert` of the delete
+  commit, then a push, removes the record and restores the trees (ADR-013, Consequences). The supported way to remove a project is
+  `vp vault project delete <project>... (--moved-to <url> | --discard)`, never `rm -rf`.
+- A slug renamed with `vp migrate project-slug` leaves the vault with no departure record.
+  `vp vault rename`, which would write a `renamed` record, is designed but not built
+  (ADR-013, Open questions).
+- There is no Dormant or Archived project state and no `vp unarchive`; `vp archive`
+  archives session *transcripts* only (§3.2).
+
+The decision record is
+[ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md); the user guide is
+[VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md).
 
 ### 3.2 Session Lifecycle
 
@@ -421,37 +458,48 @@ stateDiagram-v2
     Created --> MetadataExtracted : extract metadata
     MetadataExtracted --> Chunked : chunk transcript
     Chunked --> Embedded : ONNX 384-dim vectors
-    Embedded --> Indexed : HNSW + JSONL write
+    Embedded --> Indexed : vector index + JSONL write
     Indexed --> Stored : vault markdown written
     Stored --> Stored : searchable
-    Stored --> Archived : vp archive
+    Stored --> Archived : vp archive create
 ```
 
 **State notes:**
 - **Created:** Model-agnostic input — summary, decisions, files, open threads. No Claude dependency.
 - **Indexed:** Content is semantically searchable. "What did we decide about auth?" works.
-- **Archived:** Session file compressed, embeddings retained for search.
+- **Archived:** The raw host transcript is archived under `Projects/<slug>/transcripts/` with a manifest (ADR-001); the session note itself is not compressed and stays searchable.
 
 ### 3.3 Task Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Open : create
-    Open --> InProgress : update_status
-    InProgress --> InProgress : progress updates
-    InProgress --> Review : impl complete
-    Review --> InProgress : changes needed
-    Review --> Completed : user approves
-    Open --> Cancelled : cancel
-    InProgress --> Cancelled : cancel
-    Completed --> Retired : retire
-    Cancelled --> [*] : to cancelled/
-    Retired --> [*] : narrative appended
+    [*] --> planning : create
+    state "active (tasks/)" as Active {
+        planning --> reviewed : update_status
+        reviewed --> in_progress : update_status
+        in_progress --> blocked : update_status
+        blocked --> in_progress : update_status
+        planning --> icebox : update_status
+        icebox --> planning : update_status
+    }
+    Active --> done : retire (approved_by_human=true)
+    Active --> cancelled : cancel [superseded_by]
+    done --> [*] : file in tasks/done/
+    cancelled --> [*] : file in tasks/cancelled/
 ```
 
 **State notes:**
-- **Review:** Validation task spawned — 80% test coverage, integration test pass, code quality review.
-- **Retired:** Task moved to `done/`, `vp_append_iteration` called with completion narrative.
+- **Active statuses** are `planning`, `reviewed`, `in_progress`, `blocked` and `icebox`
+  (the `status` enum on `vp_manage_task`). `update_status` may set any of them; the
+  arrows above are the usual path, not an enforced order. `icebox` means known but
+  not scheduled: the file stays in `tasks/` and default listings hide it.
+- **Terminal states** `done` and `cancelled` are reached only by moving the file
+  (`retire` to `tasks/done/`, `cancel` to `tasks/cancelled/`); `update_status`
+  cannot set them.
+- **Retire** requires `approved_by_human=true` and does not append an iteration
+  narrative; that is a separate `vp_append_iteration` call.
+- Header schema and the data-format coupling:
+  [ADR-011](adr/011-open-task-header-schema-and-format-axis.md).
 
 ### 3.4 Knowledge Graph Triple Lifecycle
 
@@ -460,7 +508,7 @@ stateDiagram-v2
     [*] --> Created : vp_kg_add
     Created --> Valid : valid_from <= now
     Valid --> Valid : queried/traversed
-    Valid --> Superseded : newer triple added
+    Valid --> Superseded : newer triple added (not shipped)
     Valid --> Invalidated : vp_kg_invalidate
     Created --> Future : valid_from > now
     Future --> Valid : date reached
@@ -471,7 +519,7 @@ stateDiagram-v2
 **State notes:**
 - **Valid:** e.g. "Kai works_on Orion", valid_from=2025-06-01, valid_to=NULL.
 - **Invalidated:** valid_to set (e.g. 2026-03-01). Still queryable via `as_of` parameter.
-- **Superseded:** Auto-invalidated when a new triple replaces the same subject+predicate.
+- **Superseded:** NOT SHIPPED. Adding a triple only rejects an exact duplicate; nothing auto-invalidates an older triple with the same subject+predicate. The only invalidation path is `vp_kg_invalidate`.
 
 ### 3.5 Context Template Lifecycle
 
@@ -506,7 +554,7 @@ flowchart TD
         direction TB
         E["Embedded Defaults<br/>workflow, resume,<br/>commands, skills"]
         V["Vault Templates<br/>user overrides<br/>git-managed"]
-        P["Project Overrides<br/>in vault project dir<br/>+ config.toml"]
+        P["Project Overrides<br/>in vault project dir"]
     end
 
     E --> PR
@@ -534,13 +582,13 @@ flowchart TD
     CHUNK --> JSONL[Write drawers<br/>to JSONL]
     CHUNK --> KG[Extract entities<br/>to KG]
 
-    EMBED --> HNSW[(HNSW Index)]
+    EMBED --> VIDX[(Vector Index<br/>brute-force cosine)]
     JSONL --> FS[(Vault Files)]
     KG --> KGDB[(Knowledge Graph)]
 
-    HNSW --> SEARCH[vp_search]
-    DB --> SEARCH
-    DB --> CTX[vp_bootstrap_context]
+    VIDX --> SEARCH[vp_search]
+    FS --> SEARCH
+    FS --> CTX[vp_bootstrap_context]
     KGDB --> TL[vp_kg_timeline]
     VAULT --> CTX
 ```
@@ -553,9 +601,9 @@ flowchart TD
     Q --> EMB["Embed query<br/>384-dim vector"]
     Q --> FILT["Metadata filters<br/>project, wing,<br/>room, dates"]
 
-    EMB --> HNSW["HNSW search<br/>top-K candidates"]
+    EMB --> VSRCH["Exact cosine search<br/>top-K candidates"]
 
-    HNSW --> SCORE["Combine scores"]
+    VSRCH --> SCORE["Combine scores"]
     FILT --> SCORE
 
     SCORE --> RANK["Rank results"]
@@ -563,7 +611,7 @@ flowchart TD
     DEDUP --> OUT["Return top-N"]
 ```
 
-**Structural boost values (proposed, to be tuned):** wing +12%, wing+hall +24%, wing+room +34%. These are initial proposals, not empirically derived — must be validated against MemPalace benchmark scores before production use.
+**Structural boosts (shipped):** each filter that matches multiplies the score by `1 + boost` — wing 0.12, hall 0.24, room 0.34 by default — and matches stack multiplicatively. The values come from the `[search]` config section (`structural_boost_*`) and were not empirically tuned.
 Results include verbatim text, source, wing/room/hall, date, score.
 
 ---
@@ -580,11 +628,9 @@ flowchart TD
     DETECT -->|Yes| BOOT["vp_bootstrap_context"]
     INIT --> BOOT
 
-    BOOT --> PREC["Resolve precedence"]
-    PREC --> LOAD["Load workflow,<br/>resume, tasks,<br/>recent sessions"]
-    LOAD --> INJECT["Return context"]
-
-    INJECT --> WORK["Work session"]
+    BOOT --> IDX["Return INDEX:<br/>head_of_queue, session index,<br/>memory index, KG snapshot,<br/>commands, skills, URIs"]
+    IDX --> FETCH["vp_read_resource<br/>resume_uri, workflow_uri"]
+    FETCH --> WORK["Work session"]
     WORK --> END{"Work unit done?"}
     END -->|No| WORK
     END -->|Yes| CAP["vp_capture_session"]
@@ -609,19 +655,18 @@ flowchart TD
     USE --> RES["Resolve precedence"]
     AUTO --> RES
 
-    RES --> WF{"Project workflow<br/>in vault?"}
-    WF -->|Yes| WFP["Use project"]
-    WF -->|No| WF2{"Vault template?"}
-    WF2 -->|Yes| WFV["Use vault"]
-    WF2 -->|No| WFE["Use embedded"]
-
-    WFP --> MERGE["Merge resources"]
-    WFV --> MERGE
-    WFE --> MERGE
-
-    MERGE --> LOAD["Load resume, tasks,<br/>sessions, KG snapshot"]
-    LOAD --> OUT["Return JSON payload"]
+    RES --> IDX["Build INDEX: head_of_queue<br/>(from task graph), session index,<br/>memory index, KG snapshot,<br/>commands, skills"]
+    IDX --> OUT["Return index + resume_uri,<br/>workflow_uri, resume_sha256<br/>(no document bodies)"]
+    OUT --> RR["Caller: vp_read_resource<br/>resume_uri, workflow_uri"]
+    RR --> WF{"workflow resolved by<br/>precedence"}
+    WF -->|project| WFP["Projects/p/workflow.md"]
+    WF -->|vault| WFV["Templates/workflow.md"]
+    WF -->|embedded| WFE["binary default"]
 ```
+
+`vp_bootstrap_context` returns an INDEX, never document bodies (§1.9). The resume
+and workflow are fetched by the caller with `vp_read_resource` via `resume_uri` and
+`workflow_uri`; `resume_sha256` covers the full raw resume for compare-and-set.
 
 ### 5.3 Semantic Search Subflow
 
@@ -629,12 +674,12 @@ flowchart TD
 flowchart TD
     Q["vp_search(query, filters)"]
     Q --> EMB["Embed query<br/>ONNX 384-dim"]
-    EMB --> HNSW["HNSW top-K*3<br/>over-fetch"]
-    HNSW --> FILT2["Filter by<br/>dir path metadata"]
+    EMB --> VSRCH["Exact cosine top-K*3<br/>over-fetch"]
+    VSRCH --> FILT2["Filter by<br/>dir path metadata"]
     FILT2 --> BOOST{"Structural<br/>boost?"}
-    BOOST -->|wing| B1["+12%"]
-    BOOST -->|wing+hall| B2["+24%"]
-    BOOST -->|wing+room| B3["+34%"]
+    BOOST -->|wing| B1["x1.12"]
+    BOOST -->|hall| B2["x1.24<br/>(stacks)"]
+    BOOST -->|room| B3["x1.34<br/>(stacks)"]
     BOOST -->|none| B0["raw score"]
     B0 --> RANK["Rank + dedup"]
     B1 --> RANK
@@ -652,16 +697,24 @@ flowchart TD
     S -->|create| C["Validate slug"]
     C --> CW["Write task file"]
 
-    S -->|update| U["Validate status"]
+    S -->|"amend / overwrite /<br/>set_meta / set_relations"| E["Validate fields"]
+    E --> EW["Update in place"]
+
+    S -->|update_status| U["Validate status<br/>(active statuses only)"]
     U --> UW["Update in place"]
 
-    S -->|retire| R["Validate exists"]
+    S -->|retire| R["Require<br/>approved_by_human=true"]
     R --> RM["Move to done/"]
-    RM --> RI["Append iteration"]
 
-    S -->|cancel| X["Validate exists"]
+    S -->|cancel| X["Validate exists<br/>optional superseded_by"]
     X --> XM["Move to cancelled/"]
+
+    S -->|move| M["Validate to_project<br/>relations resolve there"]
+    M --> MM["Move to destination;<br/>tombstone in source cancelled/"]
 ```
+
+The `action` enum is `create`, `amend`, `overwrite`, `set_meta`, `update_status`,
+`set_relations`, `retire`, `cancel` and `move`. No action appends an iteration.
 
 ---
 
@@ -799,6 +852,23 @@ flat-frontmatter markdown under `Knowledge/learnings/`, shared across every
 project rather than project-scoped. Ported from VibeVault, and **read-only by
 design**: learnings are authored out-of-band, so there is no create path here.
 
+### 6.13 Vault Lifecycle Tools
+
+Moving whole projects into, out of, and between vaults, and binding a host to the
+vault a project lives in: `vp_vault_copy`, `vp_vault_project_delete`,
+`vp_vault_split`, `vp_vault_merge` and `vp_config_bind`. `vp_vault_copy` and
+`vp_vault_project_delete` exist so that a project's arrival and departure are each one
+recorded, published change rather than file operations an agent composes (ADR-013):
+every departure made by these tools (and by `vp_vault_split`'s purge) leaves a tracked
+record under `Audits/departures/`, and writes into a departed project are refused.
+`vp_vault_split` and `vp_vault_merge` are the older pair: multi-step
+plan/apply/verify(/purge) calls that write another vault by host path; whether copy +
+delete supersedes them is undecided (ADR-013, Open questions). The first two
+and `vp_config_bind` have CLI twins (`vp vault copy`, `vp vault project delete`,
+`vp config bind`); `vp_vault_split` and `vp_vault_merge` have no CLI verb. See
+[ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md) for the decision
+and [VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md) for the copy / delete / bind / clone procedures.
+
 ---
 
 ## 7. Storage Schema
@@ -852,22 +922,24 @@ vault/
 │   │   ├── kg/
 │   │   │   ├── entities.jsonl         ← one line per entity
 │   │   │   └── triples/
-│   │   │       └── {subj}--{pred}--{obj}.json
+│   │   │       └── {subj}--{pred}--{obj}.json  ← each part slug_hash-encoded (§7.4)
 │   │   │
+│   │   ├── .surface                   ← writer surface stamp (ADR-010)
 │   │   └── .local/                    ← gitignored, machine-local
 │   │       └── imported-sessions.jsonl ← vibe-vault migration ledger
 │   │
 │   └── .local/                        ← vault-wide, gitignored
 │       ├── embed-cache/               ← speeds up rebuild
 │       │   └── {project}/{drawer-id}.vec
-│       └── cross-project.idx          ← cross-project search index
+│       ├── models/                    ← downloaded ONNX model (§1.6)
+│       └── vp.log                     ← log file
 │
 ├── Projects/                          ← unchanged from VibeVault
 │   └── {project}/
 │       ├── resume.md
 │       ├── workflow.md                (project override, optional)
 │       ├── iterations.md
-│       ├── config.toml                (project config override)
+│       ├── commit-log.md, commit-log.anchor
 │       ├── tasks/
 │       │   ├── {slug}.md
 │       │   ├── done/
@@ -880,7 +952,9 @@ vault/
 │       ├── skills/                    (project-level skills)
 │       │   └── (same layout as commands/)
 │       ├── sessions/
-│       │   └── YYYY-MM-DD-NN.md
+│       │   └── YYYY-MM-DD-<writer>-NN.md  (legacy: YYYY-MM-DD-NN.md)
+│       ├── transcripts/               (archived raw transcripts, ADR-001)
+│       ├── memory/                    (MCP-native memory, ADR-004)
 │       └── knowledge.md
 │
 ├── Templates/                         (vault-level template overrides)
@@ -889,26 +963,43 @@ vault/
 │   ├── commands/
 │   └── skills/
 │
+├── Knowledge/
+│   └── learnings/                     (cross-project learnings, §6.12)
+│
+├── Audits/                            (vault audit reports, baseline.json)
+│   └── departures/{slug}.json         (departure records, §3.1)
+│
+├── .vibe-palace/
+│   ├── vault.toml                     (vault manifest: data format)
+│   └── remotes.toml                   (published remotes)
+├── .vp-locks/                         (advisory lock sidecars, machine-local)
 └── .git/                              (vault git repo)
 ```
 
+The retired `Projects/{project}/config.toml` (§7.7) and a cross-project index file
+are not part of the layout.
+
 **Key design decisions:**
 
-- **Project-first under `palace/`:** `ls palace/` shows all projects. `rm -rf
-  palace/recmeet/` cleanly removes one project's palace data with no orphans
-  across sibling directories.
+- **Project-first under `palace/`:** `ls palace/` shows all projects, and one
+  project's palace data sits under one directory with no orphans across sibling
+  directories. Remove a project with `vp vault project delete <project>...
+  (--moved-to <url> | --discard)`, which also writes its departure record (§3.1);
+  do not `rm -rf` it.
 
 - **`palace/` is separate from `Projects/`:** Palace data (drawers, KG) is
   structured for machine consumption. Project context (sessions, tasks,
   iterations) is structured for human + AI consumption. They coexist in the
   same git-managed vault but serve different purposes.
 
-- **No `.claude/` directory, no symlinks, no command/skill files in source tree.**
-  Commands and skills are served via MCP tools (canonical: `vp_cmd`, `vp_skill`;
-  read-only siblings: `vp_get_command`, `vp_get_skill`) and never touch the
-  project repository.
+- **No tracked `.claude/` directory, no symlinks, no tracked command/skill files in
+  the source tree.** Commands and skills are served via MCP tools (canonical:
+  `vp_cmd`, `vp_skill`; read-only siblings: `vp_get_command`, `vp_get_skill`). The
+  untracked, gitignored shims `vp init` writes (§1.1) only call those tools.
 
 ### 7.3 Drawer Storage
+
+> **Design-era detail — the code is authoritative.** §7.3–7.11 began as the April 2026 storage design; §7.4, §7.5 and §7.7 are updated to v8.2.0; elsewhere, where they disagree with `internal/storage/` (paths in `paths.go`), the code wins.
 
 **Path:** `palace/{project}/drawers/{wing}/{room}/drawers.jsonl`
 
@@ -933,7 +1024,7 @@ independent lines are the best case for three-way merge.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | yes | Deterministic: first 8 chars of md5(wing+room+content) |
+| `id` | string | yes | Deterministic: first 8 hex chars of md5(wing+content); room is excluded so an id survives reclassification |
 | `hall` | string | yes | Memory type: facts, events, discoveries, preferences, advice |
 | `content` | string | yes | Verbatim text chunk (never summarized) |
 | `source_type` | string | yes | Origin: session, file, conversation, manual |
@@ -980,14 +1071,18 @@ hundreds of entities per project).
 }
 ```
 
-**Triples path:** `palace/{project}/kg/triples/{subject}--{predicate}--{object}.json`
+**Triples path:** `palace/{project}/kg/triples/{enc(subject)}--{enc(predicate)}--{enc(object)}.json`
 
-One file per triple. The relationship is encoded in the filename for O(1) lookup.
+One file per triple, in one flat directory. The filename is derived from the
+relationship for O(1) lookup; the raw subject, predicate and object are kept in
+the JSON body, so the filename does not need to be reversible.
 
 ```json
 {
+  "subject": "kai",
+  "predicate": "works_on",
+  "object": "orion",
   "valid_from": "2025-06-01",
-  "valid_to": null,
   "confidence": 1.0,
   "source_session": "2026-01-15-03",
   "extracted_at": "2026-01-15T14:30:00Z"
@@ -996,11 +1091,11 @@ One file per triple. The relationship is encoded in the filename for O(1) lookup
 
 | Query | Filesystem operation |
 |-------|---------------------|
-| All triples for entity "kai" | `glob("palace/*/kg/triples/kai--*")` + `glob("palace/*/kg/triples/*--*--kai.json")` |
-| Specific relationship | `read("palace/recmeet/kg/triples/kai--works_on--orion.json")` |
-| All relationships of type | `glob("palace/*/kg/triples/*--works_on--*.json")` |
+| All triples for entity "kai" | `glob("palace/*/kg/triples/kai_f844ad62--*")` + `glob("palace/*/kg/triples/*--*--kai_f844ad62.json")` |
+| Specific relationship | `read("palace/{project}/kg/triples/kai_f844ad62--works_on_91571575--orion_a9256178.json")` |
+| All relationships of type | `glob("palace/*/kg/triples/*--works_on_91571575--*.json")` |
 | Invalidate a fact | Update the file: set `valid_to` |
-| History of a fact | `git log palace/recmeet/kg/triples/kai--works_on--orion.json` |
+| History of a fact | `git log` on that triple's file |
 
 **Why one file per triple:**
 
@@ -1010,18 +1105,26 @@ One file per triple. The relationship is encoded in the filename for O(1) lookup
 - Glob patterns provide all the query capability needed
 - File count stays manageable: typical project has tens to low hundreds of triples
 
-**Filename encoding rules:**
+**Filename encoding rules** (`encodeTripleComponent` in `internal/storage/paths.go`):
 
-- Subject, predicate, and object are lowercased, spaces replaced with `_`
-- Delimiter is `--` (double hyphen, unambiguous in entity names)
-- Example: `kai--works_on--orion.json`, `auth0--replaced_by--clerk.json`
+- Each component is `slug(raw) + "_" + first 8 hex chars of sha256(raw)`.
+- `slug` lowercases, maps every rune outside `[a-z0-9._-]` to `_`, collapses runs
+  of `_`, `-` and `.`, and trims them from the ends. The result has no path
+  separator, no `:`, no `..` and no `--`.
+- The hash suffix makes the name injective: two raw strings that slug identically
+  still get different filenames.
+- Delimiter is `--`. Example: `kai_f844ad62--works_on_91571575--orion_a9256178.json`.
+- Older vaults are converted with `vp migrate kg-filenames` (plan-only by default,
+  `--yes` to apply).
 
 ### 7.5 Session Storage
 
 Sessions continue to be stored as markdown files with YAML frontmatter, exactly
 as VibeVault does today:
 
-**Path:** `Projects/{project}/sessions/YYYY-MM-DD-NN.md`
+**Path:** `Projects/{project}/sessions/YYYY-MM-DD-<writer>-NN.md`, where `<writer>` is the
+writing host's fingerprint; notes written before fingerprinting keep the legacy
+`YYYY-MM-DD-NN.md` form and stay readable (`SessionRelPath`, `internal/storage/paths.go`).
 
 No change from current VibeVault format. The session markdown files are
 human-readable, git-tracked, and already proven across 686+ sessions.
@@ -1159,7 +1262,7 @@ This convention means:
 | Debugging | Requires sqlite3 CLI | cat, less, jq |
 | Backup | Copy binary file | Already in git |
 | Branch / experiment | Not possible | Branch knowledge, merge back |
-| Delete a project | Multi-table DELETE | `rm -rf palace/{project}/` |
+| Delete a project | Multi-table DELETE | `vp vault project delete <project> (--moved-to <url> \| --discard)` (writes a departure record, §3.1) |
 
 ---
 
@@ -1360,6 +1463,8 @@ variant, ensure re-index safety.
 
 ## Cross-Cutting Concerns
 
+> **Design-era detail — the code is authoritative.** The sample config below predates the current schema; `internal/storage/config.go`, `internal/storage/config/defaults.toml` (defaults) and `internal/storage/config/template.toml` (the seeded file) define the real keys.
+
 ### Error Handling
 
 All errors are structured with:
@@ -1372,7 +1477,7 @@ CLI errors print to stderr and exit with appropriate code.
 
 ### Logging
 
-- Structured JSON logging to configurable output (stderr default)
+- Structured logging to `<vault>/palace/.local/vp.log` (machine-local, gitignored)
 - Log levels: debug, info, warn, error
 - Request/response logging for MCP and HTTP (debug level)
 - Performance timing for search queries and embedding operations
@@ -1433,7 +1538,7 @@ dormant_days = 90
 ### Security
 
 - All file access validated against vault path (no path traversal)
-- HTTP server binds to localhost only (no network exposure)
+- `vp mcp serve` binds 127.0.0.1 by default (`--addr` can widen it), is read-only unless `--allow-writes`, and requires a bearer token when the variable named by `--bearer-token-env` (default `VP_MCP_BEARER_TOKEN`) is set; unset, it runs unauthenticated and warns
 - No secrets stored in vault files (API keys via environment variables only)
 - Session transcripts may contain sensitive content — vault directory should
   have appropriate file permissions
@@ -1441,13 +1546,15 @@ dormant_days = 90
 ### Concurrency
 
 - JSONL append with flock for concurrent write safety
-- HNSW index protected by RWMutex (concurrent reads, exclusive writes)
-- ONNX embedder thread-safe (uses ONNX Runtime's built-in thread pool)
+- Vector index protected by RWMutex (concurrent reads, exclusive writes)
+- ONNX embedder calls are serialized by the embedder's own mutex (hugot pure-Go backend; no ONNX Runtime)
 - Session capture is asynchronous — MCP returns immediately, indexing runs in background
 
 ---
 
 ## Validation Framework
+
+> **Design-era detail — the code is authoritative.** This is phase-era process prose; `doc/TESTING.md` is the test inventory and the Makefile targets (`make help`) are the gates.
 
 ### Per-Task Validation
 
@@ -1516,10 +1623,16 @@ Once semantic search is operational:
 
 ```
 project-root/
-└── .vibe-palace.toml          # Project identity (only file)
+├── .vibe-palace.toml          # Project identity (the only tracked file)
+├── .gitignore                 # vp init adds its ignore lines here
+├── AGENTS.md                  # gitignored: managed bootstrap block
+├── .claude/                   # gitignored: vpc-*/vps-* shims, unless the user-global plugin serves them
+├── .vibe-palace/              # gitignored: wrap-state anchors, capture sentinels
+└── .git/hooks/post-commit     # installed by vp init
 ```
 
-That's it. One file. Everything else is served via MCP.
+One tracked file. The rest is host-local and gitignored (§1.1); everything else
+is served via MCP.
 
 ### Vault Tree (managed by Vibe-Palace)
 
@@ -1530,7 +1643,6 @@ vault/
 │       ├── resume.md              # Project state (editable)
 │       ├── workflow.md            # Project-specific override (optional)
 │       ├── iterations.md          # Append-only archive
-│       ├── config.toml            # Project config override (optional)
 │       ├── commands/              # Project-specific commands (optional)
 │       │   ├── {name}.md         # Project scope
 │       │   └── {wing}/
@@ -1543,7 +1655,7 @@ vault/
 │       │   ├── done/
 │       │   └── cancelled/
 │       ├── sessions/
-│       │   └── YYYY-MM-DD-NN.md
+│       │   └── YYYY-MM-DD-<writer>-NN.md
 │       └── knowledge.md
 ├── Templates/                     # Vault-level overrides
 │   ├── workflow.md
@@ -1551,30 +1663,30 @@ vault/
 │   ├── commands/
 │   └── skills/
 ├── palace/
-│   └── {project}/                 # Drawers (JSONL), KG (JSON), .local/ (gitignored)
-│   └── model/                     # ONNX model files (if not embedded)
-│       └── all-MiniLM-L6-v2.onnx
+│   ├── {project}/                 # Drawers (JSONL), KG (JSON), .local/ (gitignored)
+│   └── .local/                    # vault-wide, gitignored
+│       └── models/                # downloaded ONNX model files
+├── Knowledge/learnings/
+├── Audits/departures/
+├── .vibe-palace/vault.toml
 └── .git/
 ```
 
 ### Binary Contents (compiled in)
 
 ```
-embedded/
-├── templates/
-│   ├── workflow.md
-│   ├── resume.md
-│   └── commands/
-│       ├── restart.md
-│       ├── wrap.md
-│       ├── review-plan.md
-│       └── cancel-plan.md
-└── tokenizer/
-    └── vocab.txt                  # WordPiece vocabulary for tokenizer
+internal/templates/templates/      # find internal/templates/templates -maxdepth 2
+├── doctrine.md                    # served from the binary (ADR-008)
+├── enrichment.md
+├── resume.md
+├── workflow.md
+├── commands/                      # embedded commands: ls internal/templates/templates/commands
+└── skills/                        # embedded skills, one directory each
 ```
 
-Note: The ONNX model is **not** embedded in the binary. It is downloaded on
-first run and cached in the vault (see Decisions Register, Section C.1).
+Note: The ONNX model, its tokenizer and `vocab.txt` are **not** embedded in the
+binary. They are downloaded on first use and cached under
+`palace/.local/models/` (see Decisions Register, Section C.1).
 
 ---
 
@@ -1604,19 +1716,21 @@ decisions — they are final.
 |---|----------|-------------------|--------|-----------|
 | D1 | Go module path | `github.com/suykerbuyk/vibe-palace` | `github.com/suykerbuyk/vibe-palace` | Matches GitHub account and project name |
 | D2 | Minimum Go version | 1.21, 1.23, 1.25 | **1.25.0** | Required by `mark3labs/mcp-go` (our MCP library). The minimum is set by our dependencies, not by the developer's machine. `go.mod` declares `go 1.25.0`. |
-| D3 | ONNX model delivery | Embed in binary (~80MB) vs download on first run | **Download on first run** | Keeps binary under 20MB. Model cached at `{vault}/palace/.local/model/all-MiniLM-L6-v2.onnx`. Downloaded from HuggingFace. SHA256 verified. `vp check` validates cache integrity. |
+| D3 | ONNX model delivery | Embed in binary (~90 MB) vs download on first run | **Download on first run** | Keeps the ~90 MB model out of the binary. Model cached under `{vault}/palace/.local/models/` in a directory named after the model (default `sentence-transformers_all-MiniLM-L6-v2/`, holding `model.onnx`, `tokenizer.json`, `vocab.txt`). Downloaded from HuggingFace. No checksum: a cached snapshot counts as complete when `tokenizer.json` and a non-empty `.onnx` are present, and a load failure discards the copy and re-downloads once (`internal/embedder/onnx.go`). `vp check` loads the embedder. |
 | D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`doc/spike-hugot-pure-go-embedding.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s. Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. |
 | D5 | HNSW library | `coder/hnsw`, `fogfish/hnsw`, brute-force with vek | **`coder/hnsw`** | Pure Go, no CGO. Uses `viterin/vek` for SIMD-accelerated L2 distance. CC0 license. 214 stars, actively maintained by Coder. Supports incremental insertion, deletion, export/import persistence. Min Go: 1.21. **Update:** our fork's three recall-bug fixes (Heap.Max/PopLast) were merged upstream into `coder/hnsw@main` (2026-06-22) and validated against the in-repo recall harness (recall@10 0.96); adoption is deferred (brute-force is the shipped index). |
 | D6 | MCP library | `mark3labs/mcp-go`, `modelcontextprotocol/go-sdk`, hand-rolled | **`mark3labs/mcp-go`** | MIT license. 8,500 stars. Handles full JSON-RPC protocol, stdio transport, tool registration with fluent JSON Schema builders. Go 1.23. The official `go-sdk` requires Go 1.25. |
 | D7 | MCP protocol version | 2024-11-05, 2025-03-26 | **2025-03-26** | Latest stable spec. `mcp-go` supports it. Matches VibeVault's upper protocol bound. |
-| D8 | HTTP framework | stdlib `net/http`, chi, echo, gin | **stdlib `net/http`** | Zero additional dependencies. Sufficient for localhost-only REST API. Routing via `http.NewServeMux` (Go 1.22+ pattern matching). |
+| D8 | HTTP transport | stdlib `net/http`, chi, echo, gin | **MCP Streamable HTTP via `mcp-go`** | There is no REST API. `vp mcp serve` serves the same MCP tools over Streamable HTTP: bearer-authenticated (token from `VP_MCP_BEARER_TOKEN` by default; unauthenticated with a warning when unset), read-only unless `--allow-writes`, bound to 127.0.0.1:7423 unless `--addr`/`--port` say otherwise. |
 | D9 | File locking strategy | flock (POSIX), lockfile (create/delete) | **flock (POSIX advisory locks)** | Atomic, no stale lockfiles on crash. Go's `syscall.Flock()`. Cross-platform: works on Linux and macOS. On Windows, use `LockFileEx` via `golang.org/x/sys/windows`. |
 | D10 | TOML library | `BurntSushi/toml`, `pelletier/go-toml` | **`BurntSushi/toml`** | De facto standard. MIT license. Zero dependencies. Stable. |
 | D11 | YAML frontmatter parsing | `go-yaml/yaml`, custom parser | **`go-yaml/yaml` v3** | Session markdown files use YAML frontmatter. yaml.v3 is the standard choice. MIT license. |
-| D12 | CLI framework | cobra, urfave/cli, stdlib `flag` | **stdlib `flag`** with subcommand dispatch | Zero dependencies. Vibe-Palace has ~15 commands — `flag` with a manual subcommand switch is sufficient. Avoids cobra's 5+ transitive deps. |
-| D13 | Man page generation | Hand-written roff, cobra doc generation, build-time codegen from help structs | **Build-time codegen from help structs** | Man pages generated by `cmd/gen-man/main.go` from the same structured help metadata used by `--help`. Single source of truth — no manual authoring, no drift. Follows VibeVault's proven pattern (`cmd/gen-man` + `help.FormatRoff()`). Zero new dependencies. |
+| D12 | CLI framework | cobra, urfave/cli, stdlib `flag` | **In-house `internal/cli`** (declarative `FlagDef`/`Command`, parsed into `FlagValues`) | Zero dependencies, and one command definition feeds `--help`, man pages and the golden tests. The stdlib `flag` package is not used for CLI parsing. `vp --help` lists the commands. Avoids cobra's transitive deps. |
+| D13 | Man page generation | Hand-written roff, cobra doc generation, build-time codegen from help structs | **Build-time codegen from help structs** | Man pages are generated from the same structured help metadata used by `--help` (`internal/cli/manpage.go`), via `make man` (`VP_GEN_MAN=1 go test -run TestGenerateManPages ./cmd/vp/`). There is no `cmd/gen-man`. Single source of truth — no manual authoring, no drift. Zero new dependencies. |
 
-**Dependency summary (8 external modules):**
+**Dependency summary (design-era):**
+
+> **Design-era detail — the code is authoritative.** This block is the April 2026 plan; `go.mod` is the dependency list (no `coder/hnsw` or `viterin/vek` ships).
 
 ```
 require (

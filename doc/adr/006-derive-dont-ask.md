@@ -1,6 +1,8 @@
 # ADR 006: Derive, Don't Ask
 
-**Status:** Accepted (2026-07-14)
+**Status:** Accepted (2026-07-14); amended 2026-09-28: the `vp:pin` specimen is
+historical — the marker vocabulary was deleted with ADR-009's apparatus
+(`first-principles` Phase 2, iteration 310, 2026-08-18)
 **Deciders:** Project owner
 **Context:** The `honest-instruments` epic — correctness must stop depending on which model read which paragraph
 
@@ -89,7 +91,8 @@ the server enforces the declaration and **refuses to guess when it is absent.** 
 absence must be loud.
 
 *Specimens:* the `<!-- vp:pin -->` marker in `resume.md` (which sections are
-correctness-critical is authorial intent, not a property of the prose); a task's
+correctness-critical is authorial intent, not a property of the prose —
+amended 2026-09-28, historical: the marker was deleted with ADR-009's apparatus); a task's
 `Parent:` / `Depends:` header lines; every `reason` in
 `internal/sourceaudit/baseline.json`; the Zed thread ID, which the extension knows
 and the server cannot.
@@ -132,6 +135,7 @@ paying for:
 - A code-side allowlist of pinned `resume.md` heading names (the obvious, rejected
   design) would have **silently un-pinned the behavioral notes the first time
   someone renamed a heading** — the notes that stop an agent corrupting the vault.
+  (Amended 2026-09-28, historical: the pin mechanism itself was later deleted — see ADR-009.)
 
 **The corollary, and it is not optional: ABSENCE IS NOT A VALUE.** Every derivation
 must distinguish *"I computed X"* from *"I could not compute it."* A default that is
@@ -238,7 +242,8 @@ Two questions, and they are not the same question:
 carries a reason naming its verdict, its evidence, and the task that owns it.
 
 **The baseline is not a suppression list. It is the artifact declaring an intent the
-code cannot express** — the same shape as the `vp:pin` marker. That is why **it may
+code cannot express** — the same shape as the `vp:pin` marker (amended 2026-09-28: historical —
+see ADR-009; and, amended 2026-09-28, as a task's `Parent:` / `Depends:` headers). That is why **it may
 only shrink**, and why a stale entry fails the build exactly as loudly as a new finding.
 
 ## Consequences
@@ -269,4 +274,4 @@ That is the argument. **The ADR is not the enforcement either — the server is.
 - `doc/adr/003-vault-write-locking.md` — the lock discipline `append-iteration-server-owned` must derive *inside*.
 - `internal/sourceaudit` — DERIVE ("is it dead?") plus DECLARE (the baseline's reasons).
 - `internal/vaultaudit` — REPORT + DEFER, and an accepted-ID ratchet that forces its own record to shrink.
-- `internal/resumezone` — the `vp:pin` / `vp:disposable` markers: DECLARE + ENFORCE, with a loud refusal to guess. An H2 carrying NEITHER marker is undeclared LIVE STATE, and `check.CheckPinCoverage` REPORTs it by name.
+- (Historical — deleted with ADR-009's apparatus, 2026-08-18.) `internal/resumezone` — the `vp:pin` / `vp:disposable` markers: DECLARE + ENFORCE, with a loud refusal to guess. An H2 carrying NEITHER marker is undeclared LIVE STATE, and `check.CheckPinCoverage` REPORTs it by name.

@@ -34,6 +34,19 @@ paths change `Templates/`, and each only removes a file:
   that is not vp-shipped bytes (see *Backup mechanics*). They remove
   through `vaultfs.Delete`, compare-and-set on the bytes read.
 
+`Templates/` is per vault (ADR-012 lets one host use several vaults): each
+path above acts on the vault resolved from the working directory (for
+`vp config sync`, from `--project-root` when given), and the reset verbs
+have no `--vault` flag. `vp vault copy` carries only a
+project's `Projects/<slug>/` and `palace/<slug>/` trees, so a vault
+`Templates/` override is never copied to the destination vault.
+
+Project-, wing- and room-tier overrides (`Projects/<slug>/commands/`,
+`Projects/<slug>/skills/` and their wing/room subdirectories, precedence
+tiers 1-3 in `internal/context/precedence.go`) are outside this policy: no
+path above touches them, and they travel with the project under
+`vp vault copy` once committed and pushed to the source vault's remote.
+
 No raw write of a `Templates/` file remains: the `.new` sidecar and its
 prompt are gone, and so is the unversioned prune's `os.Remove`. A symlink
 swapped into a path between `vaultfs.CheckDirectPath` and
@@ -132,7 +145,12 @@ PR with release notes". The change that stopped the upgrade commands
 resetting overrides, and added the named reset verbs, is that PR. It
 unified both surfaces on a backup that is never overwritten — the first of
 the options the old note listed — and removed the policy switch
-(`templates.BackupPolicy`) with the writer that took it. Its release note:
+(`templates.BackupPolicy`) with the writer that took it. Its release note,
+quoted below, is a **historical record** of the surface-v5 change (2c4ef40, 2026-09-11;
+released in v5.0.0):
+its surface numbers and its "run `make install` on every host" instruction
+applied to that release. The MCP surface is 8 as of v8.2.0
+(`grep -n 'const MCPSurfaceVersion' internal/surface/version.go`).
 
 > Behaviour change — vault `Templates/` overrides and the upgrade commands.
 > Requires `make install` on every host (MCP surface v5).

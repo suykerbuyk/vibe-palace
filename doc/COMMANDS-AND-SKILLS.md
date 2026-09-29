@@ -1,6 +1,6 @@
 # Commands and Skills
 
-**Last updated:** 2026-07-28
+**Last updated:** 2026-09-28
 
 Vibe-palace lets users create custom **commands** and **skills** as plain
 markdown files. No recompilation, no config edits, no frontend-specific
@@ -67,7 +67,7 @@ Skills can include a `references/` subdirectory with supporting documents
 
 | Name | Purpose |
 |------|---------|
-| `chair` | Visible Herdr orchestration: the Chair over one or more implementor panes; pulls in `restart` and `herdr` if this session has not already run them |
+| `chair` | The Chair over one or more implementor agents — visible Herdr panes or ephemeral subagents; loads `herdr` only when the topology resolves to Herdr mode; runs `restart` first if this session has not bootstrapped |
 | `code-digger` | Read-only codebase cartographer and auditor — onboarding maps, architecture deep-dives, a severity-ranked issue register |
 | `epic-orchestrator` | Parallel epic-closure orchestrator — isolated worktrees and subagents, adversarial review before implementation, human gate at the end |
 | `pair-reviewer` | Dual-agent pairing: review chair beside an implementation orchestrator |
@@ -95,8 +95,11 @@ Same structure applies with `skills/` in place of `commands/`.
 from room subdirectories. Without it, a file at `commands/backend/deploy.md`
 would be ambiguous — is `backend` a wing or a room?
 
-**`{vault}`** is the `vault_path` from `~/.config/vibe-palace/config.toml`
-(e.g., `~/obsidian/VibeVault`).
+**`{vault}`** is the vault this project resolves to: a `vault_path` in the
+nearest `.vibe-palace.toml`, else the project's `[project_vaults]` binding in
+`~/.config/vibe-palace/config.toml`, else that file's `vault_path`
+([ADR-012](adr/012-vault-resolution-precedence-and-host-project-bindings.md));
+a malformed or conflicting tier refuses rather than falling through.
 
 **`{project}`** is the project slug detected from the working directory or
 passed explicitly via the `project` parameter.
@@ -108,10 +111,10 @@ chain (tiers 3–5: project > vault > embedded).
 
 There are two override tiers, and both are supported:
 
-- **Vault-wide**: a file in `Templates/commands/` applies to every project.
-  Under a name no built-in uses it adds a vault-wide command — the only way
-  to publish a command to every project. Under a built-in's name it
-  overrides that built-in for every project.
+- **Vault-wide**: a file in `Templates/commands/` applies to every project
+  in that vault. Under a name no built-in uses it adds a vault-wide command —
+  the only way to publish a command to every project in the vault. Under a
+  built-in's name it overrides that built-in for every project in the vault.
 - **Per project**: a file with the same name in the project's `commands/`
   directory overrides the built-in (and any vault-wide override) for that
   project only.
@@ -119,10 +122,25 @@ There are two override tiers, and both are supported:
 An override completely replaces the lower-tier version — there is no
 inheritance or merging.
 
+**`Templates/` is per vault.** A project bound to another vault
+(`vp config bind`, ADR-012) sees that vault's `Templates/`, not the default
+vault's. `vp vault copy` (and the MCP-only `vp_vault_split` /
+`vp_vault_merge`) carry a project's footprint, `Projects/<slug>/` and
+`palace/<slug>/`, and never `Templates/`; split and merge also take
+`Knowledge/learnings/` and `Audits/`, but only when `include_learnings` /
+`include_audits` is set. So project-tier overrides travel with the project
+and vault-wide `Templates/` overrides do not: re-create any the project
+needs in the target vault. See
+[Vault lifecycle](VAULT-LIFECYCLE.md) and
+[ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md).
+
 No vp reconciler and no upgrade command changes an override in either tier.
 `vp config sync` never writes a template, never prompts about one, and
-never commits the deletion of a committed override — it restores HEAD's
-copy instead; the upgrade commands list an override as `[keep]`. "Safe"
+never commits the deletion of a committed override. An override it finds
+under a vp mirror in the worktree is restored from HEAD. One you deleted is
+left uncommitted: sync prints the reset verb that finishes the removal, or
+the `git -C <vault> checkout HEAD -- <file>` that restores it; the upgrade
+commands list an override as `[keep]`. "Safe"
 here means safe from vp's reconcilers and upgrade commands:
 `vp_vault_write` / `vp_vault_edit` / `vp_vault_move` / `vp_vault_delete` and
 `vp vault commit --paths .` are direct edits and reach any tier.
@@ -132,8 +150,9 @@ Three things to know about a vault-wide override of a built-in:
 - **Edit it before you sync.** `vp config sync` judges a `Templates/` copy by
   its bytes alone: a copy identical, line endings aside, to the current
   built-in or to a version in the frozen `internal/templates/shipped.txt`
-  (every version reachable from `1f3bb62`, plus the two rows of tag
-  `pre-rebase-501c96e`) is vp's, not an override, and is pruned.
+  (every version reachable from `1f3bb62`, plus two rows carried from the
+  since-deleted tag `pre-rebase-501c96e`, pinned by hash in the file) is
+  vp's, not an override, and is pruned.
 - **It shadows the built-in for every project**, and it misses changes the
   binary relies on — `commands/wrap.md` supplies the `expected_sha256` that
   `vp_update_resume` demands, for example. `vp_check` `template-drift` lists
@@ -156,8 +175,8 @@ subdirectory under `commands/{wing}/.wing/` or `commands/{wing}/{room}/`.
 
 ### 1. Choose a location
 
-- **All projects**: `{vault}/Templates/commands/{name}.md` — a new name
-  adds a command; a built-in's name overrides it everywhere (edit the copy
+- **All projects in the vault**: `{vault}/Templates/commands/{name}.md` — a new name
+  adds a command; a built-in's name overrides it vault-wide (edit the copy
   before syncing; see [Override behavior](#override-behavior))
 - **One project**: `{vault}/Projects/{project}/commands/{name}.md`
 - **One wing**: `{vault}/Projects/{project}/commands/{wing}/.wing/{name}.md`
@@ -180,7 +199,34 @@ Audit Go module dependencies for this project.
 5. If CVEs found, propose `go get` commands to upgrade affected modules
 ```
 
-Save this as `audit-deps.md` and it's immediately available.
+Save this as `audit-deps.md` and `vp_cmd` (a typed `vpc-audit-deps`) finds
+it at once: the resolver reads the vault on every call. A `/vpc-audit-deps`
+slash-menu entry needs a shim refresh (`vp init` or `vp commands upgrade`
+for project shims; `vp mcp install --claude-plugin` or `--grok` for the
+user-global plugins). The user-global plugins list commands without a
+project, so a project-tier command never gets a user-global menu entry; it
+stays reachable through `vp_cmd`.
+
+### Placeholders
+
+The resolver expands four placeholders in every command body and `SKILL.md`
+body it serves (`internal/scopetoken`); `references/` sections returned by
+`vp_get_skill_section` are served unexpanded:
+
+| Placeholder | Expands to |
+|-------------|-----------|
+| `{{PROJECT}}` | The project slug |
+| `{{WING}}` | The wing slug |
+| `{{ROOM}}` | The room slug |
+| `{{DATE}}` | Today's date, `YYYY-MM-DD` |
+
+A placeholder whose scope is not set expands to nothing: the built-in
+`capture` says "work for {{PROJECT}} without", which resolved with no
+project reads "work for  without". Other `{{UPPER}}` shapes are left as
+written. A whole-file vault write that carries fewer of a placeholder than
+the file on disk is refused, so compose an edit from the raw bytes
+(`vp_vault_read`), not from an expanded `vp_cmd` / `vp_get_command` result;
+remove a placeholder deliberately with `vp_vault_edit`.
 
 ### 3. Guidelines for effective commands
 
@@ -205,7 +251,8 @@ Save this as `audit-deps.md` and it's immediately available.
 ```
 
 This is the vault-wide location: a skill with a **new** name is added for
-every project, and a built-in's name overrides that built-in everywhere
+every project in the vault, and a built-in's name overrides that built-in
+for all of them
 (edit every copied file before syncing — an unedited one is vp's bytes and
 is pruned; see [Override behavior](#override-behavior)). To override a skill
 for one project only, use `{vault}/Projects/{project}/skills/{name}/`.
@@ -213,8 +260,9 @@ for one project only, use `{vault}/Projects/{project}/skills/{name}/`.
 
 Skills are always **directory-form** — a `{name}/` subdirectory
 containing `SKILL.md` (and optionally a `references/` tree). Flat-file
-skills (`skills/{name}.md`) are not supported; the resolver refuses
-them and the embedded seed ships only directory-form skills. The
+skills (`skills/{name}.md`) are not supported; the resolver ignores
+them (they are neither listed nor resolved) and the embedded seed ships
+only directory-form skills. The
 directory is the unit of override: a project-tier
 `Projects/<slug>/skills/{name}/SKILL.md` shadows the vault's persona
 entry, while each `references/<section>.md` file falls through
@@ -231,18 +279,20 @@ reference file.
 |-------|------|---------|
 | `name` | string | Canonical identifier (matches the directory name). |
 | `description` | string | What the persona is for. Host shims carry only the label `Vibe-palace skill — ` plus its first 60 bytes (`commands.ExtractBrief`); no host sees the rest. |
-| `paths` | `[]string` | Optional glob hints consumed by Claude Code / Cursor. |
-| `lifetime` | string | `"postural"` (default) or `"transactional"`. |
+| `paths` | `[]string` | Optional glob hints; rendered only into the Cursor rule's `globs`. |
+| `lifetime` | string | `"postural"` (default) or `"transactional"`. Parsed and defaulted only; nothing in vp acts on it. |
 
-A missing `lifetime` defaults to `"postural"` — the skill stays
-active across turns until `vps-clear` or a new session. Malformed or
+A missing `lifetime` defaults to `"postural"`. vp does not enforce either
+value: `vp_skill` returns the same activation frame for both, and shims do
+not render the field. The stay-active-until-`vps-clear` contract is taught by
+the agent-file managed block and the shim text. Malformed or
 missing frontmatter produces a parser error; Phase 1 requires every
 directory-form skill to carry a frontmatter block.
 
 ### Per-file fallthrough
 
-`ResolveSkillDir(name)` locates the first tier supplying a
-`SKILL.md` and returns it. `ResolveSkillSection(name, section)`
+`ResolveSkillDir(name, project, wing, room)` locates the first tier supplying a
+`SKILL.md` and returns it. `ResolveSkillSection(name, section, project, wing, room)`
 walks the 5-tier chain independently for each
 `references/<section>.md`. Concretely: if a project override ships
 only `SKILL.md` and a single custom reference, every other reference
@@ -284,7 +334,10 @@ Do NOT comment on style or formatting unless it obscures intent.
   is meant to be adopted when the user types `/vps-<name>` or `vps-<name>`.
   Claude Code enforces that; Cursor and Grok see only the label, which
   makes a description match unlikely but not impossible. Anything after the
-  first sentence is documentation for people choosing a skill. Setting
+  first sentence is documentation for people choosing a skill. Discovery
+  lists (`vp_skill` with no name, `vp_list_skills`, bootstrap
+  `available_skills`, `vp skills list`) brief the SKILL.md **body's** first
+  non-heading line instead, so write that line as a summary too. Setting
   `paths:` renders into the Cursor rule's `globs`, which Cursor attaches
   automatically whenever a matching file is in play.
 - **Define a persona**: Skills work best when they give the AI a clear role
@@ -308,7 +361,11 @@ duty: with a `name`, they wrap and deliver the target; with no
 arguments, they return a formatted discovery list. The managed block
 that `vp init` writes into `CLAUDE.md` / `AGENTS.md` points users here,
 and `vp_bootstrap_context` surfaces them via the `vpc-<name>` and
-`vps-<name>` aliases.
+`vps-<name>` aliases. When `project` is omitted, both default it from a
+high-confidence cwd marker whose `Projects/<slug>/` exists in the vault
+(never the directory basename); with no such marker the project is left
+unset. That is why global shims need not pass `project`; project-tier
+command shims pass `project="<slug>"` explicitly.
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
@@ -328,8 +385,8 @@ that want raw content without the "perform these instructions" wrapper.
 | `vp_get_command` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 | `vp_get_skill` | `name` (required), `project` (optional), `wing` (optional), `room` (optional) | Raw markdown content + source tier |
 | `vp_get_skill_section` | `name` (required), `section` (required), `project` (optional), `wing` (optional), `room` (optional) | `{content, source}` — one reference file from `skills/<name>/references/<section>.md` |
-| `vp_list_tasks` | `project` (optional) + at most one of `epic` (subtree slug), `standalone` (bool), `epics_only` (bool) | `{tasks: [TaskMeta+role]}` for the flat/epic/standalone views; `{epics: [{slug, title, priority, status, open, total, role}]}` for `epics_only` |
-| `vp_get_task` | `project` (optional), `task` (required) | Raw task markdown, resolved across `active`/`done`/`cancelled` |
+| `vp_list_tasks` | `project` (required), `include_done` (bool), `include_icebox` (bool), + at most one of `epic` (subtree slug), `standalone` (bool), `epics_only` (bool) | `{tasks: [TaskMeta+role]}` for the flat/epic/standalone views; `{epics: [{slug, title, priority, status, open, total, role}]}` for `epics_only` |
+| `vp_get_task` | `project` (required), `task` (required), `include_content` (bool, default true) | Task metadata and markdown, resolved across `active`/`done`/`cancelled`. The result leads with `content_uri` and ends with `complete`; without `complete: true` the body was cut, so page it with `vp_read_resource`. `include_content: false` returns `content_uri` + an excerpt for a large body |
 
 The epic tree and each task's `role` (epic / story / task) are **derived
 server-side** from the task `Parent` links — callers never re-scan or re-ask
@@ -458,6 +515,14 @@ parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
   `vp_vault_delete`, `vp_vault_move`. Generic, schema-agnostic access over
   vault-relative paths. `vp_vault_write` performs no schema validation —
   prefer the typed writers below for files that have one.
+- **Vault git**: `vp_vault_status`, `vp_vault_sync`, `vp_vault_tidy` —
+  sync state, pull/push and capture-artifact tidy for the vault.
+- **Vault lifecycle**: `vp_vault_copy`, `vp_vault_project_delete` and
+  `vp_config_bind` (see [Vault lifecycle](VAULT-LIFECYCLE.md)), plus the
+  MCP-only `vp_vault_split` / `vp_vault_merge`
+  ([ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md) leaves
+  open whether copy + delete supersede them). The full list is
+  `internal/mcp/tool_surface.golden.json`.
 - **Commit lifecycle** (§6.9): `vp_ingest_commit_msg` reads
   `<project>/commit.msg` off disk and writes a stamped vault copy.
 - **Wrap state** (§6.11): `vp_collect_wrap_state`, `vp_stamp_iter`,
@@ -482,7 +547,8 @@ should be a **tool catalog**, not a behavior specification. Its job:
 1. **Declare what MCP tools exist** — list the tools the AI can call
 2. **State when to call them** — "call `vp_bootstrap_context` at session
    start", "call `vp_capture_session` at end of work units"
-3. **Map user shortcuts to tools** — `/restart` → `vp_cmd("restart")`
+3. **Map user shortcuts to tools** — `/vpc-restart` or a typed
+   `vpc-restart` → `vp_cmd("restart")`
 
 All actual behavior, workflow rules, and prompt content lives in the vault's
 markdown files, served through MCP. The frontend file is the routing table;
@@ -500,10 +566,10 @@ How users trigger commands depends on their frontend:
 |----------|-----------|
 | Claude Code | **Preferred:** user-global plugin from `vp mcp install --claude-plugin`. Claude Code loads the **cache** copy and typically offers **`/vibe-palace:vpc-<name>`** (namespaced). Bare `/vpc-*` is the legacy **project** tree (`.claude/commands/`), still emitted by `vp init` when the Claude cache surface is **not** healthy. |
 | Grok Build | **Preferred:** user-global `~/.grok/plugins/vibe-palace/commands/vpc-*.md` (+ hub under `…/skills/vpc/`) from `vp mcp install --grok` (often bare `/vpc-*` when no collision). Legacy: project `.grok/plugins/…` still emitted by `vp init` when the Grok user plugin is **not** healthy. Note: `GrokPresent` remains host-wide (`~/.grok` or `grok` on PATH), so fallback project emit can still touch every repo until that host is migrated. |
-| Cursor | Rules file maps keywords to `vp_cmd` calls |
+| Cursor | The agent-file managed block (`AGENTS.md`, `.cursorrules`, `.rules`) routes typed `vpc-<name>` / `vps-<name>` to `vp_cmd` / `vp_skill`. `vp init` also writes one `.cursor/rules/vps-<name>.mdc` per skill when `.cursor/` exists; there are no Cursor command shims. vp registers no MCP server with Cursor: register `vp mcp` yourself. Without it a skill rule falls back to `vp skills show <name>`; commands have no CLI fallback. |
 | Zed | MCP-registered host: `internal/mcphost` writes a `context_servers.vibe-palace` entry in Zed settings; no shim files — commands/skills are reached via the `AGENTS.md` managed block instructing `vp_cmd` / `vp_skill` calls. **Invocation works in either pane; durability does not — see [Durability by host](#durability-by-host-claude-vs-hook-less).** |
-| Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls |
-| CLI fallback | `vp inject` prints context; `vp commands restart` outputs the command via CLI |
+| Custom MCP client | Direct `vp_cmd` / `vp_skill` tool calls, over stdio (`vp mcp`) or Streamable HTTP (`vp mcp serve`, read-only unless `--allow-writes`) |
+| CLI fallback | `vp inject` prints the bootstrap context as JSON; `vp skills show <name>` prints a skill. No CLI prints a command body — commands need MCP (`vp_cmd`). `vp tasks` (`epics`, `read`, `--epic`, `--standalone`) is the CLI twin of the `tasks-*` commands. |
 
 **Claude Code bootstrap primitive.** `/vpc-restart` is the recommended
 first message of every Claude Code session. Claude Code does not load
@@ -518,7 +584,41 @@ the job there; the two mechanisms are complementary. Grok Build's
 `project` on the bootstrap call; on stdio the server may also default
 from a high-confidence cwd marker when the slug is omitted.
 
+### Shims
+
+A shim is the small host file that puts a command or skill in a host's menu.
+It carries a label and a delegation, never the body: the body is served by
+`vp_cmd` / `vp_skill` at call time, so editing a command never requires a
+shim refresh unless its name or label changes.
+
+| Surface | Command shims | Skill shims |
+|---------|---------------|-------------|
+| Claude Code, project | `.claude/commands/vpc-<name>.md` | `.claude/skills/vps-<name>/SKILL.md` |
+| Claude Code, user-global plugin | `commands/` in the plugin cache (`~/.claude/plugins/cache/vibe-palace-local/vibe-palace/<stamp>/`) | `skills/vps-<name>/SKILL.md` there |
+| Grok Build, project | `.grok/plugins/vibe-palace/commands/vpc-<name>.md`, plus the `.grok/skills/vpc/SKILL.md` hub | `.grok/skills/vps-<name>/SKILL.md` |
+| Grok Build, user-global plugin | `~/.grok/plugins/vibe-palace/commands/` | `~/.grok/plugins/vibe-palace/skills/` |
+| Cursor, project | none | `.cursor/rules/vps-<name>.mdc` (only when `.cursor/` exists) |
+
+- **Content.** Frontmatter with the label (`Vibe-palace command — <brief>` or
+  `Vibe-palace skill — <60-byte brief of description>`), a
+  `<!-- vibe-palace:shim v=1 sha=… -->` marker, and one instruction to call
+  `vp_cmd` / `vp_skill`. The marker's sha is taken over the rendered bytes
+  (with the sha blanked) for a skill shim, and derived from the render inputs
+  plus the template version for a command shim. Skill shims add a
+  `vp skills show <name>` fallback for when `vp_skill` cannot be loaded.
+- **`disable-model-invocation: true`** is written on Claude Code skill shims
+  only, so Claude Code adopts a persona only when the user invokes it. Cursor
+  and Grok shims omit the key; there the short label is the only safeguard.
+- **Who writes them.** `vp init` writes project shims, but skips a host's
+  project shims (commands and skills) when that host's user-global plugin is
+  healthy, reporting an `Info` row. `vp commands upgrade` refreshes and
+  removes project shims; `vp skills upgrade` never touches shims.
+  `vp mcp install --claude-plugin` / `--grok` write the user-global plugins.
+
 ### Durability by host (Claude vs hook-less)
+
+The Zed and Grok Build setup steps are also in the Tutorial
+([Zed](TUTORIAL.md#zed), [Grok Build](TUTORIAL.md#grok-build-xai)).
 
 The real axis is **how a session becomes durable**, not "native vs shim."
 Shims are host UX that eventually call `vp_cmd` / `vp_capture_session`;
@@ -633,8 +733,11 @@ internal/templates/templates/
 │   ├── vault-audit.md
 │   └── wrap.md
 ├── skills/
+│   ├── chair/                  # SKILL.md
 │   ├── code-digger/            # SKILL.md + references/
 │   ├── epic-orchestrator/      # SKILL.md + references/
+│   ├── pair-reviewer/          # SKILL.md
+│   ├── second-opinion/         # SKILL.md
 │   └── startup-analyst/        # SKILL.md + references/
 ├── doctrine.md                 # Served via vp_get_doctrine (ADR-008)
 ├── enrichment.md
@@ -675,8 +778,8 @@ The nested form `skill:<name>/<relpath>` is what `commands.Plan`
 consumes for per-file skill diffs — e.g.
 `skill:startup-analyst/references/capex-opex.md` addresses that single
 reference. `ListEmbedded("skill")` returns every nested identifier
-(SKILL.md + references) so the two-SHA upgrade path can emit one
-`Change` per file; `ListResourcesScoped("skill", …)` continues to
+(SKILL.md + references) so `commands.Plan`, which is override-only,
+can classify each skill file as its own `Change`; `ListResourcesScoped("skill", …)` continues to
 return skill *names* for the directory-oriented surfaces
 (`vp skills list`, `vp_list_skills` MCP tool). The `<relpath>` is
 checked for traversal (no leading `/`, no `..`, no empty segments, no
@@ -696,3 +799,14 @@ backslashes).
 
 - **`internal/mcp/tools.go`** — `Registry` validates JSON schemas at
   registration time and dispatches handler calls at runtime.
+
+- **`internal/tools/skill_section_tool.go`** — `vp_get_skill_section`.
+
+- **`internal/commands/`** — `list.go`, `upgrade.go` (`Plan`), `reset.go`
+  back `vp commands|skills list|upgrade|reset`.
+
+- **`internal/shims/`** — renders and reconciles every host shim (see
+  [Shims](#shims)).
+
+- **`internal/scopetoken/`** — the placeholder vocabulary and the
+  write-back guard (see [Placeholders](#placeholders)).

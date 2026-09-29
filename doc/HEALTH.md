@@ -1,17 +1,29 @@
 # Vibe-Palace Project Health & Maintainability Report
 
-> **Historical document — refreshed 2026-05-08.** This report was the
-> input that motivated the cleanup-sprint. Every "DONE (commit pending)"
-> claim from the original 2026-04-14 revision has since been audited at
-> HEAD and refreshed in place to "✅ shipped (verified 2026-05-08)" with
+> **Historical record — a code-maintainability review dated 2026-04-14,
+> status refreshed 2026-05-08.** This is not a runtime-health reference and
+> nothing in it describes how to check a live install. For current runtime
+> health use `vp check` (all checks; `vp check --help` lists the ones
+> selectable with `--check`) and the `vp_health` MCP tool. Every figure
+> below (file, package and MCP tool counts, line numbers, the log rotation
+> cap, where command/skill templates live and which functions write them) is
+> as of 2026-04-14 / 2026-05-08 and is not maintained. Derive current values
+> from source instead, for example
+> `jq '.tools|length' internal/mcp/tool_surface.golden.json` for the MCP tool
+> count and `grep -n 'const MaxSize' internal/vplog/vplog.go` for the log cap.
+> The template-materialization and `.bak` mechanics described here were
+> superseded by `doc/adr/008-instruction-manual-lives-in-the-binary.md` and
+> are specified today in `doc/TEMPLATE_POLICY.md`.
+>
+> This report was the input that motivated the cleanup-sprint. Every
+> "DONE (commit pending)" claim from the original 2026-04-14 revision was
+> audited and refreshed in place to "✅ shipped (verified 2026-05-08)" with
 > linkable evidence cited in the matrices below. The full verification
-> table — line-by-line cross-checks against `internal/` source — lives in
-> `doc/RESUMPTION-PLAN.md` §2.1, and confirms that **all ten items in the
-> Top-10 Refactoring Wins matrix are fully shipped at HEAD**. No further
-> architectural cleanup is required before resuming feature development.
+> table — line-by-line cross-checks against `internal/` source as of that
+> date — lives in `doc/RESUMPTION-PLAN.md` §2.1, and confirmed that all ten
+> items in the Top-10 Refactoring Wins matrix had shipped by 2026-05-08.
 > Retain this document for the analysis (Findings #1–#3, area reviews,
-> integration-test strategy) — those framings remain accurate. Status
-> annotations are now historical.
+> integration-test strategy); its status annotations are historical.
 
 **Date:** 2026-04-14 (revised after critical review; status refreshed 2026-05-08)
 **Scope:** Full review of design & implementation across all internal packages,
