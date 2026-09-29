@@ -7,6 +7,12 @@
 
 **License:** MIT OR Apache-2.0 · **Status:** early public release · **Stack:** Go 1.25, single static binary, zero CGO
 
+**Versioning:** a release tag is `v<MCP surface>.<data format>.<build>`
+([ADR-011](doc/adr/011-open-task-header-schema-and-format-axis.md)), so
+`v8.2.0` means MCP surface 8 and vault data format 2. The major number
+tracks the tool surface, not maturity. `vp version --surface` prints the
+installed binary's surface.
+
 ---
 
 ## The Problem
@@ -31,8 +37,10 @@ structured markdown in a **git-versioned vault that is a separate
 repository from your code**, indexed with hybrid vector + structural
 semantic search, and served back on demand through standard MCP tools.
 
-One call at session start (`vp_bootstrap_context`) restores workflow,
-resume, active tasks, and recent history. One call at session end
+One call at session start (`vp_bootstrap_context`) returns an index of
+the project's state: the head of the task queue, recent sessions, and
+the `resume_uri` / `workflow_uri` handles the agent reads with
+`vp_read_resource`. One call at session end
 (`vp_capture_session`) records what changed and why. Between them,
 `vp_search`, `vp_kg_query`, and `vp_get_project_context` let the agent
 find anything it needs without a giant upfront context dump.
@@ -46,11 +54,16 @@ find anything it needs without a giant upfront context dump.
 Nothing the AI tooling produces belongs to your project's git history,
 and vibe-palace enforces that mechanically rather than by convention:
 
-- **Every AI artifact is host-local and gitignored by the tool itself.**
+- **AI artifacts are host-local and gitignored by the tool itself.**
   `vp` maintains a canonical ignore set (`/CLAUDE.md`, `/AGENTS.md`,
   `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`) and reconciles
   it into the project's `.gitignore` — these files are written into the
-  working tree for the host to find, and must never be committed.
+  working tree for the host to find, and must never be committed. Two
+  exceptions are outside that set. Cursor skill rules
+  (`.cursor/rules/vps-*.mdc`, written when `.cursor/` exists) are not
+  ignored. A `.cursorrules`, `.rules` or `.github/copilot-instructions.md`
+  file that already exists also gets the managed block written into it in
+  place, so if the repo tracks that file, the block shows up in the diff.
 - **Context files are thin shims, not context.** The `CLAUDE.md` /
   `AGENTS.md` that vibe-palace writes contain a small managed block whose
   only job is to tell the agent to call the MCP server. The real
@@ -93,12 +106,16 @@ them explicitly.
 - **Task lifecycle is human-gated.** Agents plan, implement, and
   propose; `retire` requires an explicit attestation that the human
   called the work done. Nothing silently disappears from a backlog.
-- **Moving work between projects** is an agent-orchestrated workflow
-  today: the agent creates the task in the destination project and
-  closes it in the source, carrying the content across. (A first-class
-  atomic `migrate` action is on the roadmap.) Parent/dependency edges
+- **Moving a task between projects** is one call:
+  `vp_manage_task action=move to_project=<slug>`. Only an active task
+  moves. The move is refused if the task's `parent` or any `depends_on`
+  does not resolve in the destination, or if a task with that slug is
+  already there. It adds a "Moved from <source>" section in the
+  destination and files a tombstone at
+  `Projects/<source>/tasks/cancelled/<task>.md`. Parent/dependency edges
   are per-project by design — each project's graph stays
-  self-contained.
+  self-contained. (Moving a *whole project* to another vault is covered
+  under [Multiple vaults and hosts](#multiple-vaults-and-hosts).)
 - **Search spans the portfolio.** `vp_search_cross_project` runs
   semantic search across every indexed project, and `vp_list_projects`
   enumerates the portfolio — so "have we solved this before, anywhere?"
@@ -119,12 +136,71 @@ them explicitly.
   vault writes stamp the MCP surface version; an older binary
   encountering a newer vault refuses to write and names the upgrade —
   a stale install fails loudly instead of quietly downgrading the vault.
+  A second axis, the vault **data format**, gates in the other direction.
+  A binary refuses a vault whose recorded on-disk format is *behind* the
+  format it requires, and it tells you to run the data migration
+  (`internal/surface/format.go`). `vp check --check surface` reports the
+  surface gate.
+
+### Multiple vaults and hosts
+
+A host can hold several vaults, for example a personal vault and a team
+vault. Each project resolves to exactly one vault in three tiers
+([ADR-012](doc/adr/012-vault-resolution-precedence-and-host-project-bindings.md)):
+1. a `vault_path` in the checkout's untracked `.vibe-palace.toml`;
+2. this host's `[project_vaults].<slug>` binding in the global config;
+3. the global `vault_path`.
+
+A committed `.vibe-palace.toml` names only the project, because a vault
+path belongs to one host. Resolution fails closed: a conflict or a broken
+binding refuses rather than falling back to the default vault.
+
+Moving projects between vaults uses these commands:
+
+| Command | Purpose |
+|---------|---------|
+| `vp vault init <path> --remote <name>=<url>...` | Create a new, empty vault and publish it to every remote (each must be empty). |
+| `vp vault copy <project>... --from <remote-url> [--vault <path>]` | Acts on the receiving vault (this host's default vault, or `--vault`): copy projects from another vault's **published remote** in one verified commit. |
+| `vp vault project delete <project>... (--moved-to <url> \| --discard) [--vault <path>]` | Acts on the vault the projects leave (default vault, or `--vault`): delete them in one published commit that writes their departure records (`Audits/departures/<project>.json`). |
+| `vp config bind <slug>... --vault <path>` | Bind one or more projects to a vault on this host (one `[project_vaults]` write). |
+| `vp vault clone <url> <path> [--bind <project>...]` | On another host, after `vp vault pull`: clone the vault and bind the projects in one step. |
+| `vp vault status` | Each remote's sync state (ahead, behind, diverged, reachable) plus working-tree dirt. |
+
+`copy`, `project delete` and `clone` share a pattern. You run them with
+`--dry-run` first, and the dry run prints a plan, a digest and a
+paste-ready line that carries `--expect <digest>`. Each real run also
+prints its own undo lines, to paste as printed. Copy and delete print a
+`git revert` plus push lines. Clone prints removal of the clone and a
+restore of the config backup. `vault init`'s undo also removes the new
+directory.
+
+Once a project has departed a vault, vp refuses any further write into it
+there. A stale session therefore cannot re-create the project in its old
+vault.
+
+The step-by-step procedure, with its undo order, is in
+[doc/VAULT-LIFECYCLE.md](doc/VAULT-LIFECYCLE.md). The design is in
+[ADR-013](doc/adr/013-vault-project-lifecycle-and-departure-records.md).
 
 ---
 
 ## Quick Start (5 minutes)
 
-**Prerequisites:** Go 1.25+, `~/.local/bin` in `PATH`.
+**Install a release binary.** The
+[releases page](https://github.com/suykerbuyk/vibe-palace/releases) has
+`vp_<version>_<os>_<arch>` archives for linux and darwin (amd64 and
+arm64, `.tar.gz`) and windows amd64 (`.zip`), plus a sha256
+`checksums.txt`. Each archive holds `vp`, `LICENSE` and `README.md`.
+
+```bash
+curl -LO https://github.com/suykerbuyk/vibe-palace/releases/download/v8.2.0/vp_8.2.0_linux_amd64.tar.gz
+mkdir -p ~/.local/bin
+tar -xzf vp_8.2.0_linux_amd64.tar.gz -C ~/.local/bin vp   # ~/.local/bin must be in PATH
+vp version
+```
+
+**Or build from source** (Go 1.25+). `make install` puts the binary and
+the generated man pages under `~/.local`:
 
 ```bash
 git clone https://github.com/suykerbuyk/vibe-palace.git
@@ -132,25 +208,43 @@ cd vibe-palace
 make build && make test && make install
 ```
 
-Initialize a project (creates the global config and the vault on first
-run, then registers the project):
+**Register the MCP server with your AI host.** `vp init` does not do this
+step for you. Restart the host afterwards.
+
+```bash
+vp mcp install --claude-plugin   # Claude Code; also --grok, --zed (several at once is fine)
+```
+
+**Initialize a project.** The first run also creates the global config and
+the vault (default `~/vibe-palace-vault`, or pass `--vault-path`):
 
 ```bash
 cd ~/code/your-project
 vp init
+vp check          # installation, config, vault, embedder and host rows
 ```
+
+If the repo already carries hand-written `CLAUDE.md` / `AGENTS.md` /
+`.cursorrules` content, `vp absorb --dry-run` shows how it would be moved
+into the vault. The first semantic operation downloads the embedding
+model once, so it needs network access the first time.
 
 `vp init` scaffolds the project's space in the vault and writes the
 slash-command and skill shims (`.claude/commands/vpc-*.md`,
 `.claude/skills/vps-*/SKILL.md`, and Grok/Cursor equivalents where
 detected) so your editor discovers the full vibe-palace command catalog.
+When the Claude Code (or Grok) plugin from `vp mcp install` is already
+healthy, `vp init` leaves the `vpc-*`/`vps-*` shims for that host to the
+plugin and does not write the project copies. Bare `/vpc-*` may then need
+the `vibe-palace:` prefix.
 It also installs the `commit.msg` post-commit reaper described under
 [Commands and Skills](#commands-and-skills), unless the repo already has a
 post-commit hook of its own.
 
-Then add `vibe-palace` to your editor's MCP config (see the
-[Tutorial](doc/TUTORIAL.md) for per-editor setup). Start a new session
-with `/vpc-restart` and the agent loads full context on turn one.
+Hosts without a `vp mcp install` flag (Cursor, other MCP hosts) take a
+manual MCP config entry; see the [Tutorial](doc/TUTORIAL.md) for
+per-editor setup. Start a new session with `/vpc-restart` and the agent
+loads full context on turn one.
 
 ---
 
@@ -172,7 +266,12 @@ with `/vpc-restart` and the agent loads full context on turn one.
   permanently archive-less.
 - **Task management** — vault-resident tasks with derived epic/story
   structure, explicit cross-project addressing, and human-gated
-  completion (`vp_manage_task`, `vp_list_tasks`, `vp tasks`).
+  completion (`vp_manage_task`, `vp_list_tasks`, `vp tasks`). On the CLI:
+  - `vp tasks` shows open work grouped by epic, in dependency order.
+  - `vp tasks epics` rolls up each root epic's open/total descendants.
+  - `vp tasks read` / `vp tasks edit` open one task body.
+  - `vp board` is a chronological Active / Icebox / History report,
+    and it filters nothing by default.
 - **Semantic search** — hybrid vector + structural search across all
   captured knowledge, single-project or portfolio-wide.
 - **Knowledge graph** — temporal entity-relationship graph with
@@ -193,8 +292,12 @@ with `/vpc-restart` and the agent loads full context on turn one.
   checkout until a human merges.
 - **Migration** — import existing VibeVault sessions and MemPalace data
   into the palace.
-- **`vp` CLI** — full command-line surface with generated man pages and
-  shell completions (`vp --help` for the live list).
+- **Vault lifecycle** — create vaults, move projects between them, and
+  bind projects per host: `vp vault init|copy|clone|project delete`,
+  `vp config bind` (see [Multiple vaults and hosts](#multiple-vaults-and-hosts)).
+- **`vp` CLI** — full command-line surface (`vp --help`, then
+  `vp help <command>`, is the authoritative live reference). `make man`
+  generates man pages for a subset of the commands.
 
 ---
 
@@ -209,7 +312,7 @@ through the same precedence chain.
 
 | Command | Purpose |
 |---------|---------|
-| `/vpc-restart` | Turn-1 session bootstrap: vault sync, orphan-plan sweep, context load, doctrine fetch. |
+| `/vpc-restart` | Turn-1 session bootstrap: vault pull and tidy of capture residue, context load, doctrine fetch. |
 | `/vpc-wrap` | Session wrap: quality gate, capture the session, update resume, stage files, sync the vault. |
 | `/vpc-stage` | Commit prep only: light quality gate, author `commit.msg`, stage changed files by path (never `git add -A`). |
 | `/vpc-capture` | Mid-session checkpoint without the full wrap sequence. |
@@ -260,7 +363,7 @@ mixed.
 |-------|---------|
 | `/vps-code-digger` | Read-only codebase cartographer/auditor: onboarding maps, architecture deep-dives, severity-ranked issue register. |
 | `/vps-epic-orchestrator` | Parallel-execution orchestrator that closes a whole epic across worktrees/subagents with adversarial review and a human gate. |
-| `/vps-chair` | Visible Herdr orchestration: you are the Chair over one or more implementor panes; loads `/vpc-restart` and `/vpc-herdr` if this session has not already run them. |
+| `/vps-chair` | Orchestrate subordinate implementors, as visible Herdr panes or as ephemeral subagents without Herdr; loads `/vpc-restart` (and `/vpc-herdr` when Herdr is in use) if this session has not already run them. |
 | `/vps-pair-reviewer` | Dual-agent pairing: you hold architecture and review while another agent is the implementation orchestrator. |
 | `/vps-second-opinion` | Adversarial review by a different model, headless; findings are witness statements until re-derived from source. |
 | `/vps-startup-analyst` | Domain-expert persona (business-plan analysis) with reference library — a worked template for your own skill personas. |
@@ -270,16 +373,23 @@ mixed.
 > is derived, never hand-maintained — list it with `vp commands list` /
 > `vp skills list`, or over MCP with `vp_list_commands` /
 > `vp_list_skills`. The embedded floor itself is
-> `ls internal/templates/templates/commands/` in the source tree.
+> `ls internal/templates/templates/commands/ internal/templates/templates/skills/`
+> in the source tree.
+>
+> **Skill shims are labels, not triggers.** A skill shim's description is
+> only `Vibe-palace skill — <short brief>`. On Claude Code the shim also sets
+> `disable-model-invocation: true`, so a persona is adopted only when you
+> type `/vps-<name>` (or `vps-<name>`). On Cursor and Grok the label is the
+> only safeguard.
 
 ### Supported platforms
 
 | Host | MCP server | Commands / skills | Automatic hook capture |
 |------|-----------|-------------------|------------------------|
-| **Claude Code** | registered by `vp` | `.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` | ✅ `vp hook` on SessionEnd/Stop/PreCompact |
-| **Grok Build** | registered by `vp` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | ✅ **when wired** — `vp hook` accepts Grok's own wire dialect; vibe-palace does not assume it, so MCP capture stays the mechanism to rely on (**inline archive defaults on** for handshake-derived grok/xai with a `transcript`) |
-| **Zed — Claude-shaped ACP agent** (the supported Zed path) | registered by `vp` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | ✅ full Claude hook path, **fired by archiving the thread** — not by idling, `restart`, or `exit` |
-| **Zed — native pane** (Zed's default) | registered by `vp` | same managed block | — MCP-only: inline archive when `transcript` is supplied; **fails loud** when it is not |
+| **Claude Code** | `vp mcp install --claude-plugin` | the plugin's `vpc-*` commands and `vps-*` skills; project `.claude/commands/vpc-*.md` + `.claude/skills/vps-*/SKILL.md` only when the plugin surface is not healthy | ✅ `vp hook` on SessionEnd/Stop/PreCompact |
+| **Grok Build** | `vp mcp install --grok` | native `.grok/plugins/.../commands/vpc-*.md` + `.grok/skills/` + `/vpc` hub | ✅ **when wired** — `vp hook` accepts Grok's own wire dialect; vibe-palace does not assume it, so MCP capture stays the mechanism to rely on (**inline archive defaults on** for handshake-derived grok/xai with a `transcript`) |
+| **Zed — Claude-shaped ACP agent** (the supported Zed path) | `vp mcp install --zed` | via `AGENTS.md` managed block → `vp_cmd` / `vp_skill` | ✅ full Claude hook path, **fired by archiving the thread** — not by idling, `restart`, or `exit` |
+| **Zed — native pane** (Zed's default) | `vp mcp install --zed` | same managed block | — MCP-only: inline archive when `transcript` is supplied; **fails loud** when it is not |
 | **Cursor** | manual MCP config | `.cursor/rules/vps-*.mdc` (skills) | — |
 | **Any MCP host** | manual MCP config | `vp_cmd` / `vp_skill` tools directly | — |
 
@@ -303,8 +413,7 @@ default, is MCP-only, and is not the supported path.
 
 Zed is **not** a first-class host and no Zed extension ships:
 `doc/PRD-vibe-palace-zed-assistant.md` describes an unbuilt design and carries
-a banner saying so. The native pane's remaining gap is tracked as
-`zed-pane-capture-parity` (open, **high**, scoped to the native pane).
+a banner saying so.
 Details: [Tutorial — Zed](doc/TUTORIAL.md#zed),
 [Tutorial — Grok Build](doc/TUTORIAL.md#grok-build-xai),
 [durability by host](doc/COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less),
@@ -426,7 +535,8 @@ absorbed most of `vv`'s distinctive strengths.
 | IDE coverage | Claude Code + Zed | Claude Code + Grok Build + Zed + Cursor + any MCP host |
 | LLM dependency | Optional enrichment layer | None required for capture; optional for tuning |
 
-Zed thread ingestion is also covered: `vp archive --adapter zed` reads
+Zed thread ingestion is also covered: `vp archive threads --adapter zed`
+lists threads and `vp archive create --adapter zed --session-id <id>` reads
 Zed's SQLite thread DB and archives threads by id, alongside the
 default Claude Code JSONL adapter.
 
@@ -442,14 +552,23 @@ and when more than one person (or more than one project) is involved.
 - [Commands & Skills](doc/COMMANDS-AND-SKILLS.md) — the full catalog, precedence tiers, and authoring guide
 - [Architecture](doc/ARCHITECTURE.md) — system design and package reference
 - [Testing](doc/TESTING.md) — test strategy and integration test inventory
+- [Vault Lifecycle](doc/VAULT-LIFECYCLE.md) — new vaults, moving projects between vaults, per-host bindings, undo
 - [Migration](doc/MIGRATION.md) — migrating from VibeVault and MemPalace
+- [Absorb](doc/absorb.md) — moving existing agent-context files into the vault
+- [Template Policy](doc/TEMPLATE_POLICY.md) — how embedded templates, overrides and resets interact
+- [Release notes: v8.2.0](doc/rollout/v8.2.0-release-notes.md) (earlier: [v7.2.0](doc/rollout/v7.2.0-release-notes.md))
 - [PRD](doc/PRD-vibe-palace.md) — full product requirements
 - [ADR 001: Transcript Archive](doc/adr/001-transcript-archive.md) — copyright-provenance ledger format
 - [ADR 003: Vault Write Locking](doc/adr/003-vault-write-locking.md) — per-path locks and the CAS contract
 - [ADR 006: Derive, Don't Ask](doc/adr/006-derive-dont-ask.md) — where business logic lives: DERIVE / DECLARE / DEFER
 - [ADR 007: Vault Audit & Archive Backfill](doc/adr/007-vault-audit-and-archive-backfill.md) — the vault audit and accepted-debt baseline
 - [ADR 008: The Instruction Manual Lives in the Binary](doc/adr/008-instruction-manual-lives-in-the-binary.md) — served doctrine, thin project workflow
-- [ADR 009: Inviolable Core, Delivered Whole or Fail-Loud](doc/adr/009-inviolable-core-delivered-whole-or-fail-loud.md) — honest context budgets
+- [ADR 009: Inviolable Core, Delivered Whole or Fail-Loud](doc/adr/009-inviolable-core-delivered-whole-or-fail-loud.md) — honest context budgets (superseded in full; historical)
+- [ADR 010: The Surface Gate Stays at the Dispatch Seam](doc/adr/010-surface-gate-at-the-dispatch-seam.md) — where the surface write-gate is enforced
+- [ADR 011: Open Task-Header Schema and the Data-Format/Release-Versioning Coupling](doc/adr/011-open-task-header-schema-and-format-axis.md) — the data-format axis and the release-tag scheme
+- [ADR 012: Vault Resolution Precedence and Host-Local Project Bindings](doc/adr/012-vault-resolution-precedence-and-host-project-bindings.md) — how a checkout finds its vault
+- [ADR 013: Vault Project Lifecycle Commands and Departure Records](doc/adr/013-vault-project-lifecycle-and-departure-records.md) — copy, delete, departure records
+- All ADRs: [doc/adr/](doc/adr/)
 
 ## License
 

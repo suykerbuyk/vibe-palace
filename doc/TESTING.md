@@ -1,13 +1,13 @@
 # Testing Strategy
 
-**Last updated:** 2026-08-18
+**Last updated:** 2026-09-28
 
 This document describes the testing strategy for vibe-palace, including
 the unit test infrastructure, the integration test architecture, and the
 ONNX model caching system that makes real-embedding tests practical.
 
-The suite currently runs **~2963 tests** across 52 packages, including
-**118 integration tests** (the ONNX/cross-layer tests `make integration`
+As of v8.2.0 the suite runs **~5309 tests** across 59 packages, including
+**153 integration tests** (the ONNX/cross-layer tests `make integration`
 discovers via the `TestIntegration*` prefix). These counts are approximate
 and advisory: they tally `func Test…` declarations — not the table-driven
 subtests each may fan out into — and they drift as the suite grows. Derive
@@ -28,8 +28,11 @@ between speed and fidelity.
 ### Tier 1: Unit Tests (short mode)
 
 **Command:** `make test`
-**Flags:** `go test -race -short -cover ./...`
-**Duration:** ~2 seconds
+**Runs:** the `build`, `fmt-check` and `vet` prerequisites, then
+`go test -race -short -cover ./...`, then `make live-canary` (see
+*Live-vault canaries*)
+**Duration:** not seconds; the larger packages (`internal/storage`,
+`cmd/vp`, `internal/integration`) dominate, and `-race` slows them further
 **ONNX required:** No
 
 Unit tests exercise individual functions and types within a single package.
@@ -39,14 +42,25 @@ vectors have no semantic meaning (similar texts do NOT produce similar
 vectors), but they are stable and reproducible, which is sufficient for
 testing index mechanics, storage round-trips, and tool handler logic.
 
-Every package maintains 80%+ unit test coverage. Tests that require ONNX
-embeddings call `t.Skip()` in short mode.
+The coverage target is 80%+ per package. It is a target, not a guarantee:
+several packages sit below it today. `make cover` writes the short-mode
+report to `coverage.html`. Tests that require ONNX embeddings call `t.Skip()`
+in short mode.
+
+**`-short` skips the derived-gate source-audit rule.** The module-deriving
+tests of the type-checked derived-gate rule in `internal/sourceaudit` call
+`skipUnlessFullSuite` (`internal/sourceaudit/derived_gate_test.go`) and skip
+under `-short`, so `make test` does **not** run the rule. `make source-audit`
+(the whole package, no `-short`, no `-race`) runs it, and so do the CI
+`source-audit` and `ubuntu26-canary` jobs that invoke it. The manual
+`make test-full` and `make cover-full` pass no `-short`, so they run it too.
+See *Source Audit*.
 
 ### Tier 2: Integration Tests (ONNX)
 
 **Command:** `make integration`
 **Flags:** `go test -count=1 -run TestIntegration -v ./...`
-**Duration:** ~40 seconds (warm cache), ~70 seconds (cold cache)
+**Duration:** depends on the model cache; a cold cache adds the model download
 **ONNX required:** Yes
 
 Integration tests exercise cross-layer interactions with real ONNX
@@ -58,7 +72,7 @@ All integration test function names start with `TestIntegration` so
 `make integration` discovers them via the `-run` flag.
 
 **`make model-test`** is the real-model tier outside `internal/integration`:
-`go test -count=1 -timeout 10m` over every package with a test file that calls
+`go test -count=1 -timeout 10m -p 1` over every package with a test file that calls
 the real ONNX constructor (`embedder.NewONNX(`), with neither `-short` nor
 `-race`. The package list is **derived** by a grep in the Makefile
 (`MODEL_TEST_PKGS`), never hand-listed, and an empty derivation fails the
@@ -74,16 +88,18 @@ instead would match comments that merely name `NewONNX` and pull `cmd/vp` and
 ### Tier 3: Full Suite
 
 **Command:** `make test-full`
-**Flags:** `go test -count=1 -cover ./...`
-**Duration:** ~70 seconds (warm cache)
+**Runs:** the `build` and `vet` prerequisites, then
+`go test -count=1 -cover -v ./...`
+**Duration:** longer than Tier 1 (no `-short`, so every integration and
+real-model test runs)
 **ONNX required:** Yes
 
-Runs everything: unit tests plus all integration tests.
-This is the gate for commits.
+Runs everything: unit tests plus all integration tests. It is a manual
+target: no CI job invokes it (see *CI job shape*).
 
 ---
 
-## Live-vault canaries (`internal/taskgraph/live_vault_test.go`, `internal/storage/tasks_live_vault_test.go`, `internal/tools/bootstrap_live_vault_test.go`)
+## Live-vault canaries
 
 A small class of test runs against the **operator's real vault**, resolved through
 `storage.OpenVaultGlobal()`, and **skips** when no vault is configured. It is not an
@@ -101,8 +117,6 @@ merely *discusses* a header line, and the accumulated markdown weirdness of a hu
 Current canaries:
 
 | Test | What it would catch |
-|  | MCP stdio → capture → archive → storage (+ optional memory) | No* | Post-defaults hook-less path: derived , flag omitted → note + inline archive bi-link + friction + zero makeHandler WARN; Claude SessionEnd leg on a separate temp vault; structural equivalence not byte identity (*search leg needs engine; uses mock/short-safe setup) |
-|  | MCP stdio → capture | No | Unknown host without  stays thin (no auto inline archive) |
 |---|---|
 | `TestLiveVaultHasNoPhantomRelations` | `parseTaskMeta` regressing to a whole-file scan and reading a task's **body** as a real `Parent`/`Depends` — several real task files discuss the header syntax in prose and inside fences |
 | `TestLiveVaultGraphIsCleanAndTerminates` | A structural lie in the real backlog (cycle / dangling ref / retired parent with live children) — and, under a bounded timeout, a cycle being **walked instead of detected** |
@@ -110,7 +124,15 @@ Current canaries:
 | `TestLiveVaultAmendNeverMatchesAFencedHeading` | `sectionBounds` regressing to a naive scan and splicing **into a code fence**. Not hypothetical: **22 H2 headings in this project's own task files exist only as fenced sample text** — including the `## Decision` quoted by the task that specified `amend` |
 | `TestLiveVaultAmendIsIdempotentOnRealBodies` | A retried amend **duplicating** a section on a real body instead of converging — the failure a crash-and-retry would produce |
 | `TestLiveVaultRetitleNeverDisturbsAnythingElse` | `replaceTitleLine` (whole-file, first-wins, **fence-unaware**) rewriting an H1-shaped line that is not the title. Safe only because `CreateTask` always writes `# Title` first and `validateTaskBody` refuses an unfenced H1 in a body — **that is an invariant about the CORPUS, not the function**, so only the corpus can check it. Asserts exactly one line changed per file |
+| `TestLiveVaultSessionNotesAllRoundTrip` (`internal/storage/session_yaml_safety_test.go`) | A session note at rest that cannot be re-emitted, so `vp vault tidy` and every `RewriteSession` caller would refuse it. Unparseable notes are counted and skipped, not failed on |
+| `TestLiveVaultSessionIndexIsNotEmpty` (`internal/storage/session_skips_test.go`) | The session index coming back empty on the real corpus. Asserts no count: the index is non-empty and whatever is skipped is named |
+| `TestLiveVaultKnowledgeGraphIsReadable` (`internal/storage/kg_record_skip_test.go`) | A project with an entities file yielding an empty listing. Asserts no count; whatever is skipped is named |
 | `TestBootstrapLiveVaultStillRestoresASession` | A live restart coming back unusable. Asserts the payload an agent actually receives against the real vault: the handles (`resume_uri`, `workflow_uri`, `resume_sha256`) present; **no document body** — neither a `resume` nor a `workflow` key, and no distinctive line of the live resume anywhere in the marshalled payload; `head_of_queue` non-empty when a backlog exists, every row and every session row carrying its URI; `ranking` present and naming the `structural` ranker; the wire carrying no `budget` / `shed_core` / `max_tokens` / pinned-zone banner; and `complete` last on the wire. **It asserts no size at all** — a ceiling reintroduced here would re-create the disease PRD §1.10 removes. Its body assertion was INVERTED at iteration 313: through Phase 2 it required the bodies to be present, which was that phase's gate; Phase 3 made the payload an index, and the assertion was replaced in the same commit rather than left to lie. Only the real vault has a task graph and a session corpus large enough for assembly to go wrong on |
+
+Vault resolution differs by file: the `internal/taskgraph` and `tasks_live_vault_test.go` canaries use
+`storage.OpenVaultGlobal()`; the bootstrap canary honours `VP_LIVE_VAULT` first; the three session and
+KG canaries use `liveVaultRoot` (`internal/storage/session_yaml_safety_test.go`), which reads
+`VP_LIVE_VAULT` and otherwise falls back to `~/vibe-palace-vault`.
 
 **Rules for adding one:** it must `t.Skip` (never fail) when the vault is absent, it must never
 write, and it must assert something a fixture *structurally cannot* — otherwise it is just a slow
@@ -126,9 +148,12 @@ So the invocation is a make target, not a convention:
 
     make live-canary    # go test -count=1 -v -run TestBootstrapLiveVaultStillRestoresASession ./internal/tools/
 
-`make test` depends on it, so the uncached run happens on every ordinary test invocation. **Any new
+`make test` runs it last, so the uncached run happens on every ordinary test invocation. **Any new
 live-vault canary belongs in that target's `-run` pattern** — adding one and leaving it to `go test
-./...` re-opens the hole.
+./...` re-opens the hole. As of v8.2.0 the Makefile does not follow this rule: `live-canary` runs only
+`TestBootstrapLiveVaultStillRestoresASession`, and the `TestLiveVault*` canaries in the table above
+run only through the cached `go test ./...`. List them with
+`grep -rn '^func TestLiveVault' --include='*_test.go' internal cmd`.
 
 **No size assertion, deliberately (310).** This canary once asserted a token margin, then core
 integrity against `Budget.ShedCore`, against a payload budget of 8,000 and later 16,000. Phase 2
@@ -155,20 +180,20 @@ that decides what an agent still holds is which fields were declared first.
 
 | Test | What it proves |
 |------|----------------|
-| `TestBootstrapTruncatedPrefixIsDetectable` | The headline. A real payload cut at the 19,968-byte specimen offset is **detectable from inside the truncated channel**: `complete` is absent from the prefix (and present in the whole document), while `budget`, `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count` and `post_bootstrap_instructions` all survive. It also asserts the prefix is *not* valid JSON, so a future payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
-| `TestBootstrapInstrumentsPrecedeBulk` | The order by **byte offset** — the only property a cut respects. Every instrument and recovery handle appears before `"workflow"` and `"resume"` |
+| `TestBootstrapTruncatedPrefixIsDetectable` | The headline. A real payload cut where the index begins (at `"head_of_queue":`) is **detectable from inside the truncated channel**: `complete` is absent from the prefix (and present in the whole document), while `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count`, `ranking` and `post_bootstrap_instructions` all survive. It also asserts the prefix is *not* valid JSON, so a future payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
+| `TestBootstrapInstrumentsPrecedeBulk` | The order by **byte offset** — the only property a cut respects. Every instrument and recovery handle (`resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count`, `ranking`) appears before the index (`head_of_queue`, `recent_sessions`) |
 | `TestBootstrapCompleteSentinelAlwaysEmitted` | The sentinel's three properties: no `omitempty` (a zero-value result still spells out `"complete":false`, so absence cannot be confused with a false value), **structurally last** in the struct via reflection (the guard against a future field being appended after it), and last on the wire on real marshalled payloads |
 
-The fixture these use is deliberately a payload far larger than the cut, so there is real bulk on the
-far side of it. That is not contrived: it is the quantum-ng specimen the `inline-delivery` epic
-measured, a real project whose resume and workflow together are ~1.95x a real host's cap. Since 310
-vp reduces nothing, so every such payload reaches the host at full size and the cut is the host's
-alone — which is exactly the case these tests exist to make survivable.
+The bootstrap payload no longer inlines the resume or workflow bodies, so an honest payload does not
+reach a host's fixed cap and cutting it at a fixed offset would truncate nothing. The bootstrap tests
+therefore cut at the instrument/index boundary (`cutBootstrapAtBulk`), which proves the same property
+— what survives when a host keeps only a prefix — at every payload size. Since 310 vp reduces
+nothing, so the cut is the host's alone.
 
 **The 19,968-byte figure is a specimen, not a constant of the system** — one host on one day
 (three Grok results of 60.3 KB, 53.4 KB and 32.7 KB each cut at exactly 19.5 KiB, a *flat* cap rather
-than a ratio). The tests cut at an offset and assert what survives it; any offset landing inside the
-bulk proves the same property.
+than a ratio). The surface tests below still cut at that offset and assert what survives it; any
+offset landing inside the bulk proves the same property.
 
 ### The same contract, generalised (`internal/tools/surface_wire_order_test.go`)
 
@@ -198,18 +223,19 @@ knows how to read changes nothing, which is why the epic's own acceptance note r
 measured `complete`-absent result as proof the signal arrives and explicitly **not** as proof an
 agent acts on it.
 
-Three surfaces teach the payload's delivery state and all three are pinned as one contract:
+Three surfaces teach the payload's delivery state, and `doctrineSites` collects all three:
 `internal/templates/templates/commands/restart.md` (Step 2), the `vp_bootstrap_context` tool
-description, and the Grok `/vpc` hub shim (`internal/shims`). The template reaches only hosts that
+description, and the Grok `/vpc` hub shim (`internal/shims`). As of v8.2.0 the one remaining test
+asserts only the `restart.md` site. The template reaches only hosts that
 ran `/vpc-restart`; the description reaches every agent on every host; the hub fronts the exact host
 where the flat cut was measured. Fixing one is the ADR-006 failure mode.
 
 | Test | What it proves |
 |------|----------------|
-| `TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone` | No surface asserts that an absent `budget` means nothing was reduced **without conditioning it on `complete` in the same sentence**. Both readings of the unconditioned claim were observed in the field: its free contrapositive (present ⇒ reduced ⇒ truncated) makes the ladder's routine `recent_sessions` shed read as a failed bootstrap, and in a truncated channel `budget` is absent *because it was cut off*, so the rule tells the agent a silent host cut was a clean delivery. The `[^.]` sentence bound is load-bearing: a qualifier three sentences away does not rescue a rule that reads as unconditional where the agent meets it |
+| `TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone` (RETIRED) | Deleted in 1537d83 together with the `budget` field it policed: with no `budget` on the payload, there is no absent-budget claim left to condition on `complete` |
 | `TestBootstrapDeliveryDoctrine_RestartTeachesSentinelAndFetch` | Anchored the way `TestEmbeddedCommands_CheckSuiteDelivery` anchors — on the **action**, not a mention. `complete` must be raised in a *bullet* inside Step 2 (prose observing that the sentinel exists is not a rule), and Step 2 must mandate the document FETCH: `vp_read_resource`, `workflow_uri`, `resume_uri`, `resume_sha256`, the words "every restart", and the fetch ordered ahead of the `vp_get_doctrine` call. Rewritten at 313: the old assertion pinned the recovery onto the sentinel bullet, which was right while the bodies arrived inline. Once the payload became an index, a rehydrate-on-truncation rule would leave an agent whose payload arrived WHOLE with no resume and no workflow at all — conditioning the fetch on a truncation signal is exactly how that would ship |
 
-Both were confirmed RED by restoring the old wording at each of the three sites in turn.
+Both were confirmed RED by restoring the old wording at each of the three sites in turn, before the first was retired.
 
 ---
 
@@ -253,6 +279,35 @@ the failing names, before believing any silence.
 
 ## CI job shape (`.github/workflows/ci.yml`)
 
+CI triggers on every push to `main` and on every pull request. The jobs, as of
+v8.2.0 (`sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z0-9-]+:$'`
+lists them):
+
+| Job | Runs | Why it exists |
+|---|---|---|
+| `fmt` | `make fmt-check` | Fast, toolchain-only formatting verdict. `gofmt -l` alone prints drift and exits 0, so the target fails on any drift |
+| `vet` | `go vet ./...` | Static checks, on Linux only |
+| `goreleaser-check` | `make goreleaser-check` | Validates `.goreleaser.yml` with the same GoReleaser the release job installs, after a negative control proves the validator can still reject |
+| `test` | `go test -short -race -cover ./...` | The unit tier. Not `make test`: no `fmt-check` (the `fmt` job has it) and no `live-canary` (CI has no live vault). Carries no model cache, because no `-short` test loads the model |
+| `model` | `make model-test` | The real-ONNX tier (see Tier 2), with a `~/.cache/huggingface` cache and `timeout-minutes: 15` |
+| `source-audit` | `make source-audit` | Of the jobs that run on pull requests as well as pushes, the only one that runs the type-checked derived-gate rule, which skips under `-short` (see *Source Audit*) |
+| `windows-lock` | `go test -short ./internal/vaultlock/...`, then `go test -run TestIntegration_VaultLockCrossProcess ./internal/integration/` | The sole runtime proof of the Windows byte-range lock (`flock_windows.go`); the rest of CI is Linux-only |
+| `build` | `CGO_ENABLED=0 go build -o vp ./cmd/vp`, then `./vp version` | The shipped zero-CGO build links and runs |
+| `init-e2e` | `go test -race -run '^TestIntegrationE2EInit' -v ./internal/integration/...` | Exec-based e2e tier |
+| `dispatch-e2e` | `go test -race -run '^TestIntegrationDispatch' -v ./internal/integration/...` | Exec-based e2e tier |
+| `githook-e2e` | `go test -race -run '^TestIntegrationE2EGithook' -v ./internal/integration/...` | Exec-based e2e tier |
+| `walkthrough-e2e` | `go test -race -run '^TestIntegrationE2EWalkthrough' -v ./internal/integration/...` | Exec-based e2e tier; `timeout-minutes: 10` |
+| `workflows-e2e` | `go test -race -run '^TestIntegrationE2EWorkflows' -v ./internal/integration/...` | Exec-based e2e tier; `timeout-minutes: 10`; uploads `metrics.jsonl` on success |
+| `ubuntu26-canary` | on `ubuntu-26.04`: `go test -short -race ./...`, `make source-audit`, the walkthrough e2e, `make model-test` | Temporary, push-only rehearsal of the next runner image, with a removal condition in its ci.yml comment; `timeout-minutes: 25`, no model cache by design |
+
+Each of the five e2e jobs (`init-e2e` through `workflows-e2e`) uploads its
+retained tmpdir when it fails (an `if: failure()` upload step).
+
+`make test-full`, `make cover-full` and `make integration` are manual targets
+that no job invokes. So any `TestIntegration*` test that skips under `-short`
+and is not matched by one of the e2e filters above runs only when someone runs
+`make integration` or `make test-full`.
+
 Two properties of the workflow file are load-bearing and easy to undo by
 accident.
 
@@ -270,7 +325,8 @@ instead of a runner lost for the afternoon. The timeout is a backstop against
 
 **Real-model coverage is its own job.** `model` runs `make model-test` (see
 Tier 2) with the `~/.cache/huggingface` cache (key `hf-cache-v1-…`), and it is
-the only CI job that loads the ONNX model. `test` runs `-short -race` and never
+the only CI job that loads the ONNX model on pull requests as well as pushes (the push-only
+`ubuntu26-canary` also runs `make model-test`, cold). `test` runs `-short -race` and never
 reaches the model, so it carries no model cache. Before this split the only CI
 exercise of the model was a side effect: a step that warmed the cache by
 running one `cmd/vp` check test by name. The `model` job depends on
@@ -424,7 +480,7 @@ It lived at `palace/{project}/.local/embed-cache/` until 2026-09-10. The first
 cache operation of each `EmbedCache` sweeps that legacy layout into the new one
 (see ARCHITECTURE, "Embed Cache"), so a test that seeds a vector at the old
 path is simulating a binary from before the move — which is exactly what
-`TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration` and the legacy leg of
+`TestEmbedCache_LegacyVectorsMigrateThenReembedOnce` and the legacy leg of
 `TestIntegrationPulledDeletionLeavesNoHusk` do. A test that expects to watch a
 sweep must build a FRESH `EmbedCache` (or engine): the sweep is a per-instance
 `sync.Once`, and the harness engine's may already have fired.
@@ -444,10 +500,12 @@ directory to find the project root (`go.mod`), then returns
 `.cache/models/` under that root. This ensures all packages share the
 same model cache regardless of where `go test` runs from.
 
-Consumed by the ONNX integration tests in `internal/embedder/onnx_test.go`,
-`internal/search/integration_test.go`,
-`internal/capture/integration_test.go`, and
-`internal/integration/helpers_test.go`.
+Consumed by the ONNX tests in `internal/embedder/onnx_test.go`,
+`onnx_crossprocess_test.go` and `onnx_selfheal_test.go`,
+`internal/search/integration_test.go`, `internal/capture/integration_test.go`,
+and by `testinfra.NewHarness` (`internal/testinfra/harness.go`) when a harness
+asks for the real embedder, which is how `internal/integration` reaches it.
+Find the current list with `grep -rln 'ProjectCacheDir(' --include='*.go' .`.
 
 ---
 
@@ -655,8 +713,11 @@ pre-existing `TestCommitAndPushPaths_PushRebasesOnNonFastForward` stays green
 through the restructured branch. `internal/storage/vaulttidy_test.go` mirrors the
 strand at the `TidyVault` boundary (`TestTidyVault_StrandedWhenAllRemotesFail`,
 `_NotStrandedOnSuccess`); `internal/tools/system_tools_test.go` covers the MCP
-`vp_vault_tidy` surface (`TestVaultTidy_StrandedStatus` → `status:"stranded"`,
-`TestVaultTidy_PartialPushCount` → corrected `pushed to N/M remotes` count).
+`vp_vault_tidy` surface. `TestVaultTidy_StrandedIsAnError` requires a tool
+**error** (not a status) naming `STRANDED`, saying the commit `EXISTS locally`,
+and naming the failing remote. `TestVaultTidy_PartialPushIsAnError` requires a
+1-of-2 push to be an error naming `PARTIAL` and the dead remote, and not
+`STRANDED`.
 
 ### `internal/storage/` — Vault Pull & Phantom-Template Heal
 
@@ -775,6 +836,125 @@ fixtures with a real git remote on the target vault.
 | `TestOnlyTheBindToolTargetsAProjectBySlug` (`internal/tools`) | The `slug` exemption is scoped to exactly `vp_config_bind` |
 | `TestStdioOnlyToolsAreAbsentOnServe` (`cmd/vp`) | `vp_config_bind` is never served over HTTP, even with `--allow-writes` |
 | `TestConfigBindVaultCallsBind` / `TestConfigBindRefusesAndValidatesUsage` (`cmd/vp`) | The CLI binds and verifies every repeated `--checkout`; refusals and usage errors exit `ExitUser` |
+
+#### Multi-slug bind and stale bindings (`internal/storage/project_bind_batch_test.go`, `internal/mcp/stale_project_binding_test.go`)
+
+`vp config bind` takes several slugs in one call, and the resolver refuses a
+binding that no longer matches what the vault holds.
+
+| Test | What it proves |
+|------|----------------|
+| `TestBindProjectVaultsWritesEverySlugInOneWrite` / `TestBindProjectVaultsIsAllOrNothing` | Every slug lands in one config write, and one refused slug writes none of them |
+| `TestBindProjectVaultsRefusesAConcurrentWrite` | The batch write is a compare-and-set; another writer's change survives |
+| `TestBindRefusesATargetWithARecordOverRealContent` | A target holding both a departure record and real content for the slug refuses |
+| `TestBindProjectVaultsCheckRootIsApartFromVaultPath` / `TestBindProjectVaultsVerifiesEachCheckoutsOwnSlug` | A dry run may check a scratch tree for a path that does not exist yet, while a real bind refuses unless the check root is the vault path; each checkout is verified against the slug its own marker names |
+| `TestResolverRefusesAStaleBinding` and its `…KeptAliveByIgnoredBak` / `…KeptAliveByMachineLocalResidue` variants, `TestResolverRefusesABindingWhenTheDefaultVaultHoldsTheProject` | A binding whose target no longer holds the project, or whose project is back in the default vault, refuses; an ignored `.bak` or machine-local residue does not keep it alive |
+| `TestResolverAcceptsAPalaceOnlyProjectInTheTarget`, `TestResolverIgnoresResidueInTheDefaultVaultForANewBinding`, `TestResolverNeverRefusesANewProjectWithNoFilesYet` | The non-refusals: a palace-only project counts as held, an empty `palace/<p>` or ignored residue in the default vault does not block a `--new` binding, and a new project with no files is never refused |
+| `TestRebindRenameVerifiesWhenToIsAlreadyBound` (`project_bind_round2_test.go`) | A rename whose target slug is already bound writes no binding but still verifies the renamed checkout; a disagreeing `vault_path` is refused and the marker restored |
+| `TestHookUnreadableConfigCapturesNothing` (`cmd/vp/cmd_binding_round2_test.go`) | A host config that exists but is unreadable makes the hook capture nothing and exit 0: never `ExitSystem`, which blocks the turn, and never the global fallback vault |
+| `TestStaleProjectBindingRefusesWritesOnARunningServer` (`internal/mcp`) | A server started while the binding was valid refuses writes once the move is undone underneath it. The server's root never changed, so only the stale-binding rule can see it, and it must reach the dispatch gate |
+
+### Vault lifecycle and departure tests
+
+The lifecycle commands (`vp vault init`, `vp vault copy`, `vp vault project
+delete`, `vp vault clone --bind`) and departure records, which only
+`vp vault project delete` and the `vp_vault_split` purge write. The
+user guide is [doc/VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md); the decision record
+is [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md). Per-file
+counts drift; derive them with `grep -c '^func Test' <file>`.
+
+**End to end (`internal/integration/lifecycle_e2e_test.go`).** These build the
+real `vp` binary and drive two hosts, each with its own isolated HOME and XDG
+directories, against `file://` bare remotes, to split two projects out of one
+vault into a second vault. Each printed real-run line and Undo line is run
+through `sh -c` exactly as printed, and both vault paths contain a space, so a
+quoting fault fails the test.
+
+| Test | What it proves |
+|------|----------------|
+| `TestIntegrationLifecycleHappyPath` | `init` publishes both remotes, the copy is byte-identical, the second host's pull sweeps its departed embed cache, a raw write into the moved tree refuses, and `clone --bind` makes the second host's write land in the new vault |
+| `TestIntegrationLifecycleCloneBeforePullRefuses` | Cloning before the source delete has been pulled refuses with "pull first" and writes nothing; after the pull the same clone succeeds |
+| `TestIntegrationLifecycleBindRefusesALabelMismatch` | A vault whose remotes match none of the departure record's label is refused |
+| `TestIntegrationLifecycleInitRefusesANonEmptyRemote` | `init` into a non-empty remote refuses and publishes nothing |
+| `TestIntegrationLifecycleUndoThenRedo` | The printed Undo lines, run in order with the second host already bound, revert the move, and the redo completes it |
+| `TestIntegrationLifecycleStrandedWorkSurvives` | A host's unpushed work under a moved project survives the undo and the redo, and that host can then finish the procedure |
+| `TestIntegrationLifecycleRaceBetweenDryRunAndRun` | Another host pushing between the delete's dry run and its real run makes the real run refuse before writing; after a pull the same printed line succeeds (the digest binds the footprint) |
+| `TestIntegrationLifecycleNoNewCheckFinding` | `vp check` reports no new finding in either vault after the move, and the copy does not carry a retired project config into the new vault |
+
+All eight skip under `-short` ("run with make integration") and when `git` is
+missing. As of v8.2.0 no CI job runs them: the `test` job passes `-short`, and
+the e2e jobs' `-run` filters match `^TestIntegrationE2E…` and
+`^TestIntegrationDispatch` only. They run under `make integration` and
+`make test-full`.
+
+**Kill and re-run (`internal/storage/lifecycle_e2e_kill_test.go`).**
+`TestLifecycleMoveKilledTwiceFinishesOnReRun` kills the copy mid-copy and the
+delete after its commit, through the commands' own in-process seams, and proves
+a plain re-run of each finishes the move. `TestLifecycleDeleteKilledBeforeItsCommitFinishesOnReRun`
+kills the delete after it writes its records and before its commit; the re-run
+rolls the records back and deletes afresh. They have no `-short` skip, so the
+CI `test` job runs them.
+
+**Command units.**
+
+- `internal/storage`: `vault_init_test.go`, `lifecycle_copy_test.go`,
+  `lifecycle_delete_test.go`, `lifecycle_git_test.go`,
+  `lifecycle_publish_test.go`, `vault_clone_test.go`,
+  `vault_clone_resume_test.go`.
+- `cmd/vp`: `cmd_vault_init_test.go`, `cmd_vault_copy_test.go`,
+  `cmd_vault_project_delete_test.go`, `cmd_vault_clone_test.go`.
+- `internal/tools`: `vault_copy_test.go` (`vp_vault_copy` plan then apply),
+  `vault_split_departure_test.go` (a successful purge writes one departure
+  record per purged slug; a refused purge writes none).
+
+**Departure records and the departed-write gate.**
+
+- `internal/departure`: `departure_test.go` (record parsing, chains and cycles,
+  validation, an older binary reading a deleted record as departed),
+  `departedpath_pin_test.go`, `residue_test.go`.
+- `internal/departedpath/departedpath_test.go`: the record check fails closed
+  when it cannot inspect, and `RefuseAbs` still judges a path that is lexically
+  outside the named root but resolves inside it (the root named through a
+  symlink).
+- `internal/storage`: `departures_test.go`, `departures_delete_test.go`,
+  `departed_write_test.go`, `departed_funnel_test.go`,
+  `departure_guard_test.go`, `departed_record_test.go`,
+  `departed_residue_test.go`, `embedcache_departed_test.go`.
+- `internal/vaultfs/departed_test.go` (every entry point refuses a departed
+  project, delete stays allowed), `internal/search/departed_test.go`,
+  `internal/project/departed*_test.go`, `internal/check/departed_caches_test.go`.
+- `internal/mcp/departure_gate_test.go` (the dispatch gate refuses a departed
+  project and allows read-only calls) and `internal/tools/departed_seam_*_test.go`,
+  `vault_departed_write_test.go`, `vault_sync_departed_test.go`,
+  `departed_residue_test.go`.
+- `cmd/vp`: `cmd_vault_departed_pull_test.go`, `cmd_vault_departed_write_test.go`,
+  `cmd_archive_departed_test.go`, `cmd_departed_harvest_test.go`.
+- The `departure-record-writer` source-audit rule (see *Source Audit*) pins who
+  may write a departure record.
+
+### Board and epics tests
+
+`vp board`, `vp tasks epics` / `vp tasks --epic`, and the derived task graph
+behind them.
+
+- `internal/taskgraph/graph_test.go`: the graph is derived, never stored.
+  Epics are derived from children; dangling references and cycles (dependency,
+  parent and supersession) are reported and never walked; ordering puts a
+  dependency before its dependent; subtrees are transitive and terminate on a
+  cycle; and the board partition covers every task exactly once, with the
+  bucket and sort rules for the Active, Icebox and History groups.
+- `cmd/vp/cmd_board_test.go`: `vp board` rendering (empty board, mixed epics,
+  the icebox always shown, history most-recent-first, supersession labels,
+  missing dates, stale parents, column widths), `--project`, `--json` round
+  trip and flag validation.
+- `cmd/vp/cmd_tasks_test.go`: `TestRunTasksEpicsText` and
+  `TestRunTasksEpicsTransitiveCounts` (`vp tasks epics`),
+  `TestRunTasksEpicSubtreeReRoots` and `TestRunTasksEpicUnknownAndLeaf`
+  (`vp tasks --epic`), `TestRunTasksReadOpensAnEpic`.
+- `cmd/vp/cmd_migrate_task_board_fields_test.go`: the one-time migration to
+  the board-reporting schema (active `pending` renamed to `planning`,
+  `CreateTime`/`ModTime` backfilled from git history, the per-file
+  `DataFormat` marker stamped).
 
 ### `internal/storage/`, `internal/capture/`, `internal/tools/` — Host-Identity Session IDs
 
@@ -916,7 +1096,7 @@ upload glob changed accordingly, from
 | `DiscoverEstimate` | palace | No | `--estimate` reports token count without making API calls |
 | `DiscoverRejectsRegressions` | palace → storage | No | Proposals causing regressions (negative score) are filtered out |
 
-### `internal/capture/` — Capture Pipeline Tests (coverage 92.5%)
+### `internal/capture/` — Capture Pipeline Tests
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -935,7 +1115,7 @@ upload glob changed accordingly, from
 > `make test` is `-short -race` (the ONNX tests skip) and `make integration` runs
 > without `-race`. Do not combine `-race` with the ONNX tests in this package.
 
-### `internal/search/` — Search Engine Tests (coverage 88.1%)
+### `internal/search/` — Search Engine Tests
 
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
@@ -961,7 +1141,7 @@ upload glob changed accordingly, from
 | `TestSearchCrossProject_BuildFailureNamesTheProject` / `_UnreadableVaultIsAnError` | No | Widening the enumeration kept the error contract: one project that cannot be built fails the whole cross-project search naming it, and an enumeration that could not look is an error, never an empty result |
 | `TestSearchCrossProject_CoversProjectsOnlyProject` | No | Cross-project search enumerates the union of both trees, so a notes-only project (no `palace/` store) is hit — and indexing it creates no `palace/<slug>/`. Reverting `ensureAllIndexes` to a `palace/`-only enumeration turns it red |
 | `TestEmbedCachePut_NeverCreatesAProjectTree` (`cache_test.go`) | No | A `Put` on a slug with no tree lands at `palace/.local/embed-cache/<slug>/<id>.vec` and leaves `palace/<slug>` and `Projects/<slug>` absent. Pointing `path()` back at `LocalDir` turns it red |
-| `TestEmbedCache_LegacyVectorsAreCacheHitsAfterMigration` (`cache_test.go`) | No | Vectors seeded at the legacy path are migrated by the first cache operation and served as hits: `Rebuild` reports `Embedded == 0`, the embedder runs no batch, and the emptied legacy `.local` is healed away |
+| `TestEmbedCache_LegacyVectorsMigrateThenReembedOnce` (`cache_test.go`) | No | Vectors seeded at the legacy path are moved to the new path by the first cache operation, but they carry no embedding-regime fingerprint, so the first `Rebuild` re-embeds them once (`Embedded == 2`, `CacheHits == 0`) and heals away the emptied legacy `.local`. A fresh engine then serves them as hits (`Embedded == 0`, `CacheHits == 2`) |
 | `TestEmbedCachePut_RetriesWhenItsDirectoryVanishes` (`cache_test.go`) | No | Through the `cacheWriteFile` seam, Put's first write finds its directory removed and fails with ENOENT; Put must re-create the directory, write once more, and serve the vector. Removing the retry from Put turns it red |
 | `TestEmbedCache_SweepsOncePerInstance` / `_SweepFailureIsNotFatal` / `_RefusesInvalidSlug` (`cache_test.go`) | No | The sweep Once is per instance (a second op does not re-sweep; a fresh instance does); an unreadable `palace/` fails the sweep without failing the cache; an invalid slug is refused on every operation |
 | `TestEmbedCache_ConcurrentInstancesConverge` (`cache_test.go`) | No | Six `EmbedCache` instances — each its own Once — sweep and `Put` at once under `-race`: every legacy vector ends at the new path with its bytes, every `Put` is readable, and the husks are healed |
@@ -1023,7 +1203,7 @@ tools. (A third, `internal/mdutil` — markdown section editing — backed the s
 surgical resume editors and was **deleted with them**; see *Resume-Editor
 Lost-Update Tests* below.)
 
-### `internal/vaultfs` — Vault File CRUD (coverage 82.0%)
+### `internal/vaultfs` — Vault File CRUD
 
 Read / write / edit / delete / move / exists / sha256 over vault-relative
 paths, plus the path-safety and stamping primitives. Tests cover the happy
@@ -1035,7 +1215,7 @@ enumeration of the cross-package stamp writers.
 `vp_vault_edit`), so its three loud failure modes are load-bearing rather than
 incidental: `old_string` not found, `old_string` ambiguous without
 `replace_all`, and `expected_sha256` mismatch. Each is an assertion that the
-caller's model of the file is wrong — see *Resume CAS Tests*.
+caller's model of the file is wrong — see *Blind-Overwrite CAS Tests*.
 
 #### Export-destination containment (`internal/vaultfs/destination_test.go`, `cmd/vp/export_guard_test.go`)
 
@@ -1077,7 +1257,7 @@ Exit codes are part of the contract: `ExitUser` when the destination resolves
 inside the vault (the operator can retype it), `ExitSystem` when the vault root
 cannot be resolved (a config or runtime fault, with no override).
 
-### `internal/wrapstate` — Wrap-State Collection (coverage 85.2%)
+### `internal/wrapstate` — Wrap-State Collection
 
 The engine behind `vp_collect_wrap_state` / `vp_stamp_iter` /
 `vp_preflight_wrap`. Tests cover iteration parsing
@@ -1252,7 +1432,20 @@ The `mcp-surface-handshake` epic added the `vp check` surface row and the
 `vp check --json` machine-readable report. These are pure-unit tests (no
 ONNX, run in `make test`).
 
-### `internal/check/surface_test.go` — Surface Compatibility Check (combined new-code coverage 87.8%)
+### `internal/surface` — the stamp, format and gate primitives
+
+The leaf package under the check has its own unit tests
+(`find internal/surface -name '*_test.go'`): `version_test.go` (reading and
+writing the `.surface` stamp, monotonic and byte-identical across writers),
+`format_test.go` (the `vault.toml` data-format axis, where absence means format 0), `gate_test.go` (fail-stop
+versus warn-only enforcement and their bypass and quiet switches),
+`guard_test.go` (a test write into a non-temp vault panics),
+`staleself_test.go` (detecting a replaced running binary and the advisory it
+prints), and `stranded_host_test.go` (a host on an older surface gets a message
+naming both versions and a way out, and the remediation prose has one source).
+`export_test.go` holds test-only reset seams and no tests.
+
+### `internal/check/surface_test.go` — Surface Compatibility Check
 
 Covers `CheckSurface(vaultRoot)`: empty vault → `Pass`, empty/unreachable
 path → `Pass`, a stamp at `MCPSurfaceVersion` → `Pass`, and an ahead vault
@@ -1757,7 +1950,7 @@ The `.vp-locks` segment refusal is covered by
 |------|----------------|
 | `TestDeleteDrawerAppendDrawerInterlock` | concurrent `AppendDrawer` and `DeleteDrawer` on one drawers file interlock on the same lock object: the file stays valid JSONL, every appended-and-kept ID survives, every deleted ID is gone (the historical non-interlock bug) |
 | `TestConcurrentInvalidateTriple` | concurrent `InvalidateTriple` RMWs — same-triple invalidations converge deterministically and never corrupt the file; distinct triples each land correctly |
-| `TestConcurrentAppendIteration` | N distinct markers appended concurrently to one iterations file all survive with separators intact |
+| `TestConcurrentAppendIterationOwned` | N iteration numbers minted concurrently on one iterations file through `AppendIterationOwned` (which derives max+1 under the same lock it appends within) come back as exactly {1..N}: distinct and gapless |
 | `TestConcurrentAddEntity` | N distinct entities added concurrently to one JSONL file all survive and the file stays well-formed JSONL |
 
 ### `internal/archive` — Manifest Lock and the Hook Posture Split (`-race`)
@@ -1792,7 +1985,7 @@ wedges the package instead of naming itself.
 |------|----------------|
 | `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
 
-### `internal/atomicfile` — Windows Rename Retry (coverage 86.5%)
+### `internal/atomicfile` — Windows Rename Retry
 
 The `windows-lock` job above flaked on a **rename**, not on the lock: one child
 of sixteen died in `atomicfile.Write`'s `MoveFileEx` with `Access is denied`
@@ -1805,12 +1998,12 @@ a Windows runner.
 | Test | What it proves |
 |------|----------------|
 | `TestRenameWithRetry_RetriesThenSucceeds` | a rename failing twice with a retryable error then succeeding returns nil, and the attempt **count** proves the loop actually re-ran rather than the first call quietly succeeding. |
-| `TestRenameWithRetry_NoRetryOnPermanent` | a non-retryable error returns after exactly **one** attempt, unwrapped, so `errors.Is` still reaches the original — a permanent failure must not be sat on for 785ms. |
+| `TestRenameWithRetry_NoRetryOnNonRetryable` | a non-retryable error returns after exactly **one** attempt, unwrapped, so `errors.Is` still reaches the original — a permanent failure must not be sat on for 785ms. |
 | `TestRenameWithRetry_ExhaustsBound` | an always-failing retryable error gives up after the documented bound and returns the last error wrapped with `%w`. |
 | `TestRenameRetryBound` | pins the bound (7 attempts) **and** that total backoff stays under 1s, so the numbers in the source comment cannot silently drift. |
 | `TestWrite_RetriesTransientRename` / `TestWrite_PropagatesNonRetryableRename` | prove `Write` is actually wired to the retry — both go red if the call reverts to a bare `os.Rename`. |
 | `rename_other_test.go` (`!windows`) | the off-Windows classifier returns false for every error shape, including `syscall.Errno(5)`/`(32)`, so unix never sleeps on a doomed rename. |
-| `rename_windows_test.go` (`windows`) | classifies real `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` (including through the `*os.LinkError` `os.Rename` returns) as retryable and `fs.ErrNotExist` as not. Compiled by `GOOS=windows go vet`; **runs** in the `windows-lock` CI job. |
+| `rename_windows_test.go` (`windows`) | classifies real `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` (including through the `*os.LinkError` `os.Rename` returns) as retryable and `fs.ErrNotExist` as not. As of v8.2.0 no CI job compiles or runs it: `vet` runs on Linux, and `windows-lock` runs only `./internal/vaultlock/...` and one `./internal/integration/` test, not `./internal/atomicfile`. Run it with `GOOS=windows go vet ./internal/atomicfile/` or `go test ./internal/atomicfile/` on Windows. |
 
 **Mutation-proven.** Reverting `Write` to a bare `os.Rename` reds
 `TestWrite_RetriesTransientRename` (`rename attempts = 0, want 3`); making the
@@ -1893,7 +2086,6 @@ these are pure-unit / in-process (no ONNX) and run in `make test`.
 | `TestUpdateResumeStaleShaIsMachineParseableError` (`context_query_tools_test.go`) | a stale write is refused with a **machine-parseable** conflict carrying the current digest, so a caller can rebuild its retry payload without a second read and without scraping the error string |
 | `TestUpdateResumeSchemaRequiresExpectedSha` (`context_query_tools_test.go`) | `expected_sha256` is `required` in the registered tool schema: an **omitted** guard is rejected by schema validation before the handler runs (a `*mcp.ValidationError` naming the property), while a **present-but-empty** guard clears validation — `required` mandates presence, not non-emptiness, which is exactly the assert-absent case and why there is deliberately no `minLength`. This is what makes "no blind path" structural rather than advisory |
 | `TestBootstrapResumeSha256MatchesDisk` (`context_tools_test.go`) | `vp_bootstrap_context`'s `resume_sha256` matches disk, so a session that bootstraps can wrap without a redundant `vp_get_resume` |
-| `TestBootstrapShedResumeSha256IsOfFullBody` (`context_tools_test.go`) | when the ladder sheds the resume to its pinned zone, the digest is still of the **full** body, computed pre-shed — a reduced delivery still yields a guard that will actually match. Migrated from the deleted byte-axis `slim` path: the mechanism went, the invariant did not |
 | `TestBootstrapCarriesNoDocumentBodyAtAnySize` (`context_tools_test.go`) | no document body is on the wire, asserted at both ends of the size range (a one-line resume and a 400-line one) plus a content check a renamed field would fail, with the handle and its digest still present. The size sweep is the point: a single fixture would pass an implementation that inlined small documents and dropped large ones, which is a size rule wearing an index's clothes. Replaces `TestBootstrapResumeIsNeverExcerptedByBytes`, whose subject — the resume arriving whole — Phase 3 removed |
 | `TestHeadOfQueueIsGraphOrderNotListOrder` (`bootstrap_rank_test.go`) | the queue comes from the task GRAPH, not the directory listing. The fixture is built so the two orders DISAGREE — `a-blocked-task` sorts first by filename and must not appear at all, `z-in-progress` sorts last and must lead — because a fixture where they agree passes with the derivation replaced by `vault.ListTasks` |
 | `TestSessionIndexRanksByRelevanceNotRecency` (`bootstrap_rank_test.go`) | the positive control for the ranker. The relevant session is written FIRST, making it the oldest, and must still come back at the top; a ranker that scored nothing and returned the newest rows passes every fixture where relevance and recency agree |
@@ -2084,7 +2276,7 @@ checked call-count assertion, not just an inference from correct output.
 
 | Test | What it proves |
 |------|----------------|
-| `TestSeedBatchesManyDrawerOptionsIntoOneRoom` | A 50-entry batch (30 via `WithDrawers`, 19 via `WithDrawer`, 1 via `WithDrawerOut`) into ONE `(project, wing, room)` group lands correctly AND flushes with exactly **1** `AppendDrawers` call, regardless of how many separate option calls contributed to it. Count — not wall-clock time — is the observable; see doc/TESTING.md:1931's existing rule |
+| `TestSeedBatchesManyDrawerOptionsIntoOneRoom` | A 50-entry batch (30 via `WithDrawers`, 19 via `WithDrawer`, 1 via `WithDrawerOut`) into ONE `(project, wing, room)` group lands correctly AND flushes with exactly **1** `AppendDrawers` call, regardless of how many separate option calls contributed to it. Count — not wall-clock time — is the observable; see the same rule under *Lazy Startup Tests* (`TestIntegration_HandshakeDoesNotConstructEmbedder`) |
 | `TestSeedAppendDrawersCallCountMatchesGroupCount` | Non-vacuity: seeding into **three** distinct `(project, wing, room)` groups in one `New(t, ...)` call drives the count to exactly **3** — one call per group, not one call overall and not one call per option/drawer |
 
 ---
@@ -2596,7 +2788,43 @@ iterations 191–201 was caught by looking at a real artifact, and NOT ONE was c
 a test, a check, or a code review** — and two of them were *mechanically detectable*
 and hid for months anyway.
 
-### The two findings, and why they are the same bug
+### Every rule, and where it is tested
+
+As of v8.2.0 the audit reports 12 kinds of finding. Derive the list with
+`grep -rhoE 'Kind[A-Za-z]* *= *"[a-z-]+"' internal/sourceaudit/*.go`. `Run`
+(`sourceaudit.go`) applies the syntactic rules; `RunModule` (`derived_gate.go`)
+applies the type-checked one. All files are under `internal/sourceaudit/`
+unless a path says otherwise.
+
+| Kind | What it pins | Tests |
+|------|--------------|-------|
+| `write-only-field` | A yaml/json-tagged field on a struct the code constructs that nothing assigns | `sourceaudit_test.go` |
+| `uninvoked` | A non-test function or method that no non-test code calls | `sourceaudit_test.go` |
+| `ungated-vault-writer` | A command registered without `mutates()` whose call graph reaches a stamped vault write. Syntactic, and still runs under `-short` | `ungated_writer_test.go` |
+| `vault-write-outside-funnel` | A vault mutation that bypasses the shared write primitives (`atomicfile.Write`, `vaultfs.Delete`/`Move`), or an `atomicfile.Write` whose `vaultRoot` defeats the surface stamp | `vault_write_funnel_test.go` |
+| `surface-remediation-lost` | A second copy of the surface-mismatch remediation prose, or a consumer of `*surface.IncompatibleError` that never reaches the way out | `surface_remediation_test.go` |
+| `git-exec-unsafe-env` | A `git` subprocess whose environment is not built through `SafeGitEnv` | `git_env_funnel_test.go` |
+| `env-isolation-bypass` | An `internal/integration` test that sets `HOME`, `XDG_CONFIG_HOME` or `CLAUDE_HOME` directly instead of through `testinfra.IsolateEnv` | `env_isolation_test.go` |
+| `planner-write` | A migration planner (a function that derives values a later executor writes) reaching a write call | `planner_no_write_test.go` |
+| `shared-enumeration` | An evidence reporter (the `vp` command a vault-audit dimension publishes for corroboration) reaching the enumerator the dimension itself uses | No planted-bug test; exercised by `TestSourceAuditGate`. The differential it protects is `cmd/vp/cmd_audit_task_files_differential_test.go` |
+| `git-enabled-owner` | `git_enabled` read, or its refusal forged, anywhere other than `storage.RefuseIfGitDisabled` and its allow-listed readers | `git_enabled_owner_test.go` |
+| `departure-record-writer` | Any caller of a privileged departure-record entry point (`vaultfs.WriteDepartureRecord` and its siblings); each allowed caller is a reviewed baseline entry | `departure_record_writer_test.go` |
+| `derived-gate-divergence` | The surface-gate predicate derived from the call graph disagrees with the hand-declared one for a CLI command or MCP tool. Each accepted divergence is a baseline entry whose reason records the ruling | `derived_gate_test.go`, `derived_gate_declared_test.go`, and `TestDerivedGateBaselineIsCurrent` in `sourceaudit_test.go` |
+
+**Where the derived-gate rule runs.** It type-checks the whole module
+(go/packages, SSA and a VTA call graph), so its module-deriving tests call
+`skipUnlessFullSuite` and skip under `-short`. (The fixture tests in
+`derived_gate_declared_test.go` load only a small synthetic module and run
+under `-short` too.) `make test` and the CI `test` job both pass `-short`.
+The rule therefore runs automatically only in the CI `source-audit` job and
+the push-only `ubuntu26-canary` job, both through `make source-audit`
+(`go test -count=1 ./internal/sourceaudit/`, no `-short`, no `-race`). The
+manual `make test-full` and `make cover-full` targets pass no `-short`
+either, so they run it too. If those CI jobs go away, no automated run
+checks the rule. The ruling is recorded on `skipUnlessFullSuite`
+in `derived_gate_test.go` and above `source-audit:` in the `Makefile`.
+
+### The first two findings, and why they are the same bug
 
 | Kind | What it finds | The defect that earned it |
 |------|---------------|---------------------------|
@@ -2659,6 +2887,9 @@ health. *That is the disease, inside the tool built to cure it.*
 | `TestBaselineCanOnlyShrink` | a **fixed** baseline entry fails the build |
 | `TestSourceAuditGate` | the gate itself, over this repo |
 
+This table covers the first two rules. The later rules, except `shared-enumeration`, have their own
+test files with planted-bug and clean-code cases; see *Every rule, and where it is tested* above.
+
 ### 🔴 Interface dispatch: the one exemption, and where the line is drawn
 
 A method reached only through an interface has no direct call site, so it looks
@@ -2687,8 +2918,12 @@ So the exemption keys on **where the dispatcher lives** (`stdlibContracts`):
 
 ### Honest limits
 
-It is **syntactic** (go/ast, stdlib only, no type information), which biases it toward
-**false negatives**. Field names are not unique across structs, so `Foo.Name = x` counts
+The rules `Run` applies are **syntactic** (go/ast, stdlib only, no type information), which
+biases them toward **false negatives**. The derived-gate rule is the exception: it is type-checked
+(`golang.org/x/tools` go/packages, SSA and a VTA call graph), and its known imprecisions (a shared
+generic instantiation and closure attribution, documented in `derived_gate.go`) make it
+**over-derive**, which is why a divergence is a question to rule on, not an automatic finding. The
+rest of this section is about the syntactic rules. Field names are not unique across structs, so `Foo.Name = x` counts
 as an assignment to every `Name` in the repo — which is why it found **4** of
 `SessionMeta`'s 8 dead fields and not 8.
 
@@ -2718,7 +2953,7 @@ central test is a **mutation test**, exactly as in `sourceaudit`.
 | `TestArchiveRoundTrip_FindsKnownDefects` (`archive_test.go`) | hand a vault three KNOWN defects (a stranded manifest, a dangling back-link, a readable-but-empty tree) and assert it finds exactly those — **an auditor that cannot fail issues a clean bill of health it never earned** |
 | `TestArchiveRoundTrip_CleanVaultIsClean` (`archive_test.go`) | a fully-linked vault produces no findings — trustworthy only *because* the mutation test above can fail |
 | `TestRun_FixingTheBugForcesTheBaselineToShrink` (`archive_test.go`) | linking a stranded-but-accepted manifest turns its baseline entry STALE — the ratchet, exercised end to end |
-| `TestRun_LiveVaultCanary` (`archive_test.go`) | the audit runs against the **real vault** in `make test` — the discipline the whole epic rests on |
+| `TestRun_LiveVaultCanary` (`archive_test.go`) | the audit runs against the **real vault** — the discipline the whole epic rests on. It skips unless `VP_LIVE_VAULT` names a vault root, and neither `make test` nor CI sets it |
 | `dimensions_test.go` | `TestEvidence_ReproducesTheGoRule` runs `EvidenceProjectTreeCoherence` and `EvidencePalaceStoreDrawers` under bash on a fixture holding every shape the Go side filters (a `.local`-only husk, an empty subtree, an invalid slug, symlinked project directories, a zero-length `drawers.jsonl`) and requires each to print exactly the dimension's artifacts; the commands use no GNU-only `find` (no `-quit`, no trailing-slash start path) so BSD `find` agrees. project-tree-coherence, KG-portability, resume-discipline, iteration-headings, memory-portability, task-heading-markers, palace-store-drawers each find their planted defect and pass a clean fixture; palace-store-drawers additionally pins that an ABSENT `drawers/` and a PRESENT-BUT-EMPTY one produce **distinguishable details**, that a populated `Projects/<slug>/iterations.md` (a separate ingest corpus) does **not** silence the finding, that an unreadable store lands in `unknowns` rather than passing, and — the mutation test — that emptying a populated drawer set is what produces the finding; `TestPalaceStoreDrawers_PalaceOnlyProjectDetailTellsTheTruth` asserts the detail's WORDS, not just the count, because the gate admits a palace-only project for which the two-tree explanation would be false; `TestPalaceStoreDrawers_IsRegistered` proves `Run`'s hand-edited `dims` literal actually carries it; `TestPalaceStoreDrawers_LocalOnlyDirIsNotAStore` pins the population split — a `.local`-only or empty-subtree `palace/` directory is reported by neither `palace-store-drawers` nor `project-tree-coherence` — and `TestPalaceStoreDrawers_KGOnlyStoreStillReported` pins that a real kg-only store still is, with a detail that names every drawer source as fact and says neither "never drawer-indexed" nor "UNSEARCHABLE" (fixtures seed a real file, since a bare directory is not a store); `task-preamble` pins that a task written by the real `storage.CreateTask` is **not** flagged (the positive control that ties the dimension to a writer's guarantee rather than to taste), that prose above the first H2 **is** flagged exactly once on the vault-relative artifact, that both paths of `PreambleSkippedNoH2` — no unfenced `## ` anywhere, and an unfenced `## ` sitting ABOVE the header block — render **distinguishable details** that are each true of their own file (asserted on the detail TEXT, since the outcome cannot tell them apart), that a `## ` appearing only inside a code fence falls into that degenerate class because fence-awareness comes from the predicate rather than from a local re-implementation, that `tasks/done/` and `tasks/cancelled/` are out of scope because `OverwriteTaskFile` is active-only and a finding there would be unrepairable, that an unreadable tasks dir or task file lands in `unknowns` rather than passing, that the region is disjoint from `task-heading-markers` on a file carrying both defects, and — the mutation test, `TestTaskPreamble_MutationMovingThePreambleDownClearsTheFinding` — that moving the SAME prose down under `## Context` in the SAME file clears the finding, which is what proves the rule tracks the region and not the harness; `TestTaskPreamble_IsRegistered` proves `dims` carries it, and `TestTaskPreambleText_RecoversExactlyWhatTheMigratorWrote` pins the dimension's one inference — that the detail's size and excerpt are read back out of the migrator's own before/after pair rather than from a second local copy of `storage`'s header-block rule |
 | `baseline_test.go` | `(Dimension, Artifact)` identity; an accepted pair is `accepted` not `new`; a **fixed** accepted entry goes **STALE and FAILS** (the may-only-shrink ratchet); `Regenerate` preserves reasons |
 | `staleness_test.go` | the nag is **silent when fresh** and trips on churn/age — a missing anchor must read as *unknown*, never `0` (the 209 `ABSENCE IS NOT A VALUE` bug) |

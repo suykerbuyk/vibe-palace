@@ -75,7 +75,7 @@ as `vp check` — `[pass]`, `[info]`, `[skip]`, `[FAIL]`.
 Fresh install inside a Go project:
 
 ```
-vp init — vibe-palace 0.1.0-dev
+vp init — vibe-palace <version>
 
 [pass] Global config:
        /home/you/.config/vibe-palace/config.toml
@@ -92,7 +92,7 @@ vp init — vibe-palace 0.1.0-dev
        .github/copilot-instructions.md — .github/ not present; create the dir to
          wire
 [pass] Slash-command shims (project):
-       added 22, updated 0 (commands +15 skills +7)
+       added 21, updated 0 (commands +15 skills +6)
 [pass] Hook wiring:
        vp hook installed
 [pass] Project .gitignore:
@@ -113,9 +113,15 @@ vp init — vibe-palace 0.1.0-dev
 Summary: 9 ok, 2 skip. Re-run `vp init` anytime — it is idempotent.
 ```
 
-Every onboarding step gets its own row, including the ones that had none
-before: the vault-side `Project templates` write, the project `.gitignore`,
-and the `commit.msg` git hook. `Project templates` is the only vault-side
+If `vp mcp install --claude-plugin` has already populated Claude's
+user-global command cache, an `[info] Slash-command shims (Claude)` row reports `skipped —
+user-global Claude surface healthy`, and the project `.claude/commands/`
+and `.claude/skills/` shims are not re-emitted (a `(project)` row still
+appears for Grok or Cursor shims).
+
+Every onboarding step gets its own row, including the vault-side
+`Project templates` write, the project `.gitignore`, and the `commit.msg`
+git hook. `Project templates` is the only vault-side
 row: the `Projects/<slug>/{commands,skills}/` scaffold is what marks a
 project as initialised in the vault. (Before v7.2.0 a `Vault project` row
 wrote `Projects/<slug>/config.toml` ahead of it; that per-project vault
@@ -157,7 +163,7 @@ while a step that reconciled a file in place still reports `[pass]` with a
 summary that describes the state it left, not work performed:
 
 ```
-vp init — vibe-palace 0.1.0-dev
+vp init — vibe-palace <version>
 
 [info] Global config:
        /home/you/.config/vibe-palace/config.toml (already exists, skipped)
@@ -200,10 +206,10 @@ Run the built-in diagnostic to verify everything works:
 vp check
 ```
 
-Expected output:
+Expected output (abridged — the real report has many more hygiene rows):
 
 ```
-vp check — vibe-palace installation diagnostic (0.1.0-dev)
+vp check — vibe-palace installation diagnostic (<version>)
 
 [pass] Config:
        /home/you/.config/vibe-palace/config.toml
@@ -220,8 +226,11 @@ vp check — vibe-palace installation diagnostic (0.1.0-dev)
        config is up to date
 [info] Project:
        my-project (from .vibe-palace.toml)
+       … rows elided (vault hygiene, Departed caches, Tracked marker
+         vault_path, MCP host, Stale MCP, Release version, …); this sample
+         is abridged and not in report order …
 [pass] Surface:
-       binary v1 >= vault max
+       binary v8 >= vault max
 
 All checks passed.
 ```
@@ -250,10 +259,11 @@ vp check --check surface --json    # only the Surface check; no model load
 ```
 
 The session restart/wrap flows use this to confirm vault write-compatibility
-without paying for the full 33-row report or the ~90MB model download. An
+without paying for the full report or the ~90MB model download. An
 unknown check name exits non-zero with an `unknown check` diagnostic.
 
-Selectable check names:
+Selectable check names (two examples; `vp check --help` lists every
+selectable name):
 
 | Name | Reports |
 |------|---------|
@@ -262,8 +272,9 @@ Selectable check names:
 
 ### Resume caps
 
-`resume.md` is a gateway, not an archive — every byte is paid for at session
-start by `vp_bootstrap_context`. The wrap flow prunes it to three caps, and
+`resume.md` is a gateway, not an archive — every byte is read at session
+start, when the restart flow fetches it through the `resume_uri` handle that
+`vp_bootstrap_context` returns. The wrap flow prunes it to three caps, and
 `vp check` warns when a project has drifted past them:
 
 - total size over **25 KB**
@@ -301,7 +312,7 @@ Other useful commands:
 
 ```bash
 vp version             # print version, commit, build date; DIRTY if built from uncommitted source
-vp version --surface   # print the binary's MCP tool-surface version (e.g. "surface: 1")
+vp version --surface   # print the binary's MCP tool-surface version (e.g. "surface: 8" as of v8.2.0)
 vp help                # show all commands
 ```
 
@@ -326,8 +337,28 @@ vp init
 
 **Rules:**
 - `name` must be a slug: lowercase letters, numbers, hyphens only (max 64 chars)
-- This is the **only file** vibe-palace adds to your project directory
+- `.vibe-palace.toml` is the only file vibe-palace expects you to commit. The
+  other files `vp init` writes into the project are host-local: `AGENTS.md`
+  (created if missing), `CLAUDE.md` if present, the `.claude/` / `.grok/`
+  shims, and `.vibe-palace/`. Init appends `/CLAUDE.md`, `/AGENTS.md`,
+  `/commit.msg`, `/.claude/`, `/.grok/` and `/.vibe-palace/` to the project
+  `.gitignore`, and installs a git `post-commit` hook (it deletes a consumed
+  `commit.msg`) when the directory is a git repository. Two exceptions are
+  outside that ignore set: Cursor skill rules `.cursor/rules/vps-*.mdc`
+  (written when `.cursor/` exists) are not ignored, and a pre-existing
+  `.cursorrules`, `.rules` or `.github/copilot-instructions.md` gets the
+  managed block in place, so if the repo tracks that file the block shows
+  up in the diff
 - The name is used as a key throughout the vault directory structure
+
+**Which vault does this project use?** Normally the global `vault_path`. A
+host can bind a project that moved to (or was born in) another vault with
+`vp config bind <slug> --vault <path>`. For a moved project it refuses
+unless this host's default vault records the project as moved away (run
+`vp vault pull` first); a project born in the other vault needs `--new`.
+`vp status` prints the resolved
+vault and where it came from. See
+[Multiple vaults and moving projects](#multiple-vaults-and-moving-projects).
 
 ### Understanding the Vault
 
@@ -341,15 +372,16 @@ After the first session capture, your vault will contain:
 │       └── kg/entities.jsonl                           # extracted entities
 └── Projects/
     └── my-project/
-        ├── sessions/2026-04-09-01.md                   # session record
+        ├── sessions/2026-04-09-<hostfp>-01.md          # session record
         └── tasks/                                       # task plans
 ```
 
 **palace/** holds knowledge (content chunks, vectors, KG). This is the
 searchable memory.
 
-**Projects/** holds workflow (sessions, tasks, config). This is the
-collaboration state between you and the AI.
+**Projects/** holds workflow (resume, sessions, tasks, iterations, memory).
+This is the collaboration state between you and the AI. (The tree above is
+abridged.)
 
 > **Executable version.** For a machine-verified walkthrough of the
 > steps in this chapter, run `go test -race -run
@@ -387,9 +419,10 @@ vp mcp install --zed             # Zed editor (context_servers entry)
 vp mcp install --grok --zed      # register with several hosts at once
 ```
 
-Each installer also ensures `AGENTS.md` carries the managed behavioral block
-(the cross-host baseline that teaches `vp_bootstrap_context` and the
-`vpc-*`/`vps-*` triggers). Reverse any of them with
+The `--grok` and `--zed` installers also ensure `AGENTS.md` carries the
+managed behavioral block (the cross-host baseline that teaches
+`vp_bootstrap_context` and the `vpc-*`/`vps-*` triggers); `--claude-plugin`
+does not touch `AGENTS.md` — `vp init` wires it. Reverse any of them with
 `vp mcp uninstall --<host>`. Check what's registered on this machine with
 `vp check` — it prints one `MCP host: <name>` row per detected host.
 
@@ -418,15 +451,17 @@ Verify: start Claude Code and check the MCP server list shows `vibe-palace`
 with its full tool surface available (the authoritative tool list is
 `internal/mcp/tool_surface.golden.json` in the source tree).
 
-**Note:** Vibe-palace replaces CLAUDE.md-based context injection —
-`vp_bootstrap_context` delivers workflow, resume, tasks, and sessions via MCP.
+**Note:** Vibe-palace replaces CLAUDE.md-based context injection.
+`vp_bootstrap_context` returns an index — head of queue, a session index, and
+handles — not document bodies; the agent fetches the resume and workflow with
+`vp_read_resource` via the returned `resume_uri` and `workflow_uri`.
 
 ### Agent-file wiring (CLAUDE.md, AGENTS.md, .cursorrules, .rules, copilot)
 
 When an AI starts a session in a fresh project, it needs one concrete pointer
 to call `vp_bootstrap_context` and to interpret `vpc-<name>` command
 triggers. `vp init` handles this by appending a delimited managed block to
-any agent instruction file you already have. The detected files are:
+every agent instruction file it detects. The detected files are:
 
 | File | Where |
 | --- | --- |
@@ -436,27 +471,45 @@ any agent instruction file you already have. The detected files are:
 | `.rules` | project root (Zed convention) |
 | `.github/copilot-instructions.md` | `.github/` (only if the dir exists) |
 
-`vp init` never creates these files and never creates `.github/`. If none of
-them exist, init reports `[skip] Agent wiring — no agent file found` and
-tells you to create one (even an empty `CLAUDE.md` works) and re-run.
+`vp init` creates an empty `AGENTS.md` when it is missing, so there is always
+at least one file to wire. It never creates `CLAUDE.md`, `.cursorrules`,
+`.rules` or `.github/`.
 
-The block looks like this:
+The block looks like this (as of v8.2.0; run `vp init` and open `AGENTS.md`
+to see the block your binary writes):
 
 ```markdown
-<!-- vibe-palace:begin v=1 sha=abc1234 -->
+<!-- vibe-palace:begin v=2 sha=<hash> -->
 ## Vibe-Palace Integration
 
 BEFORE responding to the user's first message in a new session, call
-`vp_bootstrap_context` to load project context, resume, active tasks,
-recent sessions, and the command and skill manifests. Do this even if
-the first message seems trivial — the returned payload shapes every
-subsequent response.
+`vp_bootstrap_context` with the project slug to load project context,
+resume, active tasks, recent sessions, and the command and skill
+manifests — for example `{"project":"<slug>"}`. Prefer always naming
+`project`; on stdio MCP the server may derive it from a high-confidence
+cwd marker when omitted. Do this even if the first message seems trivial
+— the returned payload shapes every subsequent response.
 
 When the user types `vpc-<name>` (for example `vpc-wrap`, `vpc-restart`),
-call `vp_cmd` with `name=<name>` and follow the returned
-instructions. `vps-<name>` works the same way via `vp_skill`.
+call `vp_cmd` with `name=<name>`, follow the returned
+instructions, and return to your normal posture when done. Commands are
+one-shot.
+
+When the user types `vps-<name>` (for example `vps-startup-analyst`), call
+`vp_skill` with `name=<name>` and adopt the returned persona and
+objectives as STANDING instruction for the rest of this session. Stay in
+that posture until the user types `vps-clear`, or types
+`vps-replace:<other>` (a model-parsed prefix parsed by you locally — strip
+`replace:` and call `vp_skill` with `name=<other>` after dropping all
+prior personas), or a new session starts. Multiple `vps-*` invocations
+stack additively unless replaced. `vps-clear` drops all active personas.
+`vps-replace:` is a model-parsed prefix, not a tool parameter — you strip
+the prefix yourself before calling `vp_skill`.
 <!-- vibe-palace:end -->
 ```
+
+The block's wording predates the index payload: bootstrap returns an index
+of handles, not the resume or task bodies (see the note above).
 
 The wording is a binding imperative on purpose. An earlier bulleted form
 was treated as passive reference material and the bootstrap call was
@@ -475,9 +528,10 @@ The status row shows both names: `CLAUDE.md (→ AGENTS.md)`.
 
 **Removing the block.** Delete the lines between (and including) the
 `<!-- vibe-palace:begin ... -->` and `<!-- vibe-palace:end -->` markers.
-`vp init` will re-add the block on next run; to prevent that, delete the
-agent file entirely (or add a `.vibe-palace.toml` key in a future release
-once opt-out is wired up).
+`vp init` will re-add the block on next run. Deleting `CLAUDE.md`,
+`.cursorrules`, `.rules` or `.github/copilot-instructions.md` stops it
+being wired; `AGENTS.md` is recreated
+and re-wired on every run. There is no opt-out key yet.
 
 ### Zed
 
@@ -571,8 +625,7 @@ transcript archives, and memory commits normally go through MCP tools — typica
 `/vpc-wrap` → `vp_capture_session` (+ `vp_vault_sync`) — so treat MCP capture as the
 mechanism you rely on: if the agent skips wrap, nothing else is guaranteed to run.
 
-**Corrected 2026-08-27 — Grok is not structurally hook-less.** This paragraph used to
-say Grok has no Claude-style SessionEnd `vp hook`. `vp hook` accepts Grok's own wire
+**Grok is not structurally hook-less.** (Corrected 2026-08-27.) `vp hook` accepts Grok's own wire
 dialect (`internal/hook`: Grok sends `sessionId`, Claude Code sends `session_id`, and the
 spelling is what names the host), and Grok's hook wiring lives in
 `~/.claude/settings.json`. So a Grok session **can** reach the hook path when that wiring
@@ -606,8 +659,9 @@ VP_MCP_BEARER_TOKEN=$(openssl rand -hex 32) vp mcp serve
 
 - Binds `127.0.0.1:7423` by default (override with `--addr` / `--port`; the port
   falls back to `http_port` in config).
-- **Read-only by default** — the 20 vault-mutating tools are stripped from the
-  surface, so a remote client can read and search but cannot write the vault.
+- **Read-only by default** — every tool not on the read-only allow-list
+  (`internal/tools/readonly_serve.go`) is stripped from the surface, so a
+  remote client can read and search but cannot write the vault.
   Pass `--allow-writes` to expose them too (see the security note below).
 - The bearer token is read from the environment variable named by
   `--bearer-token-env` (default `VP_MCP_BEARER_TOKEN`). With it set, every request
@@ -715,13 +769,15 @@ Run `vp help` for the full list, or `vp <command> --help` for details.
 ### Project Status
 
 ```bash
-vp status                   # palace overview: sessions, tasks, recent activity
+vp status                   # resolved vault + its source, sessions, tasks, recent activity
 vp sessions                 # list recent sessions with dates and tags
 vp tasks                    # list active tasks, grouped by epic, with priority and status
 vp tasks --done             # include completed and cancelled tasks
 vp tasks --epic <slug>      # just the subtree under an epic (or story), re-rooted
 vp tasks --standalone       # only the tasks that belong to no epic
-vp tasks epics              # roll-up of every epic: open/total, priority, status
+vp tasks epics              # roll-up of every root epic: open/total descendants
+vp board                    # chronological Active / Icebox / History report (a history
+                            #   view, not a work queue: nothing filtered by default)
 vp tasks edit <slug>        # open an ACTIVE task file in $EDITOR and save it back
                             #   (needs a terminal: piped or scripted, it refuses)
 vp tasks read <slug>        # open ANY task file in $EDITOR to READ; edits are discarded
@@ -904,7 +960,9 @@ the vault, so two machines sharing one vault can differ. One refusal inside
 
 - **Explicit git operations refuse, dry runs included:** `vp vault
   pull/push/sync/commit/tidy/status` and the MCP tools `vp_vault_sync`,
-  `vp_vault_tidy` and `vp_vault_status`. The refusal reads `git is disabled
+  `vp_vault_tidy` and `vp_vault_status`, and the vault lifecycle commands
+  `vp vault init/clone/copy/project delete` (see
+  [VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md)). The refusal reads `git is disabled
   (git_enabled = false in config)` and names the config file.
 - **Commits after a write are skipped, not refused:** `vp_manage_task` still
   writes the task and reports its commit as `skipped`, and the memory
@@ -1033,9 +1091,10 @@ vp check                    # verify installation, config, vault, embedder
 
 ### Managing Commands
 
-Vibe-palace ships a small catalog of built-in commands (`restart`, `wrap`,
-`review-plan`, `cancel-plan`, `capture`, `execute-plan`, `license`,
-`makefile`) embedded in the `vp` binary. Users
+Vibe-palace ships a catalog of built-in commands (`restart`, `wrap`,
+`capture`, `review-plan`, `execute-plan`, `cancel-plan`, the `tasks-*`
+views and more — `vp commands list` prints the full set; built-in skills
+are listed by `vp skills list`) embedded in the `vp` binary. Users
 and projects can override or extend the catalog via the 5-tier resolver
 (see `doc/COMMANDS-AND-SKILLS.md`).
 
@@ -1099,8 +1158,8 @@ with `Re-run with --overwrite to accept every shim and agent-file change
 exits 1; otherwise it prints `Nothing to do` and exits 0. In a
 `--dry-run`, an override's row reads `override  wrap  (vault 6b8e659,
 embedded 4c91c8b; kept — vp commands reset wrap removes it)` and the
-summary starts `N override(s) kept, N stale cop(y/ies) pending a prune
-by vp config sync`. A stale copy is never counted as kept.
+summary starts `Summary (dry run): N override(s) kept, N stale
+cop(y/ies) pending a prune by vp config sync`. A stale copy is never counted as kept.
 
 The upgrade commands commit nothing: they write no vault file. The
 reset verbs are the ones that commit, locally, on a vault that is its
@@ -1183,10 +1242,11 @@ drift pending a prune — an `[info]`, not an error — until you run
 `vp config sync`. It reports every override of a built-in as `[info]`
 too, so an override that shadows the binary's copy stays visible.
 
-Man pages are available for all commands: `man vp`, `man vp-search`,
+Man pages cover a subset of commands: `man vp-search`,
 `man vp-commands`, `man vp-commands-upgrade`, `man vp-commands-reset`,
 `man vp-skills`, `man vp-skills-upgrade`, `man vp-skills-reset`, etc.
-Install with `make man`.
+`make man` generates them into `doc/man/man1/` and `make install` installs
+them. `vp <command> --help` is authoritative, and covers every command.
 
 ### Resetting an override
 
@@ -1295,8 +1355,8 @@ shape:
 - **A vault nested in another repository** (a project or dotfiles
   repo). vp never commits it. The file is removed and backed up, and the
   output says the deletion is left in that repository's working tree for
-  its owner to commit. Do not run `vp vault sync` there until
-  `vault-sync-pushes-the-enclosing-repo-of-a-nested-vault` lands.
+  its owner to commit. `vp vault sync` (and pull, push and commit)
+  refuse a vault nested in another repository.
 - **Git not on PATH**, though the vault has a `.git`. The reset happens
   and warns `not committed`; exit 0.
 - **An unreadable repository.** The reset is refused before any write;
@@ -1451,8 +1511,14 @@ or the file — is never followed or pruned; its row says it is kept.
 There is no overwrite answer and no prompt. Until 2026-09-10 an `o`
 answer (and `--yes`) replaced your file with the embedded copy, the next
 sync pruned the result, and the prune's commit pushed the deletion to
-every host. Until this release a host whose `.vibe-palace/templates.lock`
+every host. Until v5.0.0 a host whose `.vibe-palace/templates.lock`
 did not record an override prompted on it at every interactive sync.
+
+> **Historical note (v5.0.0, 2026-09-12).** The rollout paragraphs below
+> describe the surface v4 and v5 bumps. The surface is 8 as of v8.2.0
+> (`vp version --surface` prints the current value). The procedure still
+> applies to every surface bump: `make install` on every host, then restart
+> every AI harness on it.
 
 **Rollout of the fix (surface v4).** The binary that stops this loss
 raises `MCPSurfaceVersion` to 4, so an older binary on another host is
@@ -1506,8 +1572,8 @@ the reset verbs, or — on a v4 host — the upgrade commands.
    an older binary, `<path>.bak` holds your override — rename it back.
    After two, the `.bak` holds embedded bytes and the override cannot be
    recovered from vp's side.
-5. Leftovers older binaries wrote stay until you remove them — this
-   release never touches them, except as noted:
+5. Leftovers older binaries wrote stay until you remove them — v5.0.0
+   and later never touch them, except as noted:
    - `*.new` and `*.new.bak` beside a template (an old `n` answer's
      review copy). Diff it against your file if you like, then delete
      it: `find <vault>/Templates \( -name '*.new' -o -name '*.new.bak' \) -print`,
@@ -1516,15 +1582,15 @@ the reset verbs, or — on a v4 host — the upgrade commands.
      bytes, an old overwrite's copy of your override, a reset's
      content-named backup). `vp config sync` never touches a `*.bak`;
      read one before you delete it.
-   - `.vibe-palace/templates.lock`. No vp from this release reads it.
+   - `.vibe-palace/templates.lock`. No vp since v5.0.0 reads it.
      On a vault that is its own git repository, `vp config sync` removes
      it when it is untracked and not ignored (the `--dry-run` row reads
      `remove the retired .vibe-palace/templates.lock (untracked and not
      ignored; …)`), because it makes `vp vault sync` refuse. A tracked
      or ignored lock, and any lock on a non-git or nested vault, is left
      — a host still running an older binary may share it — and
-     `template-drift` reports it; delete it once every host runs this
-     release.
+     `template-drift` reports it; delete it once every host runs v5.0.0
+     or later.
 
 **Recovering a copy the prune removed.** `vp config sync` removes, with
 no backup, only bytes vibe-palace itself shipped: the current built-in
@@ -1548,6 +1614,12 @@ next sync prunes them again. To keep an old version deliberately, edit
 it, or put it at the project tier (`Projects/<slug>/commands/`); a
 vault-tier pin of an unedited shipped version is impossible by design.
 
+
+> **Historical note (v5.0.0, 2026-09-12).** The two "Changed in this
+> release" blocks below are the v5.0.0 release notes, kept for reference.
+> "This release" means v5.0.0; the surface numbers in them (4, 5) are
+> superseded — it is 8 as of v8.2.0 (`vp version --surface`). The current
+> behaviour is described earlier in this part.
 
 **Changed in this release: vault `Templates/` overrides and the upgrade
 commands.** Requires `make install` on every host (MCP surface v5).
@@ -1663,17 +1735,21 @@ vp migrate vibevault
 vp migrate mempalace --export-path ~/mempalace-export.json
 ```
 
-`--vault-path` names the **source** vault to read sessions from; the
-**destination** for all writes is always your configured `vault_path`. To
-import from a different vault than you write to, point `--vault-path` at the
-source and confirm with `--yes`:
+For `vp migrate vibevault`, `--vault-path` names the **source** vault to
+read sessions from; the **destination** is the vault the current
+directory resolves to (normally the global `vault_path`; see
+[Multiple vaults and moving projects](#multiple-vaults-and-moving-projects)).
+To import from a different vault than you write
+to, point `--vault-path` at the source and confirm with `--yes` (which also
+accepts the default slug-rename suggestions). `vp migrate mempalace` takes
+only `--export-path` and `--dry-run`.
 
 ```bash
 vp migrate vibevault --vault-path ~/obsidian/VibeVault --yes
 ```
 
-Each run prints a `Source` / `Destination` / `Same vault` banner before
-scanning; a real cross-vault import needs `--yes` (or an interactive `[y/N]`
+Each `vp migrate vibevault` run prints a `Source` / `Destination` /
+`Same vault` banner before scanning; a real cross-vault import needs `--yes` (or an interactive `[y/N]`
 confirmation). After import, restart the MCP server to rebuild search indexes.
 
 ---
@@ -1684,9 +1760,11 @@ confirmation). After import, restart the MCP server to rebuild search indexes.
 
 1. Open your editor in a project that has `.vibe-palace.toml`
 2. The AI calls `vp_bootstrap_context` (or you prompt it to)
-3. It returns: workflow rules, project resume, active tasks, recent sessions,
-   KG snapshot, and available commands
-4. The AI has full project context — start working
+3. It returns an index, not documents: head of queue, a session index,
+   memory and KG snapshots, available commands and skills, and the
+   `resume_uri` / `workflow_uri` handles
+4. The AI fetches the resume and workflow with `vp_read_resource` via those
+   handles (`vpc-restart` does this on every restart) — start working
 
 ### During Work
 
@@ -1696,6 +1774,8 @@ The AI transparently calls tools as needed:
 - `vp_cmd` / `vp_skill` — execute commands, activate skills
 - `vp_palace_status` — browse knowledge structure
 - `vp_traverse` — walk the knowledge graph
+- `vp_get_doctrine` — the generic operating manual, served from the binary
+  (deliberately not part of the bootstrap payload)
 
 You don't need to invoke these manually.
 
@@ -1716,10 +1796,11 @@ AI: (calls vp_cmd name=restart, follows the restart workflow)
 
 The canonical lookup key is still the bare command name — `vpc-`/`vps-`
 are purely *display and recognition* conveniences so humans and AIs
-have a single unambiguous trigger. The bootstrap response includes
-`command_invocation` and `post_bootstrap_instructions` strings that
-restate this rule and tell the model to announce available commands
-and skills to the user; new models see both on every session start.
+have a single unambiguous trigger. The MCP server states this rule in
+its instructions at initialize, before any tool call, and the managed
+block in `AGENTS.md` restates it. The bootstrap response's
+`post_bootstrap_instructions` string tells the model to announce the
+available commands and skills to the user.
 
 To discover what is available in the current project, call `vp_cmd`
 (or `vp_skill`) with no arguments, or look at the `available_commands`
@@ -1856,8 +1937,8 @@ In addition to the free-form `vpc-<name>` trigger, `vp init` writes one
 tiny shim per command into `.claude/commands/vpc-<name>.md`. Claude Code
 surfaces these in its slash menu, so typing `/vpc-` in the REPL fuzzy-
 filters the full vibe-palace command set without needing to remember
-names. Each shim is a three-line delegation to `vp_cmd` — the command
-body itself still lives in the vault, so precedence
+names. Each shim is a short delegation to `vp_cmd` — the command
+body itself is resolved by `vp_cmd` (from the binary or an override), so precedence
 (embedded → vault → project/wing/room) stays authoritative.
 
 **Recommended: start every Claude Code session with `/vpc-restart`.**
@@ -1869,7 +1950,8 @@ shim, by contrast, is resolved before turn 1 completes — so typing
 bootstrap context on session start. In Cursor, Zed, and Copilot the
 rules file *is* loaded early, so the managed-block directive does the
 job there; `/vpc-restart` is specifically the Claude Code primitive.
-See `knowledge.md` for full rationale.
+The MCP server's own instructions, returned at initialize, also tell
+the model to call `vp_bootstrap_context` at session start.
 
 The shim set is regenerated idempotently on each `vp init` and can be
 re-synced on demand with:
@@ -1883,10 +1965,9 @@ vp commands upgrade --only restart  # narrow to a single shim
 `vp commands upgrade` refreshes three things in one pass: the command
 shims (`.claude/commands/vpc-*.md`), the agent-file managed blocks, and
 the per-project **skill** shims (`.claude/skills/vps-*/SKILL.md` and,
-when a `.cursor/` layout is present, `.cursor/rules/vps-*.mdc`). Skill
-shims previously refreshed only at `vp init`; now bumping a skill's
-version, adding a new `vps-*` skill, or removing one propagates on
-upgrade too — stale skill shims are offered for removal with the same
+when a `.cursor/` layout is present, `.cursor/rules/vps-*.mdc`). Bumping
+a skill's version, adding a new `vps-*` skill, or removing one propagates
+on upgrade — stale skill shims are offered for removal with the same
 accept/skip/accept-all prompts, and `--dry-run` previews skill-shim
 drift alongside command drift.
 
@@ -1915,8 +1996,8 @@ marker are reported as `custom` and left strictly alone.
 The shims are regeneratable on any fresh clone, so they are treated as
 host-local by default: `vp init` (and `vp commands upgrade`) reconcile
 the project repo-root `.gitignore` to ignore `/.claude/` along with the
-other vp-written artifacts (`/CLAUDE.md`, `/commit.msg`, `/.grok/`,
-`/.vibe-palace/`). The reconcile is append-only and idempotent — it
+other vp-written artifacts (`/CLAUDE.md`, `/AGENTS.md`, `/commit.msg`,
+`/.grok/`, `/.vibe-palace/`). The reconcile is append-only and idempotent — it
 never rewrites or reorders your existing `.gitignore` lines — and
 `vp check` flags an advisory when a canonical entry is missing.
 
@@ -1931,7 +2012,8 @@ want tracked) and keep the shim files force-added.
 Say "capture session" or "wrap up" (or type `vpc-wrap`). The AI follows the
 wrap/capture command and calls `vp_capture_session` with:
 
-- **summary** — what was accomplished
+- **project** — the project slug (required)
+- **summary** — what was accomplished (required)
 - **tag** — implementation, debugging, refactor, exploration, etc.
 - **decisions** — key technical decisions made
 - **files_changed** — files created or modified
@@ -1944,6 +2026,9 @@ wrap/capture command and calls `vp_capture_session` with:
   on handshake-derived grok/xai/zed the server **auto-archives** a non-empty
   transcript even if this flag is omitted; on Claude Code the flag is a
   **no-op** (SessionEnd owns the authoritative archive)
+- **session_key** — idempotency key. Omit it for new work (the server mints
+  one); to retry after a `capture incomplete` failure, pass back the key
+  from the error so the existing note is updated instead of duplicated
 
 If a transcript is provided, the capture pipeline:
 1. Detects format (plain text, markdown, JSON-RPC chat)
@@ -2050,8 +2135,9 @@ overlap = 100      # overlap between consecutive chunks
 
 ### Custom Room Keywords
 
-Define project-specific rooms with custom keywords. Project-level rooms
-fully replace vault-level rooms:
+Define custom rooms with keywords in the host config. There is no
+per-project rooms tier (the per-project file carries `palace.scoring`
+only):
 
 ```toml
 [palace.rooms.audio]
@@ -2089,6 +2175,39 @@ model = "grok-3-mini"
 api_key_env = "XAI_API_KEY"
 max_tokens = 4096
 ```
+
+### Multiple vaults and moving projects
+
+One host can use several vaults. For each project the vault is resolved in
+three tiers, first match wins: a `vault_path` in the nearest
+`.vibe-palace.toml` (meant for untracked trees; `vp check` flags a
+committed marker that sets one), then the global config's `[project_vaults]` entry for that
+marker's project name, then the global `vault_path`. Resolution fails
+closed: a bad marker or conflicting tiers refuse rather than fall through.
+
+```toml
+# ~/.config/vibe-palace/config.toml
+vault_path = "~/vibe-palace-vault"
+
+[project_vaults]
+my-project = "~/other-vault"
+```
+
+`vp config bind <slug>... --vault <path>` writes those entries (reload the
+AI host afterwards). For a moved project it refuses unless this host's
+default vault records the project as moved away (run `vp vault pull`
+first); a project born in the target vault needs `--new`. `--dry-run`
+checks everything and writes nothing. `vp status` prints the resolved vault and its
+source. Creating a vault (`vp vault init`), joining one on another host
+(`vp vault pull` first, then `vp vault clone --bind`), moving projects (`vp vault copy`, then
+`vp vault project delete --moved-to`) and departure records are covered in
+[VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md); the design is recorded in
+[ADR-012](adr/012-vault-resolution-precedence-and-host-project-bindings.md)
+and [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md).
+
+The host config accepts further tables (`[enrichment]`, `[summarization]`,
+`[archive]`); `internal/storage/config/defaults.toml` in the source tree
+documents the first two, and `[project_vaults]`, in comments.
 
 ---
 
@@ -2135,6 +2254,10 @@ Run `vp check` from a terminal — it verifies all prerequisites in order:
 2. Vault directory exists
 3. Settings load successfully
 4. Embedding model loads
+5. Project detected
+
+Further rows (vault hygiene, surface, MCP hosts, …) are interleaved with
+these; `vp check --help` lists the selectable ones.
 
 If all checks pass, verify your editor's MCP config points to `"vp"` (not a
 full path) and that `which vp` shows the binary in PATH.
@@ -2150,14 +2273,20 @@ vp init --name myapp
 
 The `name` field must be a slug (lowercase, hyphens, max 64 chars).
 
+If the project is detected but its data is missing, check which vault it
+resolved to: `vp status` prints the vault and its source. If the project
+moved to another vault, run `vp vault pull` (so the default vault holds
+its departure record), then bind it on this host with
+`vp config bind <slug> --vault <path>` (see
+[Multiple vaults and moving projects](#multiple-vaults-and-moving-projects)).
+
 ### vp hangs on startup
 
-First run downloads the ONNX model (~90MB). Wait up to 2 minutes. If it
-persists, check stderr for download errors:
-
-```bash
-echo '{}' | vp 2>/tmp/vp-errors.log; cat /tmp/vp-errors.log
-```
+Startup does not download anything: the embedder loads lazily. On a cold
+model cache the *first search* downloads the ONNX model (~90MB), which can
+take a couple of minutes. To see a download error, run `vp check` from a
+terminal; the `Embedder` row reports it (see
+[Model download fails](#model-download-fails)).
 
 ### Search returns no results
 

@@ -1,6 +1,9 @@
 # ADR 001: Transcript Archive Format
 
-**Status:** Accepted (2026-04-15)
+**Status:** Accepted (2026-04-15); the bidirectional note↔manifest link is
+extended by ADR-007 (2026-07-17) — see the note under "Field notes"; amended
+2026-09-28 (the `inline` adapter, signing shipped, git-notes and prune not
+implemented — see the dated notes in place)
 **Deciders:** Project owner
 **Context:** Vibe-palace Plan 4 — Transcript Archive / Copyright Provenance Ledger
 
@@ -27,6 +30,16 @@ MCP servers observe tool calls, not user/assistant turns. The archive
 cannot be produced by the vibe-palace MCP server itself. It must be
 produced by **per-IDE adapters** invoked from host-level hooks
 (SessionEnd in Claude Code, equivalent in Zed, etc.).
+
+> **Amended 2026-09-28.** The MCP server does produce one kind of archive:
+> for hosts with no transcript hook (or when the caller forces it with
+> `archive_transcript`), `vp_capture_session` archives a
+> caller-supplied `transcript` through the `inline` adapter
+> (`internal/archive/inline_adapter.go`, called from
+> `internal/tools/session_tools.go`; shipped 2026-07-23). The adapter is named
+> for the mechanism, not a host: an inline transcript is the agent's own
+> rendition of the session, not host ground truth. Hook-driven adapters remain
+> the source of record where a host provides a transcript on disk.
 
 ## Decision
 
@@ -95,8 +108,9 @@ Field notes:
 ### Idempotency
 
 The tuple `(session_id, adapter)` is the identity key. Calling
-`vp archive --adapter=X --session-id=Y` twice produces the same two
-files; the second call is a no-op if the manifest already exists and
+`vp archive create --adapter=X --session-id=Y` twice produces the same two
+files (amended 2026-09-28: subcommand name — originally written as
+`vp archive --adapter=X`); the second call is a no-op if the manifest already exists and
 its `source_sha256` matches the current source.
 
 If the source has changed (e.g., Claude Code appended turns to an
@@ -120,11 +134,23 @@ as `<...>.manifest.json.sig`. Supports gpg and ssh-sig. Without this,
 manifest tampering is undetectable; with it, the ledger becomes
 attributable rather than merely timestamped.
 
+> **Amended 2026-09-28: implemented.** Signing shipped with the first archive
+> implementation (`internal/archive/sign.go`, modes `ssh` and `gpg`). It is
+> configured by the `[archive]` keys `sign_mode`, `sign_key`, `sign_namespace`,
+> `allowed_signers` and `signer_identity` (`internal/storage/config.go`), and
+> `vp archive verify` checks the signature when one is present and
+> `allowed_signers` / `signer_identity` are both configured; otherwise it
+> reports the signature as unchecked, not failed (`internal/archive/verify.go`).
+
 ### Git-notes anchoring (Phase 7, forward reference)
 
 On each archive, `git notes add -m "archive: <manifest-sha256>"` on
 the current HEAD. Binds the ledger to the commit graph — forging
 provenance requires rewriting history, which is detectable.
+
+> **Amended 2026-09-28: not implemented (as of v8.2.0).** No code writes git
+> notes; the manifest's `git_head` field is the only binding to the commit
+> graph.
 
 ## Consequences
 
@@ -133,7 +159,9 @@ provenance requires rewriting history, which is detectable.
 - Evidentiary record of human↔AI turns, hashed pre-compression for
   durability.
 - IDE-agnostic format; Claude Code and Zed adapters (and future ones)
-  produce identical manifest shapes.
+  produce identical manifest shapes. (Amended 2026-09-28: a third adapter,
+  `inline`, archives caller-supplied content — see the note under Context;
+  `vp archive create --help` lists the adapters.)
 - Bidirectional links between session markdown and archives make
   human auditing straightforward.
 - Schema-versioned for forward compatibility.
@@ -141,7 +169,8 @@ provenance requires rewriting history, which is detectable.
 **Negative / trade-offs:**
 
 - Storage: full raw transcripts are large. Mitigated by zstd (~10:1)
-  and a future `vp archive prune` subcommand. For the copyright use
+  and a future `vp archive prune` subcommand (not implemented as of v8.2.0;
+  `vp archive --help` lists the subcommands). For the copyright use
   case, retention is the point — pruning is user-initiated.
 - The archive is only as trustworthy as the hook chain. A hostile
   local environment could suppress SessionEnd. Out of scope for this

@@ -1,5 +1,7 @@
 # PRD: Vibe-Palace Zed Assistant (Option 3 — Native Panel + Command Palette)
 
+> **Historical record (design dated 2026-07-12).**
+>
 > **⛔ NOT SHIPPED, NOT STARTED, AND CONTINGENT ON A CAPABILITY THAT RESOLVED NEGATIVE.**
 > Banner added 2026-08-27. Everything below it is a 2026-07-12 design document, and nothing
 > in it describes software that exists: no Rust extension was written, and `make build`
@@ -19,6 +21,12 @@
 > **The supported Zed path today is a Claude-shaped ACP agent in the Zed agent panel** —
 > not this extension, and not the native pane. See [TUTORIAL § Zed](TUTORIAL.md#zed) and
 > [COMMANDS-AND-SKILLS § Durability by host](COMMANDS-AND-SKILLS.md#durability-by-host-claude-vs-hook-less).
+>
+> **Zed support that does exist in code** is a different mechanism from this design:
+> `vp mcp install --zed` / `vp mcp uninstall --zed` register vibe-palace in Zed's
+> `settings.json` (`internal/mcphost/zed.go`), and a Zed transcript-archive adapter reads
+> Zed's thread store (`internal/archive/zed_adapter.go`). The `vpc-status` command named
+> below never existed.
 >
 > **Zed is not a first-class host.** The native pane is still Zed's default and is still
 > lossy. Do not cite §1 below as evidence that it is not.

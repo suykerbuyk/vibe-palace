@@ -2,8 +2,14 @@
 
 **Status:** Accepted (2026-08-20). Supersedes the placement thesis of the task
 `move-the-surface-gate-to-the-write-chokepoint`, which proposed the opposite and
-is amended to match. The derivation itself is not yet implemented — this ADR
-records the decision and its reasoning, not a landed mechanism.
+is amended to match. **Implemented:** predicate split `8a45673` (2026-08-20),
+param-aware gate `6254549` (2026-08-21), derived-gate pin `7a2d836` (2026-08-22).
+Amended 2026-08-20, 2026-08-22 and 2026-09-28; the 2026-08-22 amendment corrects
+two statements on this page, which are marked in place.
+
+*Original status wording, preserved (historical — superseded by the lines above):*
+"The derivation itself is not yet implemented — this ADR records the decision and
+its reasoning, not a landed mechanism."
 
 **Amended 2026-08-20** — see *Amendment: what planning the derivation found*. The
 ruling is unchanged; the amendment records a better mechanism than this page
@@ -14,14 +20,18 @@ naive reading of the Decision.
 Two statements on this page turned out to be wrong once the derivation was
 built. The Decision still stands.
 
+**Amended 2026-09-28** — see *Amendment (2026-09-28): the gate now also refuses
+stale bindings and departed projects*. Line references on this page were replaced
+by symbol names where they had rotted.
+
 ## Context
 
 The MCP surface gate refuses a vault write when the vault's recorded surface
 version exceeds this binary's. On the CLI side it fires from `preRun`
-(`cmd/vp/main.go:71`, `surfaceGate`) and selects between `EnforceFailStop` and
+(`surfaceGate` in `cmd/vp/main.go`) and selects between `EnforceFailStop` and
 `EnforceWarnOnly` on `cmd.MutatesVault` — a boolean set by wrapping a command
 constructor in `mutates()` at registration (`cmd/vp/commands.go`). On the MCP
-side it fires from `Registry.gateIfMutating` (`internal/mcp/tools.go:309`),
+side it fires from `Registry.gateIfMutating` (`internal/mcp/tools.go`),
 which keys off the `Mutating` flag on the registered tool.
 
 Both predicates are **hand-typed**. `vp commands upgrade` and `vp skills
@@ -73,6 +83,8 @@ value under this decision for reasons given below.
 
 **The surface gate stays at the dispatch seam. The `MutatesVault` / `Mutating`
 predicate becomes derived from funnel reachability rather than hand-typed.**
+*(Corrected 2026-08-22 — see Amendment (2026-08-22) §1: "derived" means PINNED
+against a derivation that fails the build on divergence, not GENERATED.)*
 
 Concretely: `surfaceGate` in `cmd/vp/main.go` and `Registry.gateIfMutating` in
 `internal/mcp/tools.go` remain the two enforcement points. What changes is that
@@ -164,6 +176,10 @@ exclude it explicitly.
 - **`ungated-vault-writer` is superseded rather than deleted.** Its job — find
   commands that write without being gated — becomes the derivation itself. It
   should not be left green and pointless beside its replacement.
+  **(Corrected 2026-08-22: KEPT, not superseded — see Amendment (2026-08-22) §2.
+  The rule still exists as `KindUngatedVaultWriter` in
+  `internal/sourceaudit/sourceaudit.go`, narrowed to what the derivation cannot
+  see.)**
 - **The funnel work keeps its value under a different justification.** Routing
   every mutation through a small set of primitives is no longer needed *so the
   gate has one place to go*; it is needed because **one auditable server-side
@@ -171,14 +187,18 @@ exclude it explicitly.
   audit logging, quota, and any non-POSIX backend all depend on it. Remaining
   routing phases should be motivated that way, or descoped honestly.
 - **The gate is per-tool, and one tool multiplexes actions — so the recovery
-  path is currently locked out.** `vp_vault_sync` is in `MutatingToolNames`
-  (`internal/tools/mutating.go:48`), the gate fires at
-  `internal/mcp/tools.go:279` before `rt.tool.Handler` at `:283`, and the
-  `switch p.Action` that would distinguish `pull` from `push` sits inside that
-  handler at `internal/tools/system_tools.go:179`. So `action: "pull"` is
-  refused identically to `action: "push"`, and a host whose binary is behind
-  the vault cannot pull over MCP at all — while the CLI equivalents are
-  registered bare (`cmd/vp/commands.go:107,108,130`) and can. `restart.md`
+  path is currently locked out.** *(Closed by `6254549`, the param-aware gate:
+  `gateIfMutating` now returns early when `readOnlyInvocation` reports a
+  read-only invocation such as `action: "pull"` — see Amendment (2026-08-20) §2.
+  The text below is the problem as it stood when this page was written.)*
+  `vp_vault_sync` is in `MutatingToolNames` (`internal/tools/mutating.go`), the
+  gate fires in `Registry.Dispatch` (`internal/mcp/tools.go`) before
+  `rt.tool.Handler`, and the `switch p.Action` that would distinguish `pull`
+  from `push` sits inside that handler (`internal/tools/system_tools.go`). So
+  `action: "pull"` is refused identically to `action: "push"`, and a host whose
+  binary is behind the vault cannot pull over MCP at all — while the CLI
+  equivalents are registered bare (see the comment on the unwrapped `vault pull`
+  / `vault push` registrations in `cmd/vp/commands.go`) and can. `restart.md`
   Step 1 uses the MCP call, so the operation that would deliver the fixed
   binary is the operation being refused.
 
@@ -204,7 +224,10 @@ exclude it explicitly.
   one, so a redirected project is gated against a vault it is not writing.
   Under server-owns-vault this becomes a per-request binding concern — a
   tenant-isolation question — and should be fixed there rather than by moving
-  the gate.
+  the gate. *(Still accurate 2026-09-28: `surfaceGate` resolves through
+  `vaultRoot` → `storage.ResolveGlobalVaultPath`. Under ADR-012's host-local
+  bindings a bound project's CLI write is gated against the global vault, so the
+  defect now has a concrete trigger.)*
 - **No coverage is lost.** `vp config sync --prune` and `vp audit vault --accept`
   keep the gate they have today, which the rejected placement would have removed.
 - **The per-write cost never arrives.** `CheckCompatible` is roughly 510 µs per
@@ -268,15 +291,15 @@ verified at source:
 
 | tool | read-only condition | site |
 |---|---|---|
-| `vp_vault_sync` | `action: "pull"` | `internal/tools/system_tools.go:179` |
-| `vp_vault_tidy` | `dry_run: true` — `TidyScan` only, writes nothing | `internal/tools/system_tools.go:509` |
-| `vp_audit_vault` | `write: false` — *"never persisted"* | `internal/tools/audit_tools.go:90` |
+| `vp_vault_sync` | `action: "pull"` | `switch p.Action`, `internal/tools/system_tools.go` |
+| `vp_vault_tidy` | `dry_run: true` — `TidyScan` only, writes nothing | `p.DryRun`, `internal/tools/system_tools.go` |
+| `vp_audit_vault` | `write: false` — *"never persisted"* | `p.Write`, `internal/tools/audit_tools.go` |
 
 All three are refused whole today.
 
 **A cheaper mechanism than this ADR considered.** `Dispatch` already calls
-`validateParams(rt.compiled, params)` at `internal/mcp/tools.go:275` — *before*
-`gateIfMutating` at `:279`. Schema-validated parameters are therefore in hand at
+`validateParams(rt.compiled, params)` in `internal/mcp/tools.go` — *before*
+`gateIfMutating`. Schema-validated parameters are therefore in hand at
 the seam, so a `func(params) bool` predicate can read `action` / `dry_run` /
 `write` there: still pre-handler, still no side effects, and nothing moves into
 a handler.
@@ -288,8 +311,8 @@ lockout, or push the gate inside the handler for those tools). **Accepted
 ### 3. `Mutating` is one boolean answering two questions — splitting it is a PREREQUISITE
 
 `Mutating` drives both the surface gate (`gateIfMutating`) and the read-only
-serve filter (`cmd/vp/cmd_mcp_serve.go:178`, `srv.DeleteTools(...)` when
-`!allowWrites`). §4 above notes the flag is non-deletable; that understates it.
+serve filter (`buildMCPServeHandler` in `cmd/vp/cmd_mcp_serve.go`,
+`srv.DeleteTools(...)` when `!allowWrites`). §4 above notes the flag is non-deletable; that understates it.
 
 Derivation makes the two answers **diverge** — see finding 1, where the derived
 answer for `vp_vault_sync` is `false`. Wiring a derived value into
@@ -377,7 +400,9 @@ and pointless; it covers what the derivation structurally cannot see.
 `vp_refresh_index` derives **true** on a genuine path to `atomicfile.Write`
 while registered `Mutating: false`. That disagreement is recorded under protest:
 the declared answer is wrong and undefended, left in place only because flipping
-it moves the surface golden.
+it moves the surface golden. *(Since fixed, noted 2026-09-28: `vp_refresh_index` is now registered
+`Mutating: true` — `"mutating": true` in `internal/mcp/tool_surface.golden.json` —
+and the task named below is done.)*
 
 It is the same defect a human refused to retire on evidence at iteration 339
 (`refresh-index-reports-rebuilt-while-writing-nothing`). A machine and a person
@@ -400,6 +425,31 @@ at all — green, pointless, and the exact failure mode this page refuses for
 So it runs via `make source-audit` and a dedicated `source-audit` CI job on every
 push and pull request. **Delete either and the rule runs nowhere.** The syntactic
 rule stays ungated and still runs under `-short`.
+
+## Amendment (2026-09-28): the gate now also refuses stale bindings and departed projects
+
+The Decision is unchanged: the gate stays at the dispatch seam. Two refusals have
+since been added inside `Registry.gateIfMutating`, so both dispatch paths get them.
+For a mutating, non-read-only invocation, in order:
+
+1. **A stale binding.** When the vault root this server bound at startup no longer
+   matches what its launch directory resolves to now, or its `[project_vaults]`
+   binding names a vault that no longer holds the project
+   (`storage.StaleBindingError`), the write is refused before the surface check. Bindings are ADR-012's
+   (`doc/adr/012-vault-resolution-precedence-and-host-project-bindings.md`; the
+   stale-binding rule is its Amendment (2026-09-28) §3).
+2. **The surface fail-stop**, as this page describes (`surface.EnforceFailStop`).
+3. **A departed project.** `refuseDepartedProject` refuses a tool whose `project` or
+   `to_project` names a project that left this vault (per its departure record,
+   which wins over whatever `Projects/<slug>/` holds, or, with no record, the
+   vault's git history — `project.Departed`), with the redirect, instead of
+   letting the write lazily re-create the tree. The write funnel refuses the same
+   paths underneath as a backstop. Departure records, and the lifecycle commands
+   and `vp_vault_split` purge that write them, are ADR-013's
+   (`doc/adr/013-vault-project-lifecycle-and-departure-records.md`).
+
+Both are refusals at the seam, before the handler runs, so the property this page
+relies on still holds: a refused tool has done nothing.
 
 ## Related
 

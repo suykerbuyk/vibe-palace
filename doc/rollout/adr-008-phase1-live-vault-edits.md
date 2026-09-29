@@ -1,5 +1,29 @@
 # ADR-008 Phase 1 — prepared live-vault edits (apply at rollout ONLY)
 
+> **Historical record — applied 2026-07-25; not a procedure to follow.** The
+> "apply at rollout ONLY" in the title describes the plan as it was written
+> before that date. The decision it implemented is
+> `doc/adr/008-instruction-manual-lives-in-the-binary.md`, which is the
+> current reference. Several things the blocks below describe have changed
+> since (as of v8.2.0):
+>
+> - `vp_bootstrap_context` returns an index, not document bodies: the resume
+>   and `workflow.md` are fetched through `resume_uri` / `workflow_uri`
+>   (`internal/mcp/server.go`, `ServerInstructions`). Bootstrap no longer
+>   inlines `workflow.md`.
+> - `vp_manage_task` has more actions than the "seven" or "eight" named
+>   below; list the current set with
+>   `grep -n '"action".*"enum"' internal/tools/task_tools.go`.
+> - The vault data format is 2, not 1
+>   (`grep -n 'const RequiredDataFormat' internal/surface/format.go`).
+> - Command names shown as `/restart`, `/wrap` are now `vpc-restart`,
+>   `vpc-wrap`.
+> - Wherever the text below says to put `vault_path` in `.vibe-palace.toml`,
+>   that applies only to an untracked checkout config: a tracked
+>   `.vibe-palace.toml` is identity only and never carries `vault_path`
+>   (`doc/adr/012-vault-resolution-precedence-and-host-project-bindings.md`,
+>   Decision 2).
+
 **Status: APPLIED 2026-07-25 (iteration 257). This document is now a record, not
 a plan — do not re-apply it.** Steps 1-5 below all completed: Edit A landed as
 `Projects/vibe-palace/workflow.md` (12,528 -> 13,482 bytes) and Edit B as

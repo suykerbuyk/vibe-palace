@@ -1,5 +1,14 @@
 # Hugot Spike Verdict
 
+> **Historical record (2026-04-07): the spike verdict behind PRD decision D4.**
+> The decision stands: vp embeds with hugot's pure-Go session
+> (`hugot.NewGoSession()` in `internal/embedder/onnx.go`, all-MiniLM-L6-v2,
+> 384 dimensions, normalized). The measurements below were taken on a
+> different host with a pre-release binary and have not been re-run (binary
+> size included). The HNSW index the last section
+> assumes was deferred: search uses a brute-force, exact cosine index
+> (`internal/search/vector_index.go`).
+
 ## Date: 2026-04-07
 
 ## System

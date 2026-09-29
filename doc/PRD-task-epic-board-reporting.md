@@ -1,6 +1,23 @@
 # PRD: Chronological Task/Epic Reporting ("Board View")
 
-**Status:** Final (v10). Implemented as the vault epic `task-epic-board-reporting`
+> **Historical record (design v10, 2026-09-15; `vp board` landed 2026-09-15, epic closed 2026-09-19).** This is the design and its
+> reasoning trail, not a living spec. §3 "Current State" describes the code *before* the feature.
+> What shipped: `vp board` (plus `--json`), the open task-header schema with `CreateTime`,
+> `ModTime` and `DataFormat`, the widened status vocabulary (`planning`, `reviewed`, `done`), the
+> one-time migration `vp migrate task-board-fields`, data format 2, and the
+> `v<surface>.<format>.<build>` release-tag guard — decided in
+> [ADR-011](adr/011-open-task-header-schema-and-format-axis.md). Related surfaces: `vp tasks epics`,
+> `vp tasks --epic/--standalone/--flat`. Differences from the design below:
+>
+> - **No MCP board tool** was built (the "fast-follow" in §4.3).
+> - **The optional upgrade-on-touch self-heal** was cancelled.
+> - **StaleParents** is flagged in `vp board` / `vp tasks` output, but no repair mechanism exists.
+> - **The supersession link** is set only by `vp_manage_task` action `cancel` with `superseded_by`,
+>   and cannot be changed afterwards.
+>
+> For current behaviour see `vp board --help`, `vp tasks --help` and ADR-011.
+
+**Status:** Shipped; epic closed 2026-09-19 (design Final, v10). Implemented as the vault epic `task-epic-board-reporting`
 (`Projects/vibe-palace/tasks/task-epic-board-reporting.md` in the vibe-palace-vault) — that task's
 own body carries this same content plus the child-task breakdown; this document is the durable,
 source-controlled record of the design and its full reasoning trail.

@@ -1,6 +1,6 @@
 # ADR 009: Deliver the Inviolable Core Whole, or Fail Loud — Never Silently Truncate Operating Instructions or Active State
 
-**Status:** ⛔ **SUPERSEDED IN FULL — `first-principles` Phase 2, iteration 310.**
+**Status:** ⛔ **SUPERSEDED IN FULL by `doc/PRD-vibe-palace.md` §1.10–§1.11 — `first-principles` Phase 2, iteration 310 (machinery deleted in `1537d83`, 2026-08-18).**
 The mechanism this ADR specified no longer exists: the shed ladder,
 `budget.shed_core`, the tier derivations, the `core-floor` and `pin-coverage`
 checks, the `vp:pin` / `vp:disposable` marker vocabulary and the payload token
@@ -131,7 +131,7 @@ reports nil). **The stated gate on `adr-009-arm-fail-loud-bootstrap` — "arming
 would hard-fail every vibe-palace bootstrap" — is therefore no longer true for
 this project**, and that task should be re-evaluated on current measurement
 rather than on this paragraph. Note it remains a vault-wide question: the
-`core-floor` check reports quantum-ng at 70.4 KB of core (resume 63.3 KB), so
+`core-floor` check reports another project at 70.4 KB of core (resume 63.3 KB), so
 arming globally would still fail there.
 
 **🔴 AMENDED 2026-07-27 (iteration 262) — point 3 above was right about the
@@ -162,7 +162,7 @@ Measurement settled it. Once `check.CheckPinCoverage` (iteration 262) could read
 pin markers vault-wide, the constant was **false for 8 of 8 projects** in the
 live vault: every one had undeclared live sections, and the shed ladder was
 dropping them on the exposed ones while `shed_core` reported nothing. A live run
-on 2026-07-27 confirms both directions — quantum-ng (core 76.9 KB, over the
+on 2026-07-27 confirms both directions — that other project (core 76.9 KB, over the
 56,000 B floor; five undeclared sections: *Current State, Project History,
 Completed Plans, Open Threads, Reference Documents*) sheds its resume and now
 reports `shed_core: ["resume->pinned"]` where it reported none; vibe-palace, which

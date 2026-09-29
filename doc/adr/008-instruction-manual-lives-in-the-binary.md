@@ -1,6 +1,15 @@
 # ADR 008: The Agent Instruction-Manual Lives in the Binary, Not in Vault Files
 
-**Status:** Accepted (2026-07-21) — Phase 1 implemented 2026-07-22
+**Status:** Accepted (2026-07-21). **Implemented in full:** Phase 1 `29437ff`
+(2026-07-22), Phase 1 live-vault rollout 2026-07-25 (iteration 257), Phases 2–4
+`807bae7` (2026-07-25). The shed ladder and payload token budget this page measures
+itself against were deleted at iteration 310 (`1537d83`, 2026-08-18; see ADR-009), so
+its "the core does not fit" / "stays gated" remarks are historical. Amended 2026-09-11
+and 2026-09-14; amended 2026-09-28 (this status line, the "historical" notes in place,
+"only `vp_manual` was built", and the *Staged rollout* outcome).
+
+*Original status line, preserved (historical — superseded by the line above):*
+Accepted (2026-07-21) — Phase 1 implemented 2026-07-22
 (`29437ff`: doctrine embedded in the binary and served via `vp_get_doctrine` /
 `vibe-palace://doctrine/<project>`; embedded `workflow.md` thinned to project
 patterns + doctrine pointer). **Phase 1 live-vault rollout COMPLETED 2026-07-25
@@ -13,6 +22,8 @@ shedding and `adr-009-arm-fail-loud-bootstrap` stays gated. Phases 2–4 pending
 a plan).
 
 **Amended 2026-09-11** — see *Amendment (2026-09-11): Templates/ provenance is a frozen shipped-version manifest*.
+
+**Amended 2026-09-14** — see *Amendment (2026-09-14): tag `pre-rebase-501c96e` deleted; rows pinned by blob hash alone*.
 
 **Deciders:** Project owner
 **Context:** `workflow.md` is the largest un-sheddable item in the bootstrap payload, it has drifted from its embedded floor, and it is riddled with host-specific assumptions — three symptoms of one cause.
@@ -99,6 +110,8 @@ via a dedicated surface. This keeps the bootstrap payload minimal (thin project 
 and matches the existing inline-vs-on-demand split already used for the resume
 (`resume` excerpt + `resume_uri`). The on-demand plumbing already exists for workflow
 (`WorkflowURI`, `vp_get_workflow`, the served `vibe-palace://workflow/{project}` resource).
+*(Historical: the 8,000-token budget was later deleted outright — ADR-009 and
+`doc/PRD-vibe-palace.md` §1.10. The on-demand split this section decided stands.)*
 
 ### 3. `resume.md` becomes a thin project task index
 
@@ -121,7 +134,8 @@ model every command matches.
 
 The MCP `tools/list` handshake already hands every host each tool's name, description, and
 input schema, so a hand-written tool-syntax inventory is redundant and forbidden (it can
-only drift). A read-only `vp_manual` / `vp_capabilities` tool self-describes from
+only drift). A read-only `vp_manual` / `vp_capabilities` tool *(built as `vp_manual`
+only; no `vp_capabilities` tool was ever built)* self-describes from
 `Registry.List()` — tools + the vpc-/vps- dispatch convention + the doctrine — so a fresh
 host learns everything in-band with **zero hand-authored inventory**. The existing
 tool-surface golden test doubles as the guarantee that this dynamic manual stays truthful.
@@ -131,6 +145,7 @@ tool-surface golden test doubles as the guarantee that this dynamic manual stays
 **Positive**
 - The token budget is handed back (~8,063 → ~5,960 tokens), structurally, not by raising
   the ceiling. Resolves the `bootstrap-payload-exceeds-its-own-token-budget` canary.
+  *(Historical: the budget itself was later deleted, at iteration 310.)*
 - Instruction-propagation `config sync` churn collapses: the Templates reconciler only
   materializes files a project has actually **overridden**, not the whole corpus.
 - The doctrine cannot drift from the binary, because it *is* the binary's content.
@@ -139,7 +154,9 @@ tool-surface golden test doubles as the guarantee that this dynamic manual stays
 - Single source of truth for base behavior; the glide-path override seam is preserved.
 
 **Costs / risks**
-- The bootstrap "un-sheddable workflow contract" guard (the conditional restore inside
+- *(Historical — the shed ladder, `shedToBudget`, `shedRungTier` and the payload budget
+  this bullet reasons about were deleted at iteration 310, `1537d83`.)* The bootstrap
+  "un-sheddable workflow contract" guard (the conditional restore inside
   `shedToBudget`, deleted at 310) assumed the behavioral rules physically live in the inlined workflow
   body. When doctrine moves to the on-demand surface, that guard's semantics move with it:
   what the guard protects is the thin workflow's minimal bootstrap-contract paragraph (the
@@ -148,7 +165,7 @@ tool-surface golden test doubles as the guarantee that this dynamic manual stays
   not re-partitioned by this work. At the embedded floor the thin workflow sits under the
   excerpt cap, so the rung cannot even fire; the guard remains for fat vault overrides.
 - New surface area: an interim read-only `vp_get_doctrine` tool (Phase 1) and a
-  `vp_manual`/`vp_capabilities` tool (Phase 2). Adding a read-only tool does not by itself
+  `vp_manual`/`vp_capabilities` tool (Phase 2) *(only `vp_manual` was built)*. Adding a read-only tool does not by itself
   require an `MCPSurfaceVersion` bump, but the tool-surface golden must be regenerated.
   (A `vp_knowledge_write` typed writer was originally proposed here and is **DROPPED**: it
   was premised on `vp_get_knowledge` reading `knowledge.md`, but that tool returns the
@@ -158,7 +175,8 @@ tool-surface golden test doubles as the guarantee that this dynamic manual stays
 - Migration must be atomic-by-construction (the corpus is `go:embed`'d, so binary and
   doctrine ship together) and honor the surface-version gate for any change to what/where
   instruction files are written.
-- A separate, real bug surfaced: the shed ladder measured the payload *without* the
+- *(Historical — apparatus deleted at iteration 310.)* A separate, real bug surfaced:
+  the shed ladder measured the payload *without* the
   `Budget` field it attaches afterward, so it could report `over=false` while shipping over
   budget. That measurement fix is **owned by `enforce-adr-009-inviolable-bootstrap-core`**
   (operator-ratified, 2026-07-22), not by this work — one bug, one owner. The same
@@ -192,6 +210,10 @@ cleanup. Tracked and reviewed as the task
 `mcp-served-doctrine-and-thin-project-workflow` (see its plan for phase detail). No code
 lands until that plan clears `/vpc-review-plan`.
 
+*(Amended 2026-09-28: done — rolled out in these four phases; see Status for the
+commits. The task, now done, records plan reviews dated 2026-07-21 and 2026-07-22, and
+Phase 1 landed on 2026-07-22.)*
+
 ## Related
 
 - ADR-006 (Derive, Don't Ask); ADR-003 (vault-write locking); ADR-009 (inviolable core —
@@ -200,7 +222,7 @@ lands until that plan clears `/vpc-review-plan`.
 - Tasks: `mcp-served-doctrine-and-thin-project-workflow` (the implementation);
   `bootstrap-payload-exceeds-its-own-token-budget` (subsumed/closed by this work);
   `workflow-md-is-the-new-binding-constraint-on-the-payload` (narrowed 2026-07-22 to the
-  bootstrap-margin instruments; depends on this work — NOT subsumed).
+  bootstrap-margin instruments; depends on this work — NOT subsumed; since done, noted 2026-09-28).
 - Investigation: four read-only probes, 2026-07-21 (bootstrap/budget, templates/precedence,
   content-split/host-audit, MCP registry/discovery).
 

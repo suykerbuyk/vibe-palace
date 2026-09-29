@@ -133,6 +133,13 @@ recognition work. It also overlaps the `cross-project-learnings-tools` effort
 and is best designed together with it rather than bolted onto the project-scoped
 memory surface. v1 ships project-scoped memory only.
 
+> **Amended 2026-09-28.** Part of the overlap shipped two days after this ADR
+> (2026-06-21): vault-wide learnings live under `Knowledge/learnings/`
+> (`internal/storage/learnings.go`) and are served **read-only** by
+> `vp_list_learnings` / `vp_get_learning` (`internal/tools/learning_tools.go`).
+> Scoped global memory *writes* remain deferred: `vp_memory_write` still
+> rejects `scope=global` (`internal/tools/memory_tools.go`).
+
 ## Alternatives considered
 
 - **Symlink the native dir into the vault (`memory-link-command`).** Cancelled:
@@ -157,5 +164,7 @@ memory surface. v1 ships project-scoped memory only.
 - MCP tools: `internal/tools/memory_tools.go`
   (`vp_memory_write`/`read`/`list`/`delete`/`harvest`); CLI: `cmd/vp/cmd_memory.go`
 - Preflight categorization: `internal/wrapstate/` (`collect.go`, `preflight.go`)
-- Tidy scope: ADR-003 references and `doc/ARCHITECTURE.md` §Vault Housekeeping
+- Tidy scope: `internal/storage/vaulttidy.go` (`sweepRules`) and
+  `doc/ARCHITECTURE.md` §Vault Housekeeping (amended 2026-09-28: this line
+  previously pointed at ADR-003's references, which do not cover tidy)
 - Deferral overlap: `cross-project-learnings-tools`

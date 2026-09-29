@@ -1,6 +1,7 @@
 # ADR 005: LLM-Enriched Session Synthesis
 
-**Status:** Accepted (2026-06-21)
+**Status:** Accepted (2026-06-21); template-materialization claims amended
+2026-09-28 — see the note under *Vault-editable, raw-loaded system prompt*
 **Deciders:** Project owner
 **Context:** Vibe-palace llm-enrichment-synthesis — replacing the weak SessionEnd
 auto-summary with a real LLM synthesis
@@ -110,6 +111,16 @@ embedded template means it is materialized into `<vault>/Templates/` on
 the synthesis prompt in the vault and have it survive binary upgrades — while the
 loader still bypasses the Resolver to keep the read raw.
 
+> **Amended 2026-09-28.** Templates are no longer materialized and there is no
+> three-SHA reconcile of template bytes (`doc/TEMPLATE_POLICY.md`, "Golden
+> path"). The embedded `enrichment.md` is the floor and serves the prompt by
+> default. A vault `Templates/enrichment.md` is an optional operator
+> **override** — the loader still reads it first
+> (`internal/enrichment/template.go`, `LoadSystemPrompt`) — and a copy
+> identical (line endings aside) to a shipped version is a mirror that `vp config sync` prunes
+> (`internal/templates/shipped.txt`). The raw, Resolver-bypassing read is
+> unchanged.
+
 ### Dedicated `[enrichment]` config block, additive minor bump
 
 Enrichment gets its own top-level `[enrichment]` TOML block
@@ -131,7 +142,9 @@ timeout_seconds = 30
 `enabled` defaults to **false** — the feature is opt-in. The API key is never
 stored in config: `api_key_env` names the environment variable, resolved at
 runtime via `os.Getenv`. Adding the block is purely additive, so the schema
-**minor** version bumped 1.0 → 1.1 (`CurrentVersionMinor = 1`); an absent
+**minor** version bumped 1.0 → 1.1 (`CurrentVersionMinor = 1` at the time;
+amended 2026-09-28: since bumped again, now `CurrentVersionMinor = 2` in
+`internal/storage/config.go`); an absent
 `[enrichment]` block decodes to the zero value and the version check only rejects
 a higher *major*, so older and newer configs interoperate.
 
@@ -221,8 +234,9 @@ point:
 - A single `Completer` abstraction reuses the existing OpenAI-compatible client
   and adds native Anthropic with one shared backoff helper — no second HTTP
   stack, no new external SDK.
-- The synthesis prompt is vault-editable and reconciles cleanly, yet stays
-  deterministic because it is loaded raw.
+- The synthesis prompt is vault-overridable (amended 2026-09-28: it was
+  described as "vault-editable and reconciles cleanly"; see the note above),
+  yet stays deterministic because it is loaded raw.
 
 **Negative / trade-offs:**
 
@@ -257,7 +271,9 @@ point:
 - **Load the system prompt through the context `Resolver`.** Rejected: the
   Resolver expands `{{DATE}}`/`{{PROJECT}}` tokens, injecting nondeterminism into
   a prompt that must stay stable. The loader bypasses it and reads raw, while the
-  template still materializes and reconciles like every other embedded template.
+  embedded floor serves the template and a vault copy is an override (amended
+  2026-09-28: it formerly said the template "materializes and reconciles like
+  every other embedded template").
 - **Run the drain in `vp_bootstrap_context`.** Rejected: bootstrap is
   latency-sensitive session-start read-assembly and must not block on a network
   LLM call. The drain runs in the already-heavy SessionEnd hook.
@@ -288,5 +304,6 @@ point:
 - Entry points: `internal/hook/hook.go` (SessionEnd enricher + drain),
   `internal/tools/session_tools.go` (`enrich` param)
 - Embedded prompt: `internal/templates/templates/enrichment.md`
-- Prior LLM client / config: ADR — Phase 12 adaptive room classification,
-  `doc/ARCHITECTURE.md` §Adaptive Room Classification
+- Prior LLM client / config: `doc/ARCHITECTURE.md` §Adaptive Room
+  Classification (Phase 12) (amended 2026-09-28: there is no separate ADR for
+  it)

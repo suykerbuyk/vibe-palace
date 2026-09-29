@@ -1,6 +1,11 @@
 # ADR 011: Open Task-Header Schema and the RequiredDataFormat/Release-Versioning Coupling
 
-**Status:** Accepted (2026-09-15)
+**Status:** Accepted (2026-09-15). Implemented: the open header schema, the new header fields and
+the widened status vocabulary, and the minor-version guard at all three enforcement sites plus the
+rewritten `version.go` doc comment (the fourth, documentation site); tags `v7.2.0` and `v8.2.0` were
+cut under this scheme. Amended 2026-09-28: source line references on this page had rotted and now
+name symbols instead, and the dated Decision 5 notes (marked "amended 2026-09-28") record what
+landed; the Context and Decision describe the code as it stood before this ADR landed.
 **Deciders:** Project owner
 **Context:** Task-header schema extensibility, the widened task-status lifecycle, and the data-format/release-tag versioning coupling this opens up
 
@@ -16,8 +21,8 @@ documenting (ADR-003, vault write locking).
 **The header parser is a closed four-field list today, not an open schema.** Confirmed against
 source (epic `## 3`): `internal/storage/tasks.go`'s field-name constant block says plainly "A
 task's metadata header is a contiguous run of `"**Field:** value"` lines, and these are the only
-fields in it" (`tasks.go:1449-1456`), and `isHeaderFieldLine` (`tasks.go:1476-1485`) recognizes
-exactly `Status`/`Priority`/`Parent`/`Depends`. `headerBlock` (`tasks.go:1544-1560`) stops scanning
+fields in it" (the field-name constant block), and `isHeaderFieldLine` recognized
+exactly `Status`/`Priority`/`Parent`/`Depends`. `headerBlock` stops scanning
 the header at the first line that isn't one of those four — by design, and for a real reason
 documented at the same site: `Parent`/`Depends` are *optional*, so a whole-file scan can't safely
 use "first occurrence wins" the way the two required fields do (a body paragraph that happens to
@@ -56,7 +61,7 @@ contract, precisely:
   task that looks dependency-free. Appending costs nothing and avoids this outright.
 
 **Header-block termination rule under the open schema, stated precisely.** `headerBlock`
-(`tasks.go:1544-1560`) does not special-case a blank line: it consumes a contiguous run of lines
+(`internal/storage/tasks.go`) does not special-case a blank line: it consumes a contiguous run of lines
 from the top of the file (after skipping any leading blank lines following the H1) for exactly as
 long as each line individually satisfies `isHeaderFieldLine`, and stops at the first line that
 doesn't — whether that line is blank, prose, or a heading. Opening the schema changes only what
@@ -140,14 +145,15 @@ plainly, as a requirement, not an assumption:
 `MCPSurfaceVersion`'s major-version gate against a release tag is implemented independently in
 three places today — confirmed by reading each:
 
-- `.github/workflows/release.yml:21-34` — the CI guard (`Guard tag major against
-  MCPSurfaceVersion`), the canonical enforcement point; a pushed tag whose major disagrees with
+- `.github/workflows/release.yml` — the CI guard (`Guard tag major against
+  MCPSurfaceVersion`; amended 2026-09-28: renamed `Guard tag major.minor against
+  MCPSurfaceVersion.RequiredDataFormat` when this decision landed), the canonical enforcement point; a pushed tag whose major disagrees with
   `MCPSurfaceVersion` fails the release job.
-- `Makefile:8-11,247-253` — `SURFACE_MAJOR`, derived the same way from `internal/surface/version.go`,
+- `Makefile` — `SURFACE_MAJOR` (amended 2026-09-28: joined by `FORMAT_MINOR` when this decision landed), derived the same way from `internal/surface/version.go`,
   checked by the `release` target as, per the Makefile's own comment, "a local convenience only":
   "The release.yml CI guard re-derives the same value from a pushed tag and refuses a mismatch;
   this copy is for local `make release`."
-- `internal/check/release_version.go:32-92` — `CheckReleaseVersion()`, exposed via `vp check
+- `internal/check/release_version.go` — `CheckReleaseVersion()`, exposed via `vp check
   --check release-version`, which compares an already-built, already-running binary's stamped
   version major against `MCPSurfaceVersion` (catching a stale binary that predates a surface bump,
   independent of any tag-time check).
@@ -164,12 +170,13 @@ sibling task `board-reporting-surface-and-format-version-bump` inherits this thr
 this ADR** — it is not free to treat `release.yml` alone as the deliverable.
 
 **This supersedes, and requires updating, `internal/surface/version.go`'s own stated tag invariant
-— a fourth site, documentation rather than enforcement.** `version.go:30-38`'s doc comment on
-`MCPSurfaceVersion` currently states, as of "the versioning task filed 2026-09-12": "a bump here
+— a fourth site, documentation rather than enforcement.** `version.go`'s doc comment on
+`MCPSurfaceVersion` stated, before this ADR, as of "the versioning task filed 2026-09-12": "a bump here
 means the next cut git tag must be `v<N>.0.0`" — minor and patch pinned at zero. This ADR replaces
 that specific invariant with `v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>`; the doc comment
 must be rewritten to say so when this ADR's decision lands, or it becomes a stale, actively
-misleading claim sitting next to the constant it documents.
+misleading claim sitting next to the constant it documents. *(Amended 2026-09-28: done — the comment was rewritten when
+this landed and now states the new scheme, with pre-ADR-011 tags such as `v5.0.0` grandfathered.)*
 
 **`<build>` is defined as a plain incrementing counter, not tied to either axis**: it distinguishes
 multiple release cuts made at the same `(MCPSurfaceVersion, RequiredDataFormat)` pair (a patch
@@ -242,16 +249,17 @@ mismatch as *predates the rule*, not as a violation of it.
 - Source-verified reasoning trail this ADR formalizes: `task-epic-board-reporting` `## 3` (Current
   State) and `## 4.1` (Data model: `CreateTime`, `ModTime`, and a widened status vocabulary).
 - Header parser: `internal/storage/tasks.go` (`isHeaderFieldLine`, `headerBlock`,
-  `headerFieldValue`, lines ~1449-1560).
-- Version axes: `internal/surface/version.go` (`MCPSurfaceVersion` and its `v<N>.0.0` tag-invariant
-  doc comment, `:30-38`, superseded by this ADR); `internal/surface/gate.go`
+  `headerFieldValue`).
+- Version axes: `internal/surface/version.go` (`MCPSurfaceVersion` and its tag-invariant doc comment,
+  which stated `v<N>.0.0` until this ADR and was rewritten when it landed); `internal/surface/gate.go`
   (`EnforceFailStop`/`EnforceWarnOnly`, confirming the surface gate fires only on writes);
   `internal/surface/format.go` (`RequiredDataFormat`, `ReadFormat`/`WriteFormat`,
   `EnforceFormatFailStop`, the read-hazard gate, and the doc comment quoted in Decision 3 that
   frames the surface axis as the write hazard).
 - Release-tag gates to extend (three independent sites, decision 5):
-  `.github/workflows/release.yml:21-34` ("Guard tag major against MCPSurfaceVersion" CI step);
-  `Makefile:8-11,247-253` (`SURFACE_MAJOR`, the `release` target's local check);
-  `internal/check/release_version.go:32-92` (`CheckReleaseVersion`, `vp check --check
+  `.github/workflows/release.yml` ("Guard tag major against MCPSurfaceVersion" CI step, now
+  "Guard tag major.minor against MCPSurfaceVersion.RequiredDataFormat");
+  `Makefile` (`SURFACE_MAJOR` and `FORMAT_MINOR`, the `release` target's local check);
+  `internal/check/release_version.go` (`CheckReleaseVersion`, `vp check --check
   release-version`).
 - Precedent for this ADR's shape and numbering: `doc/adr/003-vault-write-locking.md`.
