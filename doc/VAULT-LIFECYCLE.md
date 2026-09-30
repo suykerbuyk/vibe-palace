@@ -156,11 +156,27 @@ vp vault copy proj-a proj-b --from git@github.com:me/vibe-palace-vault.git \
 # then paste the "To run it:" line
 ```
 
-`copy` reads the source through a private blobless snapshot of its remote.
+`copy` reads the source through a private blobless snapshot of its remote:
+the commit history and the directory listings, without file contents. It
+then fetches the contents of the projects' files in one request.
 Each project's footprint is its trees under `Projects/<project>/` and
 `palace/<project>/`. `copy` copies each footprint and makes **one** commit
 with `Vp-Copy-*` trailers. It then checks that the committed footprint
 hashes equal the source's, and publishes that commit to every remote.
+
+What that costs, for a project of a few thousand files:
+- **The dry run downloads the projects' files too**, and so does the real
+  run, each into a snapshot of its own that it removes afterwards. The
+  download comes before the destination is checked, so a copy that the
+  receiving vault then refuses (it already holds the project, say) has
+  downloaded the files first.
+- **A re-run after a partial publish downloads them again** before it
+  finishes the publish, and cannot finish while the source remote is
+  unreachable.
+- **A commit in the receiving vault waits, with no message, while a copy's
+  push runs.** The copy holds that vault's lock while it commits and until
+  every remote has the commit. On a slow link that can be minutes.
+- The fetches, the commit and the push each have a 30-minute limit.
 
 A vault that holds a departure record for a project refuses a copy of that
 project ("a project cannot be copied back over its own departure in v1").

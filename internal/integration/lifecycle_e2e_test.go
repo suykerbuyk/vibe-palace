@@ -107,7 +107,8 @@ func fileURL(p string) string { return "file://" + filepath.ToSlash(p) }
 func lcBare(t *testing.T, dir string) string {
 	t.Helper()
 	lcGit(t, filepath.Dir(dir), "init", "-q", "--bare", "-b", "main", dir)
-	// The lifecycle commands fetch blobless and fetch blobs lazily.
+	// The lifecycle commands fetch a blobless snapshot; the copy then fetches
+	// its projects' blobs by id, in one request.
 	lcGit(t, dir, "config", "uploadpack.allowFilter", "true")
 	lcGit(t, dir, "config", "uploadpack.allowAnySHA1InWant", "true")
 	return dir
