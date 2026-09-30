@@ -25,16 +25,36 @@ const lazyFetchTrace = "fetch.negotiationAlgorithm=noop fetch"
 // uploadpack.allowAnySHA1InWant: protocol v2 allows a want for any object, and
 // a real git host is configured that way. It returns the fixture and the size
 // of every content file of p, by vault-relative path.
+//
+// The source has the HISTORY a real vault has, and both halves matter to the
+// completeness check that follows the blob fetch:
+//   - every one of the n files has an earlier version, in an earlier commit. A
+//     check that walks history reports those n older blobs as missing after a
+//     complete fetch, and would refuse every real copy;
+//   - the tip commit touches nothing under p. A pathspec check with --no-walk
+//     drops such a commit and lists nothing, so it would pass a snapshot that
+//     holds no blob at all.
 func newBulkCopyFix(t *testing.T, n int) (*copyFix, map[string]int64) {
 	t.Helper()
 	f := newCopyFix(t)
 	gitRun(t, f.SrcBare, "config", "--unset", "uploadpack.allowAnySHA1InWant")
 	for i := range n {
-		writeFile(t, f.Src, fmt.Sprintf("Projects/p/sessions/bulk-%02d.md", i), strings.Repeat("x", i+1)+"\n")
+		writeFile(t, f.Src, fmt.Sprintf("Projects/p/sessions/bulk-%02d.md", i), fmt.Sprintf("the first version of file %d\n", i))
 	}
 	gitRun(t, f.Src, "add", "-A")
 	gitRun(t, f.Src, "commit", "-q", "-m", "a project with many files")
+	for i := range n {
+		writeFile(t, f.Src, fmt.Sprintf("Projects/p/sessions/bulk-%02d.md", i), strings.Repeat("x", i+1)+"\n")
+	}
+	gitRun(t, f.Src, "add", "-A")
+	gitRun(t, f.Src, "commit", "-q", "-m", "a second version of every file")
+	writeFile(t, f.Src, "Projects/other/later.md", "a tip commit that touches nothing under p\n")
+	gitRun(t, f.Src, "add", "-A")
+	gitRun(t, f.Src, "commit", "-q", "-m", "an unrelated tip commit")
 	gitRun(t, f.Src, "push", "-q", "origin", "main")
+	if out := gitRun(t, f.Src, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--", "Projects/p", "palace/p"); out != "" {
+		t.Fatalf("fixture: the tip commit touches p: %s", out)
+	}
 
 	sizes := map[string]int64{}
 	for _, tree := range ProjectTrees("p") {
@@ -96,7 +116,9 @@ func TestCopy_FetchesTheFootprintInOneRequest(t *testing.T) {
 	}
 
 	trace := filepath.Join(t.TempDir(), "git.trace")
+	packets := filepath.Join(t.TempDir(), "git.packets")
 	t.Setenv("GIT_TRACE", trace)
+	t.Setenv("GIT_TRACE_PACKET", packets)
 	plan, err := PlanCopy(f.req("p"))
 	if err != nil {
 		t.Fatalf("PlanCopy: %v", err)
@@ -113,6 +135,20 @@ func TestCopy_FetchesTheFootprintInOneRequest(t *testing.T) {
 	}
 	if got := strings.Count(string(raw), lazyFetchTrace); got != 0 {
 		t.Errorf("the copy's plan made git fetch objects lazily: %d trace line(s) of `git -c %s`, want 0", got, lazyFetchTrace)
+	}
+
+	// The explicit fetch is the request git makes for a lazy fetch: wants only.
+	// Without -c fetch.negotiationAlgorithm=noop git also sends `have` lines,
+	// naming commits whose trees reference every wanted blob.
+	wire, err := os.ReadFile(packets)
+	if err != nil {
+		t.Fatalf("GIT_TRACE_PACKET wrote no file: %v", err)
+	}
+	if wants := strings.Count(string(wire), "fetch> want "); wants < n {
+		t.Fatalf("the packet trace holds %d `want` line(s), want at least %d: the blob fetch is not in it", wants, n)
+	}
+	if haves := strings.Count(string(wire), "fetch> have "); haves != 0 {
+		t.Errorf("the copy's fetches sent %d `have` line(s), want 0", haves)
 	}
 
 	var total int64
@@ -152,18 +188,15 @@ func bloblessSnapshot(t *testing.T, f *copyFix) *remoteSnapshot {
 // trees lack and nothing else. The two forms it must not be are both pinned
 // here. A pathspec form walks history and reports the older version of every
 // file, which nobody fetched; a pathspec form with --no-walk lists nothing at
-// all when the tip commit does not touch the project.
+// all when the tip commit does not touch the project. The fixture's history
+// (newBulkCopyFix) turns each of them red.
 func TestRemoteSnapshot_CompletenessCheckCountsTheTipOnly(t *testing.T) {
 	const n = 40
 	f, _ := newBulkCopyFix(t, n)
-	// History: every bulk file gets a second version, and then the tip moves on
-	// to a commit that does not touch p.
-	for i := range n {
-		writeFile(t, f.Src, fmt.Sprintf("Projects/p/sessions/bulk-%02d.md", i), fmt.Sprintf("second version %d\n", i))
-	}
-	gitRun(t, f.Src, "add", "-A")
-	gitRun(t, f.Src, "commit", "-q", "-m", "second versions")
-	f.srcPush(t, "Projects/other/later.md", "a tip commit that does not touch p\n")
+	// The check passes the manifest as a blob argument, and git reports a
+	// missing blob given that way only from 2.45.0, the release the variable
+	// arrived in: on an older git the exact count below is not known.
+	requireNoLazyFetchSupport(t, f)
 	paths := append(ProjectTrees("p"), vaultManifestRel, "Audits/departures/p.json")
 
 	s := bloblessSnapshot(t, f)
@@ -189,15 +222,19 @@ func TestRemoteSnapshot_CompletenessCheckCountsTheTipOnly(t *testing.T) {
 	}
 	// The fetch took the tip's blobs only: the first versions are still absent.
 	old := gitRun(t, f.Src, "rev-parse", "HEAD~2:Projects/p/sessions/bulk-00.md")
+	if old == gitRun(t, f.Src, "rev-parse", "HEAD:Projects/p/sessions/bulk-00.md") {
+		t.Fatal("fixture: the file has no earlier version")
+	}
 	if out := gitRun(t, s.Dir, "rev-list", "--objects", "--no-walk", "--missing=print", old); out != "?"+old {
 		t.Errorf("the first version of a file should still be missing from the snapshot; rev-list printed %q", out)
 	}
 }
 
 // requireNoLazyFetchSupport skips the test on a git that ignores
-// GIT_NO_LAZY_FETCH: there a read of a missing blob fetches it and succeeds,
-// so the guard under test does not exist. The completeness check, which needs
-// no such support, is tested above on every git.
+// GIT_NO_LAZY_FETCH, which is a git older than 2.45.0 (or an unpatched older
+// series): there a read of a missing blob fetches it and succeeds, so the
+// guard under test does not exist, and `rev-list --missing=print` does not yet
+// report a missing blob given as a starting point.
 func requireNoLazyFetchSupport(t *testing.T, f *copyFix) {
 	t.Helper()
 	probe := bloblessSnapshot(t, f)
@@ -242,18 +279,14 @@ func TestRemoteSnapshot_MissedBlobIsAnErrorNotALazyFetch(t *testing.T) {
 // that names the file, and is never that refusal.
 func TestSnapshotFormat_AbsentIsNotAVaultUnreadableIsAnError(t *testing.T) {
 	f, _ := newBulkCopyFix(t, 1)
-	requireNoLazyFetchSupport(t, f)
 	s := bloblessSnapshot(t, f)
-	trace := filepath.Join(t.TempDir(), "git.trace")
-	t.Setenv("GIT_TRACE", trace)
+	loseTheRemote(t, f)
 
-	// The tree lists the manifest and its blob was never fetched.
+	// The tree lists the manifest, its blob was never fetched, and the remote
+	// is gone: the read fails on any git, with or without GIT_NO_LAZY_FETCH.
 	_, err := snapshotFormat(s, s.Tip)
 	if err == nil || errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), vaultManifestRel) || strings.Contains(err.Error(), "not a vault") {
 		t.Errorf("an unreadable manifest must be an error naming %s, not a refusal; got %v", vaultManifestRel, err)
-	}
-	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), lazyFetchTrace) {
-		t.Error("reading the manifest fetched it lazily")
 	}
 
 	// A source that is not a vault: the first commit of the fixture's history
@@ -272,11 +305,15 @@ func TestSnapshotFormat_AbsentIsNotAVaultUnreadableIsAnError(t *testing.T) {
 // "project departed the source" refusal.
 func TestCopySourceRefusals_UnreadableDepartureRecordIsAnError(t *testing.T) {
 	f, _ := newBulkCopyFix(t, 1)
-	requireNoLazyFetchSupport(t, f)
 	f.srcPush(t, "Audits/departures/orch.json", `{"format":"vp-departure/1","slug":"orch","kind":"moved-to-vault","to":"git@example.com:x/y.git","date":"2026-09-30"}`+"\n")
 	s := bloblessSnapshot(t, f)
-	trace := filepath.Join(t.TempDir(), "git.trace")
-	t.Setenv("GIT_TRACE", trace)
+	// The listing in copySourceRefusals needs orch's own blobs; the record's
+	// blob is left out, and then the remote is gone, so the record cannot be
+	// read on any git, with or without GIT_NO_LAZY_FETCH.
+	if err := s.fetchBlobs(s.Tip, ProjectTrees("orch")); err != nil {
+		t.Fatal(err)
+	}
+	loseTheRemote(t, f)
 
 	// No record for p in the tree: not found, and no error.
 	if _, found, err := s.readFile(s.Tip, "Audits/departures/p.json"); found || err != nil {
@@ -287,11 +324,7 @@ func TestCopySourceRefusals_UnreadableDepartureRecordIsAnError(t *testing.T) {
 	if !found || err == nil || !strings.Contains(err.Error(), "Audits/departures/orch.json") {
 		t.Errorf("an unreadable record: found=%v err=%v, want found and an error naming it", found, err)
 	}
-	// Through the caller: the listing needs p's blobs, so fetch those and leave
-	// the record out.
-	if err := s.fetchBlobs(s.Tip, ProjectTrees("orch")); err != nil {
-		t.Fatal(err)
-	}
+	// Through the caller.
 	fp, n, err := footprintHash(s.Dir, s.Tip, "orch")
 	if err != nil {
 		t.Fatal(err)
@@ -300,8 +333,31 @@ func TestCopySourceRefusals_UnreadableDepartureRecordIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Audits/departures/orch.json") {
 		t.Errorf("copySourceRefusals must fail on a record it cannot read; got refusals %v, err %v", refusals, err)
 	}
-	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), lazyFetchTrace) {
-		t.Error("reading the record fetched it lazily")
+}
+
+// loseTheRemote moves f's source remote away, as a network failure would: a
+// snapshot made earlier keeps its commits and trees and can fetch nothing.
+func loseTheRemote(t *testing.T, f *copyFix) {
+	t.Helper()
+	if err := os.Rename(f.SrcBare, f.SrcBare+".away"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Absent means the tree listing succeeded and printed nothing. A listing that
+// fails is an error, never "absent".
+func TestRemoteSnapshot_ReadFileReturnsAFailedListingAsAnError(t *testing.T) {
+	f, _ := newBulkCopyFix(t, 1)
+	s := bloblessSnapshot(t, f)
+	if _, found, err := s.readFile(s.Tip, "no/such/file.toml"); found || err != nil {
+		t.Errorf("an absent path: found=%v err=%v, want false and nil", found, err)
+	}
+	const noSuchCommit = "0123456789abcdef0123456789abcdef01234567"
+	if _, found, err := s.readFile(noSuchCommit, vaultManifestRel); err == nil {
+		t.Errorf("a listing that fails must be an error, not absent; found=%v", found)
+	}
+	if _, err := snapshotFormat(s, noSuchCommit); err == nil || errors.Is(err, ErrCopyRefused) {
+		t.Errorf("snapshotFormat over a failed listing must be an error, not the not-a-vault refusal; got %v", err)
 	}
 }
 

@@ -214,12 +214,12 @@ func newRemoteSnapshot(url, branch string) (*remoteSnapshot, error) {
 }
 
 // snapshotNoLazyFetch forbids git to fetch a missing object on its own. Every
-// read of file contents in a snapshot runs with it, after fetchBlobs: a blob
-// that is still missing then fails the read at once, instead of starting a
-// fetch per file. git honours it from 2.45.0 (and in the May 2024 maintenance
-// releases of older series); a git that does not know it ignores it and
-// fetches lazily, which is slow and still correct. fetchBlobs' own
-// completeness check needs no such support.
+// read of file contents in a snapshot runs with it, whether or not fetchBlobs
+// has run: a blob that is missing then makes `show` and the checkout fail, and
+// makes the -l listing print BAD for its size, instead of starting a fetch per
+// file. git honours it from 2.45.0 (and in the May 2024 maintenance releases
+// of older series); a git that does not know it ignores it and fetches lazily,
+// which is slow and still correct.
 const snapshotNoLazyFetch = "GIT_NO_LAZY_FETCH=1"
 
 // git runs one git command in the snapshot under the lifecycle environment,
@@ -234,7 +234,10 @@ func (s *remoteSnapshot) git(timeout time.Duration, args ...string) (string, err
 // cannot read (its blob was not fetched, the object is corrupt) is an error
 // that names it, never "absent": `git show <commit>:<rel>` exits 128 for both,
 // and reading the failure as absence would turn a missing blob into "this is
-// not a vault" or into a departure record that was never looked at.
+// not a vault" or into a departure record that was never looked at. Absent
+// means the listing exited 0 and printed nothing; a listing that fails is
+// returned as an error too, or the same swallow would only have moved one call
+// earlier.
 func (s *remoteSnapshot) readFile(commit, rel string) (content string, found bool, err error) {
 	if _, found, err = treeEntryOID(s.Dir, commit, rel); err != nil || !found {
 		return "", false, err
@@ -303,7 +306,15 @@ func (s *remoteSnapshot) requireComplete(commit string, paths []string) error {
 // never as a pathspec: a pathspec makes rev-list walk history (and report
 // every older version of every file, which nobody fetched), and with --no-walk
 // it drops a commit that does not touch the paths and lists nothing. The
-// command fetches nothing and needs no particular git version.
+// command fetches nothing.
+//
+// What this rests on: --missing is documented as a debug option for partial
+// clone, and a missing blob given as a starting point (a single file's path)
+// is reported as `?<id>` only from git 2.45.0, the release GIT_NO_LAZY_FETCH
+// arrived in. It was tested on git 2.47.3. On an older git a missing tree's
+// contents are still reported through the tree; what a missing single file
+// does there is not known (an error, which fails closed, or a fetch of that
+// one blob).
 func (s *remoteSnapshot) missingObjects(commit string, paths []string) (int, error) {
 	out, err := gitCmd(s.Dir, 30*time.Second, append([]string{"ls-tree", "-z", "--full-tree", commit, "--"}, paths...)...)
 	if err != nil {
