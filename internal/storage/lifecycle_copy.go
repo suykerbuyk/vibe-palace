@@ -237,6 +237,16 @@ func ApplyCopy(req CopyRequest) (*CopyResult, error) {
 		}
 	}
 
+	// Everything below reads file contents: fetch them all in one request
+	// first, the manifest and any departure record included.
+	blobPaths := []string{vaultManifestRel}
+	for _, p := range projects {
+		blobPaths = append(append(blobPaths, ProjectTrees(p)...), departure.RelPath(p))
+	}
+	if err := snap.fetchBlobs(tip, blobPaths); err != nil {
+		return nil, copyRefuse("%v", err)
+	}
+
 	// Step 2: source refusals, at the tip.
 	files, projPlans, srcRefusals, err := copySourceRefusals(snap, tip, projects, fps, contentCounts)
 	if err != nil {
@@ -550,14 +560,14 @@ func copySourceRefusals(snap *remoteSnapshot, tip string, projects []string, fps
 			refusals = append(refusals, fmt.Sprintf("project %s is absent at the source tip %s, or its footprint holds no content file", p, shortSHA(tip)))
 			continue
 		}
-		pf, bad, err := footprintFiles(snap.Dir, tip, p)
+		pf, bad, err := footprintFiles(snap, tip, p)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		refusals = append(refusals, bad...)
 		// A departure record over a residue-only Projects/<p> means the project
 		// already left the source.
-		if data, err := lifecycleGit(snap.Dir, lifecycleSnapshotTimeout, "show", tip+":"+departure.RelPath(p)); err == nil {
+		if data, err := snap.git(lifecycleSnapshotTimeout, "show", tip+":"+departure.RelPath(p)); err == nil {
 			rec := departure.Parse(p, []byte(data))
 			projectsContent := 0
 			for _, f := range pf {
@@ -589,10 +599,12 @@ func copySourceRefusals(snap *remoteSnapshot, tip string, projects []string, fps
 }
 
 // footprintFiles lists p's content files at commit, refusing any entry that is
-// not a regular file (a symlink or submodule would be a hole or a leak).
-func footprintFiles(repo, commit, p string) ([]CopyFile, []string, error) {
+// not a regular file (a symlink or submodule would be a hole or a leak). The
+// -l sizes are read from the blobs, so snap.fetchBlobs has run over p's trees
+// first: git prints BAD for a blob the snapshot lacks.
+func footprintFiles(snap *remoteSnapshot, commit, p string) ([]CopyFile, []string, error) {
 	args := append([]string{"ls-tree", "-r", "-l", "--full-tree", commit, "--"}, ProjectTrees(p)...)
-	out, err := gitCmd(repo, 60*time.Second, args...)
+	out, err := snap.git(60*time.Second, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list the footprint of %s: %w", p, err)
 	}
@@ -614,6 +626,9 @@ func footprintFiles(repo, commit, p string) ([]CopyFile, []string, error) {
 			bad = append(bad, fmt.Sprintf("%s is not a regular file at the source (mode %s): copy refuses symlinks and submodules rather than skipping or following them", rel, f[0]))
 			continue
 		}
+		if f[3] == "BAD" {
+			return nil, nil, fmt.Errorf("list the footprint of %s: blob %s of %s is not in the snapshot", p, f[2], rel)
+		}
 		var size int64
 		if _, err := fmt.Sscan(f[3], &size); err != nil {
 			return nil, nil, fmt.Errorf("unparseable size in ls-tree line %q", line)
@@ -625,7 +640,7 @@ func footprintFiles(repo, commit, p string) ([]CopyFile, []string, error) {
 
 // snapshotFormat reads the source's .vibe-palace/vault.toml at commit.
 func snapshotFormat(snap *remoteSnapshot, commit string) (int, error) {
-	data, err := lifecycleGit(snap.Dir, lifecycleSnapshotTimeout, "show", commit+":"+vaultManifestRel)
+	data, err := snap.git(lifecycleSnapshotTimeout, "show", commit+":"+vaultManifestRel)
 	if err != nil {
 		return 0, copyRefuse("the source at %s holds no %s: it is not a vault", shortSHA(commit), vaultManifestRel)
 	}

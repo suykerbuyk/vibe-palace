@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,12 +73,19 @@ func lifecycleGitExtra(dir string) (extra []string, pre []string) {
 // with timeout. Output is trimmed; a failure carries git's own message, as
 // gitCmd's does.
 func lifecycleGit(dir string, timeout time.Duration, args ...string) (string, error) {
+	return lifecycleGitWith(dir, timeout, nil, nil, args...)
+}
+
+// lifecycleGitWith is lifecycleGit with a standard input and with env added to
+// the lifecycle environment; either may be nil.
+func lifecycleGitWith(dir string, timeout time.Duration, stdin io.Reader, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	extra, pre := lifecycleGitExtra(dir)
 	cmd := exec.CommandContext(ctx, "git", append(pre, args...)...)
 	cmd.Dir = dir
-	cmd.Env = SafeGitEnv(extra...)
+	cmd.Env = SafeGitEnv(append(extra, env...)...)
+	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {
@@ -140,7 +148,11 @@ func lsRemoteHead(url string) (remoteHead, error) {
 
 // remoteSnapshot is a private, blobless copy of another vault's published
 // branch: a bare repository under the user cache dir, inside no vault, that
-// holds the commit graph and trees and fetches blobs lazily on checkout.
+// holds the commit graph and trees and no file contents. A caller that reads
+// file contents (a size, a `show`, a checkout) calls fetchBlobs first: git
+// serves a missing blob by fetching it in a subprocess of its own, one
+// connection per file, which a project of a few thousand files does not
+// survive.
 type remoteSnapshot struct {
 	Dir    string // the bare repository
 	URL    string
@@ -188,6 +200,111 @@ func newRemoteSnapshot(url, branch string) (*remoteSnapshot, error) {
 	return s, nil
 }
 
+// snapshotNoLazyFetch forbids git to fetch a missing object on its own. Every
+// read of file contents in a snapshot runs with it, after fetchBlobs: a blob
+// that is still missing then fails the read at once, instead of starting a
+// fetch per file. git honours it from 2.45.0 (and in the May 2024 maintenance
+// releases of older series); a git that does not know it ignores it and
+// fetches lazily, which is slow and still correct. fetchBlobs' own
+// completeness check needs no such support.
+const snapshotNoLazyFetch = "GIT_NO_LAZY_FETCH=1"
+
+// git runs one git command in the snapshot under the lifecycle environment,
+// with lazy fetching forbidden.
+func (s *remoteSnapshot) git(timeout time.Duration, args ...string) (string, error) {
+	return lifecycleGitWith(s.Dir, timeout, nil, []string{snapshotNoLazyFetch}, args...)
+}
+
+// fetchBlobs brings every blob under paths at commit into the snapshot in ONE
+// request, then proves they arrived. paths are trees or files; one that commit
+// does not hold contributes nothing.
+//
+// The request is the one git makes for its own lazy fetch, with every id at
+// once: `-c fetch.negotiationAlgorithm=noop` keeps git from sending `have`
+// lines, so the server sees wants only, and a want needs nothing but the
+// server's filter support (protocol v2 allows a want for any object).
+func (s *remoteSnapshot) fetchBlobs(commit string, paths []string) error {
+	out, err := gitCmd(s.Dir, 60*time.Second, append([]string{"ls-tree", "-r", "-z", "--full-tree", commit, "--"}, paths...)...)
+	if err != nil {
+		return fmt.Errorf("list the files to fetch at %s: %w", shortSHA(commit), err)
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for rec := range strings.SplitSeq(out, "\x00") {
+		meta, _, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(meta) // mode type oid
+		// A symlink is a blob and is fetched (the copy refuses it afterwards); a
+		// submodule is a commit the remote does not hold, and is left out.
+		if !ok || len(f) != 3 || f[1] != "blob" || seen[f[2]] {
+			continue
+		}
+		seen[f[2]] = true
+		ids = append(ids, f[2])
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := lifecycleGitWith(s.Dir, lifecycleSnapshotTimeout, strings.NewReader(strings.Join(ids, "\n")+"\n"), nil,
+		"-c", "fetch.negotiationAlgorithm=noop", "fetch", "--no-tags", "--no-write-fetch-head",
+		"--recurse-submodules=no", "--filter=blob:none", "--quiet", "--stdin", s.URL); err != nil {
+		return withCredentialHint(fmt.Errorf("fetch the %d file(s) under %s from %s: %w", len(ids), strings.Join(paths, ", "), s.URL, err))
+	}
+	return s.requireComplete(commit, paths)
+}
+
+// requireComplete refuses, naming the count, unless the snapshot holds every
+// object under paths at commit.
+func (s *remoteSnapshot) requireComplete(commit string, paths []string) error {
+	missing, err := s.missingObjects(commit, paths)
+	if err != nil {
+		return err
+	}
+	if missing > 0 {
+		return fmt.Errorf("the snapshot of %s lacks %d object(s) under %s at %s: the remote did not send everything it was asked for",
+			s.URL, missing, strings.Join(paths, ", "), shortSHA(commit))
+	}
+	return nil
+}
+
+// missingObjects counts the objects under paths at commit that the snapshot
+// does not hold. It asks `rev-list --objects --no-walk --missing=print` about
+// the tree or blob of each path commit holds, passed as <commit>:<path> and
+// never as a pathspec: a pathspec makes rev-list walk history (and report
+// every older version of every file, which nobody fetched), and with --no-walk
+// it drops a commit that does not touch the paths and lists nothing. The
+// command fetches nothing and needs no particular git version.
+func (s *remoteSnapshot) missingObjects(commit string, paths []string) (int, error) {
+	out, err := gitCmd(s.Dir, 30*time.Second, append([]string{"ls-tree", "-z", "--full-tree", commit, "--"}, paths...)...)
+	if err != nil {
+		return 0, fmt.Errorf("list %s at %s: %w", strings.Join(paths, ", "), shortSHA(commit), err)
+	}
+	args := []string{"rev-list", "--objects", "--no-walk", "--missing=print"}
+	held := 0
+	for rec := range strings.SplitSeq(out, "\x00") {
+		meta, rel, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 3 || f[1] == "commit" {
+			continue
+		}
+		args = append(args, commit+":"+rel)
+		held++
+	}
+	if held == 0 {
+		return 0, nil
+	}
+	listed, err := gitCmd(s.Dir, 60*time.Second, args...)
+	if err != nil {
+		return 0, fmt.Errorf("check the snapshot holds %s at %s: %w", strings.Join(paths, ", "), shortSHA(commit), err)
+	}
+	missing := 0
+	for line := range strings.SplitSeq(listed, "\n") {
+		if strings.HasPrefix(line, "?") {
+			missing++
+		}
+	}
+	return missing, nil
+}
+
 // Close removes the snapshot and everything checked out from it.
 func (s *remoteSnapshot) Close() error {
 	if s == nil || s.root == "" {
@@ -199,7 +316,9 @@ func (s *remoteSnapshot) Close() error {
 // checkoutFootprint checks out only Projects/<p> and palace/<p> of commit, for
 // each slug, into a fresh directory inside the snapshot, and returns it. The
 // directory is a fresh checkout, so every file in it is tracked: a disk walk
-// over it sees exactly the committed footprint and nothing else.
+// over it sees exactly the committed footprint and nothing else. The caller
+// has run fetchBlobs over the same trees: the checkout fetches nothing, and a
+// blob the snapshot lacks fails it.
 func (s *remoteSnapshot) checkoutFootprint(commit string, slugs []string) (string, error) {
 	wt, err := os.MkdirTemp(s.root, "wt-")
 	if err != nil {
@@ -229,7 +348,7 @@ func (s *remoteSnapshot) checkoutFootprint(commit string, slugs []string) (strin
 	extra, pre := lifecycleGitExtra(s.Dir)
 	cmd := exec.CommandContext(ctx, "git", append(pre, args...)...)
 	cmd.Dir = s.Dir
-	cmd.Env = SafeGitEnv(append(extra, "GIT_INDEX_FILE="+index)...)
+	cmd.Env = SafeGitEnv(append(extra, "GIT_INDEX_FILE="+index, snapshotNoLazyFetch)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("check out the footprint of %s: %s: %w", commit, strings.TrimSpace(string(out)), err)
 	}

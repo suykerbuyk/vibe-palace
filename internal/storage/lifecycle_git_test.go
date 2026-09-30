@@ -70,6 +70,9 @@ func TestRemoteSnapshot_FootprintOnlyCheckout(t *testing.T) {
 	if !strings.HasPrefix(s.Dir, filepath.Join(cache, "vibe-palace", "snap")) {
 		t.Fatalf("snapshot %s is not under the user cache dir %s", s.Dir, cache)
 	}
+	if err := s.fetchBlobs(s.Tip, append(ProjectTrees("p"), ProjectTrees("orch")...)); err != nil {
+		t.Fatal(err)
+	}
 	wt, err := s.checkoutFootprint(s.Tip, []string{"p", "orch"})
 	if err != nil {
 		t.Fatal(err)
