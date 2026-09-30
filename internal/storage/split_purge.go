@@ -423,7 +423,7 @@ func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPur
 		removed = true
 	}
 	if len(c.Records) > 0 {
-		if err := stageInBatches(vaultPath, c.Records); err != nil {
+		if err := stageInBatches(vaultPath, gitAddTimeout, c.Records); err != nil {
 			return nil, rollback(fmt.Errorf("stage departure records: %w", err))
 		}
 	}
@@ -438,14 +438,14 @@ func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPur
 			return nil, rollback(fmt.Errorf("check %s: %w", surfaceRel, err))
 		}
 		if dirty {
-			if err := stageInBatches(vaultPath, []string{surfaceRel}); err != nil {
+			if err := stageInBatches(vaultPath, gitAddTimeout, []string{surfaceRel}); err != nil {
 				return nil, rollback(fmt.Errorf("stage %s: %w", surfaceRel, err))
 			}
 			pathspecs = append(pathspecs, surfaceRel)
 		}
 	}
 
-	if err := commitPathspec(vaultPath, stampedCommitMessage(c.Message, c.Trailers), pathspecs); err != nil {
+	if err := commitPathspec(vaultPath, gitCommitTimeout, stampedCommitMessage(c.Message, c.Trailers), pathspecs); err != nil {
 		return nil, rollback(err)
 	}
 

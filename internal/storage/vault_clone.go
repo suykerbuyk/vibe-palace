@@ -121,10 +121,13 @@ type cloneMarker struct {
 var ErrCloneCredentials = errors.New("the URL carries credentials")
 
 // cloneScratchStale is how old a .<name>.vp-clone-* sibling must be before a
-// later run removes it. A live run's clone step is bounded by
-// lifecycleSnapshotTimeout, and the rest takes seconds, so a sibling this old
-// belongs to a run that died.
-const cloneScratchStale = 3 * lifecycleSnapshotTimeout
+// later run removes it. A live run's `git clone` is killed at
+// lifecycleBulkTimeout and the rest takes seconds, so a sibling this old
+// almost always belongs to a run that died. Not always: the deadline kills git
+// only, and a child ssh on a stalled link can outlive it, so a later run can
+// remove the scratch of a clone that is still alive. That was so at the
+// earlier, shorter limit too.
+const cloneScratchStale = 3 * lifecycleBulkTimeout
 
 // CloneVault clones, checks, wires and optionally binds. See the file comment.
 func CloneVault(ctx context.Context, req CloneRequest) (*CloneReport, error) {
@@ -199,7 +202,7 @@ func CloneVault(ctx context.Context, req CloneRequest) (*CloneReport, error) {
 			_ = os.RemoveAll(scratch)
 		}
 	}()
-	if _, err := lifecycleGit(filepath.Dir(path), lifecycleSnapshotTimeout, "clone", "--quiet", "--branch", head.Branch, "--", req.URL, scratch); err != nil {
+	if _, err := lifecycleGit(filepath.Dir(path), lifecycleBulkTimeout, "clone", "--quiet", "--branch", head.Branch, "--", req.URL, scratch); err != nil {
 		return nil, cloneUnreachable(req.URL, err)
 	}
 	if tip, err := gitCmd(scratch, 10*time.Second, "rev-parse", "--verify", "HEAD^{commit}"); err == nil {

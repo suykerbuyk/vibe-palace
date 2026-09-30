@@ -66,7 +66,7 @@ func TestCommitPathsLockedCommitsUnderAHeldRootLock(t *testing.T) {
 	var res *PushResult
 	var err error
 	withinDeadline(t, "commitPathsLocked", func() {
-		res, err = commitPathsLocked(held, "copy alpha", "", []string{"Projects/alpha"})
+		res, err = commitPathsLocked(held, defaultCommitLimits, "copy alpha", "", []string{"Projects/alpha"})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestLockedVariantsRefuseATokenThatIsNotTheRootLock(t *testing.T) {
 		held := tok()
 		var cerr, perr error
 		withinDeadline(t, name, func() {
-			_, cerr = commitPathsLocked(held, "copy alpha", "", []string{"Projects/alpha"})
+			_, cerr = commitPathsLocked(held, defaultCommitLimits, "copy alpha", "", []string{"Projects/alpha"})
 			_, perr = CommitSplitPurgeLocked(held, SplitPurgeCommit{Slugs: []string{"alpha"}, Message: "delete alpha", ExpectHead: head})
 		})
 		if !errors.Is(cerr, vaultlock.ErrNotRootLock) {
@@ -181,7 +181,7 @@ func TestCommitPathsLockedRefusesWhileADepartureIsPending(t *testing.T) {
 
 	var err error
 	withinDeadline(t, "commitPathsLocked", func() {
-		_, err = commitPathsLocked(held, "commit keep", "", []string{"Projects/keep"})
+		_, err = commitPathsLocked(held, defaultCommitLimits, "commit keep", "", []string{"Projects/keep"})
 	})
 	if !errors.Is(err, ErrPendingDeparture) {
 		t.Fatalf("err = %v, want ErrPendingDeparture", err)

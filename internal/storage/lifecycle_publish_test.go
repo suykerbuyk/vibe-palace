@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -111,7 +112,9 @@ func markerFound(t *testing.T, dir string) bool {
 func withPush(t *testing.T, fn func(vaultPath, remote, sha, branch string) error) {
 	t.Helper()
 	old := lifecyclePush
-	lifecyclePush = fn
+	lifecyclePush = func(vaultPath, remote, sha, branch string, _ time.Duration) error {
+		return fn(vaultPath, remote, sha, branch)
+	}
 	t.Cleanup(func() { lifecyclePush = old })
 }
 
@@ -586,7 +589,7 @@ func TestLifecycleMarker_OwnCommitPassesCommitPathsLocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, v.Dir, "Projects/q/resume.md", "q\n")
-	if _, err := commitPathsLocked(h, "vault copy: q\n\nVp-Copy-Project: q", "", []string{"Projects/q"}); err != nil {
+	if _, err := commitPathsLocked(h, defaultCommitLimits, "vault copy: q\n\nVp-Copy-Project: q", "", []string{"Projects/q"}); err != nil {
 		t.Fatalf("the run's own commit was refused: %v", err)
 	}
 	if gitRun(t, v.Dir, "rev-parse", "HEAD~1") != m.Parent {
@@ -646,7 +649,7 @@ func TestLifecycleMarker_NewTokenAfterReleaseIsNotExempt(t *testing.T) {
 		}
 		writeFile(t, v.Dir, "Projects/other/x.md", "another committer's write\n")
 		before := v.head(t)
-		if _, err := commitPathsLocked(h2, "other committer", "", []string{"Projects/other/x.md"}); !errors.Is(err, ErrLifecyclePending) {
+		if _, err := commitPathsLocked(h2, defaultCommitLimits, "other committer", "", []string{"Projects/other/x.md"}); !errors.Is(err, ErrLifecyclePending) {
 			t.Fatalf("commitPathsLocked with the new token: err = %v, want ErrLifecyclePending", err)
 		}
 		if v.head(t) != before {
