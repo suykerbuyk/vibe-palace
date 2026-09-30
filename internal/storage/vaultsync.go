@@ -1392,6 +1392,17 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {
+		// A deadline, said as one. exec reports the kill as "signal: killed",
+		// and the detail line would be whatever git happened to have printed
+		// before it died (the first file of a long listing, say), which reads
+		// as if that line were the fault. Both causes stay in the chain: the
+		// deadline for errors.Is, the exec error for callers that inspect it.
+		// This names the limit; it does not make the call return at it. The
+		// kill reaches git only, so a child that holds the output pipe (ssh, a
+		// lazy fetch) is waited for.
+		if ctx.Err() != nil {
+			return trimmed, &GitError{Err: fmt.Errorf("timed out after %s: %w: %w", timeout, ctx.Err(), err)}
+		}
 		// Wrap HERE, not at the call sites. exec's *ExitError renders as exactly
 		// "exit status 128" while git's own explanation — already captured, one
 		// line above — was being dropped. Attaching it at the single point where

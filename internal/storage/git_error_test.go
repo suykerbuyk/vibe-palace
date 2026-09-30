@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -188,5 +189,33 @@ func TestGitDetailLinePrefersGitsOwnMarker(t *testing.T) {
 				t.Errorf("gitDetailLine() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A gitCmd that hits its limit says so. Before, the error was exec's bare
+// "signal: killed" followed by the first line git had printed, so a listing
+// killed at its limit read as a fault in the first file listed.
+//
+// The test asserts the MESSAGE only, not the elapsed time: the limit kills git
+// and not the alias's shell, which holds the output pipe, so the call returns
+// when that child exits (about a second here), not at 50ms.
+func TestGitCmd_ATimeoutSaysItIsATimeout(t *testing.T) {
+	dir := initTestRepo(t)
+	_, err := gitCmd(dir, 50*time.Millisecond, "-c", "alias.nap=!echo first-output-line; sleep 1", "nap")
+	if err == nil {
+		t.Fatal("a git command that outlives its limit returned no error")
+	}
+	if !strings.Contains(err.Error(), "timed out after 50ms") {
+		t.Errorf("the error does not say it is a timeout: %v", err)
+	}
+	if strings.Contains(err.Error(), "first-output-line") {
+		t.Errorf("the error carries a line of the killed command's output as if it were the cause: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) is false: %v", err)
+	}
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		t.Errorf("errors.As must still reach *exec.ExitError through the wrap; got %T", err)
 	}
 }
