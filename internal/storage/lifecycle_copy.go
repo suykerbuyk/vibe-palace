@@ -566,8 +566,13 @@ func copySourceRefusals(snap *remoteSnapshot, tip string, projects []string, fps
 		}
 		refusals = append(refusals, bad...)
 		// A departure record over a residue-only Projects/<p> means the project
-		// already left the source.
-		if data, err := snap.git(lifecycleSnapshotTimeout, "show", tip+":"+departure.RelPath(p)); err == nil {
+		// already left the source. A record that cannot be read is an error, not
+		// "no record".
+		data, recorded, err := snap.readFile(tip, departure.RelPath(p))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if recorded {
 			rec := departure.Parse(p, []byte(data))
 			projectsContent := 0
 			for _, f := range pf {
@@ -638,10 +643,14 @@ func footprintFiles(snap *remoteSnapshot, commit, p string) ([]CopyFile, []strin
 	return files, bad, nil
 }
 
-// snapshotFormat reads the source's .vibe-palace/vault.toml at commit.
+// snapshotFormat reads the source's .vibe-palace/vault.toml at commit. A source
+// without one is refused as not a vault; one that cannot be read is an error.
 func snapshotFormat(snap *remoteSnapshot, commit string) (int, error) {
-	data, err := snap.git(lifecycleSnapshotTimeout, "show", commit+":"+vaultManifestRel)
+	data, found, err := snap.readFile(commit, vaultManifestRel)
 	if err != nil {
+		return 0, err
+	}
+	if !found {
 		return 0, copyRefuse("the source at %s holds no %s: it is not a vault", shortSHA(commit), vaultManifestRel)
 	}
 	dir, err := os.MkdirTemp(snap.root, "fmt-")

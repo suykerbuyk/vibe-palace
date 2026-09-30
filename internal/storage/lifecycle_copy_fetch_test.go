@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -232,5 +233,73 @@ func TestRemoteSnapshot_MissedBlobIsAnErrorNotALazyFetch(t *testing.T) {
 	}
 	if got := strings.Count(string(raw), lazyFetchTrace); got != 0 {
 		t.Errorf("%d lazy-fetch trace line(s), want 0", got)
+	}
+}
+
+// snapshotFormat tells a source with no manifest from one whose manifest
+// cannot be read. The first is refused as not a vault; the second is an error
+// that names the file, and is never that refusal.
+func TestSnapshotFormat_AbsentIsNotAVaultUnreadableIsAnError(t *testing.T) {
+	f, _ := newBulkCopyFix(t, 1)
+	requireNoLazyFetchSupport(t, f)
+	s := bloblessSnapshot(t, f)
+	trace := filepath.Join(t.TempDir(), "git.trace")
+	t.Setenv("GIT_TRACE", trace)
+
+	// The tree lists the manifest and its blob was never fetched.
+	_, err := snapshotFormat(s, s.Tip)
+	if err == nil || errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), vaultManifestRel) || strings.Contains(err.Error(), "not a vault") {
+		t.Errorf("an unreadable manifest must be an error naming %s, not a refusal; got %v", vaultManifestRel, err)
+	}
+	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), lazyFetchTrace) {
+		t.Error("reading the manifest fetched it lazily")
+	}
+
+	// A source that is not a vault: the first commit of the fixture's history
+	// has no manifest at all.
+	root := gitRun(t, f.Src, "rev-list", "--max-parents=0", "HEAD")
+	if gitRun(t, s.Dir, "ls-tree", root, "--", vaultManifestRel) != "" {
+		t.Fatalf("fixture: the root commit %s holds a manifest", root)
+	}
+	if _, err := snapshotFormat(s, root); !errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), "not a vault") {
+		t.Errorf("a source with no manifest must be refused as not a vault; got %v", err)
+	}
+}
+
+// The departure-record read tells "no record" from a record that cannot be
+// read: the second must never pass for the first, or the copy would skip its
+// "project departed the source" refusal.
+func TestCopySourceRefusals_UnreadableDepartureRecordIsAnError(t *testing.T) {
+	f, _ := newBulkCopyFix(t, 1)
+	requireNoLazyFetchSupport(t, f)
+	f.srcPush(t, "Audits/departures/orch.json", `{"format":"vp-departure/1","slug":"orch","kind":"moved-to-vault","to":"git@example.com:x/y.git","date":"2026-09-30"}`+"\n")
+	s := bloblessSnapshot(t, f)
+	trace := filepath.Join(t.TempDir(), "git.trace")
+	t.Setenv("GIT_TRACE", trace)
+
+	// No record for p in the tree: not found, and no error.
+	if _, found, err := s.readFile(s.Tip, "Audits/departures/p.json"); found || err != nil {
+		t.Errorf("no record in the tree: found=%v err=%v, want false and nil", found, err)
+	}
+	// A record for orch in the tree, its blob never fetched.
+	_, found, err := s.readFile(s.Tip, "Audits/departures/orch.json")
+	if !found || err == nil || !strings.Contains(err.Error(), "Audits/departures/orch.json") {
+		t.Errorf("an unreadable record: found=%v err=%v, want found and an error naming it", found, err)
+	}
+	// Through the caller: the listing needs p's blobs, so fetch those and leave
+	// the record out.
+	if err := s.fetchBlobs(s.Tip, ProjectTrees("orch")); err != nil {
+		t.Fatal(err)
+	}
+	fp, n, err := footprintHash(s.Dir, s.Tip, "orch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, refusals, err := copySourceRefusals(s, s.Tip, []string{"orch"}, map[string]string{"orch": fp}, map[string]int{"orch": n})
+	if err == nil || !strings.Contains(err.Error(), "Audits/departures/orch.json") {
+		t.Errorf("copySourceRefusals must fail on a record it cannot read; got refusals %v, err %v", refusals, err)
+	}
+	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), lazyFetchTrace) {
+		t.Error("reading the record fetched it lazily")
 	}
 }

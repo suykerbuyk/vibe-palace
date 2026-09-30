@@ -215,6 +215,24 @@ func (s *remoteSnapshot) git(timeout time.Duration, args ...string) (string, err
 	return lifecycleGitWith(s.Dir, timeout, nil, []string{snapshotNoLazyFetch}, args...)
 }
 
+// readFile returns the content of the file rel at commit. Whether the file
+// exists is decided from the tree, which a snapshot always holds: found is
+// false only when commit has no entry at rel. A file the tree lists and git
+// cannot read (its blob was not fetched, the object is corrupt) is an error
+// that names it, never "absent": `git show <commit>:<rel>` exits 128 for both,
+// and reading the failure as absence would turn a missing blob into "this is
+// not a vault" or into a departure record that was never looked at.
+func (s *remoteSnapshot) readFile(commit, rel string) (content string, found bool, err error) {
+	if _, found, err = treeEntryOID(s.Dir, commit, rel); err != nil || !found {
+		return "", false, err
+	}
+	content, err = s.git(lifecycleSnapshotTimeout, "show", commit+":"+rel)
+	if err != nil {
+		return "", true, fmt.Errorf("read %s at %s from the snapshot of %s: %w", rel, shortSHA(commit), s.URL, err)
+	}
+	return content, true, nil
+}
+
 // fetchBlobs brings every blob under paths at commit into the snapshot in ONE
 // request, then proves they arrived. paths are trees or files; one that commit
 // does not hold contributes nothing.
