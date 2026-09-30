@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +265,11 @@ func TestRemoteSnapshot_MissedBlobIsAnErrorNotALazyFetch(t *testing.T) {
 	if _, err := s.checkoutFootprint(s.Tip, []string{"p"}); err == nil || !strings.Contains(err.Error(), "Projects/p/") {
 		t.Errorf("checkoutFootprint on a blobless snapshot must fail naming a path; got %v", err)
 	}
+	// The readers' `show` too, with the remote still reachable: without the
+	// variable git would fetch the manifest and the read would succeed.
+	if _, found, err := s.readFile(s.Tip, vaultManifestRel); !found || err == nil || !strings.Contains(err.Error(), vaultManifestRel) {
+		t.Errorf("readFile of a manifest the snapshot lacks must be an error naming it; found=%v err=%v", found, err)
+	}
 
 	raw, err := os.ReadFile(trace)
 	if err != nil || !strings.Contains(string(raw), "built-in: git ls-tree -r -l") {
@@ -438,4 +444,99 @@ func TestLifecyclePush_TheCopyGetsTheBulkLimitDeleteAndInitTheShortOne(t *testin
 		t.Fatalf("init: %v", err)
 	}
 	only("the init", lifecycleNetTimeout)
+}
+
+// gitStandIn puts a `git` first on PATH that behaves as the real one except in
+// the ways a test switches on, and returns the switch. Modes:
+//
+//	"drop-one":      the blob fetch (`fetch ... --stdin`) loses the first id on
+//	                 its stdin, as a server that sends less than it was asked for
+//	"fail-rev-list": every `rev-list` exits 1 and prints nothing
+//
+// An empty mode leaves git alone.
+func gitStandIn(t *testing.T) (setMode func(string)) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the git stand-in is a shell script")
+	}
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	mode := filepath.Join(dir, "mode")
+	script := `#!/bin/sh
+mode=$(cat "` + mode + `" 2>/dev/null)
+fetch=0; stdin=0; revlist=0
+for a in "$@"; do
+  case "$a" in fetch) fetch=1 ;; --stdin) stdin=1 ;; rev-list) revlist=1 ;; esac
+done
+if [ "$mode" = drop-one ] && [ $fetch = 1 ] && [ $stdin = 1 ]; then
+  sed 1d | "` + real + `" "$@"
+  exit $?
+fi
+if [ "$mode" = fail-rev-list ] && [ $revlist = 1 ]; then
+  exit 1
+fi
+exec "` + real + `" "$@"
+`
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func(m string) {
+		t.Helper()
+		if err := os.WriteFile(mode, []byte(m), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A remote that sends less than it was asked for is refused by the blob fetch
+// itself, with the count, and one missing object is enough. The copy's plan
+// stops on that refusal: it does not go on to read the snapshot.
+func TestRemoteSnapshot_UnderDeliveredBlobFetchIsRefusedWithTheCount(t *testing.T) {
+	f, _ := newBulkCopyFix(t, 5)
+	setMode := gitStandIn(t)
+	paths := append(ProjectTrees("p"), vaultManifestRel)
+
+	s := bloblessSnapshot(t, f)
+	setMode("drop-one")
+	err := s.fetchBlobs(s.Tip, paths)
+	if err == nil || !strings.Contains(err.Error(), "lacks 1 object(s)") {
+		t.Fatalf("a blob fetch that was sent one object short must be refused with \"lacks 1 object(s)\"; got %v", err)
+	}
+	// The stand-in withheld one id and nothing else: a second, whole fetch
+	// completes the same snapshot.
+	setMode("")
+	if err := s.fetchBlobs(s.Tip, paths); err != nil {
+		t.Fatalf("the same fetch through the real git: %v", err)
+	}
+
+	setMode("drop-one")
+	if _, err := PlanCopy(f.req("p")); err == nil || !errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), "lacks 1 object(s)") {
+		t.Fatalf("the copy's plan must be refused by the incomplete fetch, with the count; got %v", err)
+	}
+}
+
+// The completeness check fails closed on its own failure: a listing or a
+// rev-list that errors is an error, never "nothing is missing".
+func TestRemoteSnapshot_CompletenessCheckFailsClosed(t *testing.T) {
+	f, _ := newBulkCopyFix(t, 1)
+	s := bloblessSnapshot(t, f)
+	paths := append(ProjectTrees("p"), vaultManifestRel)
+
+	const noSuchCommit = "0123456789abcdef0123456789abcdef01234567"
+	if n, err := s.missingObjects(noSuchCommit, paths); err == nil {
+		t.Errorf("missingObjects on a commit the snapshot lacks returned %d and no error", n)
+	}
+
+	setMode := gitStandIn(t)
+	setMode("fail-rev-list")
+	if n, err := s.missingObjects(s.Tip, paths); err == nil {
+		t.Errorf("missingObjects returned %d and no error although rev-list failed", n)
+	}
+	if err := s.requireComplete(s.Tip, paths); err == nil {
+		t.Error("requireComplete passed a snapshot it could not check")
+	}
 }

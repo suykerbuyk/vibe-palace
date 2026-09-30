@@ -306,7 +306,8 @@ func (s *remoteSnapshot) requireComplete(commit string, paths []string) error {
 // never as a pathspec: a pathspec makes rev-list walk history (and report
 // every older version of every file, which nobody fetched), and with --no-walk
 // it drops a commit that does not touch the paths and lists nothing. The
-// command fetches nothing.
+// command fetches nothing. (As written every argument is a tree or a blob, so
+// --no-walk changes nothing; it matters only if an argument were ever a commit.)
 //
 // What this rests on: --missing is documented as a debug option for partial
 // clone, and a missing blob given as a starting point (a single file's path)
