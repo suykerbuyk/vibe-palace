@@ -642,7 +642,7 @@ func TestDeleteFindsACopyCommitMadeThroughCommitPathsLocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	trailers := "Vp-Copy-Project: p\nVp-Copy-Source: " + fileURL(f.Bares["origin"]) + "\nVp-Copy-Footprint: p " + fp
-	if _, err := commitPathsLocked(h, "vault copy: p", trailers, []string{"Projects/p", "palace/p"}); err != nil {
+	if _, err := commitPathsLocked(h, defaultCommitLimits, "vault copy: p", trailers, []string{"Projects/p", "palace/p"}); err != nil {
 		t.Fatal(err)
 	}
 	_ = h.Release()

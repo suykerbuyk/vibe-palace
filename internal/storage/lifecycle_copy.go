@@ -409,7 +409,7 @@ func ApplyCopy(req CopyRequest) (*CopyResult, error) {
 		paths = append(paths, ProjectTrees(p)...)
 	}
 	subject, trailers := copyCommitMessage(plan, fps, runID)
-	cres, err := commitPathsLocked(held, subject, trailers, paths)
+	cres, err := commitPathsLocked(held, bulkCommitLimits, subject, trailers, paths)
 	if err != nil {
 		return fail(fmt.Errorf("commit: %w", err))
 	}

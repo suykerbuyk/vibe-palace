@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // lazyFetchTrace is what GIT_TRACE prints when git fetches a promisor object
@@ -302,4 +303,83 @@ func TestCopySourceRefusals_UnreadableDepartureRecordIsAnError(t *testing.T) {
 	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), lazyFetchTrace) {
 		t.Error("reading the record fetched it lazily")
 	}
+}
+
+// recordPushLimits makes every publish push a real one and records the limit
+// it was given, per marker command's push.
+func recordPushLimits(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var got []time.Duration
+	old := lifecyclePush
+	lifecyclePush = func(vaultPath, remote, sha, branch string, limit time.Duration) error {
+		got = append(got, limit)
+		return old(vaultPath, remote, sha, branch, limit)
+	}
+	t.Cleanup(func() { lifecyclePush = old })
+	return &got
+}
+
+// Who gets which limit on the publish push. A copy's commit carries a whole
+// project and gets the bulk limit, on its first run and on the redo that
+// finishes an interrupted one. A delete pushes deletions and records, and an
+// init three small files: they keep the short limit, and the delete holds the
+// lock of the vault every session on the host writes.
+func TestLifecyclePush_TheCopyGetsTheBulkLimitDeleteAndInitTheShortOne(t *testing.T) {
+	if lifecycleBulkTimeout <= lifecycleNetTimeout {
+		t.Fatalf("lifecycleBulkTimeout (%s) is not above lifecycleNetTimeout (%s)", lifecycleBulkTimeout, lifecycleNetTimeout)
+	}
+	f := newCopyFix(t)
+	got := recordPushLimits(t)
+	only := func(what string, want time.Duration) {
+		t.Helper()
+		if len(*got) == 0 {
+			t.Fatalf("%s: no push was made", what)
+		}
+		for _, l := range *got {
+			if l != want {
+				t.Errorf("%s: a push was given %s, want %s", what, l, want)
+			}
+		}
+		*got = nil
+	}
+
+	// A copy that dies between its commit and its publish pushes nothing.
+	withCopyHook(t, func(stage string, _ int, _ string) error {
+		if stage == "publish" {
+			return errCopySimulatedKill
+		}
+		return nil
+	})
+	if _, err := ApplyCopy(f.req("orch")); !errors.Is(err, errCopySimulatedKill) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("the killed copy pushed: %v", *got)
+	}
+	copyTestHook = nil
+	// Its redo publishes, under the copy's limit.
+	if res, err := ApplyCopy(f.req("orch")); err != nil || res.Redo != RedoPublished {
+		t.Fatalf("redo: %+v, %v", res, err)
+	}
+	only("the copy's redo", lifecycleBulkTimeout)
+
+	// A copy that runs straight through.
+	if _, err := ApplyCopy(f.req("p")); err != nil {
+		t.Fatal(err)
+	}
+	only("the copy", lifecycleBulkTimeout)
+
+	// The delete of the copied project from the source vault.
+	if _, err := ApplyDelete(f.Src, DeleteRequest{Projects: []string{"p"}, MovedTo: fileURL(f.VBare)}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	only("the delete", lifecycleNetTimeout)
+
+	// An init of a new vault.
+	initEnv(t)
+	origin, github := twoEmptyRemotes(t)
+	if _, err := InitVault(t.Context(), initReq(filepath.Join(t.TempDir(), "new-vault"), origin, github)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	only("the init", lifecycleNetTimeout)
 }

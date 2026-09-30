@@ -29,16 +29,28 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 )
 
-// lifecycleNetTimeout bounds every network git call the lifecycle commands
-// make while they may hold the vault's root lock (ls-remote, the per-remote
-// fetch of a live tip, push). A blocked committer on the host therefore waits
-// a bounded time per remote.
+// lifecycleNetTimeout is the limit on every small network git call the
+// lifecycle commands make, most of them while they hold the vault's root lock:
+// ls-remote, the per-remote fetch of a live tip, and the publish push of init
+// and delete, whose commits carry next to nothing.
+//
+// What a limit here does, and does not: at the deadline the `git` process is
+// killed, and only it. A child that holds the output pipe (ssh, above all)
+// lives on, and the call returns when that child exits. So a push over a slow
+// or stalled link is NOT cut at the limit, and a committer blocked on the
+// vault's lock does not wait a bounded time; the limit only bounds a git that
+// is itself stuck.
 const lifecycleNetTimeout = 30 * time.Second
 
-// lifecycleSnapshotTimeout bounds the blobless snapshot fetch and the
-// footprint checkout. Those run BEFORE the lock is taken and move the most
-// data (the live personal vault's commit graph is ~16 MiB of trees).
-const lifecycleSnapshotTimeout = 5 * time.Minute
+// lifecycleBulkTimeout is the one limit on every lifecycle step that moves a
+// project's worth of data: the snapshot fetch, the blob fetch and the
+// footprint checkout (all before the lock is taken), `vp vault clone`'s clone,
+// and the copy's `git add`, `git commit` and publish push (under the receiving
+// vault's lock). A project here is a few thousand files and a few hundred MiB,
+// and the link speed is not ours to know: thirty minutes is about 160 MiB at
+// 0.1 MiB/s. The same caveat as lifecycleNetTimeout applies to what the
+// deadline kills.
+const lifecycleBulkTimeout = 30 * time.Minute
 
 // footprintHashVersion tags F. A later change to ClassifyProjectPath gets a new
 // version, so trailers written under an older one are read under their own.
@@ -100,15 +112,16 @@ func lifecycleGitWith(dir string, timeout time.Duration, stdin io.Reader, env []
 // withCredentialHint adds the credential fix to a failed network read, and
 // names the one case BatchMode cannot cover: GIT_SSH (a program, not a
 // command line) set without GIT_SSH_COMMAND, where vp adds no BatchMode, so an
-// ssh prompt can only wait out the timeout.
-func withCredentialHint(err error) error {
+// ssh prompt can only wait out the timeout. limit is the limit the failed call
+// ran under, so the hint names the wait that actually happened.
+func withCredentialHint(err error, limit time.Duration) error {
 	if err == nil {
 		return nil
 	}
 	hint := "if this is a credential failure, export GIT_SSH_COMMAND='ssh -i <key> -o IdentitiesOnly=yes -o IdentityAgent=none' and re-run"
 	if os.Getenv("GIT_SSH") != "" && os.Getenv("GIT_SSH_COMMAND") == "" {
 		hint = "GIT_SSH is set, so vp could not add ssh BatchMode and an ssh prompt may have waited out the " +
-			lifecycleNetTimeout.String() + " timeout unanswered; " + hint + " (GIT_SSH_COMMAND takes precedence over GIT_SSH)"
+			limit.String() + " timeout unanswered; " + hint + " (GIT_SSH_COMMAND takes precedence over GIT_SSH)"
 	}
 	return fmt.Errorf("%w; %s", err, hint)
 }
@@ -128,7 +141,7 @@ func lsRemoteHead(url string) (remoteHead, error) {
 	// repository, and a cwd inside one would lend it that repo's config.
 	out, err := lifecycleGit(os.TempDir(), lifecycleNetTimeout, "ls-remote", "--symref", "--", url, "HEAD")
 	if err != nil {
-		return remoteHead{}, withCredentialHint(fmt.Errorf("read %s: %w", url, err))
+		return remoteHead{}, withCredentialHint(fmt.Errorf("read %s: %w", url, err), lifecycleNetTimeout)
 	}
 	var h remoteHead
 	for line := range strings.SplitSeq(out, "\n") {
@@ -186,10 +199,10 @@ func newRemoteSnapshot(url, branch string) (*remoteSnapshot, error) {
 		_ = s.Close()
 		return nil, fmt.Errorf("init snapshot: %w", err)
 	}
-	if _, err := lifecycleGit(s.Dir, lifecycleSnapshotTimeout, "fetch", "--filter=blob:none", "--no-tags", "--quiet",
+	if _, err := lifecycleGit(s.Dir, lifecycleBulkTimeout, "fetch", "--filter=blob:none", "--no-tags", "--quiet",
 		url, "+refs/heads/"+branch+":"+snapshotRef); err != nil {
 		_ = s.Close()
-		return nil, withCredentialHint(fmt.Errorf("fetch %s %s: %w", url, branch, err))
+		return nil, withCredentialHint(fmt.Errorf("fetch %s %s: %w", url, branch, err), lifecycleBulkTimeout)
 	}
 	tip, err := gitCmd(s.Dir, 10*time.Second, "rev-parse", "--verify", snapshotRef+"^{commit}")
 	if err != nil {
@@ -226,7 +239,7 @@ func (s *remoteSnapshot) readFile(commit, rel string) (content string, found boo
 	if _, found, err = treeEntryOID(s.Dir, commit, rel); err != nil || !found {
 		return "", false, err
 	}
-	content, err = s.git(lifecycleSnapshotTimeout, "show", commit+":"+rel)
+	content, err = s.git(lifecycleBulkTimeout, "show", commit+":"+rel)
 	if err != nil {
 		return "", true, fmt.Errorf("read %s at %s from the snapshot of %s: %w", rel, shortSHA(commit), s.URL, err)
 	}
@@ -262,10 +275,10 @@ func (s *remoteSnapshot) fetchBlobs(commit string, paths []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if _, err := lifecycleGitWith(s.Dir, lifecycleSnapshotTimeout, strings.NewReader(strings.Join(ids, "\n")+"\n"), nil,
+	if _, err := lifecycleGitWith(s.Dir, lifecycleBulkTimeout, strings.NewReader(strings.Join(ids, "\n")+"\n"), nil,
 		"-c", "fetch.negotiationAlgorithm=noop", "fetch", "--no-tags", "--no-write-fetch-head",
 		"--recurse-submodules=no", "--filter=blob:none", "--quiet", "--stdin", s.URL); err != nil {
-		return withCredentialHint(fmt.Errorf("fetch the %d file(s) under %s from %s: %w", len(ids), strings.Join(paths, ", "), s.URL, err))
+		return withCredentialHint(fmt.Errorf("fetch the %d file(s) under %s from %s: %w", len(ids), strings.Join(paths, ", "), s.URL, err), lifecycleBulkTimeout)
 	}
 	return s.requireComplete(commit, paths)
 }
@@ -361,7 +374,7 @@ func (s *remoteSnapshot) checkoutFootprint(commit string, slugs []string) (strin
 	}
 	index := filepath.Join(s.root, filepath.Base(wt)+".index")
 	args := append([]string{"--work-tree=" + wt, "checkout", commit, "--"}, paths...)
-	ctx, cancel := context.WithTimeout(context.Background(), lifecycleSnapshotTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycleBulkTimeout)
 	defer cancel()
 	extra, pre := lifecycleGitExtra(s.Dir)
 	cmd := exec.CommandContext(ctx, "git", append(pre, args...)...)

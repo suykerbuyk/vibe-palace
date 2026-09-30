@@ -91,12 +91,26 @@ var (
 	ErrRemoteNotAtHead   = errors.New("remote tip is not this vault's HEAD")
 )
 
-// lifecyclePush pushes sha to remote's branch: no force, no rebase, no
-// autostash. It is a variable only so tests can simulate a push whose
-// acknowledgement was lost; the outcome never trusts its error anyway.
-var lifecyclePush = func(vaultPath, remote, sha, branch string) error {
-	_, err := lifecycleGit(vaultPath, lifecycleNetTimeout, "push", "--quiet", remote, sha+":refs/heads/"+branch)
+// lifecyclePush pushes sha to remote's branch within limit: no force, no
+// rebase, no autostash. It is a variable only so tests can simulate a push
+// whose acknowledgement was lost; the outcome never trusts its error anyway.
+var lifecyclePush = func(vaultPath, remote, sha, branch string, limit time.Duration) error {
+	_, err := lifecycleGit(vaultPath, limit, "push", "--quiet", remote, sha+":refs/heads/"+branch)
 	return err
+}
+
+// lifecyclePushLimit is the limit on the publish push of command's commit. A
+// copy's commit carries a whole project, so it gets the bulk limit; the run
+// holds the receiving vault's lock meanwhile, and a committer there waits. An
+// init's commit is three small files and a delete's is deletions and two
+// records: they keep the short limit, and the delete holds the lock of the
+// vault every session on the host writes. It is keyed on the marker's command,
+// so a redo publishes under the same limit as the run it finishes.
+func lifecyclePushLimit(command string) time.Duration {
+	if command == copyCommand {
+		return lifecycleBulkTimeout
+	}
+	return lifecycleNetTimeout
 }
 
 // remotesFile is the vault's tracked record of its own remotes (§ Clone ›
@@ -153,7 +167,7 @@ func lifecycleRemoteOrder(vaultPath string) ([]string, error) {
 func liveTip(vaultPath, remote, branch string) (string, error) {
 	out, err := lifecycleGit(vaultPath, lifecycleNetTimeout, "ls-remote", remote, "refs/heads/"+branch)
 	if err != nil {
-		return "", withCredentialHint(fmt.Errorf("%w: %s: %v", ErrRemoteUnreachable, remote, err))
+		return "", withCredentialHint(fmt.Errorf("%w: %s: %v", ErrRemoteUnreachable, remote, err), lifecycleNetTimeout)
 	}
 	tip := ""
 	for line := range strings.SplitSeq(out, "\n") {
@@ -283,7 +297,7 @@ func exactPublish(held *vaultlock.Held, branch string, remotes []string, m lifec
 		return fmt.Errorf("exact publish needs the marker's commit")
 	}
 	for i, r := range remotes {
-		pushErr := lifecyclePush(vaultPath, r, m.Commit, branch)
+		pushErr := lifecyclePush(vaultPath, r, m.Commit, branch, lifecyclePushLimit(m.Command))
 		tip, err := liveTip(vaultPath, r, branch)
 		if err != nil {
 			return &PublishError{Kind: PublishStateUnknown, Vault: vaultPath, Remote: r, Commit: m.Commit, Rerun: m.Rerun, Detail: err.Error()}

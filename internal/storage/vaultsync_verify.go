@@ -530,7 +530,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		out.Errors = append(out.Errors, err)
 		return result, out, out.err()
 	}
-	if err := stageInBatches(vaultPath, stage); err != nil {
+	if err := stageInBatches(vaultPath, gitAddTimeout, stage); err != nil {
 		return fail(fmt.Errorf("git add: %w", err))
 	}
 	hostname, _ := os.Hostname()

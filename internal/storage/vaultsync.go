@@ -306,7 +306,7 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
 	}
 
-	committed, err := stageAndCommitLocked(vaultPath, nil, message, "", keep)
+	committed, err := stageAndCommitLocked(vaultPath, nil, defaultCommitLimits, message, "", keep)
 	if err != nil {
 		return nil, err
 	}
@@ -373,10 +373,10 @@ func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string
 // caller is the committer's own root-lock token when it has one
 // (commitPathsLocked), or nil: the backstop guard exempts a lifecycle marker
 // only for the very token that wrote it.
-func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, trailers string, keep []string) (committed bool, err error) {
+func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commitLimits, message, trailers string, keep []string) (committed bool, err error) {
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
-	if err := stageInBatches(vaultPath, keep); err != nil {
+	if err := stageInBatches(vaultPath, limits.add, keep); err != nil {
 		return false, fmt.Errorf("git add: %w", err)
 	}
 
@@ -397,7 +397,7 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, tra
 	// (`rev-parse --verify --quiet`, `ls-files --error-unmatch`,
 	// `rev-parse --is-inside-work-tree`, `ls-remote --exit-code`,
 	// `var GIT_AUTHOR_IDENT`) are the same shape.
-	staged, derr := stagedChangesIn(vaultPath, keep)
+	staged, derr := stagedChangesIn(vaultPath, limits.commit, keep)
 	if derr != nil {
 		return false, derr
 	}
@@ -410,7 +410,7 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, tra
 	fullMsg := stampedCommitMessage(message, trailers)
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
-	if err := commitOnlyPathsFor(vaultPath, caller, fullMsg, keep); err != nil {
+	if err := commitOnlyPathsFor(vaultPath, caller, limits.commit, fullMsg, keep); err != nil {
 		if errors.Is(err, ErrPendingDeparture) || errors.Is(err, vaultfs.ErrDepartedProject) {
 			// A backstop fired after staging (a record appeared between the
 			// first check and the commit, or a path lies under a departed
@@ -430,8 +430,9 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, message, tra
 // gates that. A token that is not a live root lock refuses before any git runs.
 // trailers, when set, is the commit's final paragraph, after the hostname
 // stamp, so git parses it: a lifecycle copy's Vp-Copy-* block goes there, never
-// in message.
-func commitPathsLocked(held *vaultlock.Held, message, trailers string, paths []string) (*PushResult, error) {
+// in message. limits are the git add and git commit limits: defaultCommitLimits
+// for a commit of a few files, bulkCommitLimits for a whole project.
+func commitPathsLocked(held *vaultlock.Held, limits commitLimits, message, trailers string, paths []string) (*PushResult, error) {
 	if err := held.RequireRoot(); err != nil {
 		return nil, err
 	}
@@ -443,7 +444,7 @@ func commitPathsLocked(held *vaultlock.Held, message, trailers string, paths []s
 	if err := refuseOnPendingDeparturesFor(vaultPath, held); err != nil {
 		return nil, err
 	}
-	committed, err := stageAndCommitLocked(vaultPath, held, message, trailers, keep)
+	committed, err := stageAndCommitLocked(vaultPath, held, limits, message, trailers, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -562,11 +563,11 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 		return nil, err
 	}
 	if len(stage) > 0 {
-		if err := stageInBatches(vaultPath, stage); err != nil {
+		if err := stageInBatches(vaultPath, gitAddTimeout, stage); err != nil {
 			return fail(fmt.Errorf("git add: %w", err))
 		}
 	}
-	staged, err := stagedChangesIn(vaultPath, commit)
+	staged, err := stagedChangesIn(vaultPath, gitCommitTimeout, commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -958,11 +959,34 @@ func filterStageablePaths(vaultPath string, paths []string) (keep, skipped []str
 // kernel argv ceiling.
 const stageBatchByteBudget = 64 * 1024
 
+// gitAddTimeout and gitCommitTimeout are the limits on one `git add` batch and
+// on the staged-diff check and `git commit` that follow it, for a commit of a
+// handful of files: a wrap, a tidy, a lifecycle record.
+const (
+	gitAddTimeout    = 30 * time.Second
+	gitCommitTimeout = 10 * time.Second
+)
+
+// commitLimits are the limits of one stage-and-commit. Almost every commit is
+// small and takes defaultCommitLimits. `vp vault copy` commits a whole project
+// (thousands of files, hundreds of MiB to hash into the object store) and
+// takes bulkCommitLimits: a `git add` killed at 30 s leaves .git/index.lock
+// behind, and the rollback then cannot reset.
+type commitLimits struct {
+	add    time.Duration // one `git add` batch
+	commit time.Duration // the staged-diff check, and `git commit`
+}
+
+var (
+	defaultCommitLimits = commitLimits{add: gitAddTimeout, commit: gitCommitTimeout}
+	bulkCommitLimits    = commitLimits{add: lifecycleBulkTimeout, commit: lifecycleBulkTimeout}
+)
+
 // stageInBatches runs `git add -- <chunk>...` over paths, splitting into
 // chunks whose combined argv-path bytes stay under stageBatchByteBudget.
 // Always emits the `--` separator so paths beginning with `-` are treated as
-// paths, not flags.
-func stageInBatches(vaultPath string, paths []string) error {
+// paths, not flags. limit bounds each batch.
+func stageInBatches(vaultPath string, limit time.Duration, paths []string) error {
 	batch := make([]string, 0, len(paths))
 	bytes := 0
 	flush := func() error {
@@ -972,7 +996,7 @@ func stageInBatches(vaultPath string, paths []string) error {
 		args := make([]string, 0, len(batch)+2)
 		args = append(args, "add", "--")
 		args = append(args, batch...)
-		if _, err := gitCmd(vaultPath, 30*time.Second, args...); err != nil {
+		if _, err := gitCmd(vaultPath, limit, args...); err != nil {
 			return err
 		}
 		batch = batch[:0]
@@ -1023,12 +1047,12 @@ func chunkPaths(paths []string) [][]string {
 // command in this file that CANNOT take --pathspec-from-file (it rejects the
 // flag with a usage error, exit 129), so the path list has to ride in argv here.
 // Any chunk reporting a difference is enough: the question is existential.
-func stagedChangesIn(vaultPath string, paths []string) (bool, error) {
+func stagedChangesIn(vaultPath string, limit time.Duration, paths []string) (bool, error) {
 	for _, chunk := range chunkPaths(paths) {
 		args := make([]string, 0, len(chunk)+4)
 		args = append(args, "diff", "--cached", "--quiet", "--")
 		args = append(args, chunk...)
-		if _, err := gitCmd(vaultPath, 10*time.Second, args...); err != nil {
+		if _, err := gitCmd(vaultPath, limit, args...); err != nil {
 			// Non-zero exit from --quiet means "there IS a difference". It is
 			// also what a genuine failure looks like, which is acceptable here:
 			// the false positive costs one commit attempt that then reports its
@@ -1109,12 +1133,12 @@ func stagedChangesIn(vaultPath string, paths []string) (bool, error) {
 // silent no-op is the wrong direction for a function whose whole job is making a
 // write durable.
 func commitOnlyPaths(vaultPath, message string, paths []string) error {
-	return commitOnlyPathsFor(vaultPath, nil, message, paths)
+	return commitOnlyPathsFor(vaultPath, nil, gitCommitTimeout, message, paths)
 }
 
 // commitOnlyPathsFor is commitOnlyPaths for a committer holding the root lock
 // as caller (see refuseOnPendingDeparturesFor).
-func commitOnlyPathsFor(vaultPath string, caller *vaultlock.Held, message string, paths []string) error {
+func commitOnlyPathsFor(vaultPath string, caller *vaultlock.Held, limit time.Duration, message string, paths []string) error {
 	// The commit guard's backstop: every caller also runs it before staging.
 	if err := refuseOnPendingDeparturesFor(vaultPath, caller); err != nil {
 		return err
@@ -1126,7 +1150,7 @@ func commitOnlyPathsFor(vaultPath string, caller *vaultlock.Held, message string
 	if err := refuseDepartedInCommit(vaultPath, paths); err != nil {
 		return err
 	}
-	return commitPathspec(vaultPath, message, paths)
+	return commitPathspec(vaultPath, limit, message, paths)
 }
 
 // refuseDepartedInCommit refuses a commit of paths that would add or modify a
@@ -1168,7 +1192,7 @@ func refuseDepartedInCommit(vaultPath string, paths []string) error {
 // commitPathspec is commitOnlyPaths without the commit guard. Its only other
 // caller is CommitSplitPurge, whose commit is the one that finishes the
 // pending departure records the guard refuses on.
-func commitPathspec(vaultPath, message string, paths []string) error {
+func commitPathspec(vaultPath string, limit time.Duration, message string, paths []string) error {
 	f, err := os.CreateTemp("", "vp-commit-pathspec-*")
 	if err != nil {
 		return fmt.Errorf("git commit: create pathspec file: %w", err)
@@ -1189,7 +1213,7 @@ func commitPathspec(vaultPath, message string, paths []string) error {
 		return fmt.Errorf("git commit: close pathspec file: %w", err)
 	}
 
-	if _, err := gitCmd(vaultPath, 10*time.Second,
+	if _, err := gitCmd(vaultPath, limit,
 		"commit", "-m", message,
 		"--pathspec-from-file="+name, "--pathspec-file-nul",
 	); err != nil {
