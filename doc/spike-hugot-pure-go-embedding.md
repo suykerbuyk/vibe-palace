@@ -5,9 +5,13 @@
 > (`hugot.NewGoSession()` in `internal/embedder/onnx.go`, all-MiniLM-L6-v2,
 > 384 dimensions, normalized). The measurements below were taken on a
 > different host with a pre-release binary and have not been re-run (binary
-> size included). The HNSW index the last section
-> assumes was deferred: search uses a brute-force, exact cosine index
-> (`internal/search/vector_index.go`).
+> size included). The HNSW index the last section assumes is not what ships:
+> at `a32a2d4`, search is an exact brute-force cosine index
+> (`internal/search/vector_index.go:25-30`). ADR-014, which is **Proposed**, not
+> accepted, specifies HNSW as target behaviour, chosen per project by size:
+> `coder/hnsw` behind a wrapper, compiled per host, at or above a measured chunk
+> count; smaller projects keep the exact brute-force index, which is also the
+> test oracle.
 
 ## Date: 2026-04-07
 
