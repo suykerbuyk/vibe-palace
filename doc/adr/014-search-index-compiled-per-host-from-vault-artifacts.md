@@ -613,10 +613,12 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   (`internal/vaultlock/vaultlock.go:157`) locks a named path; `Acquire` and `AcquireWithTimeout`
   (`:184`) lock a hashed sidecar under `.vp-locks/` (`:215-237`).
   `host-local-index-store-ledger-and-fingerprint` adds the timed form on a named path,
-  `vaultlock.AcquireFileWithTimeout(lockPath, timeout)`. It runs `AcquireWithTimeout`'s poll loop
-  over `TryAcquireFile`'s named-file open, and returns `ErrLockWaitTimeout` (`:44`) at the deadline.
-  A context form, `AcquireFileContext`, serves the ingester and the rebuild. The caller creates
-  `palace/.local/locks/`.
+  `vaultlock.AcquireFileWithTimeout(ctx, lockPath, timeout)`. It runs the one poll loop that
+  `AcquireWithTimeout` also uses over `TryAcquireFile`'s named-file open. It returns
+  `ErrLockWaitTimeout` (`:44`) once the timeout elapses, and ctx's error once ctx is done, a cancel
+  being noticed during the wait. A zero timeout tries once; a negative one never expires, so the
+  ingester and the rebuild pass a negative timeout and bound the wait by ctx alone. The caller
+  creates `palace/.local/locks/`.
   - **Where they live.** Under the host-local `palace/.local/locks/` of the vault they guard: never
     a pidfile, and never inside `index/<p>/`, which a discard deletes. Both locks are therefore
     **per host, per vault**.
@@ -669,7 +671,7 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   - **Lock order.** The index commit lock is a leaf: no process holds two at once. The index run
     lock is taken before an index commit lock, never the reverse.
   - **Searches, the MCP server and the note-time writers take only the index commit lock,** with
-    a timeout (`AcquireFileWithTimeout`), and only for their own writes:
+    a finite timeout (`AcquireFileWithTimeout`), and only for their own writes:
     - the `stale` flag;
     - the notes embed into the cache;
     - the glide-path lazy embed;
