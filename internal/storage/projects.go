@@ -341,6 +341,44 @@ func summarizeLocal(localDir string) []LocalEntry {
 	return out
 }
 
+// TrackedDrawerFiles returns how many files git tracks under
+// palace/<project>/drawers/, by one read-only `git ls-files` against the index:
+// what the vault's history still holds, not what is on this host's disk (a
+// pull that untracked the drawers deletes the files, and a host can also hold
+// untracked drawers an old binary wrote).
+//
+// known is false when the vault is not a git repository: "tracked" has no
+// meaning there, and a caller deciding on it must keep the safe answer. A git
+// failure inside a repository is an error.
+func (v *Vault) TrackedDrawerFiles(project string) (n int, known bool, err error) {
+	if err := slug.Validate(project); err != nil {
+		return 0, false, fmt.Errorf("project: %w", err)
+	}
+	if _, err := os.Lstat(filepath.Join(v.Root, ".git")); err != nil {
+		return 0, false, nil
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return 0, false, fmt.Errorf("the vault is a git repository but git is not on PATH")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z", "--", "palace/"+project+"/drawers/")
+	cmd.Dir = v.Root
+	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, false, fmt.Errorf("git ls-files: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	for p := range bytes.SplitSeq(out, []byte{0}) {
+		if len(p) > 0 {
+			n++
+		}
+	}
+	return n, true, nil
+}
+
 // trackedPalaceLocalPathspec lists files under any palace/<slug>/.local/. The
 // :(glob) magic keeps "*" from crossing a "/", so it names exactly the
 // top-level .local of each slug; a plain 'palace/*/.local' pathspec matches no

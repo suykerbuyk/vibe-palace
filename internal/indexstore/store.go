@@ -267,12 +267,17 @@ func (f *kgFold) add(id string, o Owner, payload json.RawMessage) bool {
 	return true
 }
 
-func (f *kgFold) dropOwner(o Owner) {
+// dropOwner removes o from every record, deletes the records left with no
+// owner, and reports whether anything was removed.
+func (f *kgFold) dropOwner(o Owner) bool {
+	removed := false
 	for id, os := range f.owners {
 		out := os[:0]
 		for _, cur := range os {
 			if cur.key() != o.key() {
 				out = append(out, cur)
+			} else {
+				removed = true
 			}
 		}
 		f.owners[id] = out
@@ -287,6 +292,7 @@ func (f *kgFold) dropOwner(o Owner) {
 		order = append(order, id)
 	}
 	f.order = order
+	return removed
 }
 
 func (f *kgFold) lines() []kgLine {

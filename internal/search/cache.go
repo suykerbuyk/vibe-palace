@@ -127,10 +127,11 @@ func (c *EmbedCache) Put(project, drawerID string, vec []float32) error {
 
 // Delete unlinks a cached embedding vector. A missing file is not an error,
 // so calling Delete for a drawer that was never cached is a no-op. It is the
-// engine's eviction primitive — RemoveDrawer and the engine's orphan reaper
-// (reapOrphanVectors) route the on-disk unlink through it. storage's layout
-// sweep and vp_vault_split's purge also remove vectors, directly, because they
-// act on whole directories this type has no handle on.
+// engine's eviction primitive: RemoveDrawer routes the on-disk unlink through
+// it. The orphan reaper (indexstore's Tx.Reap, which must unlink under the
+// index commit lock), storage's layout sweep and vp_vault_split's purge remove
+// vectors directly, because they act on directories this type has no handle
+// on.
 func (c *EmbedCache) Delete(project, drawerID string) error {
 	path, err := c.path(project, drawerID)
 	if err != nil {

@@ -5,17 +5,19 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // drawerMeta stores metadata needed for filtering and boosting.
@@ -609,24 +611,16 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		return stats, err
 	}
 
-	// Live IDs for this build — the reaper unlinks every .vec whose ID is not
-	// in this set (drawer, iteration and note chunks alike).
-	live := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		live[id] = true
-	}
-
 	if len(vecs) == 0 {
 		// No drawers, no iteration chunks and no note chunks. Drop any index
 		// from a previous build so it stops serving hits for content that no
-		// longer exists, then reap every now-orphaned vector (live set is
-		// empty).
+		// longer exists, then reap every now-orphaned vector.
 		e.mu.Lock()
 		old := e.indexes[project]
 		delete(e.indexes, project)
 		e.mu.Unlock()
 		e.closeReplaced(old)
-		if n, err := e.reapOrphanVectors(project, live); err != nil {
+		if n, err := e.reap(ctx, project); err != nil {
 			slog.Warn("reap orphan vectors failed", "project", project, "err", err)
 		} else if n > 0 {
 			stats.Reaped = n
@@ -660,7 +654,7 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 	e.mu.Unlock()
 	e.closeReplaced(old)
 
-	if n, err := e.reapOrphanVectors(project, live); err != nil {
+	if n, err := e.reap(ctx, project); err != nil {
 		slog.Warn("reap orphan vectors failed", "project", project, "err", err)
 	} else if n > 0 {
 		stats.Reaped = n
@@ -701,44 +695,102 @@ func (e *Engine) detectCollision(id string, meta drawerMeta) bool {
 	return true
 }
 
-// reapOrphanVectors unlinks every .vec file under a project's embed-cache whose
-// drawer ID is not in live, evicting each through RemoveDrawer so any stale
-// in-memory index/metadata for that ID is dropped in the same step (Rebuild adds
-// metadata keys but never removes them, so this is where deleted-drawer keys get
-// cleaned). It returns the number of vectors reaped. This is cheap hygiene:
-// MoveDrawer preserves the ID so it orphans nothing, and no live delete path
-// exists today, but a future delete would leak .vec files without it. Must be
-// called with no engine lock held (RemoveDrawer takes e.mu).
-func (e *Engine) reapOrphanVectors(project string, live map[string]bool) (int, error) {
-	cacheDir, err := e.cache.dir(project)
-	if err != nil {
+// reapLockTimeout bounds how long a Rebuild waits for the project's index
+// commit lock to reap. Rebuild runs on the lazy search path, which never waits
+// on an ingest or a rebuild: a reap that cannot take the lock in time is
+// skipped (it is hygiene, and the next Rebuild reaps), never waited out. A var,
+// not a const, so a test can make the busy-lock skip immediate.
+var reapLockTimeout = 5 * time.Second
+
+// reap collects the project's orphan vectors (and orphaned store records)
+// through indexstore's Tx.Reap, under the project's index commit lock, and
+// evicts every reaped id from the in-memory index and metadata through
+// RemoveDrawer. It returns the number of vectors reaped.
+//
+// The live set is re-read under the lock (liveSourceIDs), never taken from the
+// set this Rebuild started with: another process may have committed chunks
+// since, and their vectors must survive. Tx.Reap adds every chunk id in the
+// host-local store itself.
+//
+// 🔴 LOCK ORDER: the index commit lock, THEN e.mu. reap takes e.mu (through
+// RemoveDrawer) only while it holds the commit lock, and no code path takes
+// the commit lock while holding e.mu. The per-project in-process mutex that
+// search-index-completeness-and-build-serialization adds is taken BEFORE the
+// commit lock, so it must not be e.mu. Must be called with no engine lock held.
+func (e *Engine) reap(ctx context.Context, project string) (int, error) {
+	// The embed cache's directory first, as the reaper always did: resolving
+	// it runs the cache's one-time layout sweep (legacy caches migrated, husks
+	// healed, orphan caches reaped) and its fingerprint check. For a project
+	// with no corpus this is the only cache access a Rebuild makes, so skipping
+	// it would leave the sweep unrun. Tx.Reap then reads the swept layout.
+	if _, err := e.cache.dir(project); err != nil {
 		return 0, fmt.Errorf("embed cache dir: %w", err)
 	}
-	entries, err := os.ReadDir(cacheDir)
+	tx, err := indexstore.Lock(ctx, e.vault, project, reapLockTimeout)
+	if errors.Is(err, vaultlock.ErrLockWaitTimeout) {
+		slog.Info("reap skipped: the index commit lock is busy", "project", project)
+		return 0, nil
+	}
+	if errors.Is(err, indexstore.ErrProjectGone) {
+		return 0, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read embed cache dir: %w", err)
+		return 0, err
 	}
-
-	reaped := 0
-	for _, ent := range entries {
-		name := ent.Name()
-		if ent.IsDir() || !strings.HasSuffix(name, ".vec") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".vec")
-		if live[id] {
-			continue
-		}
+	defer tx.Release()
+	reaped, err := tx.Reap(func() (map[string]bool, error) { return e.liveSourceIDs(project) })
+	if err != nil {
+		return 0, err
+	}
+	// Evict each reaped id from the in-memory index and metadata through the
+	// engine's eviction primitive. Its unlink of the .vec is a no-op by now,
+	// and it runs under the commit lock, as every .vec write must.
+	for _, id := range reaped {
 		if err := e.RemoveDrawer(project, id); err != nil {
-			slog.Warn("reap orphan vector failed", "project", project, "drawer", id, "err", err)
-			continue
+			slog.Warn("evict reaped vector failed", "project", project, "drawer", id, "err", err)
 		}
-		reaped++
 	}
-	return reaped, nil
+	return len(reaped), tx.Commit()
+}
+
+// liveSourceIDs is the union of the ids every source Rebuild reads, re-read
+// from disk: tracked drawers, iteration chunks and note chunks. (The store's
+// own chunk ids are added by Tx.Reap.) It embeds nothing.
+func (e *Engine) liveSourceIDs(project string) (map[string]bool, error) {
+	live := map[string]bool{}
+	wings, err := e.vault.ListWings(project)
+	if err != nil {
+		return nil, fmt.Errorf("list wings: %w", err)
+	}
+	for _, wing := range wings {
+		rooms, err := e.vault.ListRooms(project, wing)
+		if err != nil {
+			return nil, fmt.Errorf("list rooms for wing %s: %w", wing, err)
+		}
+		for _, room := range rooms {
+			drawers, err := e.vault.ListDrawers(project, wing, room)
+			if err != nil {
+				// Rebuild skips an unreadable room; the reaper must not
+				// treat its drawers as gone.
+				return nil, fmt.Errorf("list drawers %s/%s: %w", wing, room, err)
+			}
+			for _, d := range drawers {
+				live[d.ID] = true
+			}
+		}
+	}
+	iterIDs, _, _, err := collectIterationCorpus(e.vault, project)
+	if err != nil {
+		return nil, fmt.Errorf("iteration corpus: %w", err)
+	}
+	noteIDs, _, _, err := collectNoteCorpus(e.vault, project)
+	if err != nil {
+		return nil, fmt.Errorf("note corpus: %w", err)
+	}
+	for _, id := range append(iterIDs, noteIDs...) {
+		live[id] = true
+	}
+	return live, nil
 }
 
 // embedMisses embeds the cache-miss drawers in batches, filling their slots in

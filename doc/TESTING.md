@@ -1350,6 +1350,114 @@ exits 0 when `third_party/coder-hnsw` is upstream at the required version plus
 `vp.patch` (bytes and executable bits), 1 on drift, and 2 when the check could
 not run. `make fmt` and `fmt-check` skip `third_party/`.
 
+### `internal/indexstore/` — Host-local index store, ledger and locks
+
+The per-host search index under `palace/.local/index/<p>/` (ADR-014): the two
+index locks, the store change counter, the chunk store, the ingest ledger, the
+commit steps, discards, graph writes and the orphan reaper. Task
+`host-local-index-store-ledger-and-fingerprint`. Every test below was broken
+once on purpose and failed; the mutants are recorded in that task.
+Multi-process rows re-exec the test binary as a helper (`main_test.go`,
+`runHelper`) and synchronise through files and exit codes; no test asserts a
+duration (a 60 s liveness bound is a deadlock detector only). `TestMain`
+installs a lock recorder over the whole binary that fails the run if any
+goroutine nests two index commit locks or tries the run lock while holding one.
+
+**Locks and the counter** (`runlock_test.go`, `tx_test.go`, `generation_test.go`):
+
+| Test | What it proves |
+|---|---|
+| `TestRunLockIsNonBlockingAndNamesItsHolder` | While a helper holds the run lock, `TryRunLock` returns at once with `ok=false`, and `ReadHolder` names the helper's pid, kind, project and start time |
+| `TestRunLockLivenessIsTheOSLock` | After the holder is SIGKILLed, the next `TryRunLock` succeeds although the holder record still names the dead pid |
+| `TestHolderRecordIsAdvisory` | A deleted or corrupt holder record frees nothing; a record naming a live foreign pid blocks nothing |
+| `TestHolderRecordLifecycleAndProgress` | `SetProgress` shows in the record; `Release` removes the record before it unlocks; `ReadHolder` takes no lock |
+| `TestNoLostTrigger` | Both forced orders of a trigger against a releasing holder commit the trigger's archive exactly once |
+| `TestRecheckSkipsWhatTheLastRescanSaw` | `ReleaseAndRecheck` re-acquires only for an archive its last rescan did not see |
+| `TestLocksLiveInPalaceLocalLocks` | Both locks are files in `palace/.local/locks/`; nothing goes under `index/<p>/` or `.vp-locks/`; deleting `index/<p>/` frees nothing |
+| `TestCommitLockTimesOutAndHonoursItsContext` | `Lock` with a zero timeout or a cancelled context returns at once without acquiring |
+| `TestLockNoticesACancelDuringAFiniteWait` | A cancel during a finite wait is noticed during the wait |
+| `TestCommitLockIsALeaf` | The binary-wide checker catches a nested commit lock and a run lock under a commit lock; no `*Tx` method calls `Lock` or `TryRunLock` |
+| `TestRemovedProjectIsNotRecreated` | A project removed while `Lock` waits gives `ErrProjectGone`, and neither `index/<p>/` nor its counter is created |
+| `TestGenerationTellsEachHolderWhatChanged` | `Tx.Generation` lets each holder see another process's write; a holder's own commit is not reported back to it, and one holder's lock consumes nothing for another |
+| `TestWritesGoThroughThisFile` | No non-test file but `write.go` calls a raw `os` write or removal, and `write.go` only `os.OpenFile` for appends |
+| `TestIndexstoreDoesNotImportSearch` | `go list -deps` of the package names neither `internal/search` nor `internal/capture` |
+| `TestStoreCounter` | An empty `Tx` leaves the counter; an append moves `gen` only; a write that does more moves `gen` and the epoch; a recreated counter gets a new epoch |
+| `TestGenerationFileFormat` | The counter file is `gen epoch`; malformed contents are an error to a reader |
+| `TestMalformedCounterIsReplacedUnderTheLock` | A malformed counter is replaced under the lock with `gen` 0 and a new epoch, never wedging the project |
+| `TestCounterAndHolderWritesAreFsynced` | Counter and holder writes fsync the temp file and, after the rename, the directory |
+
+**Chunk store, ledger and commit steps** (`store_test.go`):
+
+| Test | What it proves |
+|---|---|
+| `TestCollidingDrawerIDsAreTwoStoreChunks` | Two contents whose 32-bit drawer ids collide are two stored chunks |
+| `TestPerArchiveWriteOrderAndKills` | Vectors, chunks, KG, then the ledger record (with chunk count and start day); a kill after each step leaves the session pending and invisible, and a rerun leaves no duplicate line |
+| `TestSearchLoadsOnlyLedgeredRecords` | Unledgered archives and batches are invisible; note-owned chunks are visible |
+| `TestSupersedeSteps` | The three supersede steps: shared chunk kept, private chunk deleted, note chunk untouched, generation 2, epoch changed; kills after steps 1 and 2 resume |
+| `TestSamePathSupersede` | Owners are `source_sha256`, so a re-archive at the same path supersedes correctly, whatever the chunk order |
+| `TestSupersedeAgainstAnIngestInAnotherProcess` | An ingest of the older archive in another process, forced first, loses its ownership to the supersede; forced after, it is refused |
+| `TestSupersedeRefusesAReplacedArchive` | A supersede back to an archive recorded superseded is refused |
+| `TestPendingFold` | Pending is: no record, a different live sha, or superseding to the archive |
+| `TestReplacedArchivesAreNeverPending` | An archive replaced by a supersede, or recorded superseded, is never pending |
+| `TestAFailureRecordIsNeverAnIngest` | A session with only failure records is not ledgered, stays pending, has no start day, loads nothing |
+| `TestFailureCount` | Counts accumulate; only a rebuild proof clears them, keeping the failures of its own run; an ingest run cannot make a proof |
+| `TestBaselineSet` | The baseline set: built once minus the trigger's archive, added to, cleared only by a proof, recreated by a discard; an addition creates no ledger |
+| `TestChunkCountIsDistinctIDs` | The ledger's chunk count is distinct ids; `CountChunks` reports a shortfall |
+| `TestStartDay` | Start days from session and batch records follow a supersede; a batch named after a session is refused |
+| `TestSharedRecordDating` | A shared chunk's fields come from the live owner with the earliest day, in any ingest order; a batch's day comes from the ledger |
+| `TestReplaceOwned` | `ReplaceOwned` adds, rewrites a re-dated owner line, removes and deletes; the epoch changes exactly when more than an append happened |
+| `TestReplaceOwnedAppendsAgainstTheFileItRead` | The append branch indexes from the file it read, not a stale cache |
+| `TestStoreCounterAcrossWrites` | Each kind of write moves the counter as specified (a destructive one by two); a failed append moves nothing; a failed destructive write has already moved it |
+| `TestGraphWrites` | Graph writes move `gen` only, leave records byte-identical, and a failed one keeps the old graph |
+| `TestDiscardScope` | Each discard removes exactly its files; a vector discard keeps the embed cache's sidecar |
+| `TestDiscardChunksKilledPartWay` | A chunk discard killed after any step leaves no live session over missing chunks |
+| `TestACrashedDiscardInAnotherProcessInvalidatesTheCache` | A discard that dies in another process still makes this process reload: no write from a stale cache |
+| `TestALedgerIsNeverBegunByASessionRecord` | A ledger is only ever begun by its baseline |
+| `TestTornFinalLine` | Readers skip a torn tail and stop their offset before it; the next append cuts it first |
+| `TestAppendDoesNotRescan` | 10,000 appends read `chunks.jsonl` at most once (skipped under `-short`) |
+| `TestTwoProcessAppendSameIDs` / `TestTwoProcessAppendDistinctIDs` | Two processes appending the same or distinct ids produce whole, deduplicated files |
+| `TestCachedStateReloadsAfterAnotherProcessWrites` | A process's id set reloads after another process's append |
+| `TestCacheIsDroppedAfterAFailedWrite` | A write that lands and then errors drops the cache |
+| `TestAppendsAreFsynced` | Chunk, KG and ledger appends are fsynced |
+| `TestCommitRefusesForeignIDsAndVectors` | A chunk id that is not `index.ChunkID` of its content, and a vector for no chunk, are refused |
+| `TestStoreWritesLeaveTheTreeClean` | With the canonical `.gitignore`, `git status --porcelain -uall` is empty after every kind of store write |
+
+**Reaper, legacy ledger and structure** (`reap_test.go`, `legacy_test.go`, `structure_test.go`):
+
+| Test | What it proves |
+|---|---|
+| `TestReapCollectsAKilledArchiveLaterSuperseded` | The reaper drops a superseded archive's ownership, deletes what it alone owned, and unlinks those vectors |
+| `TestReapCollectsVectorsASupersedePruned` | Vectors of chunks a supersede pruned are unlinked; stored chunks and other sources' ids keep theirs |
+| `TestReapKeepsAPendingArchive` | A pending archive's and an unledgered batch's records and vectors survive |
+| `TestReapWithNothingToCollectWritesNothing` | A reap with nothing to collect does not move the counter |
+| `TestReapAbortsOnALiveSetError` | No vector is unlinked when the live set cannot be read |
+| `TestReaperIsSafeAcrossProcesses` | A helper ingesting while this process reaps in a loop: every stored chunk keeps its vector |
+| `TestReapWaitsForAnInFlightCommit` | A reap started between a commit's vector and chunk steps waits for the commit and keeps its vector |
+| `TestDeleteLegacyLedgerIfUntracked` | The legacy ledger is deleted only when git tracks no drawer of the project, whatever untracked drawer files sit on this host's disk; kept in a non-git vault |
+| `TestWritesNeedATx` | Every exported writer is a `*Tx` method or on a reasoned allowlist that names only real writers |
+| `TestOnlyTheRebuildDiscards` | Outside this package nothing discards, clears or makes a rebuild proof (allowlist empty until the rebuild driver lands) |
+
+**Elsewhere:** `internal/index` (`TestChunkIDIsWideAndHashesContentAlone`,
+`TestIndexPackageIsALeaf`); `internal/vaultlock`
+(`TestAcquireFileWithTimeoutOnANamedFile`,
+`TestAcquireFileWithTimeoutHonoursItsContext`,
+`TestAcquireWithTimeoutSharesTheLoop`, `TestAcquireWithTimeoutNegativeTriesOnce`);
+`internal/atomicfile` (`TestWrite_FsyncAndDirFsyncAreObservable`,
+`TestRemoveWithRetry`); `internal/storage` (`TestIndexPaths`,
+`TestProjectExistsIsListAllProjectsMembership`); `internal/search`
+(`TestReapOrphanVectors`: the engine's reaper, under the commit lock, keeps a
+tracked drawer's and a stored chunk's vectors, unlinks the rest and evicts
+them from memory; `TestRebuildSkipsTheReapWhileTheCommitLockIsBusy`: a busy
+commit lock makes Rebuild skip its reap, without error and without waiting;
+`TestReapRunsTheEmbedCacheCheckFirst`: the reap resolves the embed cache first,
+so its one-time sweep and fingerprint check run even for a corpus-less
+project; `TestReapFailsOnAnUnreadableRoom`: an unreadable room fails the
+live-set read, and nothing is reaped; `internal/integration`'s
+`TestIntegrationPulledDeletionLeavesNoHusk` pins the same sweep end to end);
+`internal/tools`
+(`TestRefreshIndexKeepsTheLegacyLedgerWhileDrawersAreTracked`,
+`TestRefreshIndexDeletesTheLegacyLedgerOnceDrawersAreUntracked`).
+
 ---
 
 ## Write/Wrap Surface Unit Tests

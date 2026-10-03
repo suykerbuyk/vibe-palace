@@ -707,12 +707,26 @@ func (tx *Tx) writeChunkFold(s *state, f *chunkFold) error {
 
 // rewriteKG is rewriteChunks for the KG file.
 func (tx *Tx) rewriteKG(s *state, edit func(*kgFold)) error {
-	lines, _, _, err := readLines(tx.files.kg)
+	f, err := tx.readKGFold()
 	if err != nil {
 		return err
 	}
-	f := foldKGLines(decodeLines(tx.files.kg, lines, validKGLine))
 	edit(f)
+	return tx.writeKGFold(s, f)
+}
+
+// readKGFold reads the KG file whole and folds it.
+func (tx *Tx) readKGFold() (*kgFold, error) {
+	lines, _, _, err := readLines(tx.files.kg)
+	if err != nil {
+		return nil, err
+	}
+	return foldKGLines(decodeLines(tx.files.kg, lines, validKGLine)), nil
+}
+
+// writeKGFold replaces the KG file with f, atomically, and re-indexes the
+// cached state from it.
+func (tx *Tx) writeKGFold(s *state, f *kgFold) error {
 	data, err := encodeLines(f.lines())
 	if err != nil {
 		return err

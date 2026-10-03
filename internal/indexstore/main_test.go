@@ -410,6 +410,38 @@ func runHelper(mode string) int {
 		_ = tx.Discard(DiscardChunks)
 		return fail("the discard did not reach discard-chunks")
 
+	case "ingest-loop":
+		// Ingest 100 archives of two chunks each into alpha, one commit step
+		// each, after the go signal; signal "done" at the end.
+		if err := sig("ready"); err != nil {
+			return fail("%v", err)
+		}
+		if !await("go") {
+			return fail("never told to go")
+		}
+		for i := 0; i < 100; i++ {
+			tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+			if err != nil {
+				return fail("Lock: %v", err)
+			}
+			if _, err := tx.EnsureLedger(nil); err != nil {
+				return fail("EnsureLedger: %v", err)
+			}
+			c := commitOf(fmt.Sprintf("S%d", i), fmt.Sprintf("sha%d", i), "2026-05-13",
+				fmt.Sprintf("chunk %d a", i), fmt.Sprintf("chunk %d b", i))
+			if err := tx.CommitArchive(c, fileVW{vault}); err != nil {
+				_ = tx.Release()
+				return fail("CommitArchive: %v", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fail("Commit: %v", err)
+			}
+		}
+		if err := sig("done"); err != nil {
+			return fail("%v", err)
+		}
+		return 0
+
 	case "commit-write":
 		// One Tx on alpha that wrote something (an append).
 		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)

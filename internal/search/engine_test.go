@@ -13,8 +13,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/index"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -428,32 +431,57 @@ func TestCollisionDetectorInRebuild(t *testing.T) {
 	}
 }
 
-// TestReapOrphanVectors verifies the reaper unlinks .vec files whose drawer ID
-// is not in the live set and leaves live vectors alone.
+// TestReapOrphanVectors verifies the reaper, which runs under the project's
+// index commit lock: it unlinks the .vec files of ids no live source holds,
+// keeps the vectors of a tracked drawer and of a chunk in the host-local store,
+// and drops each reaped id from the in-memory index. A project that is not in
+// the vault is not reaped and is not an error.
 func TestReapOrphanVectors(t *testing.T) {
 	eng, v := testEngine(t)
-
-	if err := eng.cache.Put("proj", "live1", []float32{1, 2, 3}); err != nil {
+	ctx := context.Background()
+	if err := v.AppendDrawer("proj", "wing", "room", storage.Drawer{Content: "a drawer", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.cache.Put("proj", "orphan1", []float32{4, 5, 6}); err != nil {
-		t.Fatal(err)
-	}
-	if err := eng.cache.Put("proj", "orphan2", []float32{7, 8, 9}); err != nil {
-		t.Fatal(err)
-	}
-
-	n, err := eng.reapOrphanVectors("proj", map[string]bool{"live1": true})
+	drawerID := storage.DrawerID("wing", "a drawer")
+	chunk := indexstore.OwnedChunk{Chunk: indexstore.Chunk{ID: index.ChunkID("a stored chunk"), Content: "a stored chunk"}, Ownership: indexstore.Ownership{Day: "2026-05-13"}}
+	tx, err := indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
 	if err != nil {
-		t.Fatalf("reapOrphanVectors: %v", err)
+		t.Fatal(err)
+	}
+	if err := tx.Append(indexstore.NoteOwner("notes/n.md"), []indexstore.OwnedChunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{drawerID, chunk.ID, "orphan1", "orphan2"} {
+		if err := eng.cache.Put("proj", id, []float32{1, 2, 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := newIndex(kindBrute, 3, provisionalHNSWParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Build([][]float32{{1, 0, 0}, {0, 1, 0}}, []string{drawerID, "orphan1"}); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	eng.indexes["proj"] = idx
+	eng.mu.Unlock()
+
+	n, err := eng.reap(ctx, "proj")
+	if err != nil {
+		t.Fatalf("reap: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("reaped %d, want 2", n)
 	}
-
-	livePath, _ := eng.cache.path("proj", "live1")
-	if _, err := os.Stat(livePath); err != nil {
-		t.Errorf("live vector should survive reap: %v", err)
+	for _, id := range []string{drawerID, chunk.ID} {
+		p, _ := eng.cache.path("proj", id)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("live vector %s should survive reap: %v", id, err)
+		}
 	}
 	for _, id := range []string{"orphan1", "orphan2"} {
 		p, _ := eng.cache.path("proj", id)
@@ -461,12 +489,148 @@ func TestReapOrphanVectors(t *testing.T) {
 			t.Errorf("orphan %s not reaped, stat err = %v", id, err)
 		}
 	}
-
-	// Missing embed-cache dir is not an error.
-	if _, err := eng.reapOrphanVectors("no-such-project", nil); err != nil {
-		t.Errorf("reap on missing cache dir returned %v, want nil", err)
+	if idx.Len() != 1 {
+		t.Errorf("the in-memory index holds %d ids after the reap, want 1 (orphan1 evicted)", idx.Len())
 	}
-	_ = v
+
+	if n, err := eng.reap(ctx, "no-such-project"); err != nil || n != 0 {
+		t.Errorf("reap of a project not in the vault = %d, %v; want 0, nil", n, err)
+	}
+}
+
+// While another holder has the project's index commit lock, a Rebuild skips
+// its reap instead of waiting: no error, nothing reaped, the orphan vector
+// still there. reap itself reports the skip as success. Once the lock is free
+// the next Rebuild reaps.
+func TestRebuildSkipsTheReapWhileTheCommitLockIsBusy(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	addDrawer(t, v, "proj", "wing", "room", "a drawer", "facts")
+	if err := eng.cache.Put("proj", "orphan", []float32{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	orphan, _ := eng.cache.path("proj", "orphan")
+	old := reapLockTimeout
+	reapLockTimeout = 0
+	defer func() { reapLockTimeout = old }()
+
+	held, err := indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var stats RebuildStats
+	var rerr, reapErr error
+	var n int
+	go func() {
+		defer close(done)
+		stats, rerr = eng.Rebuild(ctx, "proj")
+		n, reapErr = eng.reap(ctx, "proj")
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("Rebuild waited for a busy commit lock instead of skipping its reap")
+	}
+	if rerr != nil || stats.Reaped != 0 {
+		t.Fatalf("Rebuild with the lock busy: err=%v reaped=%d; want no error and 0", rerr, stats.Reaped)
+	}
+	if reapErr != nil || n != 0 {
+		t.Fatalf("reap with the lock busy = %d, %v; want 0, nil (a skip, not a failure)", n, reapErr)
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatal("the orphan vector was reaped while the commit lock was busy")
+	}
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if stats, err := eng.Rebuild(ctx, "proj"); err != nil || stats.Reaped != 1 {
+		t.Fatalf("Rebuild with the lock free: err=%v reaped=%d; want 1", err, stats.Reaped)
+	}
+}
+
+// reap resolves the embed cache's directory before it reaps, as the reaper
+// always did, so the cache's one-time sweep and fingerprint check run even for
+// a project whose Rebuild reads no corpus. Here the project's only content is
+// a stored chunk whose vector carries an older embedding regime's sidecar: the
+// check replaces the sidecar and wipes the stale vector, which Tx.Reap alone
+// would keep (the chunk is in the store).
+func TestReapRunsTheEmbedCacheCheckFirst(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chunk := indexstore.OwnedChunk{Chunk: indexstore.Chunk{ID: index.ChunkID("a stored chunk"), Content: "a stored chunk"}, Ownership: indexstore.Ownership{Day: "2026-05-13"}}
+	tx, err := indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Append(indexstore.NoteOwner("notes/n.md"), []indexstore.OwnedChunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := v.EmbedCacheDir("proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vec := filepath.Join(dir, chunk.ID+".vec")
+	side := filepath.Join(dir, storage.EmbedCacheFingerprintFile)
+	if err := os.WriteFile(vec, make([]byte, 12), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(side, []byte("an older embedding regime\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := eng.reap(ctx, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(side)
+	if err != nil || strings.TrimSpace(string(got)) != eng.cache.fingerprint {
+		t.Fatalf("sidecar after the reap = %q, %v; want the engine's regime %q", got, err, eng.cache.fingerprint)
+	}
+	if _, err := os.Stat(vec); !os.IsNotExist(err) {
+		t.Fatal("a vector of an older regime survived: the embed cache's check did not run")
+	}
+}
+
+// An unreadable room makes the live-set read fail, and reap reaps nothing:
+// Rebuild skips such a room with a warning, but the reaper must not read its
+// drawers as gone.
+func TestReapFailsOnAnUnreadableRoom(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	eng, v := testEngine(t)
+	ctx := context.Background()
+	d1 := addDrawer(t, v, "proj", "wing", "r1", "first room drawer", "facts")
+	d2 := addDrawer(t, v, "proj", "wing", "r2", "second room drawer", "facts")
+	for _, id := range []string{d1.ID, d2.ID} {
+		if err := eng.cache.Put("proj", id, []float32{1, 2, 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	room, err := v.DrawerFile("proj", "wing", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(room, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(room, 0o644)
+
+	if _, err := eng.reap(ctx, "proj"); err == nil {
+		t.Fatal("reap succeeded although a room could not be read")
+	}
+	for _, id := range []string{d1.ID, d2.ID} {
+		p, _ := eng.cache.path("proj", id)
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("drawer %s's vector was reaped while its room was unreadable", id)
+		}
+	}
 }
 
 // TestRebuildReapsOrphanVectors verifies Rebuild is a live caller of the reaper:

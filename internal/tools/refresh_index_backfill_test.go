@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -612,5 +613,73 @@ func TestRefreshIndexBackfillDoesNotRecordAFailedIngest(t *testing.T) {
 	}
 	if rows := readLedger(t, vault, project); len(rows) != 1 {
 		t.Errorf("ledger holds %d rows after the retry, want 1", len(rows))
+	}
+}
+
+// gitVault runs git in the vault with no host or global config.
+func gitVault(t *testing.T, vault *storage.Vault, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", vault.Root, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// refreshTwice runs one refresh, applies between, and returns the second
+// run's result.
+func refreshTwice(t *testing.T, vault *storage.Vault, eng *search.Engine, project string, between func()) map[string]any {
+	t.Helper()
+	tool := RefreshIndexTool(eng, vault)
+	params, _ := json.Marshal(refreshIndexParams{Project: project})
+	if _, err := tool.Handler(context.Background(), params); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	between()
+	second, err := tool.Handler(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	return second.(map[string]any)
+}
+
+// While git tracks the project's drawers, the legacy ingest ledger is left
+// alone and the backfill skips the archives it lists, as before.
+func TestRefreshIndexKeepsTheLegacyLedgerWhileDrawersAreTracked(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	const project = "legacy-kept"
+	vault, eng := archivedProjectFixture(t, project, `{"type":"user","text":"tracked drawers keep the ledger"}`+"\n")
+	got := refreshTwice(t, vault, eng, project, func() {
+		gitVault(t, vault, "init", "-q")
+		gitVault(t, vault, "add", "palace/"+project+"/drawers")
+		gitVault(t, vault, "commit", "-qm", "drawers")
+	})
+	if got["archives_skipped"] != 1 || got["archives_ingested"] != 0 {
+		t.Fatalf("second run skipped %v, ingested %v; want 1 and 0", got["archives_skipped"], got["archives_ingested"])
+	}
+	if rows := readLedger(t, vault, project); len(rows) != 1 {
+		t.Fatalf("the legacy ledger holds %d rows, want 1", len(rows))
+	}
+}
+
+// Once git tracks no drawer of the project (a pull removed them), the legacy
+// ledger is deleted before the backfill reads it, so the archive it listed is
+// ingested again instead of being skipped for good.
+func TestRefreshIndexDeletesTheLegacyLedgerOnceDrawersAreUntracked(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	const project = "legacy-deleted"
+	vault, eng := archivedProjectFixture(t, project, `{"type":"user","text":"untracked drawers drop the ledger"}`+"\n")
+	got := refreshTwice(t, vault, eng, project, func() {
+		gitVault(t, vault, "init", "-q")
+		if err := os.RemoveAll(filepath.Join(vault.Root, "palace", project, "drawers")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got["archives_skipped"] != 0 || got["archives_ingested"] != 1 {
+		t.Fatalf("second run skipped %v, ingested %v; want 0 and 1: the ledger outlived its drawers", got["archives_skipped"], got["archives_ingested"])
 	}
 }

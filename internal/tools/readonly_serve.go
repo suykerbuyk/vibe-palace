@@ -97,7 +97,12 @@ import "sort"
 // and the sweep asks git (one read-only `git ls-files`) before it moves a legacy
 // palace/<slug>/.local/ cache, leaving any slug with a tracked file untouched —
 // so a read-only client cannot change anything another host, or this vault's
-// history, will ever see. The exemption is that narrow. Before the cache moved it did not
+// history, will ever see. The same holds for what a search's Rebuild now writes
+// through the host-local index store (indexstore, ADR-014), all of it under
+// palace/.local/ too: the orphan reaper's rewrites of
+// palace/.local/index/<slug>/chunks.jsonl and its KG records and its unlinks of
+// orphan vectors, the store change counter palace/.local/index/.generation/<slug>,
+// and the index lock files under palace/.local/locks/. The exemption is that narrow. Before the cache moved it did not
 // hold: a search could create palace/<slug>/ for a notes-only project, and
 // every project enumerator counted that directory as a store. Any other write
 // from a tool in this list is still a misclassification.

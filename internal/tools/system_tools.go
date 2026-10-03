@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/onboard"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -1010,6 +1011,16 @@ func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *sto
 	// A ledger that cannot be READ is not a reason to refuse the sweep: the
 	// worst case is the behaviour that existed before it, so it degrades to a
 	// full reingest rather than to a failure.
+	//
+	// The legacy ledger is first deleted when no drawer is tracked any more
+	// (ADR-014 decision 2): a ledger that outlived its drawers would skip every
+	// archive it lists forever. capture-and-backfill-write-host-local-index-only
+	// deletes this call with the legacy reader and writer.
+	if deleted, err := indexstore.DeleteLegacyLedgerIfUntracked(vault, project); err != nil {
+		slog.Warn("refresh index: legacy ingest ledger left in place", "project", project, "err", err)
+	} else if deleted {
+		slog.Info("refresh index: legacy ingest ledger deleted; no drawer is tracked any more", "project", project)
+	}
 	ingested, err := vault.IngestedArchives(project)
 	if err != nil {
 		slog.Warn("refresh index: ingest ledger unreadable, reingesting everything",
