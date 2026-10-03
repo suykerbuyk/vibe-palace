@@ -786,7 +786,7 @@ git index and working tree. Its holders are:
 - the index critical section of every committer (`commitAndPushPathsCore`,
   `CommitRemovals`, `pruneMirrors`);
 - **`pushCommitted`'s rejected-push reconcile** (fetch → departure guard →
-  `rebase --autostash` / `--abort`), taken per remote and released before the
+  `merge` / `merge --abort`), taken per remote and released before the
   retried push;
 - **`pullCore`'s guard → heal → merge**, taken per remote after the fetch;
 - **split purge's commit step** (`CommitSplitPurge`: HEAD re-check → `git rm` →
