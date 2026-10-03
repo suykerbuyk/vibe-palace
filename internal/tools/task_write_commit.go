@@ -64,7 +64,7 @@ const (
 // 🔴 IT COMMITS LOCALLY AND NEVER PUSHES. push=false means CommitAndPushPaths
 // enumerates no remotes and performs no network I/O at all, which is what makes
 // this safe to run inside a tool call: a push here would put a fetch, a possible
-// rebase and N remote round-trips on the latency of every task mutation, and
+// merge and N remote round-trips on the latency of every task mutation, and
 // would introduce a strand path (commit lands, push fails) into a tool whose job
 // is to write a markdown file. The local commit is sufficient for the harm being
 // closed — it is the UNCOMMITTED state that refuses the sync, and once the file

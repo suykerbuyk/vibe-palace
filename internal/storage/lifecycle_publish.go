@@ -4,8 +4,8 @@
 package storage
 
 // Exact publish: how a lifecycle command publishes the one commit it verified,
-// and nothing else. It never calls CommitAndPushPaths, whose reconcile rebases
-// and realigns; it never rebases at all. The outcome of every push is decided
+// and nothing else. It never calls CommitAndPushPaths, whose reconcile merges
+// and converges; it never rebases at all. The outcome of every push is decided
 // by reading the live remote (does its tip contain the commit?), never by
 // git's exit code. A re-run with a pending marker is a redo — push the same
 // commit, or reset and ask for a fresh dry run — never a rebase.

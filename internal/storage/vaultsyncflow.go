@@ -146,8 +146,8 @@ func SyncPreview(vaultPath string) (scan *TidyResult, refused bool, err error) {
 //     error check.
 //
 //   - A post-merge re-assert (FINDING A) runs even after a clean pull verdict:
-//     a merge that reports success can still leave residue (an autostash-style
-//     conflict, a half-applied tree). Re-scan for genuine dirt AND probe
+//     a merge that reports success can still leave residue (a half-applied
+//     tree). Re-scan for genuine dirt AND probe
 //     unmergedPaths; either one blocks the push. Freshly-written capture
 //     artifacts (the background hook may write during the pull) are sweepable,
 //     so they land in Swept on the re-scan and are absent from the re-scanned

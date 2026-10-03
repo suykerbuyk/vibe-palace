@@ -677,10 +677,11 @@ marker (§7.8).
   triggers must be:
   - the hook's last step, on every return path that ran the archive step;
   - every pull path that brings new archives: `storage.Pull`
-    (`internal/storage/vaultpull.go:143`); the rebase inside a commit-and-push
+    (`internal/storage/vaultpull.go:144`); the merge inside a commit-and-push
     (`internal/storage/vaultsync.go:863`) and its second caller, the mirror prune
-    (`internal/storage/vaultsync_verify.go:250`); the push-rejection reconcile
-    (`internal/storage/vaultsync.go:1263`); and the fast-forward merge in a resumed
+    (`internal/storage/vaultsync_verify.go:251`); the push-rejection reconcile
+    (`internal/storage/vaultsync.go:1373`) — both reconciles merge through
+    `mergeFetchedTip` (`internal/storage/vaultsync.go:1260`); and the fast-forward merge in a resumed
     `vp vault clone` (`internal/storage/vault_clone.go:531`);
   - `vp_capture_session` after it creates an archive on a hook-less host;
   - `vp mcp` startup, as a backstop for a spawn the host killed, so an archive is ingested by
@@ -1938,8 +1939,8 @@ file per room, so two hosts appending to the same room can conflict as entity li
 
 - **Authored entities appended on two machines:** Both append to the end of
   `palace/{project}/kg/entities.jsonl`, and git reports a conflict on that file rather
-  than merging the two lines. At `a32a2d4`, vault sync's reconcile then aborts the rebase
-  and keeps the new commit local for that remote (`internal/storage/vaultsync.go:863-875`).
+  than merging the two lines. Vault sync's reconcile then aborts the merge and keeps the
+  new commit local for that remote (`mergeFetchedTip`, `internal/storage/vaultsync.go:1260`).
   Resolve by keeping both lines, then sync again.
 
 - **Same triple invalidated on two machines:** Both set `valid_to` — if to

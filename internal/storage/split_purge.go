@@ -334,9 +334,9 @@ func (e *SplitPurgeHeadMovedError) Error() string {
 // 🔴 THE LOCK IS HELD FROM THE HEAD CHECK TO THE ASSERTION, and nothing under
 // it takes a per-path vaultlock key: this runs git only (git rm, add, commit,
 // and the rollback's reset and checkout), so the ADR-003 order is unchanged.
-// Every vp committer, and the reconcile paths that rebase or merge
-// (pushCommitted, pullCore), take the same key, so none of them can commit,
-// stash or merge over a purge in flight.
+// Every vp committer, and the reconcile paths that merge (pushCommitted,
+// pullCore), take the same key, so none of them can commit or merge over a
+// purge in flight.
 //
 // `git rm` without -f is the compare-and-set: it refuses the whole removal if
 // any tracked file differs from the index or from HEAD. Untracked and ignored

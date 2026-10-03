@@ -802,8 +802,8 @@ func pruneBasisWords(embeddedRel string, prov templates.Provenance) string {
 }
 
 // reportPrunePush makes a prune commit that did not reach every remote loud.
-// A rejected push, an aborted rebase or an autostash conflict after the commit
-// leaves the local prune commit stranded next to whatever the remote holds —
+// A rejected push or an aborted merge after the commit leaves the local prune
+// commit stranded next to whatever the remote holds —
 // and if the remote changed these paths, that copy is an operator's override:
 // resolving the eventual merge conflict as a deletion would remove it from
 // every host.
@@ -818,18 +818,11 @@ func reportPrunePush(res *storage.PushResult, committed []string) error {
 	for _, remote := range failed {
 		fmt.Fprintf(os.Stderr, "the prune commit %s (%s) did not reach %s: %v\n", res.CommitSHA, strings.Join(committed, ", "), remote, res.RemoteResults[remote])
 	}
-	if res.PopConflict {
-		fmt.Fprintf(os.Stderr, "the prune commit %s landed, but re-applying your uncommitted changes conflicted in: %s (they are kept in `git stash list`)\n",
-			res.CommitSHA, strings.Join(res.PopConflictPaths, ", "))
-	}
-	if len(failed) == 0 && !res.PopConflict {
+	if len(failed) == 0 {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "If a remote changed %s, its copy is operator content: keep it. When you pull, resolve any conflict on these paths by keeping the remote's file, never by deleting it.\n",
 		strings.Join(committed, ", "))
-	if len(failed) == 0 {
-		return errors.New("re-applying uncommitted changes after the prune commit conflicted")
-	}
 	return fmt.Errorf("the prune commit %s did not reach %s", res.CommitSHA, strings.Join(failed, ", "))
 }
 

@@ -681,36 +681,70 @@ regression at the unit boundary).
 
 ### `internal/storage/` — Vault Sync Stranded-Commit Hardening
 
-Hardens `CommitAndPushPaths`'s push/rebase recovery so a dirty working tree can
+Hardens `CommitAndPushPaths`'s push recovery so a dirty working tree can
 no longer strand a local capture commit, and so an already-ahead branch heals
 instead of compounding the strand across sessions (the observed ahead-2 → ahead-N
-divergence). Three behavioral fixes — a loud `Stranded` surface (commit created +
-push attempted but reached no remote, distinct from a clean no-remote downgrade),
-a `--autostash` rebase that distinguishes a TRUE content conflict (state-dir
-probe → abort + strand) from an autostash re-apply pop-conflict (commit still
-lands and pushes; `PopConflict`/`PopConflictPaths` name the marked files, edits
-preserved in the git stash), and a network-free already-ahead reconcile guard.
+divergence): a loud `Stranded` surface (commit created + push attempted but
+reached no remote, distinct from a clean no-remote downgrade), and a network-free
+already-ahead reconcile guard.
 
-The git-behavior assumptions were pinned by a throwaway-repo experiment (git
-2.54.0): a pop-conflict exits **0** (not non-zero), and `merge-base
---is-ancestor` cannot discriminate true-vs-pop (it is true in both) — so the
-`rebase-merge`/`rebase-apply` state-dir is the only reliable discriminator.
+**The reconcile merges; it never rebases, autostashes or force-pushes**
+(`vault-sync-rebase-killed-mid-run-strands-the-shared-vault`, 2026-10-02). It
+used to `rebase --autostash` under gitCmd's 60 s SIGKILL deadline: a 990-commit
+replay was killed at pick 590 and stranded the shared vault mid-rebase, with the
+caller's own files held in the autostash. Both reconcile paths now go through
+`mergeFetchedTip` (departure guard → `git merge` → `merge --abort` on a merge
+left in progress, its failure reported), and the multi-remote convergence is a
+plain fast-forward push. The autostash `PopConflict`/`PopConflictPaths` fields
+are gone, because nothing can set them.
 
 Unit coverage in `internal/storage/vaultsync_test.go` (all use real `git`
 subprocesses against bare-remote + clone fixtures — full-stack for this path):
 `TestPushResult_Stranded` (the four strand/not-strand cases),
-`TestCommitAndPushPaths_AutostashDirtyTreeRebases` (dirty tracked file no longer
-defeats the rebase — the core fix), `TestCommitAndPushPaths_AutostashPopConflict`
-(pop-conflict: commit landed + pushed, `PopConflict` set, NOT re-stranded, stash
-retained), `TestCommitAndPushPaths_TrueRebaseConflictStrands` (true conflict
-aborts + skips push + strands, no leftover rebase state),
+`TestCommitAndPushPaths_DisjointDirtyFileSurvivesReconcile` (a dirty tracked file
+the merge does not touch keeps its bytes, nothing stashed),
+`TestCommitAndPushPaths_TrueMergeConflictStrands` (true conflict aborts + skips
+push + strands, no merge left in progress, HEAD back on the capture commit),
 `TestCommitAndPushPaths_AlreadyAheadReconcilesThenPushes` /
 `_AlreadyAheadPersistentConflictStrands` /
 `_AlreadyAheadGuardFailsOpen` (Fix B reconcile, lossless strand-on-conflict, and
-fail-open / no-fire on push=false / unresolved-ref / not-ahead), plus
-`TestRebaseInProgress` and `TestUnmergedPaths` (the discriminator helpers). The
-pre-existing `TestCommitAndPushPaths_PushRebasesOnNonFastForward` stays green
-through the restructured branch. `internal/storage/vaulttidy_test.go` mirrors the
+fail-open / no-fire on push=false / unresolved-ref / not-ahead),
+`TestCommitAndPushPaths_PushMergesOnNonFastForward`, plus `TestRebaseInProgress`
+and `TestUnmergedPaths` (the state probes).
+
+`internal/storage/vaultsync_merge_test.go` pins the merge itself, each against
+the behaviour it replaced:
+`TestCommitAndPushPaths_ReconcileKeepsLocalCommitSHAs` (`rejected_push`,
+`already_ahead`: every local commit keeps its SHA — no replay),
+`_ReconcileNeverStashesTheCallersWork` (a dirty file the remote also changed is
+left byte-for-byte, no stash, no merge or rebase state, the commit strands),
+`_ReconcileAbortFailureIsReported` (a PATH-shim `git` fails `merge --abort`; the
+per-remote error carries it), `_ConvergenceNeverForcePushes` (the first remote is
+fast-forwarded, never rewritten; an argv-logging shim sees no forced push),
+`_ConvergenceRefusesAConcurrentWriter` (via `afterPushHook`: a remote moved
+between our push and the convergence is not overwritten),
+`_CommitSHAIsTheCallersCommitAfterReconcile` (`CommitSHA` is the caller's
+commit, not the merge on top of it), and the source pin `TestNoVaultPushForces`
+(no production file in `internal/storage` spells `--force`,
+`--force-with-lease`, `-f` or a `+refspec` on a push; its subtest proves it fires).
+`_LeavesAMergeItDidNotStartAlone` (a hand-resolved merge pullCore left in
+progress: the call refuses naming `MERGE_HEAD`, and the resolution's bytes, index
+entry and `MERGE_HEAD` survive — `mergeFetchedTip` only aborts a merge it
+started), `TestKilledMergeErrorNamesTheLockAndRemovesNothing` (a deadline kill is
+reported as one, names the `index.lock` it left, and removes nothing),
+`_KilledMergeRefusesTheCommit` (end to end: a shim `git merge` leaves
+`index.lock` and hangs past a lowered `mergeTimeout`; the call returns a
+`*vaultTreeUnsafeError` naming the lock, with no `merge --abort`, no `git add`
+and HEAD unmoved), `_SignalledMergeRefusesTheCommit` (the same for a merge
+killed by a signal, the shim's SIGTERM to itself), and
+`_CallersOwnDirtyFileDoesNotStrandTheReconcile` (the already-ahead reconcile's
+refusal over the caller's own uncommitted file is not recorded; the post-commit
+reconcile merges and pushes). In `vaultsync_verify_test.go`,
+`TestPruneMirrorsVerified_MergeInProgressRemovesNothing` pins the prune's side
+of that refusal: with an operator's merge in progress and the branch ahead, the
+prune keeps every path, deletes nothing on disk, stages nothing and releases the
+commit lock.
+`internal/storage/vaulttidy_test.go` mirrors the
 strand at the `TidyVault` boundary (`TestTidyVault_StrandedWhenAllRemotesFail`,
 `_NotStrandedOnSuccess`); `internal/tools/system_tools_test.go` covers the MCP
 `vp_vault_tidy` surface. `TestVaultTidy_StrandedIsAnError` requires a tool

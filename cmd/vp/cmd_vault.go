@@ -315,13 +315,6 @@ func cmdVaultCommit() *cli.Command {
 					fmt.Fprintln(os.Stderr, v)
 					return cli.ExitSystem
 				}
-				if res.PopConflict {
-					fmt.Fprintf(os.Stderr, "⚠ AUTOSTASH CONFLICT: commit %s pushed, but your unswept edits could not be cleanly re-applied — resolve conflict markers in:\n", res.CommitSHA)
-					for _, p := range res.PopConflictPaths {
-						fmt.Fprintf(os.Stderr, "    %s\n", p)
-					}
-					fmt.Fprintln(os.Stderr, "  Your edits are preserved in `git stash list`.")
-				}
 			}
 			return cli.ExitOK
 		},
@@ -482,13 +475,6 @@ func cmdVaultTidy() *cli.Command {
 			if v := storage.RemoteVerdict(storage.OpPush, res.RemoteResults, res.CommitSHA); v != "" {
 				fmt.Fprintln(os.Stderr, v)
 				return cli.ExitSystem
-			}
-			if res.PopConflict {
-				fmt.Fprintf(os.Stderr, "⚠ AUTOSTASH CONFLICT: commit %s pushed, but your unswept edits could not be cleanly re-applied — resolve conflict markers in:\n", res.CommitSHA)
-				for _, p := range res.PopConflictPaths {
-					fmt.Fprintf(os.Stderr, "    %s\n", p)
-				}
-				fmt.Fprintln(os.Stderr, "  Your edits are preserved in `git stash list`.")
 			}
 			return cli.ExitOK
 		},

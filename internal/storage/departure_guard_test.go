@@ -250,9 +250,9 @@ func TestSyncRefusesBeforeItsTidyCommit(t *testing.T) {
 }
 
 // T7. The commit-then-push path (tidy, harvest, commit --push): the new commit
-// stays local, reconcileIfAhead does NOT rebase it onto the departure, and
+// stays local, reconcileIfAhead does NOT merge the departure under it, and
 // nothing is pushed.
-func TestCommitAndPushRefusesToRebaseIntoADeparture(t *testing.T) {
+func TestCommitAndPushRefusesToMergeADeparture(t *testing.T) {
 	b, bare := departureFixture(t)
 	writeFile(t, b, "Projects/old/x.md", "earlier unpushed work\n")
 	gitRun(t, b, "add", "-A")
@@ -268,16 +268,16 @@ func TestCommitAndPushRefusesToRebaseIntoADeparture(t *testing.T) {
 	}
 	asDeparted(t, res.RemoteResults["origin"])
 	if got := gitRun(t, b, "rev-parse", "HEAD^"); got != earlier {
-		t.Errorf("the new commit was rebased: HEAD^ = %s, want the earlier local commit %s", got, earlier)
+		t.Errorf("the departure was merged in: HEAD^ = %s, want the earlier local commit %s", got, earlier)
 	}
 	if got := gitRun(t, bare, "rev-parse", "main"); got != remoteTip {
 		t.Errorf("something was pushed: bare main %s -> %s", remoteTip, got)
 	}
 }
 
-// T8. pushCommitted's own rebase, reached on a rejected push with a stale
+// T8. pushCommitted's own merge, reached on a rejected push with a stale
 // tracking ref and no reconcile, refuses the same way.
-func TestRejectedPushDoesNotRebaseIntoADeparture(t *testing.T) {
+func TestRejectedPushDoesNotMergeADeparture(t *testing.T) {
 	b, bare := departureFixture(t)
 	departOnRemote(t, bare, departure.Renamed, "new", nil)
 	writeFile(t, b, "Projects/old/x.md", "stale work\n")
@@ -290,7 +290,7 @@ func TestRejectedPushDoesNotRebaseIntoADeparture(t *testing.T) {
 	pushCommitted(b, []string{"origin"}, "main", nil, res)
 	asDeparted(t, res.RemoteResults["origin"])
 	if got := gitRun(t, b, "rev-parse", "HEAD"); got != head {
-		t.Errorf("HEAD was rebased %s -> %s", head, got)
+		t.Errorf("HEAD moved %s -> %s", head, got)
 	}
 	if got := gitRun(t, bare, "rev-parse", "main"); got != remoteTip {
 		t.Errorf("something was pushed: %s -> %s", remoteTip, got)

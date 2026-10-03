@@ -460,7 +460,7 @@ func TestCommitAndPushPaths_MultipleRemotes(t *testing.T) {
 	}
 }
 
-func TestCommitAndPushPaths_PushRebasesOnNonFastForward(t *testing.T) {
+func TestCommitAndPushPaths_PushMergesOnNonFastForward(t *testing.T) {
 	dir := initTestRepo(t)
 	bare := initBareRemote(t)
 	gitRun(t, dir, "remote", "add", "origin", bare)
@@ -476,14 +476,14 @@ func TestCommitAndPushPaths_PushRebasesOnNonFastForward(t *testing.T) {
 	gitRun(t, other, "commit", "-m", "remote advance")
 	gitRun(t, other, "push", "origin", "main")
 
-	// Local commit a different file; push must fetch+rebase then succeed.
+	// Local commit a different file; push must fetch+merge then succeed.
 	writeFile(t, dir, "local.txt", "from local")
 	res, err := CommitAndPushPaths(dir, "local change", []string{"local.txt"}, true)
 	if err != nil {
 		t.Fatalf("commit+push: %v", err)
 	}
 	if len(FailedRemotes(res.RemoteResults)) > 0 {
-		t.Errorf("expected all pushed after rebase, got %#v", res.RemoteResults)
+		t.Errorf("expected all pushed after the merge, got %#v", res.RemoteResults)
 	}
 	// Both files must be present on the remote tip.
 	tree := gitRun(t, bare, "ls-tree", "--name-only", "main")
@@ -631,13 +631,12 @@ func TestPushPlain_BadRemoteBestEffort(t *testing.T) {
 	}
 }
 
-// TestCommitAndPushPaths_AutostashDirtyTreeRebases is the core Fix A guard: a
-// dirty (uncommitted) edit to a tracked file no longer defeats the recovery
-// rebase. Local commits file X while the working tree carries an unswept dirty
-// edit to tracked file Y; the remote advanced a disjoint file Z. Before Fix A
-// the bare `git rebase` refused to start on the dirty tree and the commit was
-// stranded; with `--autostash` it shelves Y, rebases X onto Z, and re-applies Y.
-func TestCommitAndPushPaths_AutostashDirtyTreeRebases(t *testing.T) {
+// TestCommitAndPushPaths_DisjointDirtyFileSurvivesReconcile: a dirty
+// (uncommitted) edit to a tracked file does not defeat the recovery merge.
+// Local commits file X while the working tree carries an unswept dirty edit to
+// tracked file Y; the remote advanced a disjoint file Z. The merge does not
+// touch Y, so it proceeds without stashing anything and Y keeps its bytes.
+func TestCommitAndPushPaths_DisjointDirtyFileSurvivesReconcile(t *testing.T) {
 	dir := initTestRepo(t)
 	bare := initBareRemote(t)
 	gitRun(t, dir, "remote", "add", "origin", bare)
@@ -668,98 +667,31 @@ func TestCommitAndPushPaths_AutostashDirtyTreeRebases(t *testing.T) {
 		t.Fatalf("commit+push: %v", err)
 	}
 	if !res.AnyPushed() {
-		t.Errorf("expected push to succeed via autostash rebase, got %#v", res.RemoteResults)
+		t.Errorf("expected push to succeed via the merge, got %#v", res.RemoteResults)
 	}
 	if res.Stranded() {
-		t.Errorf("commit must NOT be stranded after autostash rebase: %#v", res.RemoteResults)
-	}
-	if res.PopConflict {
-		t.Errorf("disjoint dirty edit must not pop-conflict: paths=%v", res.PopConflictPaths)
+		t.Errorf("commit must NOT be stranded after the merge: %#v", res.RemoteResults)
 	}
 	// The remote tip must carry both X and the remote's Z.
 	tree := gitRun(t, bare, "ls-tree", "--name-only", "main")
 	if !strings.Contains(tree, "local-x.txt") || !strings.Contains(tree, "remote-z.txt") {
 		t.Errorf("remote tip missing converged files: %q", tree)
 	}
-	// The dirty Y edit must be re-applied to the working tree (not lost).
+	// The dirty Y edit must be left exactly as it was, and nothing stashed.
 	got, _ := os.ReadFile(filepath.Join(dir, "tracked-y.txt"))
-	if !strings.Contains(string(got), "DIRTY uncommitted edit") {
-		t.Errorf("autostash did not restore the dirty Y edit, got %q", got)
+	if string(got) != "DIRTY uncommitted edit\n" {
+		t.Errorf("the merge changed the dirty Y edit, got %q", got)
+	}
+	if stash := gitRun(t, dir, "stash", "list"); stash != "" {
+		t.Errorf("the reconcile stashed work: %q", stash)
 	}
 }
 
-// TestCommitAndPushPaths_AutostashPopConflict proves the restructured branch
-// does NOT re-strand on an autostash re-apply conflict. Local commits file X
-// while the working tree carries a dirty edit to tracked file Y on the SAME
-// region the remote also changed in Y. The capture commit lands and pushes; the
-// stash pop conflicts, so PopConflict/PopConflictPaths surface (commit is on the
-// remote, edits preserved in the stash) — this is explicitly NOT a strand.
-func TestCommitAndPushPaths_AutostashPopConflict(t *testing.T) {
-	dir := initTestRepo(t)
-	bare := initBareRemote(t)
-	gitRun(t, dir, "remote", "add", "origin", bare)
-	gitRun(t, dir, "push", "origin", "main")
-
-	// Y: tracked, multi-line so we can target a specific conflicting line.
-	writeFile(t, dir, "shared-y.txt", "line1\nline2\nline3\n")
-	gitRun(t, dir, "add", "-A")
-	gitRun(t, dir, "commit", "-m", "add shared Y")
-	gitRun(t, dir, "push", "origin", "main")
-
-	// Remote changes line1 of Y.
-	other := t.TempDir()
-	gitRun(t, other, "clone", "-b", "main", bare, ".")
-	gitRun(t, other, "config", "user.email", "other@example.com")
-	gitRun(t, other, "config", "user.name", "Other")
-	writeFile(t, other, "shared-y.txt", "OTHER\nline2\nline3\n")
-	gitRun(t, other, "add", "-A")
-	gitRun(t, other, "commit", "-m", "remote change Y line1")
-	gitRun(t, other, "push", "origin", "main")
-
-	// Local: commit X, then dirty line1 of Y differently (uncommitted).
-	writeFile(t, dir, "local-x.txt", "from local")
-	writeFile(t, dir, "shared-y.txt", "LOCAL\nline2\nline3\n")
-
-	res, err := CommitAndPushPaths(dir, "local change X", []string{"local-x.txt"}, true)
-	if err != nil {
-		t.Fatalf("commit+push: %v", err)
-	}
-	if !res.AnyPushed() {
-		t.Errorf("capture commit must LAND and push despite pop conflict, got %#v", res.RemoteResults)
-	}
-	if res.Stranded() {
-		t.Errorf("pop conflict is NOT a strand: %#v", res.RemoteResults)
-	}
-	if !res.PopConflict {
-		t.Fatalf("expected PopConflict=true after autostash re-apply conflict")
-	}
-	foundY := false
-	for _, p := range res.PopConflictPaths {
-		if p == "shared-y.txt" {
-			foundY = true
-		}
-	}
-	if !foundY {
-		t.Errorf("PopConflictPaths must name shared-y.txt, got %v", res.PopConflictPaths)
-	}
-	// Commit X reached the remote tip.
-	tree := gitRun(t, bare, "ls-tree", "--name-only", "main")
-	if !strings.Contains(tree, "local-x.txt") {
-		t.Errorf("remote tip missing landed commit X: %q", tree)
-	}
-	// The operator's edits are preserved in the stash.
-	stash := gitRun(t, dir, "stash", "list")
-	if stash == "" {
-		t.Errorf("autostash entry should be retained after pop conflict, stash list empty")
-	}
-}
-
-// TestCommitAndPushPaths_TrueRebaseConflictStrands is the regression guard for
-// the state-dir discriminator: when the capture commit ITSELF conflicts with the
-// remote, the rebase truly fails (state dir present), the commit does NOT land,
-// the rebase is aborted (no in-progress rebase left behind), and on a single
-// remote this is a strand under Fix C.
-func TestCommitAndPushPaths_TrueRebaseConflictStrands(t *testing.T) {
+// TestCommitAndPushPaths_TrueMergeConflictStrands: when the capture commit
+// ITSELF conflicts with the remote, the merge fails, is aborted (no merge left
+// in progress, no unmerged paths, HEAD back on the capture commit), the push is
+// skipped, and on a single remote this is a strand under Fix C.
+func TestCommitAndPushPaths_TrueMergeConflictStrands(t *testing.T) {
 	dir := initTestRepo(t)
 	bare := initBareRemote(t)
 	gitRun(t, dir, "remote", "add", "origin", bare)
@@ -790,20 +722,24 @@ func TestCommitAndPushPaths_TrueRebaseConflictStrands(t *testing.T) {
 		t.Fatalf("commit+push returned error (should surface per-remote, not fatal): %v", err)
 	}
 	if rerr := res.RemoteResults["origin"]; rerr == nil {
-		t.Errorf("expected a per-remote rebase error for origin, got nil")
+		t.Errorf("expected a per-remote merge error for origin, got nil")
 	}
 	if res.AnyPushed() {
-		t.Errorf("true rebase conflict must not push on a single remote: %#v", res.RemoteResults)
+		t.Errorf("true merge conflict must not push on a single remote: %#v", res.RemoteResults)
 	}
 	if !res.Stranded() {
-		t.Errorf("single-remote true rebase conflict is a strand under Fix C, got Stranded()=false")
+		t.Errorf("single-remote true merge conflict is a strand under Fix C, got Stranded()=false")
 	}
-	if res.PopConflict {
-		t.Errorf("a true rebase conflict is not a pop conflict: %v", res.PopConflictPaths)
+	// Abort must have run: no merge in progress, nothing unmerged, and HEAD is
+	// the capture commit itself.
+	if op, err := operationInProgress(dir); err != nil || op != "" {
+		t.Errorf("merge was not aborted — operation in progress %q (%v)", op, err)
 	}
-	// Abort must have run: no in-progress rebase left behind.
-	if rebaseInProgress(dir) {
-		t.Errorf("rebase was not aborted — rebase state dir still present")
+	if u := unmergedPaths(dir); len(u) > 0 {
+		t.Errorf("unmerged paths left behind: %v", u)
+	}
+	if subj := gitRun(t, dir, "log", "-1", "--format=%s", "HEAD"); !strings.HasPrefix(subj, "local conflicting Y") {
+		t.Errorf("HEAD must be the capture commit after the abort, got %q", subj)
 	}
 }
 
@@ -888,7 +824,7 @@ func TestUnmergedPaths(t *testing.T) {
 // TestCommitAndPushPaths_AlreadyAheadReconcilesThenPushes is Fix B (d): the local
 // branch carries a prior UNPUSHED commit (ahead of the stale origin/main) while
 // the remote advanced on a DISJOINT path. A new commit must NOT stack ahead-N;
-// the guard fetches+rebases the prior commit onto the remote tip first, so the
+// the guard fetches and merges the remote tip under the prior commit first, so the
 // new commit fast-forwards. Both the previously-stranded commit and the new one
 // land on the remote.
 func TestCommitAndPushPaths_AlreadyAheadReconcilesThenPushes(t *testing.T) {
@@ -933,17 +869,17 @@ func TestCommitAndPushPaths_AlreadyAheadReconcilesThenPushes(t *testing.T) {
 			t.Errorf("remote tip missing %q after reconcile: %q", want, tree)
 		}
 	}
-	// The prior commit's message must be present in remote history (replayed, not
+	// The prior commit's message must be present in remote history (merged, not
 	// dropped), proving the strand was reconciled rather than discarded.
 	logOut := gitRun(t, bare, "log", "--format=%s", "main")
 	if !strings.Contains(logOut, "prior stranded commit") {
-		t.Errorf("remote history missing replayed prior commit: %q", logOut)
+		t.Errorf("remote history missing the prior commit: %q", logOut)
 	}
 }
 
 // TestCommitAndPushPaths_AlreadyAheadPersistentConflictStrands is Fix B (e): the
 // prior UNPUSHED local commit conflicts with the remote on the SAME lines. The
-// reconcile cannot replay cleanly, so the new artifacts still commit locally
+// reconcile cannot merge cleanly, so the new artifacts still commit locally
 // (nothing lost) but the push is skipped and the result strands — the operator
 // gets an explicit signal instead of silent ahead-N compounding.
 func TestCommitAndPushPaths_AlreadyAheadPersistentConflictStrands(t *testing.T) {
@@ -999,9 +935,9 @@ func TestCommitAndPushPaths_AlreadyAheadPersistentConflictStrands(t *testing.T) 
 	} else if !strings.Contains(rerr.Error(), "reconcile against origin") {
 		t.Errorf("expected a reconcile error for origin, got %v", rerr)
 	}
-	// No rebase left mid-flight (the guard aborted).
-	if rebaseInProgress(dir) {
-		t.Errorf("reconcile must abort its rebase on conflict — state dir still present")
+	// No merge left mid-flight (the guard aborted).
+	if op, err := operationInProgress(dir); err != nil || op != "" {
+		t.Errorf("reconcile must abort its merge on conflict — operation in progress %q (%v)", op, err)
 	}
 }
 

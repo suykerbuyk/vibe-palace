@@ -235,9 +235,9 @@ func TestPendingDepartureNamesATwiceListedRecordOnce(t *testing.T) {
 	}
 }
 
-// Row 6 (N1): a rejected push's reconcile — fetch, guard, rebase --autostash —
-// waits for a purge holding the vault commit lock, instead of stashing the
-// purge's staged removal out from under it.
+// Row 6 (N1): a rejected push's reconcile — fetch, guard, merge — waits for a
+// purge holding the vault commit lock, instead of merging over the purge's
+// staged removal (or stashing it out from under it).
 func TestPushReconcileWaitsForTheCommitLock(t *testing.T) {
 	dir := initTestRepo(t)
 	bare := initBareRemote(t)
@@ -282,7 +282,7 @@ func TestPushReconcileWaitsForTheCommitLock(t *testing.T) {
 		t.Fatalf("push after the purge: %v", err)
 	}
 	if log := gitRun(t, dir, "log", "--format=%s", "-3"); !strings.Contains(log, "purge alpha") {
-		t.Errorf("the purge commit must survive the rebase:\n%s", log)
+		t.Errorf("the purge commit must survive the reconcile:\n%s", log)
 	}
 	if got := gitRun(t, dir, "ls-files", "--", "Projects/alpha"); got != "" {
 		t.Errorf("the purged tree came back: %q", got)

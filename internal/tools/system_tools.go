@@ -384,16 +384,14 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				return nil, fmt.Errorf("%s: %s (remote_results: %v)", p.Action, v, remoteResults)
 			}
 			return map[string]any{
-				"status":             "ok",
-				"action":             p.Action,
-				"committed":          res.CommitSHA != "",
-				"commit_sha":         res.CommitSHA,
-				"pushed":             doPush,
-				"stranded":           res.Stranded(),
-				"pop_conflict":       res.PopConflict,
-				"pop_conflict_paths": res.PopConflictPaths,
-				"remote_results":     remoteResults,
-				"skipped_paths":      res.SkippedPaths,
+				"status":         "ok",
+				"action":         p.Action,
+				"committed":      res.CommitSHA != "",
+				"commit_sha":     res.CommitSHA,
+				"pushed":         doPush,
+				"stranded":       res.Stranded(),
+				"remote_results": remoteResults,
+				"skipped_paths":  res.SkippedPaths,
 			}, nil
 		}
 
@@ -733,10 +731,6 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			case len(remoteResults) > 0:
 				summary += fmt.Sprintf("; pushed to %d/%d remote%s", pushedCount, len(remoteResults), plural(len(remoteResults)))
 			}
-			if res.PopConflict {
-				summary += fmt.Sprintf("; pushed, but autostash re-apply conflicted — resolve markers in %s; edits saved in stash",
-					strings.Join(res.PopConflictPaths, ", "))
-			}
 		} else {
 			summary = fmt.Sprintf("no-op: nothing to sweep, %d reported%s",
 				len(res.Reported), userMemorySummarySuffix(len(res.ReportedUserContent)))
@@ -762,8 +756,6 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"commit_sha":            res.CommitSHA,
 			"push_downgraded":       res.PushDowngraded,
 			"stranded":              res.Stranded,
-			"pop_conflict":          res.PopConflict,
-			"pop_conflict_paths":    res.PopConflictPaths,
 			"remote_results":        remoteResults,
 			"summary":               summary,
 		}, nil

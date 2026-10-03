@@ -114,8 +114,9 @@ func (r *PullResult) Stranded() bool {
 // is unmergeable, so the remaining remotes are recorded as skipped (see below).
 // It NEVER writes to os.Stderr.
 //
-// Pull keeps plain MERGE semantics; it deliberately does NOT replicate the push
-// path's rebase/force-with-lease converge loop.
+// Pull keeps plain MERGE semantics — the same merge the push path's reconcile
+// runs (mergeFetchedTip) — but it deliberately does NOT abort a conflicted
+// merge or run the push path's converge loop.
 //
 // One pre-flight exception to "returns data, not errors": before anything else
 // runs — before the phantom-template scan, before any remote is touched — Pull

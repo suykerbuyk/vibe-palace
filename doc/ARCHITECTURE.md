@@ -708,9 +708,9 @@ mirrors `PushResult` but drops `CommitSHA`, adds `HealedTemplates []string` and
 `RemoteOutput map[string]string`, and exposes `AllPulled()` / `AnyPulled()` /
 `Stranded()` alongside the per-remote `RemoteResults`.
 
-`Pull` keeps **plain merge semantics**. It deliberately does *not* replicate the
-push path's rebase / force-with-lease converge loop: incoming history is merged,
-not replayed. It attempts **every** remote and records each outcome in
+`Pull` keeps **plain merge semantics** — the same merge the push path's
+reconcile runs (`mergeFetchedTip`), but without its abort-on-conflict or its
+fast-forward converge loop: incoming history is merged, never replayed. It attempts **every** remote and records each outcome in
 `RemoteResults` rather than aborting internally, leaving each front-end its own
 policy. The CLI `pullAll` is best-effort / continue-all, adds a CLI-only
 `--dry-run`, and re-prints each remote's captured output to stderr; the MCP
@@ -1734,7 +1734,7 @@ the index as if it were someone else's — or a failed re-check after HEAD
 moved. Such a path is printed with its manual
 `git -C <vault> checkout HEAD -- <path>` and the command exits non-zero;
 the next sync finds the removal pending and commits it. A push the
-remote rejects, an aborted rebase or an autostash conflict after the
+remote rejects, or a reconcile merge that is refused or aborted, after the
 prune commit is reported with the commit, the paths and the rule — a
 remote's copy of these paths is operator content, keep it — and the
 command exits non-zero. `pruned=N` counts only files this run removed.

@@ -33,8 +33,9 @@ const departureGuardMaxPaths = 12
 // BEFORE anything merges, rebases or heals.
 //
 // 🔴 EVERY MERGE AND REBASE OF INCOMING VAULT COMMITS CALLS THIS. There are
-// exactly three in the tree — pullCore's merge, reconcileIfAhead's rebase and
-// pushCommitted's rebase on a rejected push — plus SyncVault's pre-flight, which
+// exactly two in the tree, both merges — pullCore's, and mergeFetchedTip, the
+// one merge both commit-and-push reconciles (reconcileIfAhead, and
+// pushCommitted's on a rejected push) go through — plus SyncVault's pre-flight, which
 // runs it before its own tidy commit so a refusal leaves HEAD untouched. They
 // are all in this package, which the CLI, the MCP tools and the SessionEnd
 // hook's harvest all reach, so no front end can bypass it.

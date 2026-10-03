@@ -23,8 +23,13 @@ import (
 // remoteSHA, before the convergence loop. Production code must leave this as a
 // no-op; tests override it to inject mid-flight state changes (e.g. a
 // concurrent writer mutating a bare remote between the recorded push and the
-// convergence force-with-lease).
+// convergence push).
 var afterPushHook = func(remote string) {}
+
+// mergeTimeout is the deadline on the reconcile's merge (mergeFetchedTip). It
+// is a variable only so a test can drive a merge past it; production code must
+// leave it alone.
+var mergeTimeout = 120 * time.Second
 
 // PushResult reports what happened during a CommitAndPushPaths operation.
 type PushResult struct {
@@ -37,13 +42,6 @@ type PushResult struct {
 	// not-yet-created path (e.g. an empty Projects/<slug>/memory/) or a
 	// misspelled path the caller should notice.
 	SkippedPaths []string
-	// PopConflict is set when the autostash re-apply after a rebase conflicted:
-	// the capture commit DID land and push, but the operator's shelved working-tree
-	// edits could not be cleanly re-applied. The edits are preserved in the git
-	// stash (recoverable via `git stash list`) and PopConflictPaths names the files
-	// left with conflict markers. NOT a strand — the commit reached the remote.
-	PopConflict      bool
-	PopConflictPaths []string
 }
 
 // AllPushed was DELETED at 209 — see the AllPulled note in vaultpull.go for the full
@@ -79,7 +77,7 @@ type PlainPushResult struct {
 }
 
 // PushPlain pushes the already-committed HEAD to each configured remote with a
-// plain `git push <remote> main` — the non-rebase counterpart to Pull, mirroring
+// plain `git push <remote> main` — the non-reconciling counterpart to Pull, mirroring
 // its shape. It attempts every remote in order and records each outcome in
 // RemoteResults (nil = success) alongside the captured combined stdout+stderr in
 // RemoteOutput, rather than aborting internally: the two front-ends differ on
@@ -93,7 +91,7 @@ type PlainPushResult struct {
 // pushAll, MCP gitPush) — two implementations that agreed only by being kept
 // in step. It lives here once now, after the git_enabled gate, and returns a
 // *DirtyTreeError each front-end presents its own way. It does NOT commit, does
-// NOT converge/rebase (that is CommitAndPushPaths's job), and does NOT call
+// NOT merge or converge (that is CommitAndPushPaths's job), and does NOT call
 // RemoteVerdict. The branch is main — matching what both front-ends push today.
 // The returned *PlainPushResult is always non-nil, even if a remote failed;
 // the error return is reserved for a refusal or a failure to run git at all.
@@ -172,7 +170,7 @@ func pushPlainCore(vaultPath string, remotes []string) (*PlainPushResult, error)
 //
 // When push=false, the function stages, commits, and returns immediately with
 // PushResult.CommitSHA set and RemoteResults nil. No remote network I/O occurs
-// and the rebase / converge loop is skipped — useful for local-only commits
+// and the merge / converge loop is skipped — useful for local-only commits
 // that a later push will carry to remotes. Being ahead of a remote is NORMAL on
 // this path (accumulating local commits is the whole point), so the
 // already-ahead reconcile below NEVER fires when push=false.
@@ -183,47 +181,59 @@ func pushPlainCore(vaultPath string, remotes []string) (*PlainPushResult, error)
 // code never configures upstream tracking, so @{u} would fatal; the explicit ref
 // is used instead, and a never-pushed strand is ahead of even a stale ref). When
 // HEAD is ahead — a prior commit that was stranded and never reached the remote —
-// that remote is fetched and HEAD is rebased onto it WITH `--autostash` so the
-// new commit fast-forwards instead of stacking ahead-N and compounding the
-// strand. A reconcile that hits a persistent content conflict aborts the rebase
-// and is recorded so the push to that remote is skipped (the new commit still
+// that remote is fetched and its tip is merged into HEAD so the new commit
+// fast-forwards instead of stacking ahead-N and compounding the strand. A
+// reconcile that hits a persistent content conflict aborts the merge and is
+// recorded so the push to that remote is skipped (the new commit still
 // commits locally — capture artifacts are never lost — and surfaces as a strand
-// via per-remote RemoteResults). Detection is fail-open: if `<remote>/<branch>`
-// does not resolve (never fetched) or the fetch fails, the guard simply skips
-// that remote — it is a compounding optimization, never a correctness gate, and
-// must never hard-error the commit path. The fetch happens ONLY in this rare
-// already-ahead state, so the happy path stays network-free.
+// via per-remote RemoteResults). A merge git refuses before starting is not
+// recorded (the push-rejection reconcile retries after the commit), and a vault
+// with a merge, cherry-pick, revert or rebase already in progress — or one a
+// killed merge left half-updated — refuses the whole call before anything is
+// staged (reconcileIfAhead) — the one way this reconcile fails the call, and a
+// deliberate one, since nothing may be committed into such a tree. Detection is
+// fail-open: if `<remote>/<branch>` does not resolve (never fetched) or the
+// fetch fails, the guard simply skips that remote — those failures make it a
+// compounding optimization, never a correctness gate, and never fail the
+// commit. The fetch happens ONLY in this rare already-ahead state, so the
+// happy path stays network-free.
 //
 // CROSS-CALLER IMPACT: this function is shared by tidy, `vault commit --push`,
 // and memory harvest, so the already-ahead reconcile fires for all three — and
 // that is intended. An already-ahead `vault commit --push` means a prior push
 // stranded and must reconcile before stacking more on top; the reconcile is
-// lossless (it replays the prior commit onto the remote tip, or commits locally
+// lossless (it merges the remote tip under the prior commit, or commits locally
 // and strands on a real conflict).
 //
 // When push=true: the happy path is a sequential fast-forward push. On a
-// non-fast-forward rejection, the rejected remote is fetched and the local
-// branch is rebased onto it WITH `--autostash` (so dirty tracked files that the
-// caller deliberately left unswept do not abort the rebase); the rebased commit
-// is then pushed to that remote. Fetch failures and true rebase content
-// conflicts (after `rebase --abort`) surface directly via per-remote
-// RemoteResults rather than masquerading as downstream errors. When the rebase
-// itself completes but the autostash re-apply conflicts, the capture commit
-// still lands and pushes — PushResult.PopConflict / PopConflictPaths name the
-// files left with conflict markers and the operator's edits are preserved in the
-// git stash (recoverable via `git stash list`); this is NOT a strand.
+// non-fast-forward rejection, the rejected remote is fetched and its tip is
+// MERGED into the local branch (the same plain merge pullCore runs); the merge
+// is then pushed to that remote.
 //
-// After every successful rebase-and-push, prior remotes whose last-known-good
-// SHA differs from the new HEAD are converged via
-// `git push --force-with-lease=refs/heads/<branch>:<expected> <remote>
-// <branch>`. The lease is an atomic compare-and-swap: if any concurrent writer
-// has moved the prior remote's ref since we recorded it, the push is rejected
-// and the failure surfaces as "convergence rejected (concurrent writer at
-// <remote>): <err>" in PushResult.RemoteResults. The lease is the only path in
-// this function that uses --force-with-lease; naked --force is never used.
+// 🔴 THE RECONCILE MERGES; IT NEVER REBASES AND NEVER AUTOSTASHES. A rebase
+// replays every local commit, so its cost grows with the number of commits
+// ahead, and gitCmd's deadline SIGKILLs git: on 2026-10-02 a 990-commit
+// `rebase --autostash` was killed at pick 590 and stranded the shared vault
+// mid-rebase, with the caller's own files held in the autostash. A merge is one
+// step whatever the count, keeps every local SHA, and leaves modified files it
+// does not touch alone; with staged changes in the index, or when the incoming
+// change touches a modified or untracked file in the way, git refuses up front
+// and changes nothing.
 //
-// PushResult.CommitSHA is refreshed to the post-loop HEAD if any rebase
-// happened, so the printed SHA always exists at the converged remotes.
+// Fetch failures, a refused merge, a killed merge and a true content conflict
+// (after `merge --abort`, whose own failure is reported too) surface directly
+// via per-remote RemoteResults rather than masquerading as downstream errors.
+// mergeFetchedTip only ever aborts a merge it started itself.
+//
+// After every successful merge-and-push, prior remotes whose last-pushed SHA
+// differs from the new HEAD are converged with a plain `git push <remote>
+// <branch>`. HEAD descends from every SHA already pushed, so that push is a
+// fast-forward; a concurrent writer that moved the remote in between makes it
+// a non-fast-forward, which git rejects, and the failure surfaces as
+// "convergence push to <remote> failed: <err>". No push here ever forces.
+//
+// PushResult.CommitSHA is the commit this call made. A merge does not rewrite
+// it, so it is never refreshed to the merge commit on top of it.
 //
 // A host config with git_enabled = false (or an unreadable one) refuses
 // before any git runs; the task write and the memory harvest map that refusal
@@ -303,7 +313,10 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		// Fix B: heal an already-ahead branch (a prior stranded commit) BEFORE a
 		// new commit stacks on top of it and compounds the strand. Gated on
 		// push && len(remotes) > 0 so it never fires on the downgrade path.
-		reconcileErrs = reconcileIfAhead(vaultPath, remotes, branch)
+		var rerr error
+		if reconcileErrs, rerr = reconcileIfAhead(vaultPath, remotes, branch); rerr != nil {
+			return nil, rerr
+		}
 	}
 
 	committed, err := stageAndCommitLocked(vaultPath, nil, defaultCommitLimits, message, "", keep)
@@ -661,16 +674,14 @@ func GitPathIgnored(vaultPath, rel string) (bool, error) {
 
 // pushCommitted pushes the commit a caller just made to every remote, with the
 // rejection recovery CommitAndPushPaths documents: a rejected remote is fetched
-// and the local branch rebased onto it (--autostash), a TRUE rebase conflict is
-// aborted and recorded, and prior remotes are converged with
-// --force-with-lease. It fills result.RemoteResults (nil = success),
-// PopConflict and, after any rebase, refreshes CommitSHA. A remote in
-// reconcileErrs is skipped and reported with that error. Callers must have
+// and its tip merged, a refused or conflicted merge is aborted and recorded,
+// and prior remotes are converged with a plain fast-forward push. It fills
+// result.RemoteResults (nil = success). A remote in reconcileErrs is skipped
+// and reported with that error. Callers must have
 // released the vault commit lock: pushes are deliberately not serialised.
 func pushCommitted(vaultPath string, remotes []string, branch string, reconcileErrs map[string]error, result *PushResult) {
 	result.RemoteResults = make(map[string]error, len(remotes))
 	remoteSHA := make(map[string]string, len(remotes))
-	rebasedAny := false
 
 	for _, remote := range remotes {
 		// A persistent already-ahead reconcile conflict (Fix B) means this
@@ -694,32 +705,28 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 
 		// Rejection path (non-fast-forward or other push error).
 		//
-		// 🔴 THE RECONCILE RUNS UNDER THE VAULT COMMIT LOCK. `rebase
-		// --autostash` shelves and re-applies whatever the working tree and the
-		// index hold — including another committer's in-flight work (a split
-		// purge's staged removal). Every committer holds this key across its
-		// index critical section, so taking it here makes the reconcile wait
-		// for them instead of stashing their state. The network push itself
+		// 🔴 THE RECONCILE RUNS UNDER THE VAULT COMMIT LOCK. The merge rewrites
+		// the index and the working tree, and must not run over another
+		// committer's in-flight work (a split purge's staged removal). Every
+		// committer holds this key across its index critical section, so taking
+		// it here makes the reconcile wait for them. The network push itself
 		// stays outside the lock; the fetch is inside because the guard and the
-		// rebase must see the tip it fetched. Callers released the lock before
+		// merge must see the tip it fetched. Callers released the lock before
 		// calling pushCommitted, so this never nests.
 		releaseReconcile, lerr := vaultlock.Acquire(vaultPath, vaultPath)
 		if lerr != nil {
 			result.RemoteResults[remote] = fmt.Errorf("acquire vault commit lock for the reconcile: %w", lerr)
 			continue
 		}
-		reconciled, rebasedHere := reconcileRejectedPush(vaultPath, remote, branch, result)
+		reconciled := reconcileRejectedPush(vaultPath, remote, branch, result)
 		releaseReconcile()
 		if !reconciled {
 			continue
 		}
-		if rebasedHere {
-			rebasedAny = true
-		}
 		curSHA, _ = gitCmd(vaultPath, 10*time.Second, "rev-parse", "HEAD")
 
 		if _, pushErr := gitCmd(vaultPath, 60*time.Second, "push", remote, branch); pushErr != nil {
-			// Non-NFF push error after rebase (auth, network, etc.).
+			// Push error after the merge (auth, network, etc.).
 			result.RemoteResults[remote] = pushErr
 			continue
 		}
@@ -727,30 +734,24 @@ func pushCommitted(vaultPath string, remotes []string, branch string, reconcileE
 		result.RemoteResults[remote] = nil
 		afterPushHook(remote)
 
-		// Converge prior remotes whose recorded SHA != current HEAD.
+		// Converge prior remotes whose recorded SHA != current HEAD. HEAD
+		// descends from every recorded SHA (the reconcile merged, it did not
+		// rewrite), so a plain push fast-forwards; a remote a concurrent writer
+		// moved in between is a non-fast-forward, and git refuses it.
 		for priorRemote, priorSHA := range remoteSHA {
 			if priorSHA == curSHA {
 				continue
 			}
-			if leaseErr := forceWithLease(vaultPath, priorRemote, branch, priorSHA); leaseErr != nil {
+			if _, convErr := gitCmd(vaultPath, 60*time.Second, "push", priorRemote, branch); convErr != nil {
 				result.RemoteResults[priorRemote] = fmt.Errorf(
-					"convergence rejected (concurrent writer at %s): %w",
-					priorRemote, leaseErr)
+					"convergence push to %s failed: %w", priorRemote, convErr)
 				// Leave remoteSHA[priorRemote] unchanged — caller sees
 				// divergent state via per-remote error.
 				continue
 			}
 			remoteSHA[priorRemote] = curSHA
 			// result.RemoteResults[priorRemote] stays nil (still success).
-			log.Printf("vault: force-converged %s from %s\n", priorRemote, short(priorSHA))
-		}
-	}
-
-	// Refresh CommitSHA so callers never print a SHA that no longer exists at
-	// any remote.
-	if rebasedAny {
-		if newSHA, err := gitCmd(vaultPath, 10*time.Second, "rev-parse", "--short", "HEAD"); err == nil {
-			result.CommitSHA = newSHA
+			log.Printf("vault: converged %s from %s\n", priorRemote, short(priorSHA))
 		}
 	}
 }
@@ -822,15 +823,24 @@ func downgradePush(vaultPath string, push bool) (effective, downgraded bool, err
 // the commit path. The single fetch occurs ONLY in the rare already-ahead state,
 // keeping the happy path network-free.
 //
-// For each ahead remote it fetches then `git rebase --autostash <remote>/<branch>`
-// (autostash shelves any unswept dirty tracked files so the rebase can start),
-// reusing the Fix A discriminator: if rebaseInProgress afterward, a TRUE content
-// conflict occurred — the rebase is aborted (restoring any autostashed dirt) and
-// the remote is recorded in the returned map so the caller skips its push and
-// strands the new commit. Otherwise the reconcile succeeded: HEAD now sits on the
-// remote tip with the prior commit replayed, and the new commit will
-// fast-forward. The returned map is nil when nothing conflicted.
-func reconcileIfAhead(vaultPath string, remotes []string, branch string) map[string]error {
+// For each ahead remote it fetches then merges `<remote>/<branch>`
+// (mergeFetchedTip), and sorts a failure three ways:
+//
+//   - A departure refusal or a true content conflict (aborted) is recorded in
+//     the returned map, so the caller skips that remote's push and strands the
+//     new commit.
+//   - A refusal before the merge started (*mergeNotStartedError) is NOT
+//     recorded. It runs before the caller's paths are staged, so the caller's
+//     own uncommitted files are a common cause; the push-rejection reconcile
+//     merges again after the commit, when they no longer stand in the way.
+//   - A tree nothing may commit into (*vaultTreeUnsafeError: an operation
+//     already in progress, a killed merge, a failed abort) is returned as the
+//     error, and the caller commits nothing.
+//
+// Otherwise HEAD now descends from the remote tip with the prior commit
+// unchanged beneath the merge, and the new commit will fast-forward. The
+// returned map is nil when nothing was recorded.
+func reconcileIfAhead(vaultPath string, remotes []string, branch string) (map[string]error, error) {
 	var reconcileErrs map[string]error
 	for _, remote := range remotes {
 		ref := remote + "/" + branch
@@ -846,35 +856,33 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string) map[str
 		// Already ahead: a prior commit never reached this remote. Reconcile now —
 		// the only fetch on an otherwise network-free path — so the new commit
 		// fast-forwards. A fetch failure is fail-open (skip; the normal push loop
-		// retains its own fetch+rebase recovery).
+		// retains its own fetch+merge recovery).
 		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote); err != nil {
 			continue
 		}
-		// Never rebase this host's work onto a departure of the project it is
-		// under: the refusal is recorded like a conflict, so this remote's push
-		// is skipped and the new commit stays local (guardIncomingDepartures).
-		if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
+		mergeErr := mergeFetchedTip(vaultPath, remote, branch)
+		var notStarted *mergeNotStartedError
+		var unsafe *vaultTreeUnsafeError
+		switch {
+		case mergeErr == nil:
+			// Reconciled: HEAD merged the remote tip with the prior commit
+			// unchanged; the new commit fast-forwards.
+		case errors.As(mergeErr, &unsafe):
+			return nil, fmt.Errorf("reconcile against %s: %w", remote, mergeErr)
+		case errors.As(mergeErr, &notStarted):
+			// Nothing changed; the push-rejection reconcile retries after the
+			// commit (see above).
+		default:
+			// The prior strand cannot merge with the remote tip (or the tip
+			// carries a departure of its project): record it so the caller
+			// skips this remote's push; the new commit stays local (strand).
 			if reconcileErrs == nil {
 				reconcileErrs = make(map[string]error, 1)
 			}
-			reconcileErrs[remote] = derr
-			continue
+			reconcileErrs[remote] = reconcileFailure("reconcile against "+remote+" failed", mergeErr)
 		}
-		_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", ref)
-		if rebaseInProgress(vaultPath) {
-			// TRUE conflict: the prior strand cannot replay onto the remote tip.
-			// Abort (restores any autostashed dirt) and record the failure so the
-			// caller skips this remote's push; the new commit stays local (strand).
-			_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
-			if reconcileErrs == nil {
-				reconcileErrs = make(map[string]error, 1)
-			}
-			reconcileErrs[remote] = fmt.Errorf("reconcile against %s failed: %w", remote, rebaseErr)
-		}
-		// else: reconcile succeeded — HEAD advanced onto the remote tip with the
-		// prior commit replayed; the new commit fast-forwards.
 	}
-	return reconcileErrs
+	return reconcileErrs, nil
 }
 
 // HasUncommittedChanges reports whether `git status --porcelain` limited to the
@@ -1222,69 +1230,157 @@ func commitPathspec(vaultPath string, limit time.Duration, message string, paths
 	return nil
 }
 
-// forceWithLease pushes branch to remote with a lease keyed to expectedSHA.
-// The lease causes git to reject the push if the remote's branch ref has moved
-// off expectedSHA since we last observed it — catching concurrent writers
-// without resorting to naked --force.
-func forceWithLease(vaultPath, remote, branch, expectedSHA string) error {
-	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branch, expectedSHA)
-	_, err := gitCmd(vaultPath, 60*time.Second, "push", lease, remote, branch)
-	return err
+// mergeFetchedTip merges the already-fetched <remote>/<branch> into HEAD — the
+// plain merge pullCore runs (vaultpull.go), and the commit-and-push reconcile's
+// only way of taking in a remote's commits. nil means HEAD now descends from
+// the remote tip.
+//
+// It only ever cleans up after a merge THIS call started. In order:
+//
+//  1. Any merge, cherry-pick, revert or rebase already in progress refuses,
+//     touching nothing (*vaultTreeUnsafeError). pullCore deliberately leaves a
+//     conflicted merge for the operator; merging over it fails and aborting
+//     it would destroy their hand resolution. A probe that cannot tell refuses
+//     the same way.
+//  2. The departure guard: a remote tip that takes away a project this host
+//     still has work under is refused with the *DepartedWorkError, before
+//     anything changes. It runs here so no caller can merge without it.
+//  3. The merge: one step whatever the number of commits ahead, rewriting no
+//     local commit and stashing nothing.
+//  4. A merge killed at its deadline (gitCmd SIGKILLs git), or by any other
+//     signal, is NOT aborted and nothing is removed: it can leave index.lock (which another process may
+//     own) and a half-updated tree with no MERGE_HEAD, so it is reported as
+//     such (*vaultTreeUnsafeError, killedMergeError).
+//  5. A merge this call left in progress (MERGE_HEAD, or unmerged paths) is
+//     aborted with `merge --abort`. A failed abort is joined into the error and
+//     is *vaultTreeUnsafeError.
+//  6. Anything else is git refusing before it changed anything — staged
+//     changes in the index, or the incoming change touching a modified or
+//     untracked file in the way — returned as *mergeNotStartedError.
+func mergeFetchedTip(vaultPath, remote, branch string) error {
+	ref := remote + "/" + branch
+	if op, err := operationInProgress(vaultPath); err != nil {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to merge %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", ref, err)}
+	} else if op != "" {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to merge %s: %s is in progress in the vault and vp did not start it; nothing was touched — conclude or abort it by hand first", ref, describeOperation(op))}
+	}
+	if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
+		return derr
+	}
+	_, mergeErr := gitCmd(vaultPath, mergeTimeout, "merge", ref)
+	if mergeErr == nil {
+		return nil
+	}
+	if killed := killedMergeError(vaultPath, ref, mergeErr); killed != nil {
+		return &vaultTreeUnsafeError{killed}
+	}
+	op, err := operationInProgress(vaultPath)
+	if err != nil {
+		return &vaultTreeUnsafeError{fmt.Errorf("%w; and whether it left a merge in progress cannot be told: %w", mergeErr, err)}
+	}
+	if op != "MERGE_HEAD" && len(unmergedPaths(vaultPath)) == 0 {
+		return &mergeNotStartedError{mergeErr}
+	}
+	if _, abortErr := gitCmd(vaultPath, 10*time.Second, "merge", "--abort"); abortErr != nil {
+		return &vaultTreeUnsafeError{fmt.Errorf("%w; abort failed: %w", mergeErr, abortErr)}
+	}
+	return mergeErr
+}
+
+// describeOperation names an operationInProgress result for a person: the
+// state file alone ("MERGE_HEAD") does not say what kind of operation it is.
+func describeOperation(op string) string {
+	switch op {
+	case "MERGE_HEAD":
+		return "a merge (MERGE_HEAD)"
+	case "CHERRY_PICK_HEAD":
+		return "a cherry-pick (CHERRY_PICK_HEAD)"
+	case "REVERT_HEAD":
+		return "a revert (REVERT_HEAD)"
+	}
+	return op
+}
+
+// killedMergeError describes a merge whose git process did not exit on its
+// own — killed by gitCmd at its deadline, or by any signal — or returns nil
+// when it exited with a status. Such a merge can stop mid-write. It removes
+// nothing: index.lock may belong to another process, and only a human can
+// tell.
+func killedMergeError(vaultPath, ref string, mergeErr error) error {
+	var how string
+	var exitErr *exec.ExitError
+	switch {
+	case errors.Is(mergeErr, context.DeadlineExceeded):
+		how = "killed at its deadline"
+	case errors.As(mergeErr, &exitErr) && exitErr.ExitCode() == -1:
+		// ExitCode is -1 when the process was terminated by a signal.
+		how = "killed by a signal"
+	default:
+		return nil
+	}
+	msg := fmt.Sprintf("the merge of %s was %s, so the index and working tree may be half-updated", ref, how)
+	if lock, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--git-path", "index.lock"); err == nil {
+		if !filepath.IsAbs(lock) {
+			lock = filepath.Join(vaultPath, lock)
+		}
+		if _, statErr := os.Lstat(lock); statErr == nil {
+			msg += fmt.Sprintf("; %s was left behind, and no vault commit can run until it is removed — first confirm no git process holds it", lock)
+		}
+	}
+	return fmt.Errorf("%s: %w", msg, mergeErr)
+}
+
+// mergeNotStartedError is a merge git refused before changing anything.
+type mergeNotStartedError struct{ err error }
+
+func (e *mergeNotStartedError) Error() string { return e.err.Error() }
+func (e *mergeNotStartedError) Unwrap() error { return e.err }
+
+// vaultTreeUnsafeError is a merge that could not run, or did not finish, in a
+// state nothing may commit into: an operation already in progress, a merge
+// killed by its deadline or a signal, or a failed abort.
+type vaultTreeUnsafeError struct{ err error }
+
+func (e *vaultTreeUnsafeError) Error() string { return e.err.Error() }
+func (e *vaultTreeUnsafeError) Unwrap() error { return e.err }
+
+// reconcileFailure prefixes a failed reconcile's merge error with what was
+// being reconciled. A departure refusal is returned as it is: its text is the
+// operator's remedy, and it is the same refusal pullCore reports.
+func reconcileFailure(what string, err error) error {
+	var departed *DepartedWorkError
+	if errors.As(err, &departed) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // reconcileRejectedPush is pushCommitted's rejection recovery for one remote:
-// fetch, the departure guard, then `rebase --autostash` onto the fetched tip.
-// The caller holds the vault commit lock across it. reconciled is false when
-// the push to this remote must be skipped (its RemoteResults entry is set);
-// rebased reports whether a rebase ran and landed.
-func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult) (reconciled, rebased bool) {
-	// Fetch failure surfaces directly — no rebase/converge.
+// fetch, then the guarded merge of the fetched tip (mergeFetchedTip). The
+// caller holds the vault commit lock across it. reconciled is false when the
+// push to this remote must be skipped (its RemoteResults entry is set).
+func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult) (reconciled bool) {
+	// Fetch failure surfaces directly — no merge/converge.
 	if _, fetchErr := gitCmd(vaultPath, 60*time.Second, "fetch", remote); fetchErr != nil {
 		result.RemoteResults[remote] = fmt.Errorf("fetch %s: %w", remote, fetchErr)
-		return false, false
+		return false
 	}
 
-	// Never rebase this host's work onto a departure of the project it is
-	// under: the push to this remote is skipped and the commit stays local
-	// (guardIncomingDepartures).
-	if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
-		result.RemoteResults[remote] = derr
-		return false, false
+	// Merge the freshly-fetched remote tip under the capture commit. Any
+	// failure (a departure refusal, an aborted conflict, a refusal before the
+	// merge started, a killed merge) skips the push for this remote — the
+	// commit stays local (Stranded surfaces it).
+	if mergeErr := mergeFetchedTip(vaultPath, remote, branch); mergeErr != nil {
+		result.RemoteResults[remote] = reconcileFailure("merge of "+remote+"/"+branch+" failed", mergeErr)
+		return false
 	}
-
-	// Rebase the local capture commit onto the freshly-fetched remote tip.
-	// --autostash shelves any dirty tracked files (tidy deliberately leaves
-	// non-swept dirt in the tree) so the rebase can start, then re-applies
-	// them. The state-dir — NOT the exit code — is the source of truth for
-	// whether the rebase landed: a true content conflict leaves rebase-merge/
-	// rebase-apply in place (commit did NOT land), while an autostash re-apply
-	// conflict completes the rebase (commit landed) yet may exit non-zero on
-	// older git or exit 0 with conflict markers on modern git.
-	_, rebaseErr := gitCmd(vaultPath, 60*time.Second, "rebase", "--autostash", remote+"/"+branch)
-	if rebaseInProgress(vaultPath) {
-		// TRUE rebase conflict: the capture commit did not land. Abort
-		// (this also restores the autostashed working-tree edits) and skip
-		// the push for this remote — the commit stays local (Stranded surfaces it).
-		_, _ = gitCmd(vaultPath, 10*time.Second, "rebase", "--abort")
-		result.RemoteResults[remote] = fmt.Errorf("rebase against %s failed: %w", remote, rebaseErr)
-		return false, false
-	}
-	// Rebase completed: the capture commit is on HEAD and will push below.
-	// If the autostash re-apply conflicted, the operator's edits are retained
-	// in the stash and the named files carry conflict markers — surface loudly.
-	if unmerged := unmergedPaths(vaultPath); len(unmerged) > 0 {
-		result.PopConflict = true
-		result.PopConflictPaths = unmerged
-	}
-	return true, true
+	return true
 }
 
 // rebaseInProgress reports whether a rebase is mid-flight in the vault repo,
-// i.e. git's rebase-merge or rebase-apply state directory exists. This is the
-// reliable discriminator between a TRUE rebase conflict (state dir present,
-// commit not landed) and a completed rebase whose autostash re-apply conflicted
-// (state dir absent, commit landed) — the rebase exit code is NOT reliable for
-// this across git versions.
+// i.e. git's rebase-merge or rebase-apply state directory exists. vp itself
+// never rebases the vault; this reads a rebase some other process left behind
+// (operationInProgress).
 func rebaseInProgress(vaultPath string) bool {
 	for _, name := range []string{"rebase-merge", "rebase-apply"} {
 		p, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--git-path", name)
@@ -1303,7 +1399,7 @@ func rebaseInProgress(vaultPath string) bool {
 
 // unmergedPaths returns the de-duplicated set of working-tree paths with
 // unmerged (conflict) entries, via `git ls-files -u`. Empty when the tree is
-// clean. Used after a completed rebase to detect an autostash re-apply conflict.
+// clean. Used to tell a conflicted merge from a refused one.
 func unmergedPaths(vaultPath string) []string {
 	out, err := gitCmd(vaultPath, 10*time.Second, "ls-files", "-u")
 	if err != nil || out == "" {
@@ -1403,7 +1499,7 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	// Prevent interactive prompts. GIT_EDITOR=true short-circuits any editor
-	// invocation (e.g. rebase --continue composing a merge commit message) so
+	// invocation (e.g. the reconcile's merge composing its commit message) so
 	// operators with an interactive core.editor do not see the backend hang
 	// waiting for stdin. All explicit commits here use `-m` already.
 	//

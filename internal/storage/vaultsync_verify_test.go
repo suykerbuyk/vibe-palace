@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // acceptOnly returns a verifier that accepts exactly the listed bodies (as the
@@ -687,4 +689,52 @@ func TestPruneMirrorsVerified_UnbornHeadUnreachableRemoteDefers(t *testing.T) {
 		t.Error("removed")
 	}
 	assertStillUnborn(t, dir)
+}
+
+// TestPruneMirrorsVerified_MergeInProgressRemovesNothing: an operator's merge
+// is in progress and the branch is ahead, so the already-ahead reconcile
+// refuses (a merge vp did not start). No commit is possible in that state, so
+// the prune must refuse before its first removal: every path kept, nothing
+// deleted on disk, nothing staged, the commit lock released.
+func TestPruneMirrorsVerified_MergeInProgressRemovesNothing(t *testing.T) {
+	dir := committedRepo(t, map[string]string{"T/wrap.md": "mirror\n", "shared.txt": "line1\n"})
+	bare := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", bare)
+	gitRun(t, dir, "push", "origin", "main")
+	commitLocal(t, dir, "shared.txt", "LOCAL\n")
+	advanceRemote(t, bare, "shared.txt", "REMOTE\n")
+	gitRun(t, dir, "fetch", "origin")
+	cmd := exec.Command("git", "-C", dir, "merge", "origin/main")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	_ = cmd.Run() // expected to conflict
+	writeFile(t, dir, "shared.txt", "RESOLVED BY HAND\n")
+	gitRun(t, dir, "add", "shared.txt")
+	staged := gitRun(t, dir, "diff", "--cached", "--name-status")
+
+	res, out, err := pruneMirrors(dir, []string{"T/wrap.md"}, true, true, acceptOnly(nil, "mirror\n"))
+	if err == nil || !strings.Contains(err.Error(), "a merge (MERGE_HEAD) is in progress") {
+		t.Errorf("the prune must refuse naming the merge in progress, got %v", err)
+	}
+	if res != nil && res.CommitSHA != "" {
+		t.Errorf("something was committed: %s", res.CommitSHA)
+	}
+	if len(out.Kept) != 1 || out.Kept[0].Path != "T/wrap.md" || len(out.Removed) != 0 {
+		t.Errorf("every path must be kept and none removed: %+v", out)
+	}
+	if got, ok := readBody(t, dir, "T/wrap.md"); !ok || got != "mirror\n" {
+		t.Errorf("T/wrap.md was deleted or changed on disk: %q (present=%v)", got, ok)
+	}
+	if got := gitRun(t, dir, "diff", "--cached", "--name-status"); got != staged {
+		t.Errorf("the index changed: before %q, after %q", staged, got)
+	}
+	if !gitPathExists(t, dir, "MERGE_HEAD") {
+		t.Error("the operator's merge was disturbed: MERGE_HEAD is gone")
+	}
+	release, lerr := vaultlock.Acquire(dir, dir)
+	if lerr != nil {
+		t.Fatalf("the vault commit lock was not released: %v", lerr)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
 }
