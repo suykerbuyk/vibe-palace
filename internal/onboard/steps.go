@@ -5,6 +5,7 @@ package onboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -228,24 +229,114 @@ func stepProjectScaffold(ctx context.Context, req Request) []Outcome {
 	// The shape is its siblings': stepCwdProject separates created from
 	// updated from unchanged, and stepCommandShims downgrades a
 	// nothing-happened run to Info.
+	var row Outcome
 	switch {
 	case rep.Created > 0:
-		return []Outcome{{
+		row = Outcome{
 			Status:  Pass,
 			Created: true,
 			Summary: fmt.Sprintf("scaffolded Projects/%s/{commands,skills}/", req.Slug),
-		}}
+		}
 	case rep.Updated > 0:
-		return []Outcome{{
+		row = Outcome{
 			Status:  Pass,
 			Summary: fmt.Sprintf("updated Projects/%s/{commands,skills}/", req.Slug),
-		}}
+		}
 	default:
-		return []Outcome{{
+		row = Outcome{
 			Status:  Info,
 			Summary: fmt.Sprintf("Projects/%s/{commands,skills}/ already present — nothing to scaffold", req.Slug),
+		}
+	}
+	return scaffoldCommitOutcomes(vault.Root, req.Slug, row, rep.Created+rep.Updated > 0)
+}
+
+// commitScaffold is storage.CommitProjectScaffold; a test swaps it to force
+// the one outcome a real fixture cannot produce on demand, a failed commit.
+var commitScaffold = storage.CommitProjectScaffold
+
+// scaffoldCommitOutcomes commits what the scaffold wrote and folds the result
+// into the step's rows.
+//
+// # Why the step commits at all
+//
+// The markers match no tidy sweep rule and a new project's .surface is
+// untracked, so both are Reported dirt — and Reported dirt makes vp_vault_sync
+// refuse. An init of a project into an existing vault that left them
+// uncommitted left that vault unable to sync until someone hand-committed files
+// they never wrote. Running `vp init` (or vp_init) is the deliberate act, so it
+// commits what it laid down, .surface included (IncludeStamp), locally and
+// path-scoped; the next sync pushes it. A stray init is still reported by the
+// stray-scaffolds check, which reads the directory, not git.
+//
+// A failed commit is a Fail row, and so (SideVault) an exit-worthy failure: the
+// scaffold IS on disk, but a run that reports success over a vault that cannot
+// sync is exactly the defect this commit exists to remove. Its Details name the
+// remedy, a missing committer identity first. git_enabled = false, an
+// unreadable host config, and a vault that is not its own git repository (none,
+// git unusable, or nested inside another repository) are not faults — a Detail
+// line, the row unchanged — and only when this run scaffolded something, so a
+// converged re-init prints no reason for a commit it had nothing to make.
+//
+// Dirty markers whose bytes are not the current stub are never committed (see
+// storage.CommitProjectScaffold); they get an Info row naming each path.
+func scaffoldCommitOutcomes(vaultRoot, project string, row Outcome, wrote bool) []Outcome {
+	sc, err := commitScaffold(vaultRoot, project, storage.ScaffoldCommitOptions{IncludeStamp: true, Wrote: wrote})
+	switch {
+	case errors.Is(err, storage.ErrGitDisabled) || errors.Is(err, storage.ErrGitConfigUnreadable):
+		// Only when this run scaffolded something: a converged re-init on a
+		// git-disabled host has nothing the reason explains.
+		if wrote {
+			row.Details = append(row.Details, "not committed: "+err.Error())
+		}
+		return []Outcome{row}
+	case err != nil:
+		paths := sc.Paths
+		if len(paths) == 0 {
+			paths = []string{
+				"Projects/" + project + "/commands/README.md",
+				"Projects/" + project + "/skills/README.md",
+				"Projects/" + project + "/.surface",
+			}
+		}
+		return []Outcome{row, {
+			Name:    "Project templates commit",
+			Status:  Fail,
+			Summary: "the scaffold is on disk but its commit failed: " + err.Error(),
+			Details: []string{
+				"vp_vault_sync refuses while these files are uncommitted; to finish: " +
+					storage.ScaffoldCommitRemedy(vaultRoot, project, paths),
+			},
 		}}
 	}
+	if sc.Skipped != "" {
+		row.Details = append(row.Details, "not committed: "+sc.Skipped)
+	}
+	if sc.Committed {
+		row.Details = append(row.Details, fmt.Sprintf("committed %s to the vault, local only: %s",
+			shortSHA(sc.SHA), strings.Join(sc.Paths, ", ")))
+	}
+	rows := []Outcome{row}
+	if len(sc.Kept) > 0 {
+		rows = append(rows, Outcome{
+			Name:   "Project templates commit",
+			Status: Info,
+			Summary: "left uncommitted — not vp's current stub, so vp does not commit it: " +
+				strings.Join(sc.Kept, ", "),
+			Details: []string{
+				"an edited, older or removed scaffold README is yours to review; vp_vault_sync refuses until it is committed or restored",
+			},
+		})
+	}
+	return rows
+}
+
+// shortSHA abbreviates a commit hash for a status-table line.
+func shortSHA(sha string) string {
+	if len(sha) > 9 {
+		return sha[:9]
+	}
+	return sha
 }
 
 // stepAgentWiring detects agent instruction files under the project root,

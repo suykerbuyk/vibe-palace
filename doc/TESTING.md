@@ -754,6 +754,57 @@ and naming the failing remote. `TestVaultTidy_PartialPushIsAnError` requires a
 1-of-2 push to be an error naming `PARTIAL` and the dead remote, and not
 `STRANDED`.
 
+### `internal/storage/`, `internal/onboard/` — Project Scaffold Commit
+
+When a project is initialised into an EXISTING vault, `vp init` / `vp_init`
+commits the project scaffold it lays down (`storage.CommitProjectScaffold` with
+`IncludeStamp`): the two marker READMEs plus `Projects/<p>/.surface`, as one
+local commit scoped to those paths. Without the commit, tidy reports all three
+and `vp_vault_sync` refuses. A FRESH vault's own `.gitignore` and
+`.vibe-palace/vault.toml` are not covered (task
+`fresh-vault-init-leaves-gitignore-and-vault-toml-uncommitted`). The onboard
+fixtures pre-commit `.gitignore` for that reason. `vp config sync` commits only
+the markers, and only for a project whose `.surface` is already tracked
+(`RequireTrackedStamp`).
+
+In `internal/onboard/steps_scaffold_commit_test.go` (real `git`, a bare remote):
+- `TestProjectScaffold_LeavesNoUncommittedInitPaths` pins the commit to exactly
+  those three paths.
+- `_FollowingSyncDoesNotRefuse` is the incident's acceptance test.
+- `_ReinitCommitsAnEarlierUncommittedScaffold` covers the heal.
+- `_CommitFailureIsAFailRow` checks that the run is exit-worthy and names the
+  remedy.
+- `_NoIdentityFailRowNamesTheRemedy` checks that the row names `git config
+  user.name` / `user.email`.
+- `_StaleStubMarkerIsAnInfoRow` covers bytes that are not vp's current stub,
+  which are never committed.
+- `_GitDisabledIsADetailNotAFail` checks that a git-disabled host gets a detail
+  line, not a failure.
+- Three guards cover never committing unrelated dirt, a stray scaffold still
+  being reported, and a converged re-init making no commit.
+
+`internal/storage/project_scaffold_commit_test.go` pins the helper itself:
+- markers count only when their bytes match the stub (`_NonStubMarkerIsKeptNotCommitted`);
+- `.surface` is committed only alongside a marker (`_StampOnlyJoinsAnActualCommit`);
+- an absent marker inside an untracked directory is neither committed nor kept
+  (`_AbsentMarkerInAnUntrackedDirIsNeitherCommittedNorKept`);
+- a vault nested in another repository is skipped and never staged into
+  (`_NestedVaultIsSkippedNotAnError`);
+- `RequireTrackedStamp` skips a project with an untracked stamp and otherwise
+  commits markers only (`_RequireTrackedStampSkipsAnUntrackedStamp`,
+  `_TrackedStampCommitsMarkersOnly`);
+- with no git on `PATH` it still refuses up front (`_GitDisabledRunsNoGit`).
+
+`cmd/vp/cmd_config_sync_scaffold_test.go` covers the config-sync caller:
+- `TestConfigSyncCommitsMarkersOfADeliberatelyInitialisedProject`: a tracked
+  stamp, so the markers are committed and the stamp is not.
+- `TestConfigSyncCommitsNothingForAStray`: hook-capture residue, so nothing is
+  committed and vault sync still refuses.
+
+`cmd/vp/cmd_init_test.go` `TestInitIntoANestedVaultDoesNotFail` covers an
+existing install with a `--vault-path` inside another repository: exit 0 and
+nothing staged there.
+
 ### `internal/storage/` — Vault Pull & Phantom-Template Heal
 
 Covers the incoming half of vault sync added in `storage.Pull` (plain-merge

@@ -375,3 +375,12 @@ func sha256File(t *testing.T, path string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+// committerIdentityEnv is the git identity a real host has. `vp init` commits
+// the project scaffold it lays down (storage.CommitProjectScaffold); with the
+// harness's isolated HOME git finds no identity, and init reports that as a
+// failed vault step and exits non-zero.
+var committerIdentityEnv = []string{
+	"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
+	"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com",
+}

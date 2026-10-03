@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // TestConfigSyncSkipsNonPortableProjectDir is the CLI-level reproduction of
@@ -84,5 +85,111 @@ func TestConfigSyncSkipsNonPortableProjectDir(t *testing.T) {
 	realReadme := filepath.Join(vaultPath, "Projects", "sync-portable", "commands", "README.md")
 	if _, err := os.Stat(realReadme); err != nil {
 		t.Errorf("real project's commands README not created: %v", err)
+	}
+}
+
+// syncScaffoldVault runs `vp init` of one project into a fresh git vault and
+// chdirs into that project, so a following runSyncWithStdin enumerates every
+// initialised project in the vault. It returns the vault path.
+func syncScaffoldVault(t *testing.T) string {
+	t.Helper()
+	_, _ = initTestEnv(t, false)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	vaultPath := filepath.Join(t.TempDir(), "vault")
+	cmd := cmdInit(cli.BuildInfo{Version: "test"})
+	if code := cmd.Run([]string{projDir, "--name", "sync-commit", "--vault-path", vaultPath}); code != cli.ExitOK {
+		t.Fatalf("init exit code = %d", code)
+	}
+	// A fresh vault's own files (init's vault step) are not this unit's
+	// business; commit them so only the projects under test are dirty.
+	gitRun(t, vaultPath, "add", "-A")
+	gitRun(t, vaultPath, "commit", "-q", "--allow-empty", "-m", "fixture: fresh vault")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(projDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	return vaultPath
+}
+
+func putFile(t *testing.T, root, rel, body string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestConfigSyncCommitsMarkersOfADeliberatelyInitialisedProject: a project
+// whose .surface is already TRACKED was initialised on purpose. `vp config
+// sync` scaffolds its missing markers and commits exactly those markers —
+// never the .surface, which stays a tracked modification tidy sweeps.
+func TestConfigSyncCommitsMarkersOfADeliberatelyInitialisedProject(t *testing.T) {
+	vaultPath := syncScaffoldVault(t)
+	putFile(t, vaultPath, "Projects/beta/resume.md", "# beta\n")
+	// An OLDER surface than this binary's, so the scaffold's own write
+	// re-stamps it: the stamp is then a dirty tracked file the commit must
+	// still leave out.
+	putFile(t, vaultPath, "Projects/beta/.surface", "surface = 7\n")
+	gitRun(t, vaultPath, "add", "Projects/beta/resume.md", "Projects/beta/.surface")
+	gitRun(t, vaultPath, "commit", "-q", "-m", "beta history")
+
+	out, code := runSyncWithStdin(t, "", []string{"--yes"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(vaultPath, "Projects", "beta", "skills", "README.md")); err != nil {
+		t.Fatalf("fixture: sync did not scaffold beta: %v\n%s", err, out)
+	}
+	files := strings.Split(gitRun(t, vaultPath, "show", "--name-only", "--format=", "HEAD"), "\n")
+	want := []string{"Projects/beta/commands/README.md", "Projects/beta/skills/README.md"}
+	if strings.Join(files, ",") != strings.Join(want, ",") {
+		t.Errorf("config sync commit touched %q, want exactly %q\n%s", files, want, out)
+	}
+	if st := gitRun(t, vaultPath, "status", "--porcelain", "-uall", "--", "Projects/beta"); strings.Contains(st, "README.md") || strings.Contains(st, "??") {
+		t.Errorf("beta markers left uncommitted:\n%s", st)
+	}
+	if st := gitRun(t, vaultPath, "status", "--porcelain", "--", "Projects/beta/.surface"); !strings.Contains(st, "M Projects/beta/.surface") {
+		t.Errorf("fixture: the stamp is not a dirty tracked file after sync (%q), so this test cannot see it committed", st)
+	}
+	if !strings.Contains(out, "Projects/beta scaffold committed") {
+		t.Errorf("sync output does not report the commit:\n%s", out)
+	}
+}
+
+// TestConfigSyncCommitsNothingForAStray is review C1: hook capture into a
+// slug nobody initialised leaves sessions/ content and an UNTRACKED .surface.
+// That is WithContent, so config sync enumerates and scaffolds it — but it must
+// commit nothing for it. Committing its .surface would make the next sync
+// sweep its sessions and push the whole stray unreviewed, which is exactly
+// what tidy's untracked-.surface gate exists to stop.
+func TestConfigSyncCommitsNothingForAStray(t *testing.T) {
+	vaultPath := syncScaffoldVault(t)
+	putFile(t, vaultPath, "Projects/stray/sessions/x.md", "a captured session\n")
+	putFile(t, vaultPath, "Projects/stray/.surface", "surface = 8\n")
+	head := gitRun(t, vaultPath, "rev-parse", "HEAD")
+
+	out, code := runSyncWithStdin(t, "", []string{"--yes"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if got := gitRun(t, vaultPath, "rev-parse", "HEAD"); got != head {
+		t.Errorf("config sync committed for a stray: HEAD %s -> %s\n%s\n%s", head, got,
+			gitRun(t, vaultPath, "show", "--stat", "HEAD"), out)
+	}
+	_, refused, err := storage.SyncPreview(vaultPath)
+	if !refused || err == nil || !strings.Contains(err.Error(), "Projects/stray/.surface") {
+		t.Errorf("vault sync must still refuse on the stray: refused=%v err=%v", refused, err)
 	}
 }

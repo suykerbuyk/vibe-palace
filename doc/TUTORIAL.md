@@ -1006,9 +1006,12 @@ and these are committed for you automatically:
   non-artifact dirt (pending user memory does not count and never blocks). Pass
   `--no-tidy` for the old raw pull+push that refuses on *any* uncommitted change.
 
-Both commit *only* classified capture artifacts and **report** everything else —
-`git add -A` is never used, so a stray edit or an accidental project scaffold is
-flagged for you instead of being silently committed.
+Both commit *only* classified capture artifacts and **report** everything else.
+`git add -A` is never used, so a stray edit, or a project directory something
+wrote without initialising it, is flagged for you instead of being silently
+committed. (`vp init` is the exception, because you ran it on purpose: it commits
+the scaffold it lays down for the project. If that init was a mistake, `vp check`
+reports the scaffold-only project as a stray scaffold, and a revert removes it.)
 
 To see what a sweep would do at any time, preview it without committing:
 

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -309,20 +310,30 @@ func runConfigSync(args []string) int {
 	// otherwise enumerate every directory under <vault>/Projects/ and
 	// emit one per slug.
 	var projectScaffolds []reconcile.Reconciler
+	// scaffoldSlug maps each project scaffolder to its slug, so the apply loop
+	// can commit what the scaffold wrote (storage.CommitProjectScaffold).
+	scaffoldSlug := map[reconcile.Reconciler]string{}
+	addScaffold := func(name string) {
+		r := reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+name,
+			reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold})
+		projectScaffolds = append(projectScaffolds, r)
+		// A name that fails slug.Validate is enumerated on purpose, so its
+		// not-portable Skip rows print, but the reconciler writes nothing
+		// there — so there is nothing to commit, and no commit is attempted.
+		if slug.Validate(name) == nil {
+			scaffoldSlug[r] = name
+		}
+	}
 	if vaultPathForTemplates != "" {
 		if projectSlug != "" && (cwdSet || projectFlag != "") {
 			// An explicit --cwd/--project addressing the vault itself (or a
 			// path inside it) must not scaffold Projects/<slug>/.
 			if !projectDirInsideVault {
-				projectScaffolds = append(projectScaffolds,
-					reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+projectSlug,
-						reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+				addScaffold(projectSlug)
 			}
 		} else {
 			for _, slug := range enumerateVaultProjectSlugs(vaultPathForTemplates) {
-				projectScaffolds = append(projectScaffolds,
-					reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+slug,
-						reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold}))
+				addScaffold(slug)
 			}
 		}
 	}
@@ -440,6 +451,7 @@ func runConfigSync(args []string) int {
 	acceptAll := autoYes
 	var totalReport reconcile.Report
 	totalReport.Errors = append(totalReport.Errors, preErrors...)
+	scaffoldCommitSkipsPrinted := map[string]bool{}
 
 	// No reconciler prompts about a Templates/ file. There used to be a
 	// keep/.new prompt for an override of a built-in on a host whose
@@ -515,6 +527,19 @@ func runConfigSync(args []string) int {
 		if lockAction != nil {
 			if err := removeRetiredLock(vaultPathForTemplates, *lockAction); err != nil {
 				totalReport.Errors = append(totalReport.Errors, err)
+			}
+		}
+		if slug, ok := scaffoldSlug[r]; ok {
+			skip, err := commitSyncedScaffold(os.Stdout, vaultPathForTemplates, slug, rep.Created+rep.Updated > 0)
+			if err != nil {
+				totalReport.Errors = append(totalReport.Errors, err)
+			}
+			// A vault-wide reason (git disabled, not its own repository) is the
+			// same string for every project and prints once; a per-project one
+			// names its own stamp and prints for that project.
+			if skip != "" && !scaffoldCommitSkipsPrinted[skip] {
+				scaffoldCommitSkipsPrinted[skip] = true
+				fmt.Fprintf(os.Stdout, "  [Info] %s\n", skip)
 			}
 		}
 	}
@@ -899,6 +924,55 @@ func deferPrunes(p reconcile.Plan, vaultPath, reason string) (reconcile.Plan, in
 		out.Actions = append(out.Actions, a)
 	}
 	return out, n
+}
+
+// commitSyncedScaffold commits the markers a project scaffold wrote
+// (storage.CommitProjectScaffold), so the next vault sync does not refuse over
+// stub READMEs vp itself laid down — but ONLY for a project whose .surface is
+// already tracked, and never the .surface itself (RequireTrackedStamp, no
+// IncludeStamp). Sync scaffolds every WithContent directory, and that includes
+// a stray hook capture made in a slug nobody initialised: committing anything
+// for it would end the review tidy's untracked-.surface gate exists to force.
+// `vp init` is the deliberate act that adopts a project; sync is not.
+//
+// It returns the reason no commit was attempted, if any; the caller prints
+// each distinct reason once. A vault-wide reason (git disabled, the vault not
+// its own repository) is returned only when wrote says this sync scaffolded
+// something for slug, so a converged sync prints none; an untracked stamp is
+// returned whenever a stub marker is waiting uncommitted. A failed commit is returned as an error, so the run
+// exits non-zero. Markers whose bytes are not the current stub are named and
+// left alone.
+func commitSyncedScaffold(w io.Writer, vaultRoot, slug string, wrote bool) (skipReason string, err error) {
+	sc, err := storage.CommitProjectScaffold(vaultRoot, slug, storage.ScaffoldCommitOptions{RequireTrackedStamp: true, Wrote: wrote})
+	if reason, skipped := gitDisabledSkipReason(err); skipped {
+		if !wrote {
+			return "", nil
+		}
+		return "project scaffold commits — skipped: " + reason + " — nothing committed", nil
+	}
+	if err != nil {
+		paths := sc.Paths
+		if len(paths) == 0 {
+			paths = []string{"Projects/" + slug + "/commands/README.md", "Projects/" + slug + "/skills/README.md"}
+		}
+		return "", fmt.Errorf("commit the Projects/%s scaffold: %w — vp vault sync refuses until it is committed; to finish: %s",
+			slug, err, storage.ScaffoldCommitRemedy(vaultRoot, slug, paths))
+	}
+	if sc.Committed {
+		sha := sc.SHA
+		if len(sha) > 9 {
+			sha = sha[:9]
+		}
+		fmt.Fprintf(w, "  [Pass] Projects/%s scaffold committed %s, local only: %s\n", slug, sha, strings.Join(sc.Paths, ", "))
+	}
+	if len(sc.Kept) > 0 {
+		fmt.Fprintf(w, "  [Info] Projects/%s scaffold left uncommitted — not vp's current stub, so vp does not commit it: %s\n",
+			slug, strings.Join(sc.Kept, ", "))
+	}
+	if sc.Skipped != "" {
+		return "scaffold not committed: " + sc.Skipped, nil
+	}
+	return "", nil
 }
 
 // vaultRelOf renders target relative to vaultPath with forward slashes, or

@@ -74,6 +74,13 @@ func initTestEnv(t *testing.T, preCreateConfig bool) (configDir, homeDir string)
 	t.Setenv("APPDATA", configDir)
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
+	// A committer identity, as a real host has one: `vp init` commits the
+	// project scaffold it lays down (storage.CommitProjectScaffold), and with a
+	// sandboxed HOME git finds none, which init reports as a failed SideVault
+	// step. Tests about a missing identity unset these (isolateGitIdentity).
+	for k, v := range testCommitterIdentity {
+		t.Setenv(k, v)
+	}
 
 	if preCreateConfig {
 		vpDir := filepath.Join(configDir, "vibe-palace")
@@ -83,6 +90,12 @@ func initTestEnv(t *testing.T, preCreateConfig bool) (configDir, homeDir string)
 		os.WriteFile(filepath.Join(vpDir, "config.toml"), []byte(content), 0o644)
 	}
 	return configDir, homeDir
+}
+
+// testCommitterIdentity is the git identity initTestEnv gives every test.
+var testCommitterIdentity = map[string]string{
+	"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+	"GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
 }
 
 // realHome is the process's actual home directory, captured at package init
@@ -1779,5 +1792,58 @@ func TestInitExitsNonZeroOnVaultSideFailure(t *testing.T) {
 	// failure, not a cwd-project one, which is the whole point of the case.
 	if _, err := os.Stat(filepath.Join(dir, project.ConfigFileName)); err != nil {
 		t.Errorf("project marker should still exist: %v", err)
+	}
+}
+
+// TestInitIntoANestedVaultDoesNotFail is review C2: a vault that is a
+// directory inside another repository's work tree. The scaffold's paths probe
+// dirty against the ENCLOSING repository, but vp never stages into it — so
+// init must not try, must not report a failed commit, and must exit 0, saying
+// why nothing was committed.
+func TestInitIntoANestedVaultDoesNotFail(t *testing.T) {
+	_, _ = initTestEnv(t, false)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-q", "-b", "main")
+	gitRun(t, repo, "commit", "-q", "--allow-empty", "-m", "enclosing repo")
+	head := gitRun(t, repo, "rev-parse", "HEAD")
+
+	// The route that reaches the scaffold step with a nested vault: an
+	// EXISTING install, and a --vault-path naming an EXISTING directory inside
+	// the enclosing repository. initGlobal then skips the vault step (it never
+	// creates or `git init`s an existing path; a NEW nested vault is refused
+	// there, before onboarding runs).
+	first := t.TempDir()
+	markProjectDir(t, first)
+	if code := cmdInit(cli.BuildInfo{Version: "test"}).Run(
+		[]string{first, "--name", "first", "--vault-path", filepath.Join(t.TempDir(), "v1")}); code != cli.ExitOK {
+		t.Fatalf("first install exited %d", code)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "vault2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	markProjectDir(t, projDir)
+	var code int
+	out := captureStdout(t, func() {
+		code = cmdInit(cli.BuildInfo{Version: "test"}).Run(
+			[]string{projDir, "--name", "nested", "--vault-path", filepath.Join(repo, "vault2")})
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("init into a nested vault exited %d\n%s", code, out)
+	}
+	if strings.Contains(out, "Project templates commit") {
+		t.Errorf("a nested vault produced a commit row:\n%s", out)
+	}
+	if !strings.Contains(out, "inside another repository") {
+		t.Errorf("init does not say why nothing was committed:\n%s", out)
+	}
+	if gitRun(t, repo, "rev-parse", "HEAD") != head {
+		t.Error("init committed into the enclosing repository")
+	}
+	if st := gitRun(t, repo, "diff", "--cached", "--name-only"); st != "" {
+		t.Errorf("init staged into the enclosing repository: %q", st)
 	}
 }

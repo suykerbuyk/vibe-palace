@@ -38,7 +38,7 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 // githook case needs for its own `git commit` calls to stay isolated from
 // the real developer's global gitconfig.
 func githookEnv(env *testinfra.Env) []string {
-	return env.Environ("GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	return env.Environ(append([]string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"}, committerIdentityEnv...)...)
 }
 
 // TestIntegrationE2EGithookInitInstallsAndReapFires ports

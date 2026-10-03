@@ -577,7 +577,9 @@ dirty path is routed into exactly one of two buckets:
 - **Swept** — machine-generated capture output that is safe to commit
   unattended. Staged and committed with a hostname-stamped message.
 - **Reported** — everything else. Never staged, never committed; surfaced to the
-  human so a stray edit or an accidental scaffold gets one round of eyes.
+  human so a stray edit or a project directory nobody initialised gets one
+  round of eyes. (`vp init` commits its own project scaffold; see the
+  `.surface` rule below.)
 
 This split is what lets the feature run automatically without ever committing on
 the user's behalf for anything it does not positively recognize.
@@ -626,13 +628,21 @@ not the path alone. `git status --porcelain -z` encodes status as two columns
   provenance fields), so this case now fires only on a version bump.
 - **Untracked** (`??`) `.surface` → **reported**.
 
-An untracked `.surface` means a project directory git has never seen: either a
-genuinely new project (which gets one round of human eyes on its first capture)
-or a stray scaffold from an accidental `vp init` (e.g. `Projects/p/`). Pure
-path-globbing would commit `Projects/p/.surface` while reporting its siblings
-(`config.toml`, the `commands/`/`skills/` README stubs) — a split-brain commit
-that breaks the "stray is flagged, not committed" guarantee. After a project's
-first commit its stamps read ` M` and sweep automatically. All other rules sweep
+An untracked `.surface` means a project directory git has never seen, written
+by something that did not commit it: `vp_memory_write` or `vp_vault_write`/`move`
+into a slug nobody initialised, or hook capture into a fresh slug. That is a
+stray, and it gets human eyes rather than a commit. `vp init` / `vp_init` is
+different: running it is the deliberate act that adopts a project, so it commits
+its own scaffold (`storage.CommitProjectScaffold`: the stub READMEs and the
+project's `.surface`, path-scoped, local). An accidental `vp init` therefore
+leaves a COMMITTED scaffold-only project. Tidy no longer sees it, but the
+`stray-scaffolds` check, which reads the directory rather than git, still
+reports it. `vp config sync` commits the marker stubs only for a project whose
+`.surface` is already tracked, and never the `.surface` itself, so it cannot
+adopt a stray. Pure path-globbing would commit `Projects/p/.surface` while
+reporting its siblings (the `commands/`/`skills/` README stubs), a split-brain
+commit. After a project's first commit its stamps read ` M` and sweep
+automatically. All other rules sweep
 regardless of status, including `??` for newly created
 sessions/transcripts/drawers/triples and `D ` deletes (git stages deletions).
 

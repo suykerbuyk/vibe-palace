@@ -123,7 +123,7 @@ func TestIntegrationE2EWorkflowsTuneRoomsLoop(t *testing.T) {
 	}
 	gitInit(t, projDir)
 
-	testinfra.RunCLI(t, env.Environ(), projDir, nil, "init").Must(t)
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init").Must(t)
 
 	mock := newMockLLMServer(t, allTestingMockResponse)
 	// 🔴 REFLECT THE REAL DRAWER IDS, or the apply half of this loop is inert.

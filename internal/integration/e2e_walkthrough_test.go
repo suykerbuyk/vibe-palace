@@ -82,7 +82,7 @@ func TestIntegrationE2EWalkthroughHappyPath(t *testing.T) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "=== STEP 3: vp init (default config + default vault) ===")
 	fmt.Fprintln(out, "(mirrors TUTORIAL Part 2 — Initialize a Project / Understanding the Vault)")
-	r := testinfra.RunCLI(t, env.Environ(), projA, nil, "init")
+	r := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projA, nil, "init")
 	r.Must(t)
 	fmt.Fprint(out, r.Stdout)
 
@@ -154,7 +154,7 @@ func TestIntegrationE2EWalkthroughHappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitInit(t, projB)
-	r5 := testinfra.RunCLI(t, env.Environ(), projB, nil, "init", "--vault-path", filepath.Join(env.Home, "vibe-palace-vault"))
+	r5 := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projB, nil, "init", "--vault-path", filepath.Join(env.Home, "vibe-palace-vault"))
 	r5.Must(t)
 	fmt.Fprint(out, r5.Stdout)
 	requireFileExists(t, filepath.Join(projB, ".vibe-palace.toml"))

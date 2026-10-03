@@ -36,7 +36,7 @@ func TestIntegrationE2EInitPositionalProjectDir(t *testing.T) {
 	}
 	gitInit(t, projDir)
 
-	testinfra.RunCLI(t, env.Environ(), projDir, nil, "init", "--name", "positional-project-dir").Must(t)
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init", "--name", "positional-project-dir").Must(t)
 
 	requireFileExists(t, filepath.Join(projDir, ".vibe-palace.toml"))
 	requireDirExists(t, filepath.Join(env.Home, "vibe-palace-vault"))
@@ -65,7 +65,7 @@ func TestIntegrationE2EInitExplicitVaultPath(t *testing.T) {
 	gitInit(t, projDir)
 	customVault := filepath.Join(caseDir, "custom-vault")
 
-	testinfra.RunCLI(t, env.Environ(), projDir, nil,
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil,
 		"init", "--vault-path", customVault, "--name", "explicit-vault").Must(t)
 
 	requireDirExists(t, customVault)
@@ -92,7 +92,7 @@ func TestIntegrationE2EInitPositionalAndVault(t *testing.T) {
 	gitInit(t, myproj)
 	customVault := filepath.Join(caseDir, "custom-vault")
 
-	testinfra.RunCLI(t, env.Environ(), caseDir, nil,
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), caseDir, nil,
 		"init", myproj, "--vault-path", customVault, "--name", "both-args").Must(t)
 
 	requireFileExists(t, filepath.Join(myproj, ".vibe-palace.toml"))
@@ -112,7 +112,7 @@ func TestIntegrationE2EInitNonexistentPositional(t *testing.T) {
 	caseDir := testinfra.RetainOnFailure(t, "init")
 	bogus := filepath.Join(caseDir, "does-not-exist", "vault-ish")
 
-	r := testinfra.RunCLI(t, env.Environ(), caseDir, nil, "init", bogus)
+	r := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), caseDir, nil, "init", bogus)
 
 	if r.ExitCode != 1 {
 		t.Errorf("exit code = %d, want 1 (cli.ExitUser)", r.ExitCode)
@@ -140,7 +140,7 @@ func TestIntegrationE2EInitNoGitFlag(t *testing.T) {
 	}
 	gitInit(t, projDir)
 
-	testinfra.RunCLI(t, env.Environ(), projDir, nil, "init", "--no-git", "--name", "no-git-case").Must(t)
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init", "--no-git", "--name", "no-git-case").Must(t)
 
 	requireDirExists(t, filepath.Join(env.Home, "vibe-palace-vault"))
 	requireAbsent(t, filepath.Join(env.Home, "vibe-palace-vault", ".git"))
@@ -215,7 +215,7 @@ func TestIntegrationE2EInitReinitIdempotent(t *testing.T) {
 		requireFileExists(t, filepath.Join(vaultRoot, "Projects", "reinit-case", "skills", "README.md"))
 	}
 
-	r1 := testinfra.RunCLI(t, env.Environ(), projDir, nil, "init", "--name", "reinit-case")
+	r1 := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init", "--name", "reinit-case")
 	r1.Must(t)
 	requireFileExists(t, filepath.Join(projDir, ".vibe-palace.toml"))
 	requireNotContains(t, r1.Stdout, "[FAIL]")
@@ -226,7 +226,7 @@ func TestIntegrationE2EInitReinitIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r2 := testinfra.RunCLI(t, env.Environ(), projDir, nil, "init", "--name", "reinit-case")
+	r2 := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init", "--name", "reinit-case")
 	r2.Must(t)
 	requireNotContains(t, r2.Stdout, "[FAIL]")
 
@@ -269,7 +269,7 @@ func TestIntegrationE2EInitSkillShimFallbackReachable(t *testing.T) {
 	}
 	gitInit(t, projDir)
 
-	testinfra.RunCLI(t, env.Environ(), projDir, nil, "init", "--name", "fallback-case").Must(t)
+	testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, "init", "--name", "fallback-case").Must(t)
 
 	rule := filepath.Join(projDir, ".cursor", "rules", "vps-chair.mdc")
 	requireFileExists(t, rule)
@@ -308,7 +308,7 @@ func TestIntegrationE2EInitSkillShimFallbackReachable(t *testing.T) {
 	fields := strings.Fields(cmd) // ["vp", "skills", "show", "chair"]
 	args := fields[1:]
 
-	res := testinfra.RunCLI(t, env.Environ(), projDir, nil, args...)
+	res := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, args...)
 	res.Must(t)
 	requireContains(t, res.Stdout, "# skill: chair | source: embedded")
 
@@ -322,7 +322,7 @@ func TestIntegrationE2EInitSkillShimFallbackReachable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res2 := testinfra.RunCLI(t, env.Environ(), projDir, nil, args...)
+	res2 := testinfra.RunCLI(t, env.Environ(committerIdentityEnv...), projDir, nil, args...)
 	res2.Must(t)
 	requireContains(t, res2.Stdout, "# skill: chair | source: project")
 	requireContains(t, res2.Stdout, "fallback-case chair body")

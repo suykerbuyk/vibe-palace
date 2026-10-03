@@ -175,10 +175,16 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 // Status gating (H2): for the .surface rule only, routing depends on the status
 // code, not the path alone. Porcelain -z encodes status as two columns XY where
 // X is the index (staged) state and Y is the worktree state:
-//   - "??" → untracked (a brand-new project dir git has never seen, or a stray
-//     scaffold). Untracked .surface is REPORTED — a genuinely new project gets
-//     one round of human eyes; a stray Projects/p/ scaffold is caught, not
-//     committed.
+//   - "??" → untracked. Untracked .surface is REPORTED, never swept. The
+//     writers that create a project on purpose commit their own stamp — `vp
+//     init`/vp_init and `vp config sync` through CommitProjectScaffold, task
+//     writes through commitTaskWrite, the memory harvest — so an untracked
+//     Projects/<p>/.surface reaching tidy was left by a writer that does NOT
+//     commit: vp_memory_write or vp_vault_write/move into a slug that was
+//     never initialised (a Phantom dir), or hook capture into a fresh slug.
+//     That is the case that needs human eyes, and sweeping it would commit a
+//     stray. (Task untracked-project-stamps-from-writers-that-never-commit
+//     owns the hook-capture half.)
 //   - any tracked modification (" M" worktree-modified — the hook stamp churn —
 //     plus "M " staged and "MM" both-modified) → SWEPT. The gate is simply
 //     "untracked ('??') reports; everything else sweeps".
