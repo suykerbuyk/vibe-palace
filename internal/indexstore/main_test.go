@@ -6,6 +6,7 @@ package indexstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -245,6 +246,11 @@ func (h *helper) wait(t *testing.T) {
 
 // ---- helper modes ----------------------------------------------------------
 
+// noVectors is a VectorWriter that writes nothing, for helpers.
+type noVectors struct{}
+
+func (noVectors) Put(string, string, []float32) error { return nil }
+
 func runHelper(mode string) int {
 	vault := storage.NewVault(os.Getenv(helperVaultEnv))
 	dir := os.Getenv(helperDirEnv)
@@ -304,6 +310,105 @@ func runHelper(mode string) int {
 			return fail("Release: %v", err)
 		}
 		return 0
+
+	case "append-same", "append-distinct":
+		// Append 1,000 chunks to alpha in 100 commits of 10, after the go
+		// signal, so two helpers interleave. append-same uses the same
+		// contents in every helper; append-distinct prefixes them.
+		prefix := ""
+		if mode == "append-distinct" {
+			prefix = os.Getenv("VP_INDEXSTORE_PREFIX")
+		}
+		if err := sig("ready"); err != nil {
+			return fail("%v", err)
+		}
+		if !await("go") {
+			return fail("never told to go")
+		}
+		for b := 0; b < 100; b++ {
+			tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+			if err != nil {
+				return fail("Lock: %v", err)
+			}
+			var recs []OwnedChunk
+			for i := 0; i < 10; i++ {
+				recs = append(recs, ownedChunk(fmt.Sprintf("%schunk %d", prefix, b*10+i), "w", "r"))
+			}
+			if err := tx.Append(NoteOwner("notes/n.md"), withDay(recs, "2026-05-01")); err != nil {
+				_ = tx.Release()
+				return fail("Append: %v", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fail("Commit: %v", err)
+			}
+		}
+		return 0
+
+	case "append-one":
+		// One Append of one chunk to alpha.
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		recs := withDay([]OwnedChunk{ownedChunk(os.Getenv("VP_INDEXSTORE_CONTENT"), "alpha", "d")}, "2026-05-13")
+		if err := tx.Append(NoteOwner("n"), recs); err != nil {
+			_ = tx.Release()
+			return fail("Append: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fail("Commit: %v", err)
+		}
+		return 0
+
+	case "commit-A-W":
+		// Commit archive A of session S with chunks X, Y and W after the go
+		// signal, and record the outcome in "result": ok, or superseded.
+		if err := sig("ready"); err != nil {
+			return fail("%v", err)
+		}
+		if !await("go") {
+			return fail("never told to go")
+		}
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		result := "ok"
+		err = tx.CommitArchive(commitOf("S", "A", "2026-05-13", "X", "Y", "W"), noVectors{})
+		switch {
+		case errors.Is(err, ErrSuperseded):
+			result = "superseded"
+		case err != nil:
+			_ = tx.Release()
+			return fail("CommitArchive: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fail("Commit: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "result"), []byte(result), 0o644); err != nil {
+			return fail("%v", err)
+		}
+		if err := sig("done"); err != nil {
+			return fail("%v", err)
+		}
+		return 0
+
+	case "discard-crash":
+		// Start a chunk discard of alpha and die after it removed the ledger
+		// and the chunks: exit without releasing anything, as a killed
+		// process would. The OS drops the commit lock.
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		commitStep = func(step string) error {
+			if step == "discard-chunks" {
+				os.Exit(0)
+			}
+			return nil
+		}
+		_ = tx.Discard(DiscardChunks)
+		return fail("the discard did not reach discard-chunks")
 
 	case "commit-write":
 		// One Tx on alpha that wrote something (an append).

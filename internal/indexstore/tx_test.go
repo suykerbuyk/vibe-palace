@@ -284,9 +284,10 @@ func TestLockNoticesACancelDuringAFiniteWait(t *testing.T) {
 }
 
 // Every file this package writes or removes goes through write.go, so every
-// write is fsynced with its directory and every rename and removal is retried
-// on Windows: no non-test file calls a raw os write or removal.
-func TestWritesGoThroughAtomicfile(t *testing.T) {
+// whole-file write is fsynced with its directory, every append is fsynced, and
+// every rename and removal is retried on Windows: no non-test file calls a raw
+// os write or removal, except write.go's one os.OpenFile for appends.
+func TestWritesGoThroughThisFile(t *testing.T) {
 	banned := map[string]bool{"WriteFile": true, "Rename": true, "Remove": true, "RemoveAll": true, "Create": true, "CreateTemp": true, "OpenFile": true, "Truncate": true}
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -304,6 +305,11 @@ func TestWritesGoThroughAtomicfile(t *testing.T) {
 		ast.Inspect(f, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
+				return true
+			}
+			// write.go may open a file for an append; nothing else, and no
+			// other file may do even that.
+			if name == "write.go" && sel.Sel.Name == "OpenFile" {
 				return true
 			}
 			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" && banned[sel.Sel.Name] {

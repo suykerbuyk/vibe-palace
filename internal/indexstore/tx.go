@@ -36,12 +36,17 @@ type Tx struct {
 	vault   *storage.Vault
 	project string
 	genPath string
+	files   projectFiles
 
 	mu          sync.Mutex
 	release     func() error // nil once finished
+	lockGen     Gen          // the counter as Lock found it
 	gen         Gen          // the counter: as found by Lock, then as left by Commit
 	wrote       bool
 	changeEpoch bool
+	preBumped   bool   // the counter was bumped before a destructive step
+	st          *state // loaded on the first write or read that needs it
+	broken      bool   // a write failed part-way: the cached state is not trusted
 }
 
 // Lock takes the index commit lock for project and returns the Tx that every
@@ -68,6 +73,10 @@ func Lock(ctx context.Context, vault *storage.Vault, project string, timeout tim
 		return nil, err
 	}
 	genPath, err := vault.IndexGenerationPath(project)
+	if err != nil {
+		return nil, err
+	}
+	pf, err := filesFor(vault, project)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +120,9 @@ func Lock(ctx context.Context, vault *storage.Vault, project string, timeout tim
 		vault:   vault,
 		project: project,
 		genPath: genPath,
+		files:   pf,
 		release: unlock,
+		lockGen: g,
 		gen:     g,
 	}, nil
 }
@@ -150,6 +161,32 @@ func (tx *Tx) noteWrite(moreThanAppend bool) {
 	if moreThanAppend {
 		tx.changeEpoch = true
 	}
+}
+
+// beginDestructive bumps the store counter, with a new epoch, BEFORE the
+// first step of a write that is more than an append (a rewrite, a removal, a
+// torn-tail cut), once per Tx. If this process dies part-way through that
+// write, the counter has already moved, so every other process that cached
+// the store's state (a long-lived MCP server's id set and ledger) reloads it
+// instead of appending against a store that is no longer what it remembers.
+//
+// The Tx still bumps the counter again when it finishes, with a new epoch: a
+// lock-free reader may have read the store between this bump and the write,
+// and must see the write's own change. So a commit that did more than append
+// moves gen by two.
+func (tx *Tx) beginDestructive() error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if tx.preBumped {
+		return nil
+	}
+	g, err := bumpGenFile(tx.genPath, true)
+	if err != nil {
+		return err
+	}
+	tx.preBumped, tx.gen = true, g
+	tx.wrote, tx.changeEpoch = true, true
+	return nil
 }
 
 // Commit finishes the Tx: if it wrote anything, it bumps the store counter
@@ -191,6 +228,15 @@ func (tx *Tx) finishLocked() error {
 		if g, gerr = bumpGenFile(tx.genPath, tx.changeEpoch); gerr == nil {
 			tx.gen = g
 		}
+	}
+	// The cached state saw every write this Tx made, unless one failed part
+	// way or the counter could not be bumped.
+	switch {
+	case tx.broken || gerr != nil:
+		putState(tx.vault.Root, tx.project, nil)
+	case tx.st != nil:
+		tx.st.gen = tx.gen
+		putState(tx.vault.Root, tx.project, tx.st)
 	}
 	rerr := tx.release()
 	tx.release = nil

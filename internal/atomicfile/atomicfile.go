@@ -322,6 +322,14 @@ func sameDir(a, b string) bool {
 	return err1 == nil && err2 == nil && ra == rb
 }
 
+// SyncDir fsyncs dir so that a file created or renamed inside it is durable:
+// the step WithDirFsync performs after Write's rename, for a writer that
+// creates a file another way (an append that creates its file). A no-op on
+// Windows, as for WithDirFsync.
+func SyncDir(dir string) error {
+	return syncDir(dir)
+}
+
 // syncDir fsyncs a directory so a rename or create inside it is durable. It is
 // a no-op on Windows (see WithDirFsync).
 func syncDir(dir string) error {
