@@ -96,7 +96,7 @@ func runKGFilenamePlan(vault *storage.Vault) (storage.TripleFilenameMigration, e
 // migration (exclusive lock, pre-scan refusal, rename, and the post-migration
 // verification pass — all inside ApplyTripleFilenameMigration), stamps the vault
 // at RequiredDataFormat ONLY after a verified success, then git-STAGES the
-// renamed triples and the (otherwise-gitignored) format stamp WITHOUT
+// renamed triples and the format stamp (force-added) WITHOUT
 // committing. Returns the migration result and the number of staged path groups.
 func runKGFilenameApply(vault *storage.Vault) (storage.TripleFilenameMigration, int, error) {
 	root := vault.Root
@@ -131,8 +131,9 @@ func runKGFilenameApply(vault *storage.Vault) (storage.TripleFilenameMigration, 
 	}
 
 	// STAGE (do not commit). `palace` covers every renamed/removed triple; the
-	// tree was clean, so nothing else under it is staged. The stamp lives under
-	// the gitignored `.vibe-palace/` dir, so it is force-added — once tracked it
+	// tree was clean, so nothing else under it is staged. The stamp is
+	// force-added defensively — the vault's canonical .gitignore does not ignore
+	// `.vibe-palace/`, but an operator's own rule could — so once tracked it
 	// syncs to every other host with the renamed data.
 	staged := 0
 	if err := storage.GitAdd(root, "palace"); err != nil {

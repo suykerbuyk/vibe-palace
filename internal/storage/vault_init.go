@@ -92,6 +92,8 @@ var (
 // accepts without surprises in a refspec.
 var remoteNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// initBranch is the branch every new vault is born on: GitInit points the
+// unborn HEAD at it, whichever command creates the vault.
 const initBranch = "main"
 
 // Test seams, no-ops in production: initAfterMarker runs right after the init
@@ -176,12 +178,11 @@ func initFresh(ctx context.Context, path string, req InitVaultRequest) (*InitVau
 		return nil, err
 	}
 
-	// `git init -b main`: the scaffold's `git init` follows the host's
-	// init.defaultBranch, so point the still-unborn HEAD at main before the
-	// first commit.
-	if _, err := gitCmd(path, 10*time.Second, "symbolic-ref", "HEAD", "refs/heads/"+initBranch); err != nil {
+	// The scaffold's GitInit points the unborn HEAD at initBranch; verify it,
+	// as the stamp is verified below, rather than set it a second time here.
+	if head, err := gitCmd(path, 10*time.Second, "symbolic-ref", "HEAD"); err != nil || head != "refs/heads/"+initBranch {
 		removeNew()
-		return nil, fmt.Errorf("vault init: set branch %s: %w", initBranch, err)
+		return nil, fmt.Errorf("vault init: the scaffold did not put HEAD on %s (got %q, %v)", initBranch, head, err)
 	}
 	if f, ferr := surface.ReadFormat(path); ferr != nil || f != surface.RequiredDataFormat {
 		removeNew()

@@ -101,7 +101,7 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 				return cli.ExitSystem
 			}
 			results = append(results, onboard.Rows(res)...)
-			if exitWorthyFailure(res) != "" {
+			if exitWorthyFailure(res) != "" || anyFailed(globalResults) {
 				projectCode = cli.ExitSystem
 			}
 
@@ -312,8 +312,69 @@ func initVault(cwd, vaultPath string, gitEnabled bool) ([]check.Result, int) {
 		results = append(results, vaultRow)
 		return results, cli.ExitSystem
 	}
+	if gitWanted && gitOK {
+		vaultRow = commitVaultInit(vaultPath, vPlan, rep, vaultRow)
+	}
 	results = append(results, vaultRow)
 	return results, cli.ExitOK
+}
+
+// commitVaultInit commits what the vault step just wrote — the vault
+// .gitignore and, on a vault this plan created, its data-format stamp —
+// through storage.CommitVaultInit, and renders the outcome on the Vault row the
+// way the project scaffold's commit renders on its own.
+//
+// A failed commit turns the row [FAIL] but does NOT stop init: the vault is on
+// disk and usable, and the project steps still run. cmdInit exits non-zero for
+// any [FAIL] row from this phase. git_enabled = false, an unreadable host
+// config and a vault that is not its own repository are Details lines, as for
+// the scaffold. Dirty files whose bytes vp cannot vouch for are left exactly as
+// they are and named.
+func commitVaultInit(vaultPath string, p reconcile.Plan, rep reconcile.Report, row check.Result) check.Result {
+	created := false
+	for _, a := range p.Actions {
+		if a.Kind == reconcile.ActionCreate && a.Target == vaultPath {
+			created = true
+			break
+		}
+	}
+	vc, err := storage.CommitVaultInit(vaultPath, storage.VaultInitCommitOptions{
+		CreatedVault: created, Wrote: rep.Created+rep.Updated > 0,
+	})
+	switch {
+	case errors.Is(err, storage.ErrGitDisabled) || errors.Is(err, storage.ErrGitConfigUnreadable):
+		row.Details = append(row.Details, "not committed: "+err.Error())
+		return row
+	case err != nil:
+		paths := vc.Paths
+		if len(paths) == 0 {
+			paths = []string{".gitignore"}
+			if created {
+				paths = append(paths, ".vibe-palace/vault.toml")
+			}
+		}
+		row.Status = check.Fail
+		row.Details = append(row.Details,
+			"the vault files this step wrote ("+strings.Join(paths, ", ")+") are on disk but their commit failed: "+err.Error(),
+			"vp_vault_sync refuses while these files are uncommitted; to finish: "+
+				storage.VaultInitCommitRemedy(vaultPath, paths))
+		return row
+	}
+	if vc.Skipped != "" {
+		row.Details = append(row.Details, "not committed: "+vc.Skipped)
+	}
+	if vc.Committed {
+		sha := vc.SHA
+		if len(sha) > 9 {
+			sha = sha[:9]
+		}
+		row.Details = append(row.Details, fmt.Sprintf("committed %s to the vault, local only: %s", sha, strings.Join(vc.Paths, ", ")))
+	}
+	if len(vc.Kept) > 0 {
+		row.Details = append(row.Details, "left uncommitted — not the bytes vp wrote, so vp does not commit them: "+
+			strings.Join(vc.Kept, ", ")+"; review and commit or restore them — vp_vault_sync refuses until then")
+	}
+	return row
 }
 
 // requestedNewVault returns the absolute --vault-path when the flag names a
@@ -417,6 +478,18 @@ func classifyVaultStep(p reconcile.Plan, rep reconcile.Report) vaultStepOutcome 
 	}
 	out.notes = rep.Notes
 	return out
+}
+
+// anyFailed reports whether any row is [FAIL]. Global init returns ExitOK over
+// one failure it does not stop for — the vault's own commit (commitVaultInit) —
+// and this is what still makes that run exit non-zero.
+func anyFailed(rows []check.Result) bool {
+	for _, r := range rows {
+		if r.Status == check.Fail {
+			return true
+		}
+	}
+	return false
 }
 
 // errOrFirst returns err.Error() if err is non-nil, else the first error

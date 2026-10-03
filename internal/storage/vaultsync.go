@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -387,6 +389,25 @@ func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string
 // (commitPathsLocked), or nil: the backstop guard exempts a lifecycle marker
 // only for the very token that wrote it.
 func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commitLimits, message, trailers string, keep []string) (committed bool, err error) {
+	// What the index held for these paths BEFORE this call staged anything.
+	// On any failure below, the index is put back to exactly this — every
+	// entry this call staged is undone, and nothing it did not stage moves:
+	// another path's staged content, and an operator's own pre-staged entry
+	// for one of keep, both survive. A failed commit used to leave its paths
+	// staged, and tidy then swept a staged-new .surface ALONE (its gate treats
+	// only `??` as untracked), splitting a scaffold across two commits.
+	before, err := indexEntriesFor(vaultPath, keep)
+	if err != nil {
+		return false, fmt.Errorf("read the index before staging: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			if rerr := restoreIndexEntries(vaultPath, keep, before); rerr != nil {
+				err = fmt.Errorf("%w; restoring the index also failed: %v", err, rerr)
+			}
+		}
+	}()
+
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
 	if err := stageInBatches(vaultPath, limits.add, keep); err != nil {
@@ -423,16 +444,91 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	fullMsg := stampedCommitMessage(message, trailers)
 
 	// Commit ONLY the paths this call was given. See commitOnlyPaths.
+	// A failure here — a departure backstop that fired after staging, a
+	// rejecting hook, any git error — restores the index (the deferred
+	// restoreIndexEntries above).
 	if err := commitOnlyPathsFor(vaultPath, caller, limits.commit, fullMsg, keep); err != nil {
-		if errors.Is(err, ErrPendingDeparture) || errors.Is(err, vaultfs.ErrDepartedProject) {
-			// A backstop fired after staging (a record appeared between the
-			// first check and the commit, or a path lies under a departed
-			// project's tree): leave nothing staged.
-			_, _ = gitCmd(vaultPath, 30*time.Second, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, keep...)...)
-		}
 		return false, err
 	}
 	return true, nil
+}
+
+// indexEntriesFor returns the index entries (`git ls-files -s` lines: "mode
+// oid stage<TAB>path") at or under each of paths, keyed by path. A path may
+// name a directory, so the match is the path itself or anything beneath it.
+func indexEntriesFor(vaultPath string, paths []string) (map[string][]string, error) {
+	cmd := exec.Command("git", "-C", vaultPath, "ls-files", "-s", "-z")
+	cmd.Env = SafeGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files -s: %w", err)
+	}
+	want := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		want[strings.TrimSuffix(p, "/")] = struct{}{}
+	}
+	entries := map[string][]string{}
+	for _, rec := range strings.Split(string(out), "\x00") {
+		tab := strings.IndexByte(rec, '\t')
+		if tab < 0 {
+			continue
+		}
+		path := rec[tab+1:]
+		// The path itself or any ancestor directory: one set lookup per
+		// level, so a large commit over a large index stays linear.
+		for p := path; ; {
+			if _, ok := want[p]; ok {
+				entries[path] = append(entries[path], rec)
+				break
+			}
+			i := strings.LastIndexByte(p, '/')
+			if i < 0 {
+				break
+			}
+			p = p[:i]
+		}
+	}
+	return entries, nil
+}
+
+// restoreIndexEntries puts the index entries at or under paths back to before
+// (indexEntriesFor's snapshot), touching only the entries that differ: an
+// entry this call added is removed, one it changed gets its old line back.
+// It writes the index directly (update-index), never the work tree, and it
+// needs no HEAD, so it works on an unborn branch too.
+func restoreIndexEntries(vaultPath string, paths []string, before map[string][]string) error {
+	after, err := indexEntriesFor(vaultPath, paths)
+	if err != nil {
+		return err
+	}
+	var remove, add []string
+	for path, lines := range after {
+		if !slices.Equal(lines, before[path]) {
+			remove = append(remove, path)
+		}
+	}
+	for path, lines := range before {
+		if !slices.Equal(lines, after[path]) {
+			add = append(add, lines...)
+		}
+	}
+	if len(remove) > 0 {
+		cmd := exec.Command("git", "-C", vaultPath, "update-index", "-z", "--force-remove", "--stdin")
+		cmd.Env = SafeGitEnv()
+		cmd.Stdin = strings.NewReader(strings.Join(remove, "\x00") + "\x00")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git update-index --force-remove: %s: %w", bytes.TrimSpace(out), err)
+		}
+	}
+	if len(add) > 0 {
+		cmd := exec.Command("git", "-C", vaultPath, "update-index", "-z", "--index-info")
+		cmd.Env = SafeGitEnv()
+		cmd.Stdin = strings.NewReader(strings.Join(add, "\x00") + "\x00")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git update-index --index-info: %s: %w", bytes.TrimSpace(out), err)
+		}
+	}
+	return nil
 }
 
 // commitPathsLocked is commitAndPushPathsCore's local commit for a caller that

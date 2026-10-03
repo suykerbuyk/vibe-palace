@@ -208,6 +208,22 @@ func (r *VaultReconciler) Plan(_ context.Context) (Plan, error) {
 		// other states never reach storage.InspectVaultGit at all — no
 		// behavior change there).
 	}
+	// A seeded (create-mode) plan that cannot give the vault its own repository
+	// applies NOTHING. The git Skip is planned after the directory and the
+	// .gitignore, and init fails its Vault step on any Skip — so applying the
+	// rest would write a directory, a .gitignore and a format stamp into the
+	// enclosing repository's work tree and then report the step failed. Refuse
+	// with the Skip's own reason before the first write instead. An unseeded
+	// plan (`vp config sync` over an existing nested vault) keeps its other
+	// actions: there the Skip is a report, not a refusal.
+	if r.seed.seedSet {
+		gitPath := filepath.Join(vaultPath, ".git")
+		for _, a := range actions {
+			if a.Kind == ActionSkip && a.Target == gitPath {
+				return Plan{Actions: []Action{a}}, nil
+			}
+		}
+	}
 	return Plan{Actions: actions}, nil
 }
 

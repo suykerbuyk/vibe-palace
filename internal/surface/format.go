@@ -162,18 +162,29 @@ func WriteFormat(root string, n int) error {
 		return fmt.Errorf("create vault manifest dir: %w", err)
 	}
 
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(VaultManifest{Format: n}); err != nil {
-		return fmt.Errorf("encode vault.toml: %w", err)
+	data, err := FormatManifestBytes(n)
+	if err != nil {
+		return err
 	}
 
 	// Reuse the surface stamp's private temp-file + rename primitive (same
 	// package) so the manifest is written atomically, mirroring how the stamp
 	// is written.
-	if err := writeStampFileAtomic(vaultManifestPath(root), buf.Bytes()); err != nil {
+	if err := writeStampFileAtomic(vaultManifestPath(root), data); err != nil {
 		return fmt.Errorf("write vault.toml: %w", err)
 	}
 	return nil
+}
+
+// FormatManifestBytes is the exact .vibe-palace/vault.toml WriteFormat writes
+// for data format n. It is the one encoder, so a caller that must recognise a
+// stamp vp wrote (storage.CommitVaultInit) compares against the same bytes.
+func FormatManifestBytes(n int) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(VaultManifest{Format: n}); err != nil {
+		return nil, fmt.Errorf("encode vault.toml: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // FormatIncompatibleError is returned by the data-format read gate when a vault's

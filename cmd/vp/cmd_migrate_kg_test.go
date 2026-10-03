@@ -212,7 +212,7 @@ func TestRunKGFilenameApplyStampsAndStages(t *testing.T) {
 	if f, err := surface.ReadFormat(root); err != nil || f != surface.RequiredDataFormat {
 		t.Errorf("format = %d (err %v), want %d", f, err, surface.RequiredDataFormat)
 	}
-	// The format stamp is STAGED (tracked) despite living under gitignored .vibe-palace/.
+	// The format stamp is STAGED (tracked) alongside the renamed triples.
 	out, err := exec.Command("git", "-C", root, "diff", "--staged", "--name-only").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git diff --staged: %s: %v", out, err)

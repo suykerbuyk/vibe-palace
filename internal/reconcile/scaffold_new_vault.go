@@ -53,6 +53,14 @@ func ScaffoldNewVault(ctx context.Context, dest string) error {
 	if err != nil {
 		return fmt.Errorf("plan destination vault: %w", err)
 	}
+	// A seeded plan that cannot give dest its own repository (nested inside
+	// another work tree, or an unverifiable .git) is ONLY that Skip, and applies
+	// nothing — so it must abort here, never read as a scaffold that succeeded.
+	for _, a := range plan.Actions {
+		if a.Kind == ActionSkip {
+			return fmt.Errorf("scaffold destination vault: %s", a.Summary)
+		}
+	}
 	rep, err := vr.Apply(ctx, plan)
 	if err != nil {
 		return fmt.Errorf("scaffold destination vault: %w", err)

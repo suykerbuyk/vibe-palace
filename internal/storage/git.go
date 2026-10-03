@@ -494,12 +494,21 @@ func RefuseIfGitDisabled(vaultPath, verb string) error {
 	return apperr.Caller(fmt.Errorf("refusing to %s (vault %s): %w (config: %s)", verb, vaultPath, ErrGitDisabled, cfgPath))
 }
 
-// GitInit runs git init in the given directory.
+// GitInit runs git init in the given directory and points the still-unborn
+// HEAD at main (`git init -b main`, spelled for gits older than 2.28): a bare
+// `git init` follows the host's init.defaultBranch, so two hosts could create
+// vaults on different branches. Every new vault is born through here — `vp
+// init`'s vault step, and `vp vault init` and the split's destination through
+// reconcile.ScaffoldNewVault — so the first commit lands on main whichever
+// command made the vault.
 func GitInit(dir string) error {
 	cmd := exec.Command("git", "init", dir)
 	cmd.Env = SafeGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init %s: %s: %w", dir, out, err)
+	}
+	if _, err := gitCmd(dir, 10*time.Second, "symbolic-ref", "HEAD", "refs/heads/"+initBranch); err != nil {
+		return fmt.Errorf("git init %s: set branch %s: %w", dir, initBranch, err)
 	}
 	return nil
 }
@@ -546,9 +555,11 @@ func GitAdd(dir string, paths ...string) error {
 
 // GitAddForce stages pathspecs with -f so a gitignored path is added anyway
 // (`git add -f -- <paths>`). It is how the migration tracks the data-format
-// stamp `.vibe-palace/vault.toml`, which lives under the otherwise-ignored
-// `.vibe-palace/` dir: once tracked, the stamp syncs to every other host with
-// the renamed data instead of being left behind (the gitignored-stamp bug).
+// stamp `.vibe-palace/vault.toml` so it syncs to every other host with the
+// renamed data. The vault's canonical .gitignore (CanonicalGitignorePatterns)
+// does NOT ignore `.vibe-palace/` — only a project checkout's does
+// (CanonicalProjectGitignorePatterns) — so -f is defensive: it stages the stamp
+// even under an operator's own ignore rule.
 func GitAddForce(dir string, paths ...string) error {
 	if err := RefuseIfGitDisabled(dir, "stage"); err != nil {
 		return err
