@@ -142,6 +142,70 @@ func (v *Vault) EmbedCacheDir(project string) (string, error) {
 	return filepath.Join(v.VaultLocalDir(), "embed-cache", project), nil
 }
 
+// IndexRootDir returns the directory holding every project's host-local search
+// index (ADR-014 decision 2): {vault}/palace/.local/index
+//
+// Besides one directory per project it holds .generation/, the store change
+// counters. Every enumerator of this directory skips names that start with
+// ".", which no project slug does (slug.Validate).
+func (v *Vault) IndexRootDir() string {
+	return filepath.Join(v.VaultLocalDir(), "index")
+}
+
+// IndexDir returns a project's host-local search index directory:
+// {vault}/palace/.local/index/{project}
+//
+// A discard deletes its contents, so nothing that must outlive a discard (the
+// change counter, the locks) lives inside it.
+func (v *Vault) IndexDir(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.IndexRootDir(), project), nil
+}
+
+// IndexGenerationPath returns the file holding a project's store change
+// counter: {vault}/palace/.local/index/.generation/{project}
+//
+// It sits outside IndexDir so a discard of the project's index never resets it.
+func (v *Vault) IndexGenerationPath(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.IndexRootDir(), ".generation", project), nil
+}
+
+// IndexLocksDir returns the directory holding the index run lock, its holder
+// record and the per-project index commit locks:
+// {vault}/palace/.local/locks
+//
+// The locks are per host and per vault. Lock files here are never deleted: a
+// process that deletes a lock file another process holds open lets two
+// holders lock two different files.
+func (v *Vault) IndexLocksDir() string {
+	return filepath.Join(v.VaultLocalDir(), "locks")
+}
+
+// IndexRunLockPath returns the index run lock: {vault}/palace/.local/locks/index-run.lock
+func (v *Vault) IndexRunLockPath() string {
+	return filepath.Join(v.IndexLocksDir(), "index-run.lock")
+}
+
+// IndexRunHolderPath returns the run lock's advisory holder record:
+// {vault}/palace/.local/locks/index-run.holder
+func (v *Vault) IndexRunHolderPath() string {
+	return filepath.Join(v.IndexLocksDir(), "index-run.holder")
+}
+
+// IndexCommitLockPath returns a project's index commit lock:
+// {vault}/palace/.local/locks/index-commit-{project}.lock
+func (v *Vault) IndexCommitLockPath(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.IndexLocksDir(), "index-commit-"+project+".lock"), nil
+}
+
 // EnsureDir creates the directory tree at path if it does not exist.
 // Uses os.MkdirAll with 0755 permissions. Idempotent.
 func EnsureDir(path string) error {

@@ -547,3 +547,29 @@ func split(s string) []string {
 	}
 	return result
 }
+
+// ProjectExists is membership of ListAllProjects: a Projects/ directory or a
+// palace store is a project; a name in neither, and palace/.local/ (where the
+// host-local index lives), are not.
+func TestProjectExistsIsListAllProjectsMembership(t *testing.T) {
+	v := testVault(t)
+	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "notes-only"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
+	if err := v.AppendDrawer("palace-only", "wing-1", "room-1", d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(v.IndexRootDir(), "ghost"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for slug, want := range map[string]bool{"notes-only": true, "palace-only": true, "ghost": false, "absent": false} {
+		got, err := v.ProjectExists(slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("ProjectExists(%q) = %v, want %v", slug, got, want)
+		}
+	}
+}

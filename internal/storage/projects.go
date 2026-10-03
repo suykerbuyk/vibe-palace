@@ -129,6 +129,26 @@ func (v *Vault) ListAllProjects() ([]ProjectPresence, error) {
 	return out, nil
 }
 
+// ProjectExists reports whether project is a member of the vault, by the
+// predicate cross-project search enumerates by: ListAllProjects, the union of
+// Projects/<slug>/ directories and palace/<slug>/ stores, minus departed
+// slugs. It is the one definition of "the project exists": search.ProjectExists
+// (both search surfaces) and the host-local index's commit lock
+// (indexstore.Lock, which must not recreate a removed project's index) call it.
+//
+// It returns an error only when ListAllProjects could not look. A caller must
+// not collapse that into "absent": "I could not look" is not "the project does
+// not exist".
+func (v *Vault) ProjectExists(project string) (bool, error) {
+	projects, err := v.ListAllProjects()
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(projects, func(p ProjectPresence) bool {
+		return p.Slug == project
+	}), nil
+}
+
 // listProjectDirs returns the valid project slugs directly under dir. An absent
 // dir yields nothing; an existing-but-unreadable one is an error.
 //

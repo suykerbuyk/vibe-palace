@@ -4,9 +4,11 @@
 package vaultlock
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -497,4 +499,179 @@ func TestTryAcquireFileExcludes(t *testing.T) {
 	if _, _, err := TryAcquireFile("relative.lock"); err == nil {
 		t.Fatal("a relative lock path was accepted")
 	}
+}
+
+// liveness is a deadlock detector, not a performance bound: every wait that
+// uses it is expected to return without waiting on any timer, and a lock that
+// ignores its timeout or context fails here with a message instead of hanging
+// until go test's package timeout.
+const liveness = 60 * time.Second
+
+func within(t *testing.T, what string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { defer close(done); f() }()
+	select {
+	case <-done:
+	case <-time.After(liveness):
+		t.Fatalf("%s did not return: the lock blocks instead of honouring its bound", what)
+	}
+}
+
+// AcquireFileWithTimeout locks the file it is named, not a .vp-locks sidecar;
+// with a zero timeout it fails at once with ErrLockWaitTimeout while another
+// holder has the file, and succeeds once that holder releases.
+func TestAcquireFileWithTimeoutOnANamedFile(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "index-commit-alpha.lock")
+	bg := context.Background()
+
+	rel, err := AcquireFileWithTimeout(bg, lock, 0)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, ok, err := TryAcquireFile(lock); err != nil || ok {
+		t.Fatalf("TryAcquireFile while held: ok=%v err=%v; the timed acquire did not lock the named file", ok, err)
+	}
+	within(t, "zero-timeout acquire of a held lock", func() {
+		if _, err := AcquireFileWithTimeout(bg, lock, 0); !errors.Is(err, ErrLockWaitTimeout) {
+			t.Errorf("acquire while held: err=%v, want ErrLockWaitTimeout", err)
+		}
+	})
+	if err := rel(); err != nil {
+		t.Fatal(err)
+	}
+	rel2, err := AcquireFileWithTimeout(bg, lock, 0)
+	if err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+	_ = rel2()
+
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatal("the lock file was removed on release")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".vp-locks")); !os.IsNotExist(err) {
+		t.Fatalf("a .vp-locks sidecar directory was created: %v", err)
+	}
+	if _, err := AcquireFileWithTimeout(bg, "relative.lock", 0); err == nil {
+		t.Fatal("a relative lock path was accepted")
+	}
+}
+
+// AcquireFileWithTimeout returns ctx's error, without acquiring, for a context
+// that is already cancelled and for one cancelled DURING the wait, with a
+// finite timeout as well as none; and a waiter takes the lock once the holder
+// releases.
+func TestAcquireFileWithTimeoutHonoursItsContext(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "index-commit-alpha.lock")
+	rel, err := mustTryAcquireFile(t, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	within(t, "acquire with a cancelled context", func() {
+		if _, err := AcquireFileWithTimeout(cancelled, lock, -1); !errors.Is(err, context.Canceled) {
+			t.Errorf("err=%v, want context.Canceled", err)
+		}
+	})
+
+	// Cancel only once the waiter is known to be waiting on the held lock, so
+	// this exercises the in-loop check, not the up-front one. The finite
+	// timeout is the liveness bound: a loop that ignored ctx would wait it out.
+	for _, timeout := range []time.Duration{-1, liveness} {
+		waiting, cancelWaiting := context.WithCancel(context.Background())
+		var once sync.Once
+		restore := SetWaitHook(func() { once.Do(cancelWaiting) })
+		res := make(chan error, 1)
+		go func() {
+			_, err := AcquireFileWithTimeout(waiting, lock, timeout)
+			res <- err
+		}()
+		within(t, fmt.Sprintf("acquire (timeout %s) cancelled while waiting", timeout), func() {
+			if err := <-res; !errors.Is(err, context.Canceled) {
+				t.Errorf("timeout %s: err=%v, want context.Canceled", timeout, err)
+			}
+		})
+		restore()
+	}
+
+	got := make(chan func() error, 1)
+	go func() {
+		r, err := AcquireFileWithTimeout(context.Background(), lock, -1)
+		if err != nil {
+			t.Errorf("waiter: %v", err)
+		}
+		got <- r
+	}()
+	if err := rel(); err != nil {
+		t.Fatal(err)
+	}
+	within(t, "waiter after the holder released", func() {
+		if r := <-got; r != nil {
+			_ = r()
+		}
+	})
+}
+
+// AcquireWithTimeout (the .vp-locks sidecar form) runs the same loop: it waits
+// while the lock is held and takes it once the holder releases.
+func TestAcquireWithTimeoutSharesTheLoop(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "held")
+	release, err := Acquire(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan struct{})
+	var once sync.Once
+	restore := SetWaitHook(func() { once.Do(func() { close(waited) }) })
+	defer restore()
+	res := make(chan error, 1)
+	go func() {
+		r, err := AcquireWithTimeout(root, target, liveness)
+		if r != nil {
+			_ = r()
+		}
+		res <- err
+	}()
+	within(t, "AcquireWithTimeout reaching the shared wait", func() { <-waited })
+	_ = release()
+	within(t, "AcquireWithTimeout after release", func() {
+		if err := <-res; err != nil {
+			t.Errorf("err=%v", err)
+		}
+	})
+}
+
+// mustTryAcquireFile takes lock or fails the test.
+func mustTryAcquireFile(t *testing.T, lock string) (func() error, error) {
+	t.Helper()
+	rel, ok, err := TryAcquireFile(lock)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		t.Fatal("lock unexpectedly held")
+	}
+	return rel, nil
+}
+
+// AcquireWithTimeout keeps its meaning for a negative timeout after sharing
+// the poll loop: it tries once and returns ErrLockWaitTimeout, where
+// AcquireFileWithTimeout would wait for its ctx.
+func TestAcquireWithTimeoutNegativeTriesOnce(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "held")
+	release, err := Acquire(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	within(t, "AcquireWithTimeout with a negative timeout", func() {
+		if _, err := AcquireWithTimeout(root, target, -time.Second); !errors.Is(err, ErrLockWaitTimeout) {
+			t.Errorf("err=%v, want ErrLockWaitTimeout", err)
+		}
+	})
 }

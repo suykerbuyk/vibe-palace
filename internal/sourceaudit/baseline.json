@@ -117,6 +117,10 @@
       "reason": "DELIBERATE, on a Chair ruling (U4 code review, 2026-09-27): `vp vault init` writes ONLY a vault that does not exist yet — it refuses an existing path, and resumes only its own unfinished init, recognised by its own marker — and never the SERVED vault. mutates() fail-stops on the served vault's MCP surface version, which says nothing about a vault this command is about to create and stamp current (reconcile.ScaffoldNewVault stamps RequiredDataFormat, and the new vault's own writes stamp its surface). Gating it would let a newer default vault block creating an unrelated new one. Its safety is in its own refusals (storage.InitVault) and is tested there. Task lc-u4-vp-vault-init-with-remotes."
     },
     {
+      "id": "uninvoked atomicfile.SetSyncObserver",
+      "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because tests in other packages need it (internal/indexstore pins that its counter and holder-record writes are fsynced with their directory). An fsync leaves no other trace, so without it a caller that drops WithFsync or WithDirFsync passes every test. Production never sets it. Task host-local-index-store-ledger-and-fingerprint (slice 1 review, D1)."
+    },
+    {
       "id": "uninvoked atomicfile.SetWriteObserver",
       "reason": "DELIBERATE TEST SEAM, declared in non-test code because it must be reachable from another package's tests (cmd/vp). It exists because \"how many times did this run write THIS FILE\" is not answerable anywhere else: a counter placed inside a command's own executor counts writes THROUGH that executor, and the regression that matters (task-board-fields-migration-fails-on-real-vault-data, D1) is a SECOND writer appearing beside the executor, which never passes such a counter. Every task-file write in the tree bottoms out in atomicfile.Write — vaultWriteFunnel exists to keep it that way — so this is the one honest place for a per-file write count. Exercised by cmd/vp's TestBoardFieldsWritesEachFileExactlyOnce, and proven capable of failing: reintroducing the two-write shape makes that test report 2 writes for every archived file. Production never calls it and nothing in atomicfile behaves differently when it is unset. ADR-006 verdict: REPORT + DECLARE — this is production surface added for a test, which is a real cost the plan recorded rather than hid."
     },
@@ -131,6 +135,46 @@
     {
       "id": "uninvoked cli.Registry.SetOutput",
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
+    },
+    {
+      "id": "uninvoked index.ChunkID",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The chunk id of the host-local store. First non-test callers: this task's slice 2 (the store's commit steps check each record's id against it) and pending-archive-ingester-and-per-archive-commit-step. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.ReadGeneration",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The lock-free read of the store change counter. Non-test callers: search-index-completeness-and-build-serialization (the engine's reload rule), authored-and-extracted-knowledge-graph-records (the local KG reader) and index-coverage-instrument. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.ReadHolder",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The lock-free read of the run lock's holder record. Non-test callers: explicit-resumable-index-rebuild-with-disk-watchdog (vp index rebuild names the holder; vp_refresh_index checks it before spawning) and index-coverage-instrument (the status probe). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.RunLock.Release",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, which hold the run lock for a whole run. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.RunLock.ReleaseAndRecheck",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The no-lost-trigger release. Non-test caller: pending-archive-ingester-and-per-archive-commit-step, after its final rescan. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.RunLock.SetProgress",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, which report run progress for the coverage instrument. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.RunLock.SetProject",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, as a run moves from project to project. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.TryRunLock",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The index run lock. Non-test callers: pending-archive-ingester-and-per-archive-commit-step, explicit-resumable-index-rebuild-with-disk-watchdog and the lifecycle half of index-fingerprints-project-lifecycle-and-migration-marker. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.Tx.Release",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). Non-test caller: this task's slice 3, where the engine's orphan reaper becomes Tx.Reap under the index commit lock. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.Tx.noteWrite",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). Non-test callers: this task's slice 2, where every Tx write method records itself in the store change counter through it. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked mcp.KnowledgeURI",
@@ -293,6 +337,10 @@
       "reason": "Reports whether XDG_CONFIG_HOME still points at the RunHermetic fixture; by design its only callers are the two live-vault canaries' skip branches, which fail instead of skipping when the ambient restore was lost. Added by task mcp-vault-tidy-and-sync-do-not-honour-git-enabled-false. TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go (the same shape as the testinfra.* entries): internal/testutil is the one leaf package every hermetic test package can import, because internal/storage and internal/tools cannot import testinfra, which imports them. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },
     {
+      "id": "uninvoked vaultlock.SetWaitHook",
+      "reason": "DELIBERATE TEST SEAM, declared in non-test code because tests in other packages need it (internal/indexstore cancels a Lock while it is known to be waiting). It runs when a timed acquire finds its lock held and is about to wait, so a test can act during the wait instead of sleeping. Production never sets it. Task host-local-index-store-ledger-and-fingerprint (slice 1 review, D2)."
+    },
+    {
       "id": "uninvoked zed.ListThreadIDs",
       "reason": "REAL FINDING, owned by the existing task zed-pane-capture-parity (Phase 1). This is the missing half of the documented Zed failure: zedAdapter.ResolveSource requires a Zed thread UUID, ListThreadIDs is the ONLY code in the tree that can enumerate one, and nothing calls it — so a thread cannot be found without hand-querying SQLite. Its doc comment cites a `--detect` smoke mode that DOES NOT EXIST anywhere in the tree. The gate rediscovered that task's root cause from source alone. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
     },
@@ -307,6 +355,10 @@
     {
       "id": "vault-write-outside-funnel check.sweepStaleProbes",
       "reason": "DELIBERATELY EXEMPT — the other half of the probe in CheckVaultFilesystem above. internal/check/vaultfs.go:94 removes vault-root entries matching the .vp-fs-probe- prefix that are older than 5 minutes, i.e. residue from a probe whose process died before its own cleanup at :172. It removes only files this package created. Same circularity rationale. Census row 23."
+    },
+    {
+      "id": "vault-write-outside-funnel indexstore.writeFile",
+      "reason": "host-local derived index under palace/.local — ignored by git, not vault content (ADR-014). writeFile passes \"\" as atomicfile.Write's vault root on purpose: its only destinations are the run lock's holder record (palace/.local/locks/) and the store change counters (palace/.local/index/.generation/), which the canonical ignore line palace/.local/ (internal/storage/git.go:30) keeps out of git, so a .surface stamp would be wrong. Task host-local-index-store-ledger-and-fingerprint."
     },
     {
       "id": "vault-write-outside-funnel storage.writeScoringConfigAt",

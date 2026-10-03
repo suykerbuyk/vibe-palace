@@ -42,6 +42,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
@@ -54,6 +55,7 @@ type config struct {
 	perm        os.FileMode
 	inheritPerm bool
 	fsync       bool
+	dirFsync    bool
 	// recordHeld admits a write under Audits/departures/: the vault root lock
 	// token of a lifecycle command (ForDepartureRecord).
 	recordHeld *vaultlock.Held
@@ -76,6 +78,51 @@ func WithInheritPerm() Option { return func(c *config) { c.inheritPerm = true } 
 // WithFsync makes Write fsync the temp file before rename, for callers that
 // want durability beyond rename atomicity.
 func WithFsync() Option { return func(c *config) { c.fsync = true } }
+
+// WithDirFsync makes Write fsync the target's directory after the rename, so
+// the rename itself survives a crash, not only the bytes. Pair it with
+// WithFsync for a write that must be durable once Write returns. On Windows a
+// directory cannot be opened for sync and NTFS journals the rename, so it is a
+// no-op there.
+//
+// The directory sync runs after the rename, so when it fails Write returns an
+// error although the new content is already in place: the caller cannot read
+// an error as "the target is unchanged", only as "the write may not be
+// durable".
+func WithDirFsync() Option { return func(c *config) { c.dirFsync = true } }
+
+// syncObserver, when non-nil, is called with the path of every fsync this
+// package completes: the temp file before its rename (WithFsync), and the
+// directory after it (WithDirFsync). A TEST SEAM, like writeObserver: a
+// durability step leaves no other trace, so without it a caller that drops
+// one of the options passes every test.
+var (
+	syncObserverMu sync.Mutex
+	syncObserver   func(path string)
+)
+
+// SetSyncObserver installs f as the fsync observer and returns a function that
+// restores the previous one. Intended for tests only.
+func SetSyncObserver(f func(path string)) (restore func()) {
+	syncObserverMu.Lock()
+	prev := syncObserver
+	syncObserver = f
+	syncObserverMu.Unlock()
+	return func() {
+		syncObserverMu.Lock()
+		syncObserver = prev
+		syncObserverMu.Unlock()
+	}
+}
+
+func notifySync(path string) {
+	syncObserverMu.Lock()
+	f := syncObserver
+	syncObserverMu.Unlock()
+	if f != nil {
+		f(path)
+	}
+}
 
 // ForDepartureRecord admits a write under Audits/departures/. held must be the
 // live root-lock token of the vault written: only a lifecycle command holding
@@ -230,6 +277,7 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 			tmp.Close()
 			return fmt.Errorf("sync temp: %w", err)
 		}
+		notifySync(tmpPath)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
@@ -241,6 +289,11 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 		return fmt.Errorf("rename: %w", err)
 	}
 	removeTemp = false
+	if cfg.dirFsync {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync dir: %w", err)
+		}
+	}
 
 	if vaultRoot != "" {
 		if err := surface.StampForPath(vaultRoot, absPath); err != nil {
@@ -267,4 +320,22 @@ func sameDir(a, b string) bool {
 	ra, err1 := filepath.EvalSymlinks(a)
 	rb, err2 := filepath.EvalSymlinks(b)
 	return err1 == nil && err2 == nil && ra == rb
+}
+
+// syncDir fsyncs a directory so a rename or create inside it is durable. It is
+// a no-op on Windows (see WithDirFsync).
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return err
+	}
+	notifySync(dir)
+	return nil
 }

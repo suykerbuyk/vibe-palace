@@ -16,6 +16,7 @@ import (
 // no reason to swap them, and tests must restore them in t.Cleanup.
 var (
 	renameFn             = os.Rename
+	removeFn             = os.Remove
 	isRetryableRenameErr = retryableRenameErr
 	sleepFn              = time.Sleep
 
@@ -55,8 +56,29 @@ var (
 // the attempt count; the wrap uses %w so errors.Is / errors.As still reach the
 // underlying *os.LinkError and syscall.Errno.
 func renameWithRetry(oldpath, newpath string) error {
+	return retryTransient(func() error { return renameFn(oldpath, newpath) })
+}
+
+// RemoveWithRetry removes path, retrying on the same transient Windows sharing
+// failures, with the same schedule, as the rename inside Write: a reader that
+// holds the file open without FILE_SHARE_DELETE (another process's lock-free
+// read, a scanner) makes DeleteFile fail with ERROR_ACCESS_DENIED or
+// ERROR_SHARING_VIOLATION for as long as it holds it. Errors are returned as
+// os.Remove returns them, so errors.Is(err, fs.ErrNotExist) still works.
+//
+// It removes one file the caller names and nothing else: it is not a vault
+// writer, it stamps no surface version, and it does not consult the departure
+// record, so it is for host-local files only (the derived index under
+// palace/.local/, ADR-014).
+func RemoveWithRetry(path string) error {
+	return retryTransient(func() error { return removeFn(path) })
+}
+
+// retryTransient runs op, retrying while the platform classifier calls its
+// error transient, on the renameRetryBackoff schedule.
+func retryTransient(op func() error) error {
 	for attempt := 0; ; attempt++ {
-		err := renameFn(oldpath, newpath)
+		err := op()
 		if err == nil {
 			return nil
 		}

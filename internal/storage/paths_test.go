@@ -174,6 +174,51 @@ func TestEmbedCacheDir(t *testing.T) {
 	}
 }
 
+// TestIndexPaths: the host-local index, its change counter and its locks all
+// live under the vault-wide palace/.local/ (ADR-014 decision 2); the counter
+// and the locks sit outside index/<project>/, which a discard deletes; and
+// every per-project helper validates the slug before it becomes a path.
+func TestIndexPaths(t *testing.T) {
+	v := NewVault("/vault")
+	local := filepath.Join("/vault", "palace", ".local")
+	if got, want := v.IndexRootDir(), filepath.Join(local, "index"); got != want {
+		t.Errorf("IndexRootDir = %q, want %q", got, want)
+	}
+	if got, want := v.IndexLocksDir(), filepath.Join(local, "locks"); got != want {
+		t.Errorf("IndexLocksDir = %q, want %q", got, want)
+	}
+	if got, want := v.IndexRunLockPath(), filepath.Join(local, "locks", "index-run.lock"); got != want {
+		t.Errorf("IndexRunLockPath = %q, want %q", got, want)
+	}
+	if got, want := v.IndexRunHolderPath(), filepath.Join(local, "locks", "index-run.holder"); got != want {
+		t.Errorf("IndexRunHolderPath = %q, want %q", got, want)
+	}
+
+	perProject := []struct {
+		name string
+		fn   func(string) (string, error)
+		want string
+	}{
+		{"IndexDir", v.IndexDir, filepath.Join(local, "index", "recmeet")},
+		{"IndexGenerationPath", v.IndexGenerationPath, filepath.Join(local, "index", ".generation", "recmeet")},
+		{"IndexCommitLockPath", v.IndexCommitLockPath, filepath.Join(local, "locks", "index-commit-recmeet.lock")},
+	}
+	for _, c := range perProject {
+		got, err := c.fn("recmeet")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, got, c.want)
+		}
+		for _, bad := range []string{"BAD", "", "../escape", ".generation"} {
+			if _, err := c.fn(bad); err == nil {
+				t.Errorf("%s(%q) should return an error", c.name, bad)
+			}
+		}
+	}
+}
+
 func TestEnsureDir(t *testing.T) {
 	base := t.TempDir()
 

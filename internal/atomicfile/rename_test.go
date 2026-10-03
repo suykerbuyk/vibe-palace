@@ -165,3 +165,45 @@ func TestWrite_PropagatesNonRetryableRename(t *testing.T) {
 		t.Fatalf("rename attempts = %d, want exactly 1", *calls)
 	}
 }
+
+// RemoveWithRetry retries a transient failure on the rename schedule, returns
+// a non-transient error (a missing file) at once and unwrapped, and removes a
+// real file.
+func TestRemoveWithRetry(t *testing.T) {
+	stubRename(t, func(string, string) error { return nil }, func(err error) bool { return errors.Is(err, errRenameFake) })
+	oldRemove := removeFn
+	t.Cleanup(func() { removeFn = oldRemove })
+
+	calls := 0
+	removeFn = func(path string) error {
+		calls++
+		if calls <= 3 {
+			return errRenameFake
+		}
+		return oldRemove(path)
+	}
+	p := filepath.Join(t.TempDir(), "holder")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveWithRetry(p); err != nil {
+		t.Fatalf("RemoveWithRetry after 3 transient failures: %v", err)
+	}
+	if calls != 4 {
+		t.Fatalf("remove attempts = %d, want 4", calls)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("file still present: %v", err)
+	}
+
+	calls = 10 // past the transient failures
+	if err := RemoveWithRetry(p); !errors.Is(err, os.ErrNotExist) || calls != 11 {
+		t.Fatalf("missing file: err=%v after %d attempts, want ErrNotExist after one", err, calls-10)
+	}
+
+	removeFn = func(string) error { calls++; return errRenameFake }
+	calls = 0
+	if err := RemoveWithRetry(p); !errors.Is(err, errRenameFake) || calls != wantAttempts {
+		t.Fatalf("always transient: err=%v after %d attempts, want errRenameFake after %d", err, calls, wantAttempts)
+	}
+}

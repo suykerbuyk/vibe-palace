@@ -29,6 +29,7 @@
 package vaultlock
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -39,7 +40,8 @@ import (
 	"time"
 )
 
-// ErrLockWaitTimeout is returned by AcquireWithTimeout when the lock is not
+// ErrLockWaitTimeout is returned by AcquireWithTimeout and
+// AcquireFileWithTimeout when the lock is not
 // obtained before the deadline elapses.
 var ErrLockWaitTimeout = errors.New("vaultlock: timed out waiting for lock")
 
@@ -181,14 +183,88 @@ func TryAcquireFile(lockPath string) (release func() error, ok bool, err error) 
 // (e.g., a hung network download performed while holding the lock) must not
 // be allowed to starve every other waiter for however long the holder itself
 // takes to time out or hang.
+//
+// A zero or negative timeout tries exactly once and then returns
+// ErrLockWaitTimeout. (AcquireFileWithTimeout differs: there a negative
+// timeout waits until its ctx is done.)
 func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) (release func() error, err error) {
 	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, err
 	}
+	// The shared loop reads a negative timeout as "never expires"; this
+	// function has always meant "try once", so clamp it.
+	if timeout < 0 {
+		timeout = 0
+	}
+	return pollExclusive(context.Background(), f, timeout, targetAbsPath)
+}
+
+// AcquireFileWithTimeout is AcquireWithTimeout on a lock file the caller
+// names: lockPath itself, as TryAcquireFile opens it, not a hashed sidecar
+// under a vault's .vp-locks/. The parent directory must exist; the file is
+// created if needed and left in place on release.
+//
+// It waits until whichever comes first:
+//   - the lock is taken;
+//   - timeout elapses: ErrLockWaitTimeout. A zero timeout tries exactly once,
+//     and a negative one never expires;
+//   - ctx is done: ctx's error (errors.Is(err, context.Canceled) or
+//     DeadlineExceeded). A ctx that is already done returns without trying.
+//
+// The ingester and the rebuild pass a negative timeout and bound the wait by
+// ctx; searches pass a finite timeout and skip their write when it expires.
+func AcquireFileWithTimeout(ctx context.Context, lockPath string, timeout time.Duration) (release func() error, err error) {
+	if !filepath.IsAbs(lockPath) {
+		return nil, fmt.Errorf("vaultlock: lock path must be absolute, got %q", lockPath)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("vaultlock: open lock file: %w", err)
+	}
+	return pollExclusive(ctx, f, timeout, lockPath)
+}
+
+// waitHook, when a test sets it with SetWaitHook, runs each time
+// pollExclusive finds the lock held and is about to wait.
+var (
+	waitHookMu sync.Mutex
+	waitHook   func()
+)
+
+// SetWaitHook installs f to run each time a timed acquire (AcquireWithTimeout,
+// AcquireFileWithTimeout) finds its lock held and is about to wait, and returns
+// a function that restores the previous hook. A TEST SEAM, for tests in other
+// packages too: it lets a test act while a waiter is known to be waiting,
+// instead of sleeping and hoping. Production never sets it.
+func SetWaitHook(f func()) (restore func()) {
+	waitHookMu.Lock()
+	prev := waitHook
+	waitHook = f
+	waitHookMu.Unlock()
+	return func() {
+		waitHookMu.Lock()
+		waitHook = prev
+		waitHookMu.Unlock()
+	}
+}
+
+// pollExclusive is the one poll loop behind every timed acquire. It takes the
+// lock on f, which it owns: on any failure it closes f. ctx is checked before
+// every attempt, so a cancelled caller never takes the lock, and a cancel is
+// noticed during the wait, not only at the next attempt. A negative timeout
+// never expires; what names the lock in a timeout error.
+func pollExclusive(ctx context.Context, f *os.File, timeout time.Duration, what string) (func() error, error) {
 	deadline := time.Now().Add(timeout)
 	const pollInterval = 50 * time.Millisecond
 	for {
+		if err := ctx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
 		ok, err := flockTryExclusive(f)
 		if err != nil {
 			f.Close()
@@ -197,11 +273,22 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 		if ok {
 			return releaser(f), nil
 		}
-		if time.Now().After(deadline) {
+		if timeout >= 0 && !time.Now().Before(deadline) {
 			f.Close()
-			return nil, fmt.Errorf("%w: %s after %s", ErrLockWaitTimeout, targetAbsPath, timeout)
+			return nil, fmt.Errorf("%w: %s after %s", ErrLockWaitTimeout, what, timeout)
 		}
-		time.Sleep(pollInterval)
+		waitHookMu.Lock()
+		hook := waitHook
+		waitHookMu.Unlock()
+		if hook != nil {
+			hook()
+		}
+		t := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+		case <-t.C:
+		}
 	}
 }
 

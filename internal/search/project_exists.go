@@ -5,18 +5,17 @@ package search
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// ProjectExists reports whether project is a member of the vault by the exact
-// predicate cross-project search already enumerates by: ListAllProjects, the
-// union of Projects/<slug>/ directories and palace/<slug>/ stores. Both MCP
-// vp_search and CLI `vp search` call this — or, for search, get it called for
-// them by Engine.Search — before any embedder work runs, so an unknown project
-// is refused identically on both surfaces instead of costing a model load (or a
-// cold host's ONNX download) merely to answer "no results".
+// ProjectExists reports whether project is a member of the vault, by
+// storage.Vault.ProjectExists: the union of Projects/<slug>/ directories and
+// palace/<slug>/ stores that cross-project search already enumerates by. Both
+// MCP vp_search and CLI `vp search` call this — or, for search, get it called
+// for them by Engine.Search — before any embedder work runs, so an unknown
+// project is refused identically on both surfaces instead of costing a model
+// load (or a cold host's ONNX download) merely to answer "no results".
 //
 // A notes-only project (Projects/<slug>/ with no palace/ store) is in; a
 // .local-only palace husk is out; so is a symlinked Projects/<slug> OR a
@@ -31,13 +30,7 @@ import (
 // the two would turn a real I/O failure into a silent, wrong "unknown project"
 // refusal.
 func ProjectExists(vault *storage.Vault, project string) (bool, error) {
-	projects, err := vault.ListAllProjects()
-	if err != nil {
-		return false, err
-	}
-	return slices.ContainsFunc(projects, func(p storage.ProjectPresence) bool {
-		return p.Slug == project
-	}), nil
+	return vault.ProjectExists(project)
 }
 
 // UnknownProjectError reports that Project names no member of ListAllProjects.

@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"runtime"
+	"strings"
 )
 
 func TestWrite_RoundTripDefaultPerm(t *testing.T) {
@@ -225,5 +227,64 @@ func TestWriteObserverIsRestoredAndOptional(t *testing.T) {
 	defer mu.Unlock()
 	if count != 1 {
 		t.Errorf("count = %d, want 1 — the observer kept firing after restore", count)
+	}
+}
+
+// WithFsync syncs the temp file before the rename, and WithDirFsync syncs the
+// target's directory after it; neither happens without its option. The sync
+// observer is the only trace a sync leaves, so this is what fails when a
+// caller, or this package, drops one.
+func TestWrite_FsyncAndDirFsyncAreObservable(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "file.txt")
+	var synced []string
+	dirSyncSaw := ""
+	restore := SetSyncObserver(func(path string) {
+		synced = append(synced, path)
+		if path == dir {
+			// The directory sync must come after the rename, or it makes
+			// nothing durable: by then the target holds the new bytes.
+			b, _ := os.ReadFile(p)
+			dirSyncSaw = string(b)
+		}
+	})
+	defer restore()
+
+	if err := Write("", p, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 0 {
+		t.Fatalf("a Write with no sync option synced %v", synced)
+	}
+
+	if err := Write("", p, []byte("y"), WithFsync(), WithDirFsync()); err != nil {
+		t.Fatal(err)
+	}
+	wantDir := 0
+	if runtime.GOOS != "windows" {
+		wantDir = 1
+	}
+	var temps, dirs int
+	for _, s := range synced {
+		switch {
+		case s == dir:
+			dirs++
+		case filepath.Dir(s) == dir && strings.HasPrefix(filepath.Base(s), ".vp-atomic-"):
+			if dirs > 0 {
+				t.Fatalf("the directory was synced before the temp file: %v", synced)
+			}
+			temps++
+		default:
+			t.Fatalf("unexpected sync of %s", s)
+		}
+	}
+	if temps != 1 || dirs != wantDir {
+		t.Fatalf("synced %v: %d temp file(s) and %d dir(s), want 1 and %d", synced, temps, dirs, wantDir)
+	}
+	if wantDir == 1 && dirSyncSaw != "y" {
+		t.Fatalf("the directory was synced while the target held %q: the sync ran before the rename", dirSyncSaw)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "y" {
+		t.Fatalf("content = %q", got)
 	}
 }
