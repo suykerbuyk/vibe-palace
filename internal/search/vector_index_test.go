@@ -13,7 +13,7 @@ import (
 )
 
 func TestBuildAndSearch(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 
 	vectors := [][]float32{
 		{1, 0, 0},
@@ -64,7 +64,7 @@ func TestExactRecall(t *testing.T) {
 		ids[i] = fmt.Sprintf("v%d", i)
 	}
 
-	idx := NewVectorIndex(dims)
+	idx := newBruteIndex(dims)
 	if err := idx.Build(vectors, ids); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestExactRecall(t *testing.T) {
 }
 
 func TestIncrementalInsert(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 
 	if err := idx.Insert("a", []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestIncrementalInsert(t *testing.T) {
 }
 
 func TestInsertReplace(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	_ = idx.Insert("a", []float32{1, 0, 0})
 	_ = idx.Insert("a", []float32{0, 1, 0}) // replace
 
@@ -141,7 +141,7 @@ func TestInsertReplace(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	_ = idx.Insert("a", []float32{1, 0, 0})
 	_ = idx.Insert("b", []float32{0, 1, 0})
 
@@ -161,14 +161,14 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDeleteNonexistent(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	if idx.Delete("nope") {
 		t.Error("Delete should return false for nonexistent key")
 	}
 }
 
 func TestConcurrentSearchInsert(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	_ = idx.Insert("seed", []float32{0.5, 0.5, 0.5})
 
 	var wg sync.WaitGroup
@@ -196,7 +196,7 @@ func TestConcurrentSearchInsert(t *testing.T) {
 }
 
 func TestEmptyIndex(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	results, err := idx.Search([]float32{1, 0, 0}, 5)
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestEmptyIndex(t *testing.T) {
 }
 
 func TestDimensionMismatch(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	err := idx.Insert("a", []float32{1, 0})
 	if err == nil {
 		t.Error("expected error for dimension mismatch on insert")
@@ -221,7 +221,7 @@ func TestDimensionMismatch(t *testing.T) {
 }
 
 func TestBuildMismatchedLengths(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	err := idx.Build([][]float32{{1, 0, 0}}, []string{"a", "b"})
 	if err == nil {
 		t.Error("expected error for mismatched vectors/ids lengths")
@@ -229,7 +229,7 @@ func TestBuildMismatchedLengths(t *testing.T) {
 }
 
 func TestSearchKZero(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	_ = idx.Insert("a", []float32{1, 0, 0})
 	results, err := idx.Search([]float32{1, 0, 0}, 0)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestSearchKZero(t *testing.T) {
 }
 
 func TestSearchKLargerThanIndex(t *testing.T) {
-	idx := NewVectorIndex(3)
+	idx := newBruteIndex(3)
 	_ = idx.Insert("a", []float32{1, 0, 0})
 	_ = idx.Insert("b", []float32{0, 1, 0})
 

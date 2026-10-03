@@ -291,6 +291,7 @@ lists them):
 | `test` | `go test -short -race -cover ./...` | The unit tier. Not `make test`: no `fmt-check` (the `fmt` job has it) and no `live-canary` (CI has no live vault). Carries no model cache, because no `-short` test loads the model |
 | `model` | `make model-test` | The real-ONNX tier (see Tier 2), with a `~/.cache/huggingface` cache and `timeout-minutes: 15` |
 | `source-audit` | `make source-audit` | Of the jobs that run on pull requests as well as pushes, the only one that runs the type-checked derived-gate rule, which skips under `-short` (see *Source Audit*) |
+| `hnsw` | `make hnsw-check` | `goreleaser build --snapshot --clean` of `./cmd/vp` for every goreleaser target (the only PR-time cross-build), the vendored `coder-hnsw` drift check, and the slow HNSW recall-floor and search-cost tests (`VP_HNSW_SLOW=1`, no `-race`); `timeout-minutes: 20` |
 | `windows-lock` | `go test -short ./internal/vaultlock/...`, then `go test -run TestIntegration_VaultLockCrossProcess ./internal/integration/` | The sole runtime proof of the Windows byte-range lock (`flock_windows.go`); the rest of CI is Linux-only |
 | `build` | `CGO_ENABLED=0 go build -o vp ./cmd/vp`, then `./vp version` | The shipped zero-CGO build links and runs |
 | `init-e2e` | `go test -race -run '^TestIntegrationE2EInit' -v ./internal/integration/...` | Exec-based e2e tier |
@@ -1189,8 +1190,8 @@ upload glob changed accordingly, from
 
 ### `internal/search/` — Recall Harness (`recall_test.go`)
 
-A model-free harness that guards the **`VectorIndex` brute-force exactness
-claim** (100% recall) against an independent ground-truth scan. It runs in the
+A model-free harness that guards the **`bruteIndex` exactness claim** (100%
+recall) against an independent ground-truth scan. It runs in the
 `-short` fast suite — **no ONNX**.
 
 - **Corpus:** four constitutional documents under
@@ -1218,14 +1219,85 @@ claim** (100% recall) against an independent ground-truth scan. It runs in the
 | `TestConstitutionCrossDocumentSearch` | No | Re-embedded natural-language phrase queries (e.g. "necessary and proper", "right to bear arms", "amparo") surface their expected source document within the top-10 |
 | `TestConstitutionDeleteAndSearch` | No | After deleting ~20% of the corpus, search still satisfies the distance bound over survivors and never returns a deleted id |
 
-**Scope (important):** this harness guards the **`VectorIndex` KNN data
+**Scope (important):** this harness guards the **`bruteIndex` KNN data
 structure** with synthetic vectors. It does **not** exercise the production
 384-dim ONNX embedding path or `Engine.Search` — those are covered by the
 real-embedder integration tests in `internal/search/integration_test.go`. The
-harness retains a set-overlap recall@k metric (logged, not asserted here);
-should the index boundary ever be pointed at an approximate backend such as
-HNSW, that recall@k becomes the meaningful threshold to assert (e.g. `>= 0.90`),
-since an approximate index is not expected to hold the exact distance bound.
+harness retains a set-overlap recall@k metric (logged, not asserted here). The
+approximate HNSW index has its own recall tests in the next section; the
+recall bar on real vectors belongs to task
+`hnsw-parameters-from-real-vector-recall-and-production-wiring`.
+
+### `internal/search/` — Vector index contract and HNSW wrapper
+
+`VectorIndex` has two implementations behind one contract: `bruteIndex`
+(exact; production; the oracle) and `hnswIndex` (`github.com/coder/hnsw`
+behind a safety wrapper, vendored under `third_party/coder-hnsw/` until the
+upstream windows fix merges). Task `vector-index-interface-and-coder-hnsw-wrapper`.
+Every test below was broken once on purpose and failed; the mutants are listed
+in that task. No test asserts a duration: costs are counted (distance
+evaluations through the test-only `countingCosine`, library searches through
+`hnswIndex.librarySearches`). The library is NOT reproducible even with a seeded
+`Rng` (`layer.entry()` ranges over a Go map), so no test pins an exact recall.
+
+**Shared contract** (`vector_index_contract_test.go`, every case runs on both
+implementations):
+
+| Test | What it proves |
+|---|---|
+| `TestContractBuildDuplicateIDsLastWins` | `Build` deduplicates ids before adding anything; the last occurrence wins and `Len` counts distinct ids |
+| `TestContractDuplicateThenDeleteLeavesNoGhost` | Deleting an id `Build` saw twice removes it entirely (brute force once kept the earlier duplicate searchable forever) |
+| `TestContractKZeroIsEmpty` / `TestContractKNegativeIsError` | `k = 0` is an empty result; `k < 0` is an error |
+| `TestContractUnusableVectorsAreSkippedAndLogged` | Zero, NaN and infinite vectors are never stored, by `Build` or `Insert`, and each skip is logged with its id |
+| `TestContractExtremeNormVectorsAreUnusable` | A finite vector whose float32 squared norm leaves [2^-60, 2^60] (under- or overflow, or a pair whose norm product would) is unusable in `Build`, `Insert` and as a query, for both implementations alike |
+| `TestContractUnusableQueryIsError` | An unusable query is an error (brute force once scored a zero query 1.0 against everything) |
+| `TestContractUnusableInsertDeletesTheID` | Inserting an unusable vector for a stored id deletes it, so its older vector stops being searchable |
+| `TestContractStoresACopy` | Mutating a slice after `Build` or `Insert` changes nothing stored |
+| `TestContractWrongDimsIsError` | `Build`, `Insert` and `Search` refuse the wrong dimensionality |
+| `TestContractInsertUpserts` | Inserting an existing id replaces its vector |
+| `TestContractHugeKIsBounded` | `k = 1<<40` sizes no allocation by `k` (the HNSW request is capped at the graph size) |
+| `TestContractImplementationsAgree` | On a corpus small enough for an exhaustive HNSW search, the two return the same ids in the same order, distances within `crossImplTolerance` (1e-5: float64 brute force against float32 SIMD cosine) |
+| `TestNewIndexUnknownKindIsError` | `newIndex` refuses an unknown kind instead of falling back |
+| `TestCandidateCountSaturates` | `limit*3` saturates instead of overflowing into a negative `k` |
+
+**HNSW wrapper** (`hnsw_index_test.go`, `main_test.go`, `hnsw_rebuild_test.go`):
+
+| Test | What it proves |
+|---|---|
+| `TestDistanceNameIsPinned` | `distanceName` is `vp-cosine-nanguard`, and `TestMain` found the library resolving it to `cosineNaNGuard` before any constructor ran (registration only in `init()`) |
+| `TestGuardedDistanceSurvivesExportImport` | A graph built with the production distance exports, imports with the same function, and answers ten searches identically |
+| `TestRegistrationDoesNotRaceExport` | Under `-race`: constructing indexes while others `Export` touches no unlocked library state |
+| `TestCosineNaNGuard` / `TestNaNScoreGuard` | A NaN score becomes +Inf, and no non-finite result ever reaches the caller |
+| `TestHNSWIdenticalReinsertIsNoop` / `TestHNSWUpsertTombstonesTheOldKey` | An identical re-insert makes no tombstone and no mutation; an upsert tombstones the old key rather than re-adding it (issue #15) |
+| `TestHNSWSearchFillsKPastTombstones` | When tombstones crowd the first answer, `Search` widens its request until it has `k` live results |
+| `TestHNSWConcurrentSearchDuringInsert` | Under `-race`: eight readers and one writer |
+| `TestHNSWChurnSafety` | `-short`, under `-race` (≈1.3 s; 300 random 32-dimension vectors, shrunk from 2k × 384 at 19.8 s with both churn mutants still killed): 30% deletes, 20% re-inserts, colliding ids, and a tombstone rebuild started during the churn (asserted; deterministic, because the trigger runs synchronously in the crossing write). Searches are checked while the rebuild may still run and again after it finishes, and the index is closed. No panic, no deleted id, no stale vector, `Len` equal to the live count |
+| `TestHNSWChurnRecallFloor5k` | `VP_HNSW_SLOW=1`, `make hnsw-slow`: after churn on seeded random 5k vectors, recall@10 at (16, 100) ≥ 0.44 (12-run minimum 0.4645 − 0.02), and at `EfSearch` 20 at least 0.02 below the floor |
+| `TestHNSWTombstoneHeavySearchCost` | `VP_HNSW_SLOW=1`: on seeded random 10k vectors with rebuilds pinned off, 15% tombstones cost ≤ 2× the distance evaluations per query and ≤ 1 + ⌈log2(Len/k)⌉ library searches |
+| `TestHNSWUpsertsAloneCrossTheThreshold` | Upserts alone trigger the tombstone rebuild; exactly one starts and the swapped graph holds no tombstone |
+| `TestHNSWWritesDuringAHeldRebuild` | Writes made while a rebuild is held after its snapshot (more than `finalReplayMax`, so the swap first catches up off-lock) are all applied: a deleted id never returns, an upsert answers with its new vector, a second trigger starts no second build |
+| `TestHNSWRebuildCancelledOnClose` | `Close` cancels a held rebuild and returns only after its goroutine has exited; it never swaps |
+| `TestHNSWBuildCancelsARunningRebuild` | `Build` cancels a running rebuild, which never swaps its stale snapshot over `Build`'s contents |
+| `TestHNSWRebuildAbandonedWhenWritesOutpaceCatchUp` | A writer landing more than `finalReplayMax` writes before every off-lock catch-up round (a flat-out writer, made deterministic by a hook) gets the rebuild ABANDONED: no swap, nothing replayed under the lock, the old graph still correct; the next rebuild waits out the backoff (`MinTombstones` writes), and a quiet rebuild then swaps within the lock budget and resets the backoff |
+| `TestHNSWSmallRemainderReplayedUnderLock` | Writes within the lock budget (5 deletes, 5 upserts) skip the off-lock catch-up and are all replayed under the lock at the swap: `Len` is the live count, every live id is found at its own vector, no deleted id returns |
+| `TestHNSWBuildResetsTheRebuildBackoff` | `Build` resets an inherited rebuild backoff, so the fresh graph's first threshold crossing rebuilds at once |
+| `TestRebuildBackoffGens` | The backoff rule: `MinTombstones` writes (at least 1) after the first abandon, ×4 per further consecutive abandon, capped |
+| `TestHNSWTombstoneMeasurement` | `VP_HNSW_MEASURE=1`, by hand, asserts nothing: the 0–20% tombstone table at 5k and 20k behind `TombstoneRatio`, then one rebuild under a flat-out writer (swap or abandon, and what the lock replayed) |
+
+**Engine lifecycle** (`engine_index_lifecycle_test.go`):
+
+| Test | What it proves |
+|---|---|
+| `TestEngineRebuildClosesTheReplacedIndexOffLock` | On both `Rebuild` paths (replace, and the empty-corpus drop) the old index is closed, its rebuild cancelled and exited, and `e.mu` is free when it closes (`beforeIndexClose` hook, `TryLock`) |
+| `TestEngineCloseClosesEveryIndex` | `Engine.Close` closes every index before the embedder |
+| `TestEngineCloseClearsTheBuiltMemo` | `Engine.Close` clears the lazy-build memo with the index map, so no project reads as built without an index |
+| `TestEngineRebuildRunsOffLock` | A rebuild triggered by `RemoveDrawer` (under `e.mu`) is held while `RemoveDrawer` returns and searches on the same and another project return; every wait is bounded at 60 s with a goroutine dump, never a timing assertion |
+| `TestEngineSearchHugeLimit` | `Search` with `Limit = math.MaxInt` neither errors nor allocates by the limit |
+
+**Vendored copy:** `scripts/check-hnsw-vendor.sh` (`make hnsw-vendor`, networked)
+exits 0 when `third_party/coder-hnsw` is upstream at the required version plus
+`vp.patch` (bytes and executable bits), 1 on drift, and 2 when the check could
+not run. `make fmt` and `fmt-check` skip `third_party/`.
 
 ---
 

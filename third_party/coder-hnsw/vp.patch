@@ -1,0 +1,140 @@
+--- a/encode.go
++++ b/encode.go
+@@ -1,14 +1,9 @@
+ package hnsw
+ 
+ import (
+-	"bufio"
+-	"cmp"
+ 	"encoding/binary"
+ 	"fmt"
+ 	"io"
+-	"os"
+-
+-	"github.com/google/renameio"
+ )
+ 
+ // errorEncoder is a helper type to encode multiple values
+@@ -259,69 +254,4 @@
+ 	}
+ 
+ 	return nil
+-}
+-
+-// SavedGraph is a wrapper around a graph that persists
+-// changes to a file upon calls to Save. It is more convenient
+-// but less powerful than calling Graph.Export and Graph.Import
+-// directly.
+-type SavedGraph[K cmp.Ordered] struct {
+-	*Graph[K]
+-	Path string
+-}
+-
+-// LoadSavedGraph opens a graph from a file, reads it, and returns it.
+-//
+-// If the file does not exist (i.e. this is a new graph),
+-// the equivalent of NewGraph is returned.
+-//
+-// It does not hold open a file descriptor, so SavedGraph can be forgotten
+-// without ever calling Save.
+-func LoadSavedGraph[K cmp.Ordered](path string) (*SavedGraph[K], error) {
+-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+-	if err != nil {
+-		return nil, err
+-	}
+-	defer f.Close()
+-	info, err := f.Stat()
+-	if err != nil {
+-		return nil, err
+-	}
+-
+-	g := NewGraph[K]()
+-	if info.Size() > 0 {
+-		err = g.Import(bufio.NewReader(f))
+-		if err != nil {
+-			return nil, fmt.Errorf("import: %w", err)
+-		}
+-	}
+-
+-	return &SavedGraph[K]{Graph: g, Path: path}, nil
+-}
+-
+-// Save writes the graph to the file.
+-func (g *SavedGraph[K]) Save() error {
+-	tmp, err := renameio.TempFile("", g.Path)
+-	if err != nil {
+-		return err
+-	}
+-	defer tmp.Cleanup()
+-
+-	wr := bufio.NewWriter(tmp)
+-	err = g.Export(wr)
+-	if err != nil {
+-		return fmt.Errorf("exporting: %w", err)
+-	}
+-
+-	err = wr.Flush()
+-	if err != nil {
+-		return fmt.Errorf("flushing: %w", err)
+-	}
+-
+-	err = tmp.CloseAtomicallyReplace()
+-	if err != nil {
+-		return fmt.Errorf("closing atomically: %w", err)
+-	}
+-
+-	return nil
+ }
+--- a/encode_test.go
++++ b/encode_test.go
+@@ -155,29 +155,6 @@
+ 	verifyGraphNodes(t, g2)
+ }
+ 
+-func TestSavedGraph(t *testing.T) {
+-	dir := t.TempDir()
+-
+-	g1, err := LoadSavedGraph[int](dir + "/graph")
+-	require.NoError(t, err)
+-	require.Equal(t, 0, g1.Len())
+-	for i := 0; i < 128; i++ {
+-		g1.Add(
+-			Node[int]{
+-				i, randFloats(1),
+-			},
+-		)
+-	}
+-
+-	err = g1.Save()
+-	require.NoError(t, err)
+-
+-	g2, err := LoadSavedGraph[int](dir + "/graph")
+-	require.NoError(t, err)
+-
+-	requireGraphApproxEquals(t, g1.Graph, g2.Graph)
+-}
+-
+ const benchGraphSize = 100
+ 
+ func BenchmarkGraph_Import(b *testing.B) {
+--- a/go.mod
++++ b/go.mod
+@@ -3,7 +3,6 @@
+ go 1.21.4
+ 
+ require (
+-	github.com/google/renameio v1.0.1
+ 	github.com/stretchr/testify v1.9.0
+ )
+ 
+--- a/go.sum
++++ b/go.sum
+@@ -3,8 +3,6 @@
+ github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
+ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+-github.com/google/renameio v1.0.1 h1:Lh/jXZmvZxb0BBeSY5VKEfidcbcbenKjZFzM/q0fSeU=
+-github.com/google/renameio v1.0.1/go.mod h1:t/HQoYBZSsWSNK35C6CO/TpPLDVWvxOHboWUAweKUpk=
+ github.com/kr/pretty v0.1.0 h1:L/CwN0zerZDmRFUapSPitk6f+Q3+0za1rQkzVuMiMFI=
+ github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
+ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

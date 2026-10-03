@@ -19,7 +19,7 @@ import (
 // This file is a model-free recall harness salvaged from a sibling HNSW fork.
 // It builds a deterministic TF-IDF feature-hashed embedding over a small corpus
 // of constitutional documents (no ONNX, no external model), loads them into the
-// project's exact brute-force *VectorIndex, and verifies search behavior against
+// project's exact brute-force *bruteIndex, and verifies search behavior against
 // an independent ground-truth scan that uses identical distance math.
 
 const (
@@ -223,11 +223,11 @@ func loadConstitutionCorpus(t *testing.T) (ids []string, vecs [][]float32, idf *
 	return ids, vecs, idf
 }
 
-// buildCorpusIndex inserts the corpus into a fresh *VectorIndex using per-chunk
+// buildCorpusIndex inserts the corpus into a fresh *bruteIndex using per-chunk
 // Insert (deterministic append order). IDs are unique, so Insert is safe.
-func buildCorpusIndex(t *testing.T, ids []string, vecs [][]float32) *VectorIndex {
+func buildCorpusIndex(t *testing.T, ids []string, vecs [][]float32) *bruteIndex {
 	t.Helper()
-	idx := NewVectorIndex(embeddingDim)
+	idx := newBruteIndex(embeddingDim)
 	for i := range ids {
 		if err := idx.Insert(ids[i], vecs[i]); err != nil {
 			t.Fatalf("Insert %s: %v", ids[i], err)

@@ -73,7 +73,11 @@ vet: ## Run go vet
 # The .claude prune keeps a subagent worktree's checked-out copy of this module
 # out of the count; without it the gate reports the same file twice and can fail
 # on a tree the developer cannot edit.
-GO_SOURCES = $(shell find . -name '*.go' -not -path './.git/*' -not -path './.claude/*')
+#
+# The third_party prune keeps `make fmt` from ever rewriting a vendored copy:
+# third_party/coder-hnsw must stay byte-identical to upstream plus its patch,
+# which scripts/check-hnsw-vendor.sh verifies.
+GO_SOURCES = $(shell find . -name '*.go' -not -path './.git/*' -not -path './.claude/*' -not -path './third_party/*')
 
 .PHONY: fmt
 fmt: ## Rewrite every Go source in place with gofmt
@@ -130,6 +134,42 @@ live-canary: ## Run the live-vault bootstrap canary uncached and verbose (SKIP i
 .PHONY: source-audit
 source-audit: ## Run the source audit INCLUDING the type-checked derived-gate rule (no -short)
 	go test -count=1 ./internal/sourceaudit/
+
+# THE HNSW WRAPPER'S CHECKS THAT `make test` CANNOT RUN, and the CI `hnsw` job's
+# entire step (task vector-index-interface-and-coder-hnsw-wrapper):
+#   - hnsw-crossbuild: goreleaser builds ./cmd/vp for every target .goreleaser.yml
+#     names, so the target list is goreleaser's own, never a copy. It catches the
+#     class of break that once hid until a tag: coder/hnsw upstream does not build
+#     for windows.
+#   - hnsw-vendor: third_party/coder-hnsw is upstream plus vp.patch (networked).
+#   - hnsw-slow: the 5k churn recall floor and the 10k tombstone-cost test. They
+#     need VP_HNSW_SLOW=1 and run without -race. A -run filter that matched
+#     nothing would pass silently, so the target fails unless both tests report
+#     PASS by name.
+empty :=
+space := $(empty) $(empty)
+HNSW_SLOW_TESTS := TestHNSWChurnRecallFloor5k TestHNSWTombstoneHeavySearchCost
+
+.PHONY: hnsw-check hnsw-crossbuild hnsw-vendor hnsw-slow
+hnsw-check: hnsw-crossbuild hnsw-vendor hnsw-slow ## The HNSW cross-build, vendored-copy drift check and slow recall/cost tests (CI job `hnsw`)
+
+hnsw-crossbuild: ## Build ./cmd/vp for every goreleaser target (needs goreleaser)
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "hnsw-crossbuild: goreleaser is not on PATH." >&2; exit 1; }
+	goreleaser build --snapshot --clean
+
+hnsw-vendor: ## Verify third_party/coder-hnsw is upstream plus vp.patch (needs network)
+	scripts/check-hnsw-vendor.sh
+
+hnsw-slow: ## Run the slow HNSW recall-floor and search-cost tests
+	@out="$$(VP_HNSW_SLOW=1 go test -count=1 -timeout 15m -v \
+		-run '^($(subst $(space),|,$(HNSW_SLOW_TESTS)))$$' ./internal/search/ 2>&1)"; rc=$$?; \
+	printf '%s\n' "$$out"; \
+	[ $$rc -eq 0 ] || exit $$rc; \
+	for t in $(HNSW_SLOW_TESTS); do \
+		printf '%s\n' "$$out" | grep -q -- "--- PASS: $$t " || { \
+			echo "hnsw-slow: $$t did not report PASS (renamed, skipped or filtered out)" >&2; exit 1; }; \
+	done
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests

@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/coder/hnsw v0.6.2-0.20260622133054-36cab6028fed
 	github.com/gomlx/go-huggingface v0.3.5-0.20260327162928-af20e4f3e7b5
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.5
@@ -12,6 +13,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
+	github.com/viterin/vek v0.4.2
 	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 	golang.org/x/tools v0.43.0
@@ -20,6 +22,7 @@ require (
 )
 
 require (
+	github.com/chewxy/math32 v1.11.1 // indirect
 	github.com/daulet/tokenizers v1.26.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
@@ -37,6 +40,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/viant/afs v1.30.0 // indirect
+	github.com/viterin/partial v1.1.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yalue/onnxruntime_go v1.27.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -52,3 +56,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/coder/hnsw => ./third_party/coder-hnsw

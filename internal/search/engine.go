@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -47,8 +48,8 @@ type Engine struct {
 	config   storage.Config
 
 	mu       sync.RWMutex
-	indexes  map[string]*VectorIndex // project -> index
-	metadata map[string]drawerMeta   // drawerID -> metadata
+	indexes  map[string]VectorIndex // project -> index
+	metadata map[string]drawerMeta  // drawerID -> metadata
 
 	// collisions counts distinct-content DrawerID collisions observed at
 	// index-build time. It is zero in a healthy vault; a nonzero value is the
@@ -62,6 +63,10 @@ type Engine struct {
 	buildMu   sync.Mutex
 	built     map[string]bool          // project -> index materialized
 	buildsRun map[string]*projectBuild // project -> in-flight build
+
+	// beforeIndexClose, when set, runs just before a replaced index is
+	// closed. Tests use it to prove e.mu is not held there.
+	beforeIndexClose func()
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -85,7 +90,7 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		vault:     vault,
 		cache:     cache,
 		config:    cfg,
-		indexes:   make(map[string]*VectorIndex),
+		indexes:   make(map[string]VectorIndex),
 		metadata:  make(map[string]drawerMeta),
 		built:     make(map[string]bool),
 		buildsRun: make(map[string]*projectBuild),
@@ -290,7 +295,7 @@ func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters,
 		if !ok || idx.Len() == 0 {
 			return nil, nil
 		}
-		c, err := idx.Search(queryVec, limit*3)
+		c, err := idx.Search(queryVec, candidateCount(limit))
 		if err != nil {
 			return nil, fmt.Errorf("vector search: %w", err)
 		}
@@ -300,7 +305,7 @@ func (e *Engine) searchReady(ctx context.Context, query string, f SearchFilters,
 			if !listed[project] {
 				continue
 			}
-			c, err := idx.Search(queryVec, limit*3)
+			c, err := idx.Search(queryVec, candidateCount(limit))
 			if err != nil {
 				return nil, fmt.Errorf("vector search: %w", err)
 			}
@@ -422,7 +427,10 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 			if err != nil {
 				return fmt.Errorf("embedder dimensions: %w", err)
 			}
-			idx = NewVectorIndex(dims)
+			idx, err = newIndex(kindBrute, dims, provisionalHNSWParams)
+			if err != nil {
+				return err
+			}
 			e.indexes[in.Project] = idx
 		}
 		meta := makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
@@ -614,8 +622,10 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		// longer exists, then reap every now-orphaned vector (live set is
 		// empty).
 		e.mu.Lock()
+		old := e.indexes[project]
 		delete(e.indexes, project)
 		e.mu.Unlock()
+		e.closeReplaced(old)
 		if n, err := e.reapOrphanVectors(project, live); err != nil {
 			slog.Warn("reap orphan vectors failed", "project", project, "err", err)
 		} else if n > 0 {
@@ -630,12 +640,16 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		return stats, fmt.Errorf("embedder dimensions: %w", err)
 	}
 
-	idx := NewVectorIndex(dims)
+	idx, err := newIndex(kindBrute, dims, provisionalHNSWParams)
+	if err != nil {
+		return stats, err
+	}
 	if err := idx.Build(vecs, ids); err != nil {
 		return stats, fmt.Errorf("build index: %w", err)
 	}
 
 	e.mu.Lock()
+	old := e.indexes[project]
 	e.indexes[project] = idx
 	for i, id := range ids {
 		if e.detectCollision(id, metas[i]) {
@@ -644,6 +658,7 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		e.metadata[id] = metas[i]
 	}
 	e.mu.Unlock()
+	e.closeReplaced(old)
 
 	if n, err := e.reapOrphanVectors(project, live); err != nil {
 		slog.Warn("reap orphan vectors failed", "project", project, "err", err)
@@ -771,8 +786,45 @@ func (e *Engine) Embedder() embedder.Embedder {
 	return e.embedder
 }
 
-// Close releases resources.
+// closeReplaced closes an index that is no longer published. The caller must
+// not hold e.mu: Close waits for the index's background rebuild, and holding
+// the engine lock there would stall every search meanwhile.
+func (e *Engine) closeReplaced(old VectorIndex) {
+	if old == nil {
+		return
+	}
+	if e.beforeIndexClose != nil {
+		e.beforeIndexClose()
+	}
+	if err := old.Close(); err != nil {
+		slog.Warn("close replaced vector index failed", "err", err)
+	}
+}
+
+// candidateCount is how many vector candidates a search fetches for limit
+// results: three times as many, because metadata filters drop some. It
+// saturates instead of overflowing on an absurd limit.
+func candidateCount(limit int) int {
+	if limit > math.MaxInt/3 {
+		return math.MaxInt
+	}
+	return limit * 3
+}
+
+// Close releases resources: every index (cancelling any background rebuild),
+// then the embedder. The lazy-build memo is cleared with the index map, so no
+// project reads as built once its index is gone.
 func (e *Engine) Close() error {
+	e.mu.Lock()
+	indexes := e.indexes
+	e.indexes = make(map[string]VectorIndex)
+	e.mu.Unlock()
+	e.buildMu.Lock()
+	clear(e.built)
+	e.buildMu.Unlock()
+	for _, idx := range indexes {
+		e.closeReplaced(idx)
+	}
 	return e.embedder.Close()
 }
 

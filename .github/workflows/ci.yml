@@ -92,6 +92,29 @@ jobs:
   # timeout-minutes is a backstop against a wedged download (warm runtime is
   # well under a minute); the target's own `go test -timeout 10m` fires first so
   # a hang still prints its goroutine dump.
+  # The HNSW wrapper's checks that `test` cannot run, as one PR-time job
+  # (task vector-index-interface-and-coder-hnsw-wrapper). `make hnsw-check` is
+  # the whole step, so a developer runs exactly what this job runs:
+  #   - a goreleaser build of ./cmd/vp for every target .goreleaser.yml names.
+  #     `goreleaser-check` above builds nothing, the windows job builds only
+  #     ./internal/vaultlock, and the release rehearsal is manual — so before
+  #     this job a target that stopped compiling (coder/hnsw upstream does not
+  #     build for windows) surfaced only at tag time;
+  #   - the networked drift check of the vendored third_party/coder-hnsw;
+  #   - the 5k churn recall floor and the 10k tombstone-cost test, which need
+  #     VP_HNSW_SLOW=1 and no -race (under -race they cost minutes, and they
+  #     count work rather than racing goroutines).
+  hnsw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - uses: ./.github/actions/goreleaser
+      - run: make hnsw-check
+
   model:
     runs-on: ubuntu-latest
     timeout-minutes: 15

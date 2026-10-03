@@ -576,3 +576,6 @@ Dual-licensed under
 [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) or
 [MIT](https://opensource.org/licenses/MIT), at your option. See
 [LICENSE](LICENSE) for details.
+
+The vector index uses [coder/hnsw](https://github.com/coder/hnsw), dedicated to
+the public domain under [CC0 1.0](third_party/coder-hnsw/LICENSE).

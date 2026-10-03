@@ -250,7 +250,7 @@ func TestDeduplication(t *testing.T) {
 	}
 
 	eng.mu.Lock()
-	idx := NewVectorIndex(384)
+	idx := newBruteIndex(384)
 	eng.indexes["proj"] = idx
 	mock := embedder.NewMock(384)
 	v1, _ := mock.Embed(ctx, d1.Content)
