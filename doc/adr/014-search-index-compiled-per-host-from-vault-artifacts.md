@@ -706,11 +706,12 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
     - Claude Code gives SessionEnd hooks 1.5 s by default, raised to the hook's own timeout (30 s
       here). The spawn-only rule fits either way.
   - **After a vault pull** that brings in new archives. "A pull" means every code path that merges
-    or rebases remote commits into the vault:
-    - `storage.Pull` (`internal/storage/vaultpull.go:143`);
-    - the rebase inside a commit-and-push (`internal/storage/vaultsync.go:863`), and its second
-      caller, the mirror prune (`internal/storage/vaultsync_verify.go:250`);
-    - the push-rejection reconcile (`internal/storage/vaultsync.go:1263`);
+    remote commits into the vault:
+    - `storage.Pull` (`internal/storage/vaultpull.go:144`);
+    - the merge inside a commit-and-push (`internal/storage/vaultsync.go:863`), and its second
+      caller, the mirror prune (`internal/storage/vaultsync_verify.go:251`);
+    - the push-rejection reconcile (`internal/storage/vaultsync.go:1373`). Both reconciles merge
+      through `mergeFetchedTip` (`internal/storage/vaultsync.go:1260`);
     - the fast-forward merge in a resumed `vp vault clone` (`internal/storage/vault_clone.go:531`).
   - **After `vp_capture_session` creates an archive** on a hook-less host.
   - **At `vp mcp` startup**, as a backstop. A spawn can be lost if the host kills the hook before
@@ -1155,19 +1156,20 @@ vault runs v9.2.0 or later before the migration, and none goes back.
     - the glide-path rule itself (decision 7).
 - **Self-heal on pull.** A new binary that finds an unmerged `UD`, `DU` or `DD` entry on a
   now-ignored derived path:
-  - reads the incoming marker, from `MERGE_HEAD` or the rebase's onto commit;
+  - reads the incoming marker from `MERGE_HEAD`;
   - resolves the entry with `git rm --cached` and deletes the file;
-  - concludes the merge or continues the rebase, and drops an autostash only when it holds nothing
-    but derived paths;
+  - concludes the merge;
   - reports each path it deleted.
 
   **Where it runs.** At every pull path that can leave an unmerged entry:
-  - the merge in `pullCore` (`internal/storage/vaultpull.go:161`, the merge at `:271-283`);
-  - the rebase in `reconcileIfAhead` (`internal/storage/vaultsync.go:863`), reached from a
-    commit-and-push (`:306`) and from the mirror prune (`internal/storage/vaultsync_verify.go:250`).
-    There the heal runs before the path's abort on conflict, and the abort stays for any
-    non-derived conflict;
-  - the push-rejection reconcile's rebase (`reconcileRejectedPush`, `vaultsync.go:1263`).
+  - the merge in `pullCore` (`internal/storage/vaultpull.go:162`, the merge at `:272-287`);
+  - the merge in `mergeFetchedTip` (`internal/storage/vaultsync.go:1260`), the one merge both
+    commit-and-push reconciles go through: `reconcileIfAhead` (`vaultsync.go:863`), reached from a
+    commit-and-push (`:317`) and from the mirror prune (`internal/storage/vaultsync_verify.go:251`),
+    and the push-rejection reconcile (`reconcileRejectedPush`, `vaultsync.go:1373`). There the
+    heal runs before `mergeFetchedTip`'s `merge --abort` on conflict, and the abort stays for any
+    non-derived conflict. `mergeFetchedTip` refuses to start while any merge, cherry-pick, revert
+    or rebase is already in progress, so the heal only ever acts on a merge vp itself started.
 
   The resumed clone's merge is `--ff-only` (`internal/storage/vault_clone.go:531`), so it never
   leaves an unmerged entry and needs no heal.
