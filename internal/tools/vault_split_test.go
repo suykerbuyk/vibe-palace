@@ -14,7 +14,6 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
-	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // Every test in this file runs against an EPHEMERAL vault under t.TempDir().
@@ -29,9 +28,8 @@ func splitFixtureVault(t *testing.T, slugs ...string) string {
 	t.Helper()
 	root := t.TempDir()
 
-	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
-		t.Fatalf("stamp vault format: %v", err)
-	}
+	// A migrated source: split moves projects only between migrated vaults.
+	splitMarkMigrated(t, root)
 
 	for _, s := range slugs {
 		writeSplitFile(t, root, "palace/"+s+"/kg/entities.jsonl", `{"id":"e1"}`)
@@ -114,7 +112,7 @@ func callSplit(t *testing.T, root string, p vaultSplitParams) (map[string]any, e
 // a name that matches nothing is a refusal, never an empty set.
 func TestVaultSplitPlan_UnknownSlugRefuses(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	_, err := callSplit(t, root, splitPlanParams(dest, "alpha", "nosuchproject"))
 	if err == nil {
@@ -156,7 +154,7 @@ func TestVaultSplitPlan_SymlinkInAllowListedTreeRefuses(t *testing.T) {
 		t.Skip("symlink creation requires privilege on Windows")
 	}
 	root := splitFixtureVault(t, "alpha", "beta")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	// Baseline: alpha plans clean before the link exists, so a later failure is
 	// attributable to the link and not to the fixture.
@@ -194,7 +192,7 @@ func TestVaultSplitPlan_SymlinkUnderPrunedDirDoesNotRefuse(t *testing.T) {
 		t.Skip("symlink creation requires privilege on Windows")
 	}
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	link := filepath.Join(root, "palace", "alpha", ".local", "embed-cache", "linked.vec")
 	if err := os.Symlink(filepath.Join(root, "Projects", "alpha", "resume.md"), link); err != nil {
@@ -226,7 +224,7 @@ func TestVaultSplitPlan_SymlinkUnderPrunedDirDoesNotRefuse(t *testing.T) {
 // directly, because the payload deliberately does not carry them.
 func TestVaultSplitPlan_SubtractSetIsAbsentFromInventory(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	m, err := buildSplitManifest(storage.NewVault(root), splitPlanParams(dest, "alpha"))
 	if err != nil {
@@ -296,7 +294,7 @@ func TestVaultSplitPlan_DestinationInsideVaultRefuses(t *testing.T) {
 // undercount. Refusing here means apply never starts on such a tree.
 func TestVaultSplitPlan_Format0SourceRefuses(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	// Unstamp: absence of the manifest IS format 0.
 	if err := os.RemoveAll(filepath.Join(root, ".vibe-palace")); err != nil {
@@ -333,7 +331,8 @@ func TestVaultSplitUnimplementedActionRefuses(t *testing.T) {
 
 	for _, action := range []string{"merge", "sync", "Plan", "", "plan "} {
 		t.Run("action="+action, func(t *testing.T) {
-			dest := filepath.Join(t.TempDir(), "new-vault")
+			dest := splitDest(t)
+			destBefore := snapshotTree(t, dest)
 			p := splitPlanParams(dest, "alpha")
 			p.Action = action
 
@@ -349,8 +348,8 @@ func TestVaultSplitUnimplementedActionRefuses(t *testing.T) {
 			if !strings.Contains(err.Error(), "plan, apply, verify, purge") {
 				t.Errorf("refusal must name the implemented actions, got: %v", err)
 			}
-			if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-				t.Errorf("a refused action must create nothing at %s", dest)
+			if after := snapshotTree(t, dest); !equalStringMaps(destBefore, after) {
+				t.Errorf("a refused action must change nothing at %s", dest)
 			}
 		})
 	}
@@ -360,7 +359,7 @@ func TestVaultSplitUnimplementedActionRefuses(t *testing.T) {
 // nothing rather than everything.
 func TestVaultSplitPlan_EmptySlugsRefuses(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	if _, err := callSplit(t, root, splitPlanParams(dest)); err == nil {
 		t.Fatal("plan accepted an empty slug list")
@@ -372,7 +371,7 @@ func TestVaultSplitPlan_EmptySlugsRefuses(t *testing.T) {
 // vault, and its disposition is owned by another task.
 func TestVaultSplitPlan_ReportsDriftAndDoesNotGuess(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	// `orphan` has history and no store: Projects-only drift.
 	writeSplitFile(t, root, "Projects/orphan/resume.md", "# orphan\n")
@@ -415,7 +414,7 @@ func TestVaultSplitPlan_ReportsDriftAndDoesNotGuess(t *testing.T) {
 // minted for a different allow-list.
 func TestVaultSplitPlan_ManifestDigestBindsTheRequest(t *testing.T) {
 	root := splitFixtureVault(t, "alpha", "beta")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 	vault := storage.NewVault(root)
 
 	base, err := buildSplitManifest(vault, splitPlanParams(dest, "alpha"))
@@ -474,7 +473,7 @@ func TestVaultSplitPlan_ManifestDigestBindsTheRequest(t *testing.T) {
 // the allow-list.
 func TestVaultSplitPlan_ReportsVaultGlobalArtifactsLeftBehind(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	writeSplitFile(t, root, "Knowledge/learnings/one.md", "a learning\n")
 	writeSplitFile(t, root, "Audits/2026-08-22.md", "an audit\n")
@@ -543,9 +542,10 @@ func TestVaultSplitPlan_ReportsVaultGlobalArtifactsLeftBehind(t *testing.T) {
 // the surface gate exists to prevent.
 func TestVaultSplitPlan_WritesNothing(t *testing.T) {
 	root := splitFixtureVault(t, "alpha")
-	dest := filepath.Join(t.TempDir(), "new-vault")
+	dest := splitDest(t)
 
 	before := snapshotTree(t, root)
+	destBefore := snapshotTree(t, dest)
 	if _, err := callSplit(t, root, splitPlanParams(dest, "alpha")); err != nil {
 		t.Fatal(err)
 	}
@@ -560,10 +560,10 @@ func TestVaultSplitPlan_WritesNothing(t *testing.T) {
 		}
 	}
 
-	// And it did not create the destination. plan validates the path; only
-	// apply may bring it into existence.
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		t.Errorf("plan created the destination at %s", dest)
+	// And it did not touch the destination. plan validates it; only apply
+	// copies into it.
+	if destAfter := snapshotTree(t, dest); !equalStringMaps(destBefore, destAfter) {
+		t.Errorf("plan changed the destination at %s", dest)
 	}
 }
 

@@ -384,7 +384,7 @@
     {
       "name": "vp_vault_split",
       "mutating": true,
-      "schema_sha256": "aeef194369a352f1b6095f4e1b8fe73cdfb398db9b279a8aff539cd799cb2416"
+      "schema_sha256": "ab2f3e9d552bf56d04724fc43e8c1d95e13bb90ee8287f406cae82cb1a9fd355"
     },
     {
       "name": "vp_vault_status",

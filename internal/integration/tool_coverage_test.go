@@ -1876,8 +1876,13 @@ var toolCoverageFixtures = map[string]toolFixture{
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/" + project + "/note.md", "content": "splittable content",
 			})
+			// Split moves projects only from a migrated vault into an existing,
+			// migrated one; plan checks both markers.
+			covMarkMigrated(t, h.Vault.Root)
+			dest := t.TempDir()
+			covMarkMigrated(t, dest)
 			return map[string]any{
-				"action": "plan", "slugs": []string{project}, "destination": t.TempDir(),
+				"action": "plan", "slugs": []string{project}, "destination": dest,
 			}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
@@ -1965,9 +1970,9 @@ var toolCoverageFixtures = map[string]toolFixture{
 				}
 				return strings.TrimSpace(string(out))
 			}
-			if err := surface.WriteFormat(h.Vault.Root, surface.RequiredDataFormat); err != nil {
-				t.Fatalf("stamp vault: %v", err)
-			}
+			// Both vaults are migrated: copy moves projects only between
+			// migrated vaults.
+			covMarkMigrated(t, h.Vault.Root)
 			run(h.Vault.Root, "add", "-A")
 			run(h.Vault.Root, "commit", "-q", "--allow-empty", "-m", "format")
 			vBare := t.TempDir()
@@ -1980,9 +1985,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 			run(src, "init", "-q")
 			run(src, "config", "user.email", "t@example.com")
 			run(src, "config", "user.name", "T")
-			if err := surface.WriteFormat(src, surface.RequiredDataFormat); err != nil {
-				t.Fatalf("stamp source vault: %v", err)
-			}
+			covMarkMigrated(t, src)
 			if err := os.MkdirAll(filepath.Join(src, "Projects", project), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -2025,10 +2028,10 @@ var toolCoverageFixtures = map[string]toolFixture{
 			// non-repository destination — so the bound vault itself must be a
 			// git repo here, even though plan writes nothing.
 			covGitVault(t, h)
+			// Merge moves projects only between migrated vaults.
+			covMarkMigrated(t, h.Vault.Root)
 			sourceRoot := t.TempDir()
-			if err := surface.WriteFormat(sourceRoot, surface.RequiredDataFormat); err != nil {
-				t.Fatalf("stamp source vault: %v", err)
-			}
+			covMarkMigrated(t, sourceRoot)
 			projDir := filepath.Join(sourceRoot, "Projects", project)
 			if err := os.MkdirAll(projDir, 0o755); err != nil {
 				t.Fatal(err)
@@ -2413,5 +2416,17 @@ func TestToolCoverageExecution(t *testing.T) {
 			}
 			fx.assert(t, h, payload)
 		})
+	}
+}
+
+// covMarkMigrated writes the current data format and the migration marker into
+// root's vault.toml: split, copy and merge move projects only between migrated
+// vaults.
+func covMarkMigrated(t *testing.T, root string) {
+	t.Helper()
+	if err := surface.WriteVaultManifest(root, surface.VaultManifest{
+		Format: surface.RequiredDataFormat, AuthoredOnly: "2026-10-04",
+	}); err != nil {
+		t.Fatalf("mark the vault migrated: %v", err)
 	}
 }

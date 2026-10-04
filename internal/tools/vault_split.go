@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -173,6 +174,14 @@ type splitManifest struct {
 	Global           []splitGlobalReport
 	Drift            []splitDriftReport
 	SHA256           string
+	// Residue is the source's derived residue for the manifest's slugs
+	// (storage.DerivedResidue): untracked, ignored derived index files, left
+	// out of Entries. It is computed ONCE per operation, against the SOURCE, and
+	// travels by value to every site in that operation — the destination
+	// inventory and the purge's unaccounted check — so the three agree. It is
+	// not in the digest: it is never copied, so it is not what an operator
+	// approves.
+	Residue map[string]struct{}
 }
 
 // splitManifestFormat tags the digest preimage. A change to how the manifest is
@@ -193,9 +202,9 @@ type vaultSplitParams struct {
 var vaultSplitSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["plan", "apply", "verify", "purge"], "description": "Action. \"plan\" reads the source vault and returns a manifest digest, writing nothing. \"apply\" scaffolds the destination and copies the manifest into it, never touching the source. \"verify\" proves the destination holds exactly the manifest and nothing else, writing nothing. \"purge\" removes the source slug trees, and only after re-running verify against the destination. apply, verify and purge all require manifest_sha256."},
+		"action": {"type": "string", "enum": ["plan", "apply", "verify", "purge"], "description": "Action. \"plan\" reads the source vault and returns a manifest digest, writing nothing. \"apply\" copies the manifest into the existing, migrated destination, never touching the source. \"verify\" proves the destination holds exactly the manifest and nothing else, writing nothing. \"purge\" removes the source slug trees, and only after re-running verify against the destination. apply, verify and purge all require manifest_sha256."},
 		"slugs": {"type": "array", "items": {"type": "string"}, "description": "Allow-list of project slugs to split out. Inclusion is an allow-list, never \"everything except\": there is no exclude parameter and there will not be one. An unknown slug is a refusal, not an empty selection."},
-		"destination": {"type": "string", "description": "Absolute host path of the new standalone vault. It must not resolve inside the bound vault. plan does not create it; apply refuses a destination that exists at all, because a pre-created directory is never stamped with the vault data format and would be born format 0."},
+		"destination": {"type": "string", "description": "Absolute host path of the destination vault. It must already exist, created by a v9 \"vp vault init\" (which writes the migration marker), and must not resolve inside the bound vault. Split never creates or migrates a destination: source and destination must both carry the migration marker, and every other pairing is refused before any write."},
 		"include_learnings": {"type": "boolean", "description": "Include Knowledge/learnings/*.md in the manifest. Default false. Learnings carry no project field, so copy-none is the fail-closed default."},
 		"include_audits": {"type": "boolean", "description": "Include Audits/ in the manifest. Default false. Audit reports name slugs across the whole vault."},
 		"manifest_sha256": {"type": "string", "description": "The digest action \"plan\" returned. Required by apply, verify and purge. The manifest itself stays server-side: each of those actions re-derives it from the source and refuses unless the digest matches, so a source that changed after the plan was approved cannot be copied or deleted."},
@@ -438,9 +447,25 @@ func buildSplitManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifes
 			format, surface.RequiredDataFormat)
 	}
 
+	// 🔴 MIGRATED INTO MIGRATED ONLY (ADR-014 decision 11; Chair ruling C7).
+	// Both markers are checked before any inventory, so plan, apply, verify and
+	// purge — which all build the manifest here — refuse every other pairing
+	// before a byte is read or written. Split never writes a marker.
+	if err := splitRefuseUnmigratedPair(root, p.Destination); err != nil {
+		return nil, err
+	}
+
 	// Deduplicate and sort the request so the digest does not depend on the
 	// order the caller happened to type.
 	slugs, err := normalizeSplitSlugs(p.Slugs)
+	if err != nil {
+		return nil, err
+	}
+
+	// The source's derived residue, once, for every slug: left out of the
+	// manifest here, and carried in m.Residue to the destination inventory
+	// and the purge.
+	residue, err := storage.DerivedResidue(root, slugs)
 	if err != nil {
 		return nil, err
 	}
@@ -476,6 +501,7 @@ func buildSplitManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifes
 		Slugs:            slugs,
 		IncludeLearnings: p.IncludeLearnings,
 		IncludeAudits:    p.IncludeAudits,
+		Residue:          residue,
 	}
 
 	for _, s := range slugs {
@@ -501,7 +527,7 @@ func buildSplitManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifes
 			}
 			report.Tree = tree.label
 			m.Trees = append(m.Trees, report)
-			m.Entries = append(m.Entries, entries...)
+			m.Entries = append(m.Entries, withoutResidue(entries, residue)...)
 		}
 	}
 
@@ -530,6 +556,63 @@ func buildSplitManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifes
 	sort.Slice(m.Entries, func(i, j int) bool { return m.Entries[i].Path < m.Entries[j].Path })
 	m.SHA256 = splitManifestDigest(m)
 	return m, nil
+}
+
+// withoutResidue returns entries minus the paths in residue.
+func withoutResidue(entries []splitEntry, residue map[string]struct{}) []splitEntry {
+	if len(residue) == 0 {
+		return entries
+	}
+	out := entries[:0:0]
+	for _, e := range entries {
+		if _, ok := residue[e.Path]; !ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// splitRefuseUnmigratedPair is split's two-marker rule: the source and the
+// destination must both carry the migration marker (ADR-014 decision 11,
+// "Split, copy and merge need two migrated vaults"; Chair ruling C7). The
+// destination must therefore already exist — split no longer scaffolds one,
+// because a scaffolded vault is never migrated and split never writes a
+// marker. A marker that cannot be read refuses, naming the key: every caller
+// is a writer, and a writer fails closed.
+func splitRefuseUnmigratedPair(root, dest string) error {
+	migrated, err := storage.VaultMigrated(root)
+	if err != nil {
+		return fmt.Errorf("refusing to split: the source vault's migration marker cannot be read: %w", err)
+	}
+	if !migrated {
+		return apperr.Caller(fmt.Errorf(
+			"refusing to split: the source vault carries no migration marker (authored_only in " +
+				".vibe-palace/vault.toml). Split moves projects only from a migrated vault into a " +
+				"migrated vault; migrate the source first"))
+	}
+	info, err := os.Stat(dest)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return apperr.Caller(fmt.Errorf(
+			"refusing to split: destination %q does not exist. Split copies into an existing, "+
+				"migrated vault and never creates one: create it with a v9 `vp vault init`, "+
+				"which writes the migration marker", dest))
+	case err != nil:
+		return apperr.Caller(fmt.Errorf("refusing to split: stat destination %q: %w", dest, err))
+	case !info.IsDir():
+		return apperr.Caller(fmt.Errorf("refusing to split: destination %q is not a directory", dest))
+	}
+	migrated, err = storage.VaultMigrated(dest)
+	if err != nil {
+		return fmt.Errorf("refusing to split: the destination's migration marker cannot be read: %w", err)
+	}
+	if !migrated {
+		return apperr.Caller(fmt.Errorf(
+			"refusing to split: destination %q carries no migration marker. Split copies only "+
+				"into a migrated vault and never writes a marker: create the destination with a "+
+				"v9 `vp vault init`, or run the migration on it", dest))
+	}
+	return nil
 }
 
 // normalizeSplitSlugs validates, deduplicates and sorts the requested slugs.

@@ -23,12 +23,12 @@ import (
 // matters more for this file than for the plan tests, because these actions
 // create, copy and DELETE.
 
-// splitDest returns a destination path that does NOT exist. apply refuses a
-// destination that exists at all, so every happy-path test must name one inside
-// a temp dir rather than the temp dir itself.
+// splitDest returns a destination made the one way split now accepts: a v9
+// `vp vault init` (storage.InitVault), which is born migrated, against a local
+// bare remote. See vault_split_dest_test.go.
 func splitDest(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "new-vault")
+	return splitInitDest(t)
 }
 
 // splitPlannedParams runs plan and returns params carrying the digest it
@@ -86,8 +86,8 @@ func TestVaultSplitApply_WithoutManifestSHARefuses(t *testing.T) {
 	if !apperr.IsCaller(err) {
 		t.Errorf("a missing required parameter is a CALLER fault, got: %v", err)
 	}
-	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Errorf("refused apply must create nothing at %s (stat err: %v)", dest, statErr)
+	if _, statErr := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(statErr) {
+		t.Errorf("refused apply must copy nothing into %s (stat err: %v)", dest, statErr)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestVaultSplitApply_WrongManifestSHARefuses(t *testing.T) {
 	if !strings.Contains(err.Error(), "mismatch") {
 		t.Errorf("refusal must name the mismatch, got: %v", err)
 	}
-	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Errorf("refused apply must create nothing at %s", dest)
+	if _, statErr := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(statErr) {
+		t.Errorf("refused apply must copy nothing into %s", dest)
 	}
 }
 
@@ -141,80 +141,183 @@ func TestVaultSplitApply_SourceChangedAfterPlanRefuses(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mutation proof 2: a destination that ALREADY EXISTS refuses.
+// Mutation proof 2: migrated into migrated only (C7), and only a ready
+// `vp vault init` destination.
 // ---------------------------------------------------------------------------
 
-// TestVaultSplitApply_ExistingDestinationRefuses pins the R1 finding, and the
-// case it pins is the one an older, more obvious guard misses.
-//
-// VaultReconciler.Plan emits ActionCreate only when the destination directory
-// is ABSENT, and the vault data-format stamp is written only inside that branch.
-// An operator who runs `mkdir -p /path/to/new-vault` first therefore gets
-// ActionUnchanged, no stamp, and a vault born at format 0 — which then receives
-// current-format data and reports itself unmigrated forever. A guard phrased as
-// "refuse if the destination already contains palace/ or Projects/" passes this
-// case cleanly, which is why the rule is the stricter one: refuse if the
-// destination exists AT ALL.
-//
-// The subtests are the two shapes that matter: an EMPTY directory (the one the
-// weaker guard misses) and a non-empty one.
-func TestVaultSplitApply_ExistingDestinationRefuses(t *testing.T) {
+// splitUnmarkedDest is an existing vault without the migration marker: its
+// own repository, at the current data format.
+func splitUnmarkedDest(t *testing.T) string {
+	t.Helper()
+	splitGitEnv(t)
+	dest := filepath.Join(t.TempDir(), "unmarked")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	splitGit(t, dest, "init", "-q", "-b", "main")
+	if err := surface.WriteFormat(dest, surface.RequiredDataFormat); err != nil {
+		t.Fatal(err)
+	}
+	return dest
+}
+
+// TestVaultSplit_RefusesEveryPairingButMigratedIntoMigrated is ADR-014
+// decision 11's rule (Chair ruling C7): plan and apply refuse every pairing
+// but migrated into migrated, before any write, and leave the destination's
+// tree and vault.toml byte-identical. Mutants: a split that still scaffolds an
+// absent destination; one that writes the marker into its destination; a
+// refusal keyed on either marker alone, which passes (b) or (c); a refusal at
+// apply only, which plan omits.
+func TestVaultSplit_RefusesEveryPairingButMigratedIntoMigrated(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		prepare func(t *testing.T, dest string)
+		name     string
+		source   func(t *testing.T) string
+		dest     func(t *testing.T) string
+		wantText string
 	}{
-		{
-			name: "empty directory pre-created by mkdir",
-			prepare: func(t *testing.T, dest string) {
-				if err := os.MkdirAll(dest, 0o755); err != nil {
-					t.Fatalf("mkdir dest: %v", err)
+		{"(a) migrated source, destination absent",
+			func(t *testing.T) string { return splitFixtureVault(t, "alpha") },
+			func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") },
+			"vp vault init"},
+		{"(b) migrated source, an existing unmarked vault",
+			func(t *testing.T) string { return splitFixtureVault(t, "alpha") },
+			splitUnmarkedDest,
+			"carries no migration marker"},
+		{"(c) unmarked source, a migrated destination",
+			func(t *testing.T) string {
+				root := splitFixtureVault(t, "alpha")
+				if err := surface.WriteVaultManifest(root, surface.VaultManifest{Format: surface.RequiredDataFormat}); err != nil {
+					t.Fatal(err)
 				}
+				return root
 			},
-		},
-		{
-			name: "directory holding unrelated content",
-			prepare: func(t *testing.T, dest string) {
-				if err := os.MkdirAll(filepath.Join(dest, "notes"), 0o755); err != nil {
-					t.Fatalf("mkdir dest: %v", err)
+			splitInitDest,
+			"migrate the source first"},
+		{"(d) unmarked into unmarked",
+			func(t *testing.T) string {
+				root := splitFixtureVault(t, "alpha")
+				if err := surface.WriteVaultManifest(root, surface.VaultManifest{Format: surface.RequiredDataFormat}); err != nil {
+					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(dest, "notes", "x.md"), []byte("x"), 0o644); err != nil {
-					t.Fatalf("write dest file: %v", err)
-				}
+				return root
 			},
-		},
-		{
-			name: "a plain file at the destination path",
-			prepare: func(t *testing.T, dest string) {
-				if err := os.WriteFile(dest, []byte("not a vault"), 0o644); err != nil {
-					t.Fatalf("write dest file: %v", err)
-				}
+			splitUnmarkedDest,
+			"carries no migration marker"},
+		{"a destination marker that cannot be read",
+			func(t *testing.T) string { return splitFixtureVault(t, "alpha") },
+			func(t *testing.T) string {
+				dest := splitInitDest(t)
+				writeSplitFile(t, dest, ".vibe-palace/vault.toml", "format = 2\nauthored_only = 5\n")
+				return dest
 			},
-		},
+			"authored_only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := splitFixtureVault(t, "alpha")
-			dest := splitDest(t)
-			p := splitPlannedParams(t, root, dest, "alpha")
+			root := tc.source(t)
+			dest := tc.dest(t)
+			before := snapshotTree(t, filepath.Dir(dest))
+
+			p := splitPlanParams(dest, "alpha")
+			if _, err := callSplit(t, root, p); err == nil || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("plan: err = %v, want a refusal naming %q", err, tc.wantText)
+			}
 			p.Action = "apply"
-			tc.prepare(t, dest)
-
-			before := snapshotTree(t, dest)
-
-			_, err := callSplit(t, root, p)
-			if err == nil {
-				t.Fatal("apply must refuse a destination that already exists")
+			p.ManifestSHA256 = strings.Repeat("a", 64)
+			if _, err := callSplit(t, root, p); err == nil || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("apply: err = %v, want a refusal naming %q", err, tc.wantText)
 			}
-			if !strings.Contains(err.Error(), "already exists") {
-				t.Errorf("refusal must say the destination exists, got: %v", err)
-			}
-			if !apperr.IsCaller(err) {
-				t.Errorf("a bad destination is a CALLER fault, got: %v", err)
-			}
-			if after := snapshotTree(t, dest); !equalStringMaps(before, after) {
-				t.Errorf("refused apply must not touch the destination\nbefore: %v\nafter:  %v", before, after)
+			if after := snapshotTree(t, filepath.Dir(dest)); !equalStringMaps(before, after) {
+				t.Errorf("a refused split changed the destination\nbefore: %v\nafter:  %v", before, after)
 			}
 		})
 	}
+}
+
+// TestVaultSplitApply_IntoAVaultInitDestination: a migrated source into a v9
+// `vp vault init` destination plans, applies, verifies and purges, with the
+// init's remote and Audits/.surface present, and apply never rewrites the
+// destination's vault.toml. Mutants: an apply that still refuses an existing
+// destination; a remotes gate that refuses the init's remote; a root gate that
+// refuses Audits; an apply that writes vault.toml.
+func TestVaultSplitApply_IntoAVaultInitDestination(t *testing.T) {
+	root := splitFixtureVault(t, "alpha", "beta")
+	dest := splitInitDest(t)
+	manifest, err := os.ReadFile(filepath.Join(dest, ".vibe-palace", "vault.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := splitPlannedParams(t, root, dest, "alpha")
+	for _, action := range []string{"apply", "verify", "purge"} {
+		p.Action = action
+		if action == "purge" {
+			p.DepartureTo = purgeLabel
+		}
+		if _, err := callSplit(t, root, p); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dest, ".vibe-palace", "vault.toml")); string(got) != string(manifest) {
+			t.Fatalf("%s rewrote the destination's vault.toml:\n%s\nwant\n%s", action, got, manifest)
+		}
+	}
+}
+
+// TestVaultSplitApply_RefusesAnUnsafeExistingDestination: an otherwise valid
+// `vp vault init` destination that (a) already holds the travelling slug's
+// tree, (c) carries a pending lifecycle marker, or (d) has a remote its
+// remotes.toml does not record. (a) and (c) refuse at apply and copy nothing;
+// (d) fails verify, so purge refuses and the source survives. (b), a nested
+// destination, is in vault_split_nested_dest_test.go. Mutants: a destination
+// check that admits any existing vault; a remotes gate that accepts every
+// remote.
+func TestVaultSplitApply_RefusesAnUnsafeExistingDestination(t *testing.T) {
+	t.Run("(a) already holds Projects/<slug>", func(t *testing.T) {
+		root := splitFixtureVault(t, "alpha")
+		dest := splitInitDest(t)
+		p := splitPlannedParams(t, root, dest, "alpha")
+		writeSplitFile(t, dest, "Projects/alpha/resume.md", "theirs\n")
+		p.Action = "apply"
+		if _, err := callSplit(t, root, p); err == nil || !strings.Contains(err.Error(), "already holds Projects/alpha") {
+			t.Fatalf("apply: err = %v, want a refusal naming Projects/alpha", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "palace", "alpha")); !os.IsNotExist(err) {
+			t.Errorf("a refused apply copied palace/alpha (stat err %v)", err)
+		}
+	})
+	t.Run("(c) a pending lifecycle marker", func(t *testing.T) {
+		root := splitFixtureVault(t, "alpha")
+		dest := splitInitDest(t)
+		p := splitPlannedParams(t, root, dest, "alpha")
+		writeSplitFile(t, dest, ".git/vp-lifecycle-pending", "not a finished init\n")
+		p.Action = "apply"
+		if _, err := callSplit(t, root, p); err == nil {
+			t.Fatal("apply into a destination with a pending lifecycle marker must refuse")
+		}
+		if _, err := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(err) {
+			t.Errorf("a refused apply copied Projects/alpha (stat err %v)", err)
+		}
+	})
+	t.Run("(d) a remote remotes.toml does not record", func(t *testing.T) {
+		root := splitFixtureVault(t, "alpha")
+		dest := splitInitDest(t)
+		p := splitPlannedParams(t, root, dest, "alpha")
+		p.Action = "apply"
+		if _, err := callSplit(t, root, p); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		splitGit(t, dest, "remote", "add", "stray", "file:///nonexistent")
+		p.Action = "verify"
+		if _, err := callSplit(t, root, p); err == nil || !strings.Contains(err.Error(), "stray") {
+			t.Fatalf("verify: err = %v, want a refusal naming the stray remote", err)
+		}
+		p.Action = "purge"
+		p.DepartureTo = purgeLabel
+		if _, err := callSplit(t, root, p); err == nil {
+			t.Fatal("purge must refuse when verify fails")
+		}
+		if _, err := os.Stat(filepath.Join(root, "Projects", "alpha", "resume.md")); err != nil {
+			t.Errorf("the source must survive a refused purge: %v", err)
+		}
+	})
 }
 
 // TestVaultSplitApply_RelativeDestinationRefuses pins that a destination is an
@@ -281,8 +384,8 @@ func TestVaultSplitApply_Format0SourceRefusesBeforeCopy(t *testing.T) {
 	if !strings.Contains(err.Error(), "data format 0") {
 		t.Errorf("refusal must name the source data format (not the digest), got: %v", err)
 	}
-	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Errorf("format refusal must land before the destination is scaffolded, but %s exists", dest)
+	if _, statErr := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(statErr) {
+		t.Errorf("format refusal must land before any copy, but %s holds Projects/alpha", dest)
 	}
 }
 
@@ -338,27 +441,31 @@ func TestVaultSplitApply_DestinationTreesAreExactlyTheAllowList(t *testing.T) {
 		t.Fatalf("read destination root: %v", err)
 	}
 	for _, e := range rootEnts {
+		// Audits/ is the `vp vault init` destination's own: it may hold that
+		// init's .surface stamp and nothing else.
+		if e.Name() == "Audits" && splitAuditsHoldsOnlyStamp(dest) {
+			continue
+		}
 		if !splitDestRootAllowed[e.Name()] {
 			t.Errorf("destination root holds unexpected %q", e.Name())
 		}
 	}
 
-	// Positive proof, not just tolerance: the real apply path must actually
-	// route the .gitignore Create through vaultlock.Acquire against THIS
-	// destination (vault-gitignore-create-bypasses-the-vault-lock), which
-	// unconditionally creates .vp-locks/ as a side effect of taking the lock
-	// at all. Without this assertion, a fix that merely widened the allow-list
-	// without ever wiring the lock through would slip past undetected.
+	// Positive proof, not just tolerance: `vp vault init` takes the vault root
+	// lock against THIS destination, which unconditionally creates .vp-locks/
+	// (vaultlock's sidecar dir). The allow-list admits it for that reason.
 	if info, err := os.Stat(filepath.Join(dest, ".vp-locks")); err != nil || !info.IsDir() {
-		t.Errorf("destination is missing .vp-locks/ after apply (err=%v) — "+
-			"the .gitignore Create branch should have taken the vault lock against this destination", err)
+		t.Errorf("destination is missing .vp-locks/ (err=%v) — the destination's own init "+
+			"should have taken the vault lock against it", err)
 	}
 
-	// Vault-global artifacts stayed behind. Neither include_ flag was set.
-	for _, rel := range []string{"Knowledge", "Audits"} {
-		if _, err := os.Stat(filepath.Join(dest, rel)); err == nil {
-			t.Errorf("destination has %s/ though it was not included", rel)
-		}
+	// Vault-global artifacts stayed behind. Neither include_ flag was set:
+	// no Knowledge/, and an Audits/ holding only the destination's own stamp.
+	if _, err := os.Stat(filepath.Join(dest, "Knowledge")); err == nil {
+		t.Errorf("destination has Knowledge/ though it was not included")
+	}
+	if !splitAuditsHoldsOnlyStamp(dest) {
+		t.Errorf("destination's Audits/ holds more than its own .surface, though it was not included")
 	}
 
 	// And beta's bytes are nowhere in the destination at all.
@@ -478,8 +585,10 @@ func TestVaultSplitVerify_PassesAfterApplyAndCatchesTampering(t *testing.T) {
 	if res["complete"] != true {
 		t.Errorf("verify payload must end with complete:true, got %v", res["complete"])
 	}
-	if remotes, ok := res["dest_remotes"].([]any); ok && len(remotes) > 0 {
-		t.Errorf("split configures no remotes, got %v", remotes)
+	// Split configures no remote: the destination's are exactly the one its
+	// `vp vault init` recorded.
+	if remotes, _ := res["dest_remotes"].([]any); len(remotes) != 1 || remotes[0] != "origin" {
+		t.Errorf("dest_remotes = %v, want exactly the init's [origin]", remotes)
 	}
 
 	t.Run("a slug that was never in the allow-list fails verify", func(t *testing.T) {

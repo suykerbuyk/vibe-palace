@@ -19,7 +19,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
-	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
@@ -47,8 +46,8 @@ import (
 // as it copied would have no state in which the operator could look at both
 // halves before committing to one.
 
-// splitDestRootAllowed is the set of top-level names a freshly split
-// destination may contain, before the include_* flags widen it.
+// splitDestRootAllowed is the set of top-level names a split destination may
+// contain, before the include_* flags widen it.
 //
 // It is the ROOT half of leak gate 1: the per-tree half (below) proves that
 // palace/ and Projects/ hold only allow-listed slugs, and this proves that
@@ -56,23 +55,27 @@ import (
 // loose file at the destination root — each is a leak the per-tree gate cannot
 // see, because it never looks outside the two trees it walks.
 //
-// Every entry is something the destination recipe itself creates:
+// The destination is a v9 `vp vault init` (split no longer scaffolds one), and
+// every entry is something that init, or the copy, creates:
 //
-//   - .git, .gitignore   — reconcile.NewVault's git init and gitignore
-//   - .vibe-palace       — the data-format stamp (vault.toml)
+//   - .git, .gitignore   — init's repository, and its .gitignore with the
+//     derived-index lines
+//   - .vibe-palace       — vault.toml (format and migration marker) and the
+//     recorded remotes.toml
 //   - Templates          — tolerated, never created: under Design B the
-//     override-only reconcile writes no template, so a fresh destination has
-//     no Templates/ directory at all and the embedded floor serves
+//     override-only reconcile writes no template, so a destination has no
+//     Templates/ directory at all and the embedded floor serves
 //   - palace, Projects   — the two trees the copy writes into
 //   - .surface           — atomicfile's own stamp, if a write resolves the
 //     destination root as its stamp directory
 //   - .vp-locks          — vaultlock's per-path sidecar dir, created
 //     unconditionally by vaultlock.Acquire (openLockFile's own
-//     os.MkdirAll) the moment anything locks a path under this vault —
-//     here, ReconcileVaultGitignore's own create-path lock, taken against
-//     THIS destination since vault-gitignore-create-bypasses-the-vault-lock.
-//     Host-local and gitignored (CanonicalGitignorePatterns), same class as
-//     .vibe-palace and .surface above.
+//     os.MkdirAll) the moment anything locks a path under this vault, as
+//     init's own root lock does. Host-local and gitignored
+//     (CanonicalGitignorePatterns), same class as .vibe-palace and .surface.
+//
+// Audits/ is admitted separately when it holds only init's .surface stamp
+// (splitAuditsHoldsOnlyStamp), and fully under include_audits.
 var splitDestRootAllowed = map[string]bool{
 	".git":         true,
 	".gitignore":   true,
@@ -173,18 +176,12 @@ func splitBindManifest(vault *storage.Vault, p vaultSplitParams) (*splitManifest
 	return m, nil
 }
 
-// splitCheckDestination validates the destination path for an action that will
-// touch it, and enforces the exists / does-not-exist rule that action needs.
-//
-// 🔴 apply REFUSES A DESTINATION THAT EXISTS AT ALL — not one that "looks like a
-// vault". VaultReconciler.Plan emits ActionCreate only when the directory is
-// missing (vault.go:120-128), and the data-format stamp is written only inside
-// that branch (:186-198). An empty directory an operator pre-created with
-// `mkdir -p` therefore yields ActionUnchanged and a destination born at format
-// 0 — which then receives current-format bytes and reports itself as
-// unmigrated. The older, more permissive guard (refuse only if the destination
-// already holds Projects/ or palace/) does not catch that case at all.
-func splitCheckDestination(vaultRoot, dest string, mustExist bool) error {
+// splitCheckDestination validates the destination path for an action that
+// touches it: absolute, outside the bound vault, and readable. Whether it is a
+// migrated vault is buildSplitManifest's two-marker rule
+// (splitRefuseUnmigratedPair); whether apply may copy into it is
+// splitCheckApplyDestination.
+func splitCheckDestination(vaultRoot, dest string) error {
 	if strings.TrimSpace(dest) == "" {
 		return apperr.Caller(fmt.Errorf("destination is required"))
 	}
@@ -200,88 +197,76 @@ func splitCheckDestination(vaultRoot, dest string, mustExist bool) error {
 	if err := vaultfs.RefuseDestinationInsideVault(vaultRoot, dest); err != nil {
 		return apperr.Caller(err)
 	}
-
-	_, err := os.Stat(dest)
-	switch {
-	case mustExist:
-		if err != nil {
-			return apperr.Caller(fmt.Errorf(
-				"destination %q is not readable: %w (run action \"apply\" first)", dest, err))
-		}
-		return nil
-	case err == nil:
+	if _, err := os.Stat(dest); err != nil {
 		return apperr.Caller(fmt.Errorf(
-			"destination %q already exists: split refuses to reuse it. A destination that "+
-				"already exists is not created by the reconciler, so it is never stamped "+
-				"with the vault data format and would be born format 0 while receiving "+
-				"current-format bytes. Remove the host path, or choose another destination",
-			dest))
-	case errors.Is(err, os.ErrNotExist):
-		return splitRefuseNestedDestination(dest)
-	default:
-		// Anything other than "absent" — a permission error, a broken symlink
-		// component — leaves us unable to say the destination is absent, and
-		// that is exactly the state in which creating it is unsafe.
-		return apperr.Caller(fmt.Errorf("stat destination %q: %w", dest, err))
+			"destination %q is not readable: %w (create it with a v9 `vp vault init`)", dest, err))
 	}
+	return nil
 }
 
-// splitRefuseNestedDestination refuses a not-yet-existing destination that
-// would be created inside another git work tree.
+// splitCheckApplyDestination is what an existing, migrated destination must
+// also pass before apply copies a byte into it (task
+// split-and-merge-exclude-derived-palace-paths, Scope 4). Split no longer
+// scaffolds its destination — a scaffolded vault is never migrated, and split
+// never writes a marker — so the operator makes it with a v9 `vp vault init`,
+// and apply checks that it is that vault, ready:
 //
-// 🔴 THE VAULT RECONCILER SKIPS GIT INIT FOR A NESTED VAULT, and rightly so for
-// config sync (tasks/done/config-sync-git-inits-a-vault-nested-in-another-
-// repository). For a split that skip is silent: the destination gets no
-// repository of its own, and verify's remote check then answers for the
-// enclosing one. So apply refuses first, using the same predicate,
-// storage.InspectVaultGit.
-//
-// The destination does not exist yet, and InspectVaultGit runs git inside the
-// path it is given, so it is asked about the nearest EXISTING ancestor. A
-// repository there, at its top level or below it, is a repository the
-// destination would be inside. A state git cannot resolve refuses too: the
-// scaffold needs a working git anyway, and "cannot tell" is not "not nested".
-func splitRefuseNestedDestination(dest string) error {
-	anc := filepath.Dir(filepath.Clean(dest))
-	for {
-		if _, err := os.Stat(anc); err == nil {
-			break
-		}
-		parent := filepath.Dir(anc)
-		if parent == anc {
-			return nil
-		}
-		anc = parent
+//   - its data format is the current one;
+//   - it is a git repository of its own, not a directory inside another work
+//     tree (verify's remote gate would otherwise answer for that repository);
+//   - it carries no pending lifecycle marker: an unfinished `vp vault init`;
+//   - it holds no palace/<slug>/ and no Projects/<slug>/ for any travelling
+//     slug: apply never merges into an existing project tree.
+func splitCheckApplyDestination(dest string, slugs []string) (int, error) {
+	destFormat, err := surface.ReadFormat(dest)
+	if err != nil {
+		return 0, fmt.Errorf("read destination vault format: %w", err)
 	}
-	state, gerr := storage.InspectVaultGit(anc)
-	switch state {
-	case storage.VaultNotGit:
-		return nil
-	case storage.VaultGitOK, storage.VaultGitNested:
-		top, err := storage.GitTopLevel(anc)
-		if err != nil || top == "" {
-			top = anc
+	if destFormat != surface.RequiredDataFormat {
+		return 0, apperr.Caller(fmt.Errorf(
+			"destination is at data format %d, required %d: refusing to copy current-format "+
+				"data into it", destFormat, surface.RequiredDataFormat))
+	}
+	switch state, gerr := storage.InspectVaultGit(dest); state {
+	case storage.VaultGitOK:
+	case storage.VaultGitNested:
+		top, terr := storage.GitTopLevel(dest)
+		if terr != nil || top == "" {
+			top = "an enclosing repository"
 		}
-		return apperr.Caller(fmt.Errorf(
-			"destination %q is inside the git repository at %q: the destination would not "+
-				"get a repository of its own (the vault reconciler skips git init for a nested "+
-				"vault), so verify's remote check would answer for %q and a published split "+
-				"could land in the wrong repository. Choose a destination outside any git "+
-				"work tree", dest, top, top))
+		return 0, apperr.Caller(fmt.Errorf(
+			"destination %q is not its own repository: git resolves it to the work tree at %s. "+
+				"Create the destination with `vp vault init` outside any git work tree", dest, top))
 	default:
-		reason := "git is unavailable"
+		reason := "it is not a git repository"
 		if gerr != nil {
 			reason = gerr.Error()
 		}
-		return apperr.Caller(fmt.Errorf(
-			"cannot tell whether destination %q would be inside a git repository (%s, "+
-				"inspecting %q): split refuses rather than risk a destination without a "+
-				"repository of its own", dest, reason, anc))
+		return 0, apperr.Caller(fmt.Errorf(
+			"destination %q is not a repository `vp vault init` made (%s)", dest, reason))
 	}
+	if err := storage.RefuseIfLifecyclePending(dest); err != nil {
+		return 0, apperr.Caller(fmt.Errorf("destination %q: %w", dest, err))
+	}
+	var present []string
+	for _, s := range slugs {
+		for _, rel := range []string{"palace/" + s, "Projects/" + s} {
+			if _, err := os.Lstat(filepath.Join(dest, filepath.FromSlash(rel))); err == nil {
+				present = append(present, rel)
+			}
+		}
+	}
+	if len(present) > 0 {
+		return 0, apperr.Caller(fmt.Errorf(
+			"destination %q already holds %s: split copies a project only into a vault that "+
+				"does not have it", dest, strings.Join(present, ", ")))
+	}
+	return destFormat, nil
 }
 
-// vaultSplitApply scaffolds a NEW destination vault and copies the manifest
-// into it. It writes nothing to the source.
+// vaultSplitApply copies the manifest into an existing, migrated destination
+// (a v9 `vp vault init`). It writes nothing to the source, and never writes the
+// destination's vault.toml.
 func vaultSplitApply(ctx context.Context, vault *storage.Vault, p vaultSplitParams) (*vaultSplitApplyResult, error) {
 	// Order is deliberate: the bind is checked on shape (cheap, total), then
 	// the destination (cheap, and refuses a call that could never succeed
@@ -292,37 +277,22 @@ func vaultSplitApply(ctx context.Context, vault *storage.Vault, p vaultSplitPara
 			"manifest_sha256 is required for action %q: run action \"plan\" first and pass "+
 				"the digest it returns", p.Action))
 	}
-	if err := splitCheckDestination(vault.Root, p.Destination, false); err != nil {
+	if err := splitCheckDestination(vault.Root, p.Destination); err != nil {
 		return nil, err
 	}
 
-	// buildSplitManifest, inside the bind, is where the source data format is
-	// checked — before any inventory and therefore before any copy. A format-0
-	// source holds triple files in the old encoding; copying them and stamping
-	// the destination format 1 would produce a vault that reports itself
-	// current while its KG accessors silently undercount.
+	// buildSplitManifest, inside the bind, is where the source data format and
+	// both migration markers are checked — before any inventory and therefore
+	// before any copy.
 	m, err := splitBindManifest(vault, p)
 	if err != nil {
 		return nil, err
 	}
 
 	dest := p.Destination
-	if err := splitScaffoldDestination(ctx, dest); err != nil {
-		return nil, err
-	}
-
-	// The scaffold's whole job was to make this true. Asserting it HERE rather
-	// than in verify is the difference between refusing to copy into an
-	// unstamped vault and discovering afterwards that we already did.
-	destFormat, err := surface.ReadFormat(dest)
+	destFormat, err := splitCheckApplyDestination(dest, m.Slugs)
 	if err != nil {
-		return nil, fmt.Errorf("read destination vault format: %w", err)
-	}
-	if destFormat != surface.RequiredDataFormat {
-		return nil, fmt.Errorf(
-			"destination was scaffolded at data format %d, required %d: refusing to copy "+
-				"current-format data into a vault that reports itself unmigrated",
-			destFormat, surface.RequiredDataFormat)
+		return nil, err
 	}
 
 	var files int
@@ -346,28 +316,17 @@ func vaultSplitApply(ctx context.Context, vault *storage.Vault, p vaultSplitPara
 		Notes: append(splitPlanNotes(m),
 			"The source is untouched. Removal is action \"purge\", which re-binds this "+
 				"manifest and refuses unless action \"verify\" passes against the destination.",
-			"No remotes were configured and nothing was committed. Wire the destination's "+
-				"remote by hand after verify.",
+			"Nothing was committed in the destination, and its remotes are the ones `vp vault "+
+				"init` recorded. Commit and push there after verify.",
 		),
 		Complete: true,
 	}, nil
 }
 
-// splitScaffoldDestination creates the destination vault through the ONLY
-// scaffold that stamps the vault data format: reconcile.ScaffoldNewVault, which
-// `vp vault init` shares. See it for why dest (not a working directory) is the
-// argument and why any Report.Errors entry aborts before a byte is copied.
-func splitScaffoldDestination(ctx context.Context, dest string) error {
-	if err := reconcile.ScaffoldNewVault(ctx, dest); err != nil {
-		return fmt.Errorf("%w (nothing was copied; remove the destination host path before retrying)", err)
-	}
-	return nil
-}
-
 // vaultSplitVerify proves the destination holds exactly the manifest and
 // nothing else. It writes nothing.
 func vaultSplitVerify(vault *storage.Vault, p vaultSplitParams) (*vaultSplitVerifyResult, error) {
-	if err := splitCheckDestination(vault.Root, p.Destination, true); err != nil {
+	if err := splitCheckDestination(vault.Root, p.Destination); err != nil {
 		return nil, err
 	}
 	m, err := splitBindManifest(vault, p)
@@ -402,7 +361,7 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 	// missing from the destination is an incomplete copy; a destination file
 	// missing from the manifest is a leak, and it is the direction a
 	// "did everything arrive?" check would never look in.
-	destEntries, err := splitDestInventory(dest, p, m.Slugs)
+	destEntries, err := splitDestInventory(dest, p, m.Slugs, m.Residue)
 	if err != nil {
 		return nil, err
 	}
@@ -478,10 +437,28 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 				"list destination remotes: %w (this is a refusal, not an empty remote set: "+
 					"a destination that cannot answer `git remote` is not a repository)", err)
 		}
-		if len(remotes) > 0 {
+		// Split configures no remote. The destination's own are exactly the ones
+		// `vp vault init` recorded in .vibe-palace/remotes.toml; any other was
+		// added outside both tools.
+		recorded, rerr := storage.ReadRecordedRemotes(dest)
+		if rerr != nil {
+			return nil, fmt.Errorf("read the destination's recorded remotes: %w", rerr)
+		}
+		known := make(map[string]bool, len(recorded))
+		for _, r := range recorded {
+			known[r.Name] = true
+		}
+		var unrecorded []string
+		for _, r := range remotes {
+			if !known[r] {
+				unrecorded = append(unrecorded, r)
+			}
+		}
+		if len(unrecorded) > 0 {
 			problems = append(problems, fmt.Sprintf(
-				"destination has remote(s) %s: split configures none, so these were added "+
-					"outside the tool", strings.Join(remotes, ", ")))
+				"destination has remote(s) %s that its .vibe-palace/remotes.toml does not record: "+
+					"split configures none and `vp vault init` records every one it adds, so "+
+					"these were added outside both", strings.Join(unrecorded, ", ")))
 		}
 	}
 
@@ -508,7 +485,7 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 			"leak gate 2: Templates/ holds no resource files and an empty lock",
 			"destination .surface stamps carry no inherited provenance",
 			"destination data format",
-			"destination remotes (ListRemotes error is a refusal)",
+			"destination remotes are exactly those .vibe-palace/remotes.toml records (ListRemotes error is a refusal)",
 		},
 		Notes: []string{
 			"Body-text mentions of other projects and host-rooted paths inside copied " +
@@ -530,7 +507,12 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 // written for the destination would be a second definition of the subtract set,
 // and the moment those two definitions differ, verify starts comparing two
 // different questions and reports agreement.
-func splitDestInventory(dest string, p vaultSplitParams, slugs []string) ([]splitEntry, error) {
+//
+// residue is the SOURCE's derived residue (splitManifest.Residue), never the
+// destination's: a migrated destination ignores the derived paths, so its own
+// rules would mark copied files differently, and verify would compare two
+// different sets.
+func splitDestInventory(dest string, p vaultSplitParams, slugs []string, residue map[string]struct{}) ([]splitEntry, error) {
 	var entries []splitEntry
 	for _, s := range slugs {
 		for _, dir := range []string{
@@ -541,7 +523,7 @@ func splitDestInventory(dest string, p vaultSplitParams, slugs []string) ([]spli
 			if err != nil {
 				return nil, fmt.Errorf("inventory destination: %w", err)
 			}
-			entries = append(entries, treeEntries...)
+			entries = append(entries, withoutResidue(treeEntries, residue)...)
 		}
 	}
 	_, globalEntries, err := walkSplitGlobal(dest, p)
@@ -615,13 +597,29 @@ func splitLeakGateMembership(dest string, slugs []string, p vaultSplitParams) []
 		if name == "Knowledge" && p.IncludeLearnings {
 			continue
 		}
-		if name == "Audits" && p.IncludeAudits {
+		if name == "Audits" && (p.IncludeAudits || splitAuditsHoldsOnlyStamp(dest)) {
 			continue
 		}
 		problems = append(problems, fmt.Sprintf(
 			"destination root holds %q, which the split scaffold does not create", name))
 	}
 	return problems
+}
+
+// splitAuditsHoldsOnlyStamp reports whether the destination's Audits/ holds
+// nothing but its .surface stamp — what a v9 `vp vault init` writes there, so
+// the root gate admits it without include_audits.
+func splitAuditsHoldsOnlyStamp(dest string) bool {
+	ents, err := os.ReadDir(filepath.Join(dest, "Audits"))
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if e.Name() != ".surface" || !e.Type().IsRegular() {
+			return false
+		}
+	}
+	return true
 }
 
 // splitLeakGateGlobal is leak gate 2: vault-global artifacts arrived only where
@@ -729,9 +727,10 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	if err := departure.ValidateLabel(p.DepartureTo); err != nil {
 		return nil, apperr.Caller(fmt.Errorf("departure_to: %w", err))
 	}
-	if err := splitCheckDestination(vault.Root, p.Destination, true); err != nil {
+	if err := splitCheckDestination(vault.Root, p.Destination); err != nil {
 		return nil, err
 	}
+	// The bind re-checks both migration markers before anything is removed.
 	m, err := splitBindManifest(vault, p)
 	if err != nil {
 		return nil, err
@@ -788,6 +787,12 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 				return nil, err
 			}
 			for _, rel := range set.Files {
+				// The source's derived residue was left out of the manifest on
+				// purpose; purge removes it with the other untracked, ignored
+				// rows after its commit.
+				if _, isResidue := m.Residue[rel]; isResidue {
+					continue
+				}
 				if hashes[rel] == "" && !splitSubtracted(rel) {
 					unaccounted = append(unaccounted, rel)
 				}

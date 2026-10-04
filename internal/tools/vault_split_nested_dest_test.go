@@ -24,11 +24,11 @@ func splitGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// TestVaultSplitApply_RefusesADestinationInsideAnotherRepository: the vault
-// reconciler rightly skips git init for a nested vault, so a destination inside
-// another work tree would get no repository of its own, and verify's remote
-// check would answer for the enclosing one. Apply must refuse before creating
-// anything, and must still accept a destination under a plain directory.
+// TestVaultSplitApply_RefusesADestinationInsideAnotherRepository: a migrated
+// destination that is a directory inside another git work tree, not a
+// repository of its own. Verify's remote check would answer for the enclosing
+// one, so apply refuses before copying anything. Mutant: a destination check
+// that admits any existing migrated vault.
 func TestVaultSplitApply_RefusesADestinationInsideAnotherRepository(t *testing.T) {
 	if !storage.GitAvailable() {
 		t.Skip("git unavailable")
@@ -41,6 +41,7 @@ func TestVaultSplitApply_RefusesADestinationInsideAnotherRepository(t *testing.T
 	}
 	splitGit(t, outer, "init", "-q")
 	dest := filepath.Join(outer, "sub", "new-vault")
+	splitMarkMigrated(t, dest)
 
 	p := splitPlannedParams(t, root, dest, "alpha")
 	p.Action = "apply"
@@ -51,19 +52,19 @@ func TestVaultSplitApply_RefusesADestinationInsideAnotherRepository(t *testing.T
 	if !apperr.IsCaller(err) {
 		t.Errorf("want a caller error, got %T: %v", err, err)
 	}
-	if !strings.Contains(err.Error(), "inside the git repository at") {
-		t.Errorf("refusal must name the enclosing repository, got: %v", err)
+	if !strings.Contains(err.Error(), "not its own repository") {
+		t.Errorf("refusal must say the destination is not its own repository, got: %v", err)
 	}
-	if _, serr := os.Stat(dest); !os.IsNotExist(serr) {
-		t.Errorf("a refused apply must create nothing at the destination (stat err: %v)", serr)
+	if _, serr := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(serr) {
+		t.Errorf("a refused apply must copy nothing (stat err: %v)", serr)
 	}
 
-	// The same call against a destination outside any work tree still works.
+	// The same call against a `vp vault init` destination still works.
 	plain := splitDest(t)
 	q := splitPlannedParams(t, root, plain, "alpha")
 	q.Action = "apply"
 	if _, err := callSplit(t, root, q); err != nil {
-		t.Fatalf("apply into a plain directory must still succeed: %v", err)
+		t.Fatalf("apply into a vault init destination must still succeed: %v", err)
 	}
 }
 
@@ -83,8 +84,10 @@ func TestVaultSplitVerify_RefusesADestinationThatIsNotItsOwnRepository(t *testin
 		}
 		t.Run(name, func(t *testing.T) {
 			root := splitFixtureVault(t, "alpha")
-			outer := filepath.Join(t.TempDir(), "outer")
-			dest := filepath.Join(outer, "new-vault")
+			// A `vp vault init` destination, then made nested: its parent
+			// becomes a repository below.
+			dest := splitInitDest(t)
+			outer := filepath.Dir(dest)
 
 			p := splitPlannedParams(t, root, dest, "alpha")
 			p.Action = "apply"
@@ -109,7 +112,7 @@ func TestVaultSplitVerify_RefusesADestinationThatIsNotItsOwnRepository(t *testin
 			if !strings.Contains(err.Error(), "not its own repository") {
 				t.Errorf("verify must say the destination is not its own repository, got: %v", err)
 			}
-			if strings.Contains(err.Error(), "added outside the tool") {
+			if strings.Contains(err.Error(), "remotes.toml does not record") {
 				t.Errorf("verify must not blame the enclosing repository's remotes on the destination: %v", err)
 			}
 
