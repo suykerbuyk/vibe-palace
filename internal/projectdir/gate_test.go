@@ -130,3 +130,36 @@ func TestRefuseUninitialisedAbsSymlinkedVaultRoot(t *testing.T) {
 		t.Errorf("initialised project under a symlinked root refused: %v", err)
 	}
 }
+
+// An in-vault symlink is judged by where the write lands as well as by its
+// literal path: Projects/p/lnk -> .. carries Projects/p/lnk/gamma/x.md into
+// Projects/gamma/, and a top-level Notes -> Projects carries Notes/beta/x.md
+// into Projects/beta/. Either alias into an uninitialised project refuses.
+func TestRefuseUninitialisedAbsInVaultSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	root := gateVault(t)
+	if err := os.Symlink("..", filepath.Join(root, "Projects", "p", "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("Projects", filepath.Join(root, "Notes")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"Projects/p/lnk/gamma/x.md", "Notes/beta/x.md", "Notes/ph/notes/x.md"} {
+		if err := RefuseUninitialisedAbs(root, filepath.Join(root, filepath.FromSlash(rel))); !errors.Is(err, ErrUninitialisedProject) {
+			t.Errorf("file %s: err = %v, want ErrUninitialisedProject", rel, err)
+		}
+	}
+	for _, rel := range []string{"Projects/p/lnk/gamma", "Notes/beta"} {
+		if err := RefuseUninitialisedDirAbs(root, filepath.Join(root, filepath.FromSlash(rel))); !errors.Is(err, ErrUninitialisedProject) {
+			t.Errorf("dir %s: err = %v, want ErrUninitialisedProject", rel, err)
+		}
+	}
+	// The same aliases into the initialised p are admitted.
+	for _, rel := range []string{"Projects/p/lnk/p/x.md", "Notes/p/x.md"} {
+		if err := RefuseUninitialisedAbs(root, filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("file %s into the initialised p: err = %v, want nil", rel, err)
+		}
+	}
+}

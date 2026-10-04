@@ -160,6 +160,19 @@ func RelOfAbs(vaultRoot, absPath string) (string, bool) {
 	return filepath.ToSlash(rel), true
 }
 
+// ResolvedRelOfAbs is absPath relative to the RESOLVED vault root once its
+// deepest existing ancestor is resolved through EvalSymlinks: where a write to
+// absPath would land. ok is false when vaultRoot is "" or the landing place is
+// outside the vault. A check that judges a path by its project tree judges
+// this as well as RelOfAbs, so an in-vault symlink (Projects/p/lnk -> .., a
+// top-level Notes -> Projects) cannot carry a write into another project.
+func ResolvedRelOfAbs(vaultRoot, absPath string) (string, bool) {
+	if vaultRoot == "" {
+		return "", false
+	}
+	return resolvedRel(vaultRoot, absPath)
+}
+
 type record struct {
 	Kind, To, Date string
 	malformed      string

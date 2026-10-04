@@ -222,9 +222,13 @@ var ErrUninitialisedProject = errors.New("project is not initialised in this vau
 // RefuseUninitialisedAbs is THE gate every vault write primitive calls before
 // it writes a FILE: it refuses a file under Projects/<slug>/ or
 // palace/<slug>/ unless Projects/<slug> is initialised (ClassifyProjectDir). A
-// palace/<slug>/ write is judged by its project's Projects/<slug>. The path is
-// resolved as the departed-project check resolves it (departedpath.RelOfAbs),
-// so a symlinked vault root is judged too.
+// palace/<slug>/ write is judged by its project's Projects/<slug>. Two paths
+// are judged, as the departed-project check judges them: the literal one
+// (departedpath.RelOfAbs, which also recognises a symlinked vault root) and
+// the one the write would land on once in-vault symlinks are resolved
+// (departedpath.ResolvedRelOfAbs). Either naming an uninitialised project
+// refuses, so Projects/p/lnk -> .. or a top-level Notes -> Projects cannot
+// carry a write into a project nobody initialised.
 //
 // Only a path strictly inside a project tree is judged. A file directly under
 // Projects/ or palace/ (Projects/config.toml) creates no project folder and no
@@ -258,10 +262,24 @@ func refuseUninitialised(vaultRoot, absPath string, minDepth int) error {
 	if err := departedpath.RefuseAbs(vaultRoot, absPath); err != nil {
 		return err
 	}
-	rel, ok := departedpath.RelOfAbs(vaultRoot, absPath)
-	if !ok {
-		return nil
+	var rels []string
+	if rel, ok := departedpath.RelOfAbs(vaultRoot, absPath); ok {
+		rels = append(rels, rel)
 	}
+	if rel, ok := departedpath.ResolvedRelOfAbs(vaultRoot, absPath); ok && (len(rels) == 0 || rel != rels[0]) {
+		rels = append(rels, rel)
+	}
+	for _, rel := range rels {
+		if err := refuseUninitialisedRel(vaultRoot, rel, minDepth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseUninitialisedRel judges one vault-relative path: the project tree it
+// lies in, if it lies at least minDepth segments deep in one.
+func refuseUninitialisedRel(vaultRoot, rel string, minDepth int) error {
 	project, ok := departedpath.TreeSlug(rel)
 	if !ok || len(strings.Split(strings.Trim(path.Clean(rel), "/"), "/")) < minDepth {
 		return nil

@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,5 +142,42 @@ func TestArchiveCreateRefusesAnUninitialisedProject(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(vaultDir, "Projects", "p", "transcripts", "*.manifest.json"))
 	if len(matches) != 1 {
 		t.Errorf("initialised archive create wrote %d manifests, want 1", len(matches))
+	}
+}
+
+// `vp vault write` through an in-vault symlink is judged by where it lands:
+// neither alias may create the uninitialised project it points into.
+func TestVaultWriteRefusesThroughAnInVaultSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	for _, tc := range []struct {
+		name, link, target, refused, admitted, absent string
+	}{
+		{name: "link inside a project to its parent", link: "Projects/alpha/lnk", target: "..",
+			refused: "Projects/alpha/lnk/gamma/x.md", admitted: "Projects/alpha/lnk/alpha/y.md", absent: "Projects/gamma"},
+		{name: "top-level link to Projects", link: "Notes", target: "Projects",
+			refused: "Notes/beta/x.md", admitted: "Notes/alpha/y.md", absent: "Projects/beta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vaultDir := setupTestVaultEnv(t)
+			testutil.InitProject(t, vaultDir, "alpha")
+			if err := os.Symlink(tc.target, filepath.Join(vaultDir, filepath.FromSlash(tc.link))); err != nil {
+				t.Fatal(err)
+			}
+			var code int
+			stderr := captureStderr(t, func() { code = cmdVaultWrite().Run([]string{tc.refused, "--content", "hi"}) })
+			if code == cli.ExitOK {
+				t.Fatalf("vp vault write %s: exit 0, want a refusal", tc.refused)
+			}
+			if !strings.Contains(stderr, "project is not initialised") {
+				t.Errorf("vp vault write %s: stderr %q does not name the refusal", tc.refused, stderr)
+			}
+			mustNotExist(t, vaultDir, tc.absent, "vp vault write "+tc.refused)
+			stderr = captureStderr(t, func() { code = cmdVaultWrite().Run([]string{tc.admitted, "--content", "hi"}) })
+			if code != cli.ExitOK {
+				t.Errorf("vp vault write %s into the initialised alpha: exit %d, stderr %q", tc.admitted, code, stderr)
+			}
+		})
 	}
 }
