@@ -104,6 +104,9 @@ func NewEmbedCache(vault *storage.Vault) *EmbedCache {
 	return &EmbedCache{vault: vault, regimes: map[string]cacheRegime{}}
 }
 
+// errCorruptVector marks a vector file whose size is no whole vector.
+var errCorruptVector = errors.New("corrupt cache file")
+
 // Get returns a cached embedding vector, or nil if not cached. It takes no
 // lock and writes nothing. On a project whose cache is another regime's (see
 // EmbedCache) every Get is a miss.
@@ -131,7 +134,7 @@ func (c *EmbedCache) Get(project, drawerID string) ([]float32, error) {
 	}
 
 	if len(data)%4 != 0 {
-		return nil, fmt.Errorf("corrupt cache file %s: size %d not divisible by 4", path, len(data))
+		return nil, fmt.Errorf("%w %s: size %d not divisible by 4", errCorruptVector, path, len(data))
 	}
 
 	vec := make([]float32, len(data)/4)

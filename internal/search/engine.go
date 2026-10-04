@@ -176,7 +176,24 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	_, inMemory := e.indexes[project]
 	e.mu.RUnlock()
 
+	// However the build ends, the in-flight entry is cleared and every joined
+	// search released: a build that panicked must not leave later searches of
+	// the project waiting on it for ever. The panic itself propagates.
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		r := recover()
+		b.err = fmt.Errorf("build index for %s did not finish: %v", project, r)
+		e.endBuild(project, b)
+		if r != nil {
+			panic(r)
+		}
+	}()
+
 	_, b.err = e.rebuildAndRemember(ctx, project, searchLockTimeout)
+	finished = true
 	if isLockTimeout(b.err) {
 		if ok || inMemory {
 			slog.Info("search serves the loaded index: the project is busy", "project", project)
@@ -185,13 +202,17 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 			b.err = fmt.Errorf("%w: %s", ErrIndexNotReady, project)
 		}
 	}
+	e.endBuild(project, b)
+	return b.err
+}
 
+// endBuild clears project's in-flight build and releases every search that
+// joined it.
+func (e *Engine) endBuild(project string, b *projectBuild) {
 	e.buildMu.Lock()
 	delete(e.buildsRun, project)
 	e.buildMu.Unlock()
 	close(b.done)
-
-	return b.err
 }
 
 // ensureAllIndexes materializes every known project's index. Cross-project
@@ -842,7 +863,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			return stats, err
 		}
 		storeIDs[c.ID] = true
-		vec, _ := e.cache.Get(project, c.ID)
+		vec, err := e.cachedVector(project, c.ID)
+		if err != nil {
+			return stats, err
+		}
 		if c.SourceType == storage.SourceTypeDecision {
 			stats.DecisionChunks++
 			if c.Selected != nil {
@@ -917,7 +941,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 				stats.Drawers++
 
 				// Try cache first; misses are embedded together below.
-				vec, _ := e.cache.Get(project, d.ID)
+				vec, err := e.cachedVector(project, d.ID)
+				if err != nil {
+					return stats, err
+				}
 				if vec == nil {
 					missIdx = append(missIdx, len(vecs))
 					missText = append(missText, d.Content)
@@ -945,7 +972,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
-		vec, _ := e.cache.Get(project, id)
+		vec, err := e.cachedVector(project, id)
+		if err != nil {
+			return stats, err
+		}
 		if vec == nil {
 			missIdx = append(missIdx, len(vecs))
 			missText = append(missText, iterTexts[i])
@@ -972,7 +1002,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
-		vec, _ := e.cache.Get(project, id)
+		vec, err := e.cachedVector(project, id)
+		if err != nil {
+			return stats, err
+		}
 		if vec == nil {
 			missIdx = append(missIdx, len(vecs))
 			missText = append(missText, noteTexts[i])
@@ -1037,6 +1070,25 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
 	e.remember(project, &chain, start)
 	return stats, nil
+}
+
+// cachedVector is a build's embed-cache lookup. A vector file that is
+// corrupt (a size that is no whole vector, written by an older binary's
+// non-atomic write) is a miss: the vector is embedded or counted missing like
+// any other. Any other error (an unreadable cache directory or file) fails the
+// build, naming the cache: reading it as "no vector" would report every chunk
+// as missing (the missing_vectors reason) for a fault that no repair pass or
+// rebuild can mend.
+func (e *Engine) cachedVector(project, id string) ([]float32, error) {
+	vec, err := e.cache.Get(project, id)
+	if errors.Is(err, errCorruptVector) {
+		slog.Warn("embed cache: corrupt vector read as a miss", "project", project, "id", id, "err", err)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the embed cache of %s: %w", project, err)
+	}
+	return vec, nil
 }
 
 // distinctSources counts the distinct sources among metas: their SourceRefs
