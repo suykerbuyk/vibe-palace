@@ -48,7 +48,7 @@ Verify migrate scaffolds the project.
 	// Run migrate end-to-end.
 	res, err := migrate.ImportVibeVault(
 		context.Background(),
-		h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		h.Vault, h.Vault,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -93,7 +93,7 @@ Verify migrate scaffolds the project.
 	// byte-unchanged and still no config.toml appears.
 	if _, err := migrate.ImportVibeVault(
 		context.Background(),
-		h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		h.Vault, h.Vault,
 		migrate.ImportOptions{},
 	); err != nil {
 		t.Fatalf("second ImportVibeVault: %v", err)

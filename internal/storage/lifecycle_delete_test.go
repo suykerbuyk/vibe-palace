@@ -29,6 +29,7 @@ var delLeftovers = []string{
 	"Projects/p/resume.md.bak",
 	"palace/p/.local/imported-sessions.jsonl",
 	"palace/.local/embed-cache/p/0001.vec",
+	"palace/.local/imports/p/imported-sessions.jsonl",
 }
 
 func newDelFixture(t *testing.T, remotes ...string) *delFixture {
@@ -193,7 +194,7 @@ func TestDeleteDryRunListsLeftoversAndWritesNothing(t *testing.T) {
 		paths = append(paths, l.Path+":"+l.Class)
 	}
 	sort.Strings(paths)
-	want := []string{"Projects/p/resume.md.bak:ignored", "palace/.local/embed-cache/p/0001.vec:machine-local", "palace/p/.local/imported-sessions.jsonl:machine-local"}
+	want := []string{"Projects/p/resume.md.bak:ignored", "palace/.local/embed-cache/p/0001.vec:machine-local", "palace/.local/imports/p/imported-sessions.jsonl:machine-local", "palace/p/.local/imported-sessions.jsonl:machine-local"}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("leftovers = %v, want %v", paths, want)
 	}
@@ -228,7 +229,7 @@ func TestDeleteRefusesAWriteAfterTheCopy(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no copy of") {
 		t.Fatalf("err = %v", err)
 	}
-	if f.head(t) != head || markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != 3 {
+	if f.head(t) != head || markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != len(delLeftovers) {
 		t.Fatal("a refused delete changed V")
 	}
 }
@@ -315,7 +316,7 @@ func TestDeleteReRunAfterPublishRemovesOnlyTheLeftovers(t *testing.T) {
 	if _, err := ApplyDelete(f.Dir, f.movedReq()); !errors.Is(err, errKilled) {
 		t.Fatalf("err = %v", err)
 	}
-	if markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != 3 {
+	if markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != len(delLeftovers) {
 		t.Fatal("want: published (no marker) with every leftover still present")
 	}
 	head := f.head(t)
@@ -357,7 +358,7 @@ func TestDeleteNeverRemovesLeftoversAgainstAnUnpublishedDelete(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not published") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(f.leftoversPresent(t)) != 3 {
+	if len(f.leftoversPresent(t)) != len(delLeftovers) {
 		t.Fatal("leftovers were removed against an unpublished delete")
 	}
 }
@@ -373,7 +374,7 @@ func TestDeleteReRunWithAMarkerRedoesThePublish(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	commit := f.head(t)
-	if !markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != 3 || gitRun(t, f.Bares["origin"], "rev-parse", "main") == commit {
+	if !markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != len(delLeftovers) || gitRun(t, f.Bares["origin"], "rev-parse", "main") == commit {
 		t.Fatal("want: marker kept, leftovers present, nothing pushed")
 	}
 	deleteBeforePublish = func() error { return nil }
@@ -408,7 +409,7 @@ func TestDeleteReRunAfterTheRemoteMovedResetsAndKeepsLeftovers(t *testing.T) {
 	if !errors.Is(err, ErrRedoRemoteMoved) {
 		t.Fatalf("err = %v", err)
 	}
-	if f.head(t) != parent || markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != 3 {
+	if f.head(t) != parent || markerFound(t, f.Dir) || len(f.leftoversPresent(t)) != len(delLeftovers) {
 		t.Fatal("want: reset to the parent, marker cleared, leftovers kept")
 	}
 	if _, err := os.Stat(filepath.Join(f.Dir, "Projects/p/resume.md")); err != nil {

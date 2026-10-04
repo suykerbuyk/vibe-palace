@@ -142,6 +142,22 @@ func (v *Vault) EmbedCacheDir(project string) (string, error) {
 	return filepath.Join(v.VaultLocalDir(), "embed-cache", project), nil
 }
 
+// ImportsDir returns the directory holding a project's host-local import
+// records (vp migrate's idempotency marker):
+// {vault}/palace/.local/imports/{project}
+//
+// Like the embed cache it lives under the git-ignored palace/.local/, so it is
+// never vault dirt, and it is its own directory, not the index store's. It is
+// only a hint: an importer confirms each hit against the session's archive
+// manifest, so a marker left by a deleted, renamed or departed project can
+// never suppress an import.
+func (v *Vault) ImportsDir(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.VaultLocalDir(), "imports", project), nil
+}
+
 // IndexRootDir returns the directory holding every project's host-local search
 // index (ADR-014 decision 2): {vault}/palace/.local/index
 //

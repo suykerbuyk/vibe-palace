@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -142,7 +141,7 @@ the request context. We touched internal/auth/middleware.go for this.
 	}
 
 	ctx := context.Background()
-	result, err := migrate.ImportVibeVault(ctx, source, dest, engine, emb, cfg, migrate.ImportOptions{})
+	result, err := migrate.ImportVibeVault(ctx, source, dest, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportVibeVault: %v", err)
 	}
@@ -151,30 +150,22 @@ the request context. We touched internal/auth/middleware.go for this.
 	if result.SessionsImported != 2 {
 		t.Errorf("SessionsImported = %d, want 2", result.SessionsImported)
 	}
-	if result.DrawersCreated == 0 {
-		t.Errorf("DrawersCreated = 0, want > 0")
+	if result.ArchivesWritten == 0 {
+		t.Errorf("ArchivesWritten = 0, want > 0")
 	}
 
-	// Discover the destination slug dir under palace/. palace/.local is
-	// vault-wide machine-local state (the embed cache lives there), never a
-	// slug, and filepath.Glob's "*" matches a leading dot.
-	matches, err := filepath.Glob(filepath.Join(dstDir, "palace", "*"))
+	// Discover the destination slug under Projects/: the import writes its
+	// archives there, and nothing under palace/<slug>/.
+	matches, err := filepath.Glob(filepath.Join(dstDir, "Projects", "*", "transcripts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var palaceDirs []string
-	for _, m := range matches {
-		if !strings.HasPrefix(filepath.Base(m), ".") {
-			palaceDirs = append(palaceDirs, m)
-		}
+	if len(matches) == 0 {
+		t.Fatal("no destination Projects/<slug>/transcripts/ directory created")
 	}
-	if len(palaceDirs) == 0 {
-		t.Fatal("no destination palace/<slug>/ directory created")
-	}
-	slugDir := palaceDirs[0]
-	slugName := filepath.Base(slugDir)
+	slugName := filepath.Base(filepath.Dir(matches[0]))
 
-	markerFile := filepath.Join(slugDir, ".local", "imported-sessions.jsonl")
+	markerFile := filepath.Join(dstDir, "palace", ".local", "imports", slugName, "imported-sessions.jsonl")
 	if _, err := os.Stat(markerFile); err != nil {
 		t.Errorf("expected destination marker file %s: %v", markerFile, err)
 	}
@@ -227,7 +218,7 @@ the request context. We touched internal/auth/middleware.go for this.
 
 	// (c) Idempotency across vaults: a second run dedupes via the
 	// destination markers.
-	result2, err := migrate.ImportVibeVault(ctx, source, dest, engine, emb, cfg, migrate.ImportOptions{})
+	result2, err := migrate.ImportVibeVault(ctx, source, dest, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("second ImportVibeVault: %v", err)
 	}

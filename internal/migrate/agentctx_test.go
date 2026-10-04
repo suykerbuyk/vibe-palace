@@ -254,7 +254,7 @@ func TestImportVibeVault_AgentctxOnly(t *testing.T) {
 	vault := storage.NewVault(root)
 	dest := storage.NewVault(t.TempDir())
 
-	res, err := ImportVibeVault(context.Background(), vault, dest, nil, nil, storage.Config{}, ImportOptions{
+	res, err := ImportVibeVault(context.Background(), vault, dest, ImportOptions{
 		WithAgentctx: true,
 		SkipSessions: true,
 	})
@@ -284,7 +284,7 @@ func TestImportVibeVault_OnlyProjects(t *testing.T) {
 	vault := storage.NewVault(root)
 	dest := storage.NewVault(t.TempDir())
 
-	res, err := ImportVibeVault(context.Background(), vault, dest, nil, nil, storage.Config{}, ImportOptions{
+	res, err := ImportVibeVault(context.Background(), vault, dest, ImportOptions{
 		WithAgentctx: true,
 		SkipSessions: true,
 		OnlyProjects: []string{"keep-me"},

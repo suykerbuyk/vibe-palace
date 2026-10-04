@@ -584,7 +584,7 @@ func TestMigrateVibeVaultDryRunBuildsNoEmbedder(t *testing.T) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr)
 		}
 	}
-	marker := filepath.Join(vaultDir, "palace", "p", ".local", "imported-sessions.jsonl")
+	marker := filepath.Join(vaultDir, "palace", ".local", "imports", "p", "imported-sessions.jsonl")
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("dry run wrote the import marker (stat err %v)", err)
 	}
@@ -685,23 +685,6 @@ func TestMigrateVibeVaultSourceStatFailureIsSystemError(t *testing.T) {
 	}
 }
 
-func TestMigrateVibeVaultRealRunBuildsEmbedderOnce(t *testing.T) {
-	vaultDir := setupTestVaultEnv(t)
-	seedVibeVaultSource(t, vaultDir)
-	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
-	var code int
-	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--yes"}) })
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
-	}
-	if *constructed != 1 {
-		t.Errorf("embedder constructed %d times, want 1", *constructed)
-	}
-	if !strings.Contains(stderr, "1 sessions imported") {
-		t.Errorf("stderr lacks %q:\n%s", "1 sessions imported", stderr)
-	}
-}
-
 func TestMigrateVibeVaultNoSessionsBuildsNoEmbedder(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	seedVibeVaultSource(t, vaultDir)
@@ -757,7 +740,7 @@ func TestMigrateVibeVaultCrossVaultDryRunWarnsOrphanMarkers(t *testing.T) {
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "WARNING: prior runs left idempotency markers") {
+	if !strings.Contains(stderr, "NOTE: prior runs left idempotency markers") {
 		t.Errorf("stderr lacks the orphan-marker warning:\n%s", stderr)
 	}
 }
@@ -774,5 +757,42 @@ func TestMigrateVibeVaultBadSlugMapIsUserError(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--slug-map") {
 		t.Errorf("stderr lacks the --slug-map refusal:\n%s", stderr)
+	}
+}
+
+// TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand: a real vibevault run
+// writes archives and loads no model, and its last line says the sessions are
+// archived, that the archives are not indexed on this host until a later
+// release indexes archives, and that nothing is to be run now. No line names a command or
+// claims that anything is indexed now: the ingester does not exist yet, and a
+// transcript backfill on a live vault is forbidden (task
+// importers-write-the-frozen-tracked-corpus, plan revision R-2).
+func TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	seedVibeVaultSource(t, vaultDir)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--yes"}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
+	}
+	if *constructed != 0 {
+		t.Errorf("a vibevault import constructed the embedder %d times, want 0", *constructed)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	last := lines[len(lines)-1]
+	for _, want := range []string{"2 sessions archived", "the archives are not indexed on this host", "nothing to run now"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("last line %q lacks %q", last, want)
+		}
+	}
+	lower := strings.ToLower(stderr)
+	for _, banned := range []string{"vp_refresh_index", "vp index rebuild", "refresh_index", "restart the mcp", "indexing", "being indexed", "will be indexed by", "rebuild search"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("the output contains %q:\n%s", banned, stderr)
+		}
+	}
+	if m, _ := filepath.Glob(filepath.Join(vaultDir, "Projects", "p", "transcripts", "*.manifest.json")); len(m) != 2 {
+		t.Errorf("%d manifests, want 2 (s1 and knowledge.md)", len(m))
 	}
 }

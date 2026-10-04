@@ -454,12 +454,13 @@ func refuseSelfDestination(root, url string) error {
 	return nil
 }
 
-// collectDeleteTrees collects every file under p's two trees and its embed
-// cache, before anything is changed.
+// collectDeleteTrees collects every file under p's two trees, its embed cache
+// and its import records (palace/.local/imports/<p>/, vp migrate's marker),
+// before anything is changed.
 func collectDeleteTrees(root string, projects []string) ([]PurgeSet, error) {
 	var sets []PurgeSet
 	for _, p := range projects {
-		for _, tree := range append([]string{"palace/.local/embed-cache/" + p}, ProjectTrees(p)...) {
+		for _, tree := range append([]string{"palace/.local/embed-cache/" + p, "palace/.local/imports/" + p}, ProjectTrees(p)...) {
 			set, err := CollectPurgeTree(root, tree)
 			if err != nil {
 				return nil, err

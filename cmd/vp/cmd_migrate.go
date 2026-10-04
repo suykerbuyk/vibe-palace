@@ -34,14 +34,14 @@ func cmdMigrate() *cli.Command {
 
 var migrateVibeVaultFlags = []cli.FlagDef{
 	{Name: "--vault-path", Arg: "PATH", Help: "SOURCE VibeVault root to read sessions from (default: the configured vault). Writes always land in the configured vault_path, never here."},
-	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults. Loads no embedding model."},
+	{Name: "--dry-run", Help: "Preview import; prompts for conflict resolution like a real run. Use --yes to auto-accept defaults. Writes nothing."},
 	{Name: "--strict", Help: "Abort on the first frontmatter parse error (default: log file path, skip the session, continue)"},
 	{Name: "--yes", Short: "-y", Help: "Accept default slug-rename suggestions without prompting"},
 	{Name: "--slug-map", Arg: "OLD=NEW[,OLD=NEW...]", Help: "Pre-specify slug renames; uncovered collisions fall back to interactive or auto"},
 	{Name: "--only", Arg: "SLUG[,SLUG...]", Help: "Restrict the run to these projects (matched by source dir slug or final slug). Default: every project in the source vault."},
 	{Name: "--agentctx", Help: "Also carry each project's agentctx tree (resume, iterations, workflow, knowledge, tasks, memory) plus a verbatim migrated/ archive of commands/skills/snippets/features. Copy-if-absent."},
 	{Name: "--force", Help: "Overwrite existing agentctx destination files (default: skip present files). Re-seeds from source, discarding vault-side edits. Requires --agentctx."},
-	{Name: "--no-sessions", Help: "Skip session + knowledge indexing; copy agentctx only (loads no embedder). Requires --agentctx."},
+	{Name: "--no-sessions", Help: "Skip archiving sessions and knowledge.md; copy agentctx only. Requires --agentctx."},
 }
 
 func cmdMigrateVibeVault() *cli.Command {
@@ -49,24 +49,26 @@ func cmdMigrateVibeVault() *cli.Command {
 		Name:     "migrate vibevault",
 		Synopsis: "vp migrate vibevault [--vault-path PATH] [--dry-run] [--agentctx]",
 		Description: "Import data from a VibeVault directory into the palace. By default it " +
-			"imports sessions (indexed for search) only. --agentctx additionally carries each " +
+			"archives sessions only: each session with text becomes a transcript archive under " +
+			"Projects/<slug>/transcripts/, dated by the session's own date, and knowledge.md is " +
+			"archived the same way. Nothing is embedded or indexed, so no model is loaded; the archives " +
+			"are not indexed on this host until a later release indexes archives. --agentctx additionally carries each " +
 			"project's agentctx tree — resume, iterations, workflow, knowledge, tasks, and memory " +
 			"land in their canonical slots; commands/skills/snippets/features are preserved " +
 			"verbatim under Projects/<slug>/migrated/. Agentctx copy is copy-if-absent (use --force " +
-			"to overwrite); --no-sessions copies agentctx only and loads no embedder. " +
+			"to overwrite); --no-sessions copies agentctx only. " +
 			"--vault-path names the SOURCE vault; the DESTINATION is always the configured vault_path " +
 			"(~/.config/vibe-palace/config.toml). When --vault-path is omitted, source and destination " +
 			"are the same configured vault. Every run prints a Source/Destination/Same-vault banner to " +
 			"stderr before scanning; a real (non-dry-run) cross-vault import requires confirmation " +
 			"(--yes, or an interactive [y/N] prompt on a TTY). A source with no Projects/ directory " +
-			"is refused (exit 1) before that confirmation and before any model loads. --dry-run " +
-			"loads no embedding model, so a preview never downloads it.",
+			"is refused (exit 1) before that confirmation.",
 		Flags: migrateVibeVaultFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp migrate vibevault", Comment: "Import sessions in place: source and destination are the configured vault"},
 			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --dry-run", Comment: "Preview import reading from another vault (writes nothing)"},
 			{Cmd: "vp migrate vibevault --vault-path /home/johns/obsidian/VibeVault --agentctx --slug-map RezBldrVault=rezbldrvault --yes", Comment: "Cross-vault import of sessions + agentctx, pinning the canonical slug"},
-			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --agentctx --no-sessions --dry-run", Comment: "Preview an agentctx-only copy (no embedder, no session indexing)"},
+			{Cmd: "vp migrate vibevault --vault-path ~/old-vault --agentctx --no-sessions --dry-run", Comment: "Preview an agentctx-only copy (no sessions archived)"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateVibeVaultFlags, args)
@@ -93,7 +95,7 @@ func cmdMigrateVibeVault() *cli.Command {
 				return cli.ExitUser
 			}
 
-			dest, cfg, err := openMigrateDestination()
+			dest, _, err := openMigrateDestination()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
 				return cli.ExitUser
@@ -146,15 +148,10 @@ func cmdMigrateVibeVault() *cli.Command {
 			// Orphan-marker preflight warning for cross-vault runs.
 			if sourceHasOrphanMarkers(resolvedSource, resolvedDest) {
 				fmt.Fprintf(os.Stderr,
-					"WARNING: prior runs left idempotency markers in the source vault, but after\n"+
-						"this fix markers are read from the destination. Those sessions will be\n"+
-						"re-processed (slow; re-embeds). Palace artifacts are deduped by ID, so no\n"+
-						"corruption results.\n"+
-						"One-time remediation: copy\n"+
-						"  %s/palace/*/.local/imported-sessions.jsonl\n"+
-						"into the matching\n"+
-						"  %s/palace/*/.local/\n"+
-						"before running.\n",
+					"NOTE: prior runs left idempotency markers in the source vault (%s), but\n"+
+						"markers are read from the destination (%s). Those sessions are checked\n"+
+						"against their archives again; an archive already there is skipped, so\n"+
+						"nothing is duplicated.\n",
 					resolvedSource, resolvedDest,
 				)
 			}
@@ -166,31 +163,15 @@ func cmdMigrateVibeVault() *cli.Command {
 				return cli.ExitUser
 			}
 
-			// Engine and model cache bind to the DESTINATION. An
-			// agentctx-only run (--no-sessions) indexes nothing, and a dry
-			// run reports counts without embedding, so both skip the
-			// embedder entirely (no ~90MB model load) and pass nil.
-			var (
-				emb     embedder.Embedder
-				eng     *search.Engine
-				cleanup = func() {}
-			)
-			if !noSessions && !dryRun {
-				emb, eng, cleanup, err = setupEmbedder(dest, cfg)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
-					return cli.ExitSystem
-				}
-			}
-			defer cleanup()
-
+			// No embedder: a vibevault import writes transcript archives
+			// and embeds nothing, so it never loads a model.
 			if dryRun {
 				fmt.Fprintln(os.Stderr, dryRunNotice)
 			}
 			fmt.Fprintln(os.Stderr, "Scanning projects...")
 
 			result, err := migrate.ImportVibeVault(
-				context.Background(), source, dest, eng, emb, cfg,
+				context.Background(), source, dest,
 				migrate.ImportOptions{
 					DryRun:       dryRun,
 					Strict:       strict,
@@ -597,9 +578,24 @@ func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 
 	printAgentctxResult(result.Agentctx, dryRun)
 
-	if !dryRun && (result.SessionsImported > 0 || result.DrawersCreated > 0) {
-		fmt.Fprintln(os.Stderr, "\nRestart the MCP server to rebuild search indexes.")
+	if result.SessionsEmpty > 0 {
+		fmt.Fprintf(os.Stderr, "%d sessions were empty: no archive.\n", result.SessionsEmpty)
 	}
+	if !dryRun && result.ArchivesWritten > 0 {
+		fmt.Fprintln(os.Stderr, archivedNotice(result.ArchivesWritten))
+	}
+}
+
+// archivedNotice is a vibevault import's last line. It speaks of the
+// archives, not the sessions: on an in-place import the session notes are
+// already in Projects/<slug>/sessions/ and the search engine's note corpus
+// serves their text, while the archives' transcripts are indexed by nothing
+// yet. It names no command and claims no indexing: the host-local pending-archive ingester, which indexes
+// archives, depends on this import and does not exist yet, and the operator
+// warning forbids a transcript backfill (vp_refresh_index) on a live vault
+// (task importers-write-the-frozen-tracked-corpus, plan revision R-2).
+func archivedNotice(n int) string {
+	return fmt.Sprintf("\n%d sessions archived; the archives are not indexed on this host until a later release indexes archives; nothing to run now.", n)
 }
 
 // printAgentctxResult renders the agentctx file-copy summary. It is a no-op

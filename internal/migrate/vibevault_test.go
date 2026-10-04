@@ -11,8 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/suykerbuyk/vibe-palace/internal/embedder"
-	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -91,7 +89,7 @@ tag: exploration
 ---
 `
 
-func setupTestVault(t *testing.T) (*storage.Vault, *search.Engine, embedder.Embedder, storage.Config) {
+func setupTestVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	tmpDir := t.TempDir()
 
@@ -112,18 +110,28 @@ func setupTestVault(t *testing.T) (*storage.Vault, *search.Engine, embedder.Embe
 		}
 	}
 
-	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
+	return storage.NewVault(tmpDir)
+}
 
-	return vault, engine, emb, cfg
+// sessionDone reports whether the importer counts sessionID of project as
+// imported: its marker, confirmed against the archived manifests.
+func sessionDone(t *testing.T, vault *storage.Vault, project, sessionID string) bool {
+	t.Helper()
+	archived, err := archivedSessions(vault.Root, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk, err := loadMarkers(vault, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mk.done(sessionID, archived)
 }
 
 func TestImportVibeVault_Basic(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,11 +148,11 @@ func TestImportVibeVault_Basic(t *testing.T) {
 }
 
 func TestImportVibeVault_Idempotent(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 	ctx := context.Background()
 
 	// First import.
-	r1, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
+	r1, err := ImportVibeVault(ctx, vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -153,7 +161,7 @@ func TestImportVibeVault_Idempotent(t *testing.T) {
 	}
 
 	// Second import — everything should be skipped.
-	r2, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
+	r2, err := ImportVibeVault(ctx, vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -166,9 +174,9 @@ func TestImportVibeVault_Idempotent(t *testing.T) {
 }
 
 func TestImportVibeVault_DryRun(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{
 		DryRun: true,
 	})
 	if err != nil {
@@ -180,7 +188,7 @@ func TestImportVibeVault_DryRun(t *testing.T) {
 	}
 
 	// Verify nothing was actually written — marker file should not exist.
-	markerFile := filepath.Join(vault.Root, "palace", "test-project", ".local", "imported-sessions.jsonl")
+	markerFile := filepath.Join(vault.Root, "palace", ".local", "imports", "test-project", "imported-sessions.jsonl")
 	if _, err := os.Stat(markerFile); !os.IsNotExist(err) {
 		t.Errorf("marker file should not exist after dry run, got err: %v", err)
 	}
@@ -203,9 +211,6 @@ func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
 	var mu sync.Mutex
 	var events []ProgressEvent
@@ -217,7 +222,7 @@ func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 		},
 	}
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, opts)
+	result, err := ImportVibeVault(context.Background(), vault, vault, opts)
 	if err != nil {
 		t.Fatalf("tolerant default should not return an error, got: %v", err)
 	}
@@ -264,7 +269,7 @@ func TestImportVibeVault_BadFrontmatter(t *testing.T) {
 	}
 
 	// Marker file must contain a parse_failed entry for the failed session.
-	markerFile := filepath.Join(vault.Root, "palace", "bad-project", ".local", "imported-sessions.jsonl")
+	markerFile := filepath.Join(vault.Root, "palace", ".local", "imports", "bad-project", "imported-sessions.jsonl")
 	mb, mErr := os.ReadFile(markerFile)
 	if mErr != nil {
 		t.Fatalf("expected parse_failed marker at %s: %v", markerFile, mErr)
@@ -289,11 +294,8 @@ func TestImportVibeVault_BadFrontmatter_StrictAborts(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{Strict: true})
+	_, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{Strict: true})
 	if err == nil {
 		t.Fatal("strict mode should return an error on parse failure")
 	}
@@ -301,7 +303,7 @@ func TestImportVibeVault_BadFrontmatter_StrictAborts(t *testing.T) {
 		t.Errorf("strict-mode error should name the offending file; got: %v", err)
 	}
 
-	markerFile := filepath.Join(vault.Root, "palace", "bad-project", ".local", "imported-sessions.jsonl")
+	markerFile := filepath.Join(vault.Root, "palace", ".local", "imports", "bad-project", "imported-sessions.jsonl")
 	if _, statErr := os.Stat(markerFile); !os.IsNotExist(statErr) {
 		t.Errorf("strict mode should not write a marker file, stat err=%v", statErr)
 	}
@@ -323,12 +325,9 @@ func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
 	// First run: parse fails, parse_failed marker written.
-	r1, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	r1, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("first run: unexpected error: %v", err)
 	}
@@ -337,7 +336,7 @@ func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
 	}
 	// The session ID is derived from the filename when parse fails.
 	failedID := "bad"
-	if imp, _ := isSessionImported(vault, "bad-project", failedID); imp {
+	if imp := sessionDone(t, vault, "bad-project", failedID); imp {
 		t.Error("parse_failed entry should not count as imported")
 	}
 
@@ -349,14 +348,14 @@ func TestImportVibeVault_BadFrontmatter_RepairAfterParseFail(t *testing.T) {
 	}
 
 	// Second run: session imports cleanly.
-	r2, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	r2, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
 	}
 	if r2.SessionsImported != 1 {
 		t.Errorf("second run: SessionsImported = %d, want 1", r2.SessionsImported)
 	}
-	if imp, _ := isSessionImported(vault, "bad-project", failedID); !imp {
+	if imp := sessionDone(t, vault, "bad-project", failedID); !imp {
 		t.Error("session should be marked as imported after repair")
 	}
 }
@@ -376,11 +375,8 @@ func TestImportVibeVault_EmptyTranscript(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -406,11 +402,8 @@ func TestImportVibeVault_SlugMapping(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -423,7 +416,7 @@ func TestImportVibeVault_SlugMapping(t *testing.T) {
 	}
 
 	// Verify the marker was written under the slugified name.
-	markerFile := filepath.Join(vault.Root, "palace", "00-test-project", ".local", "imported-sessions.jsonl")
+	markerFile := filepath.Join(vault.Root, "palace", ".local", "imports", "00-test-project", "imported-sessions.jsonl")
 	if _, err := os.Stat(markerFile); err != nil {
 		t.Errorf("expected marker file at slugified path: %v", err)
 	}
@@ -441,13 +434,10 @@ func TestImportVibeVault_SlugCollision(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
 	// Default resolver (AutoResolver) should auto-rename the later-sorted dir,
 	// not fatally abort.
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error with default resolver: %v", err)
 	}
@@ -463,7 +453,7 @@ func TestImportVibeVault_SlugCollision(t *testing.T) {
 }
 
 func TestImportVibeVault_Progress(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
 	var mu sync.Mutex
 	var events []ProgressEvent
@@ -476,7 +466,7 @@ func TestImportVibeVault_Progress(t *testing.T) {
 		},
 	}
 
-	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, opts)
+	_, err := ImportVibeVault(context.Background(), vault, vault, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -502,12 +492,12 @@ func TestImportVibeVault_Progress(t *testing.T) {
 }
 
 func TestImportVibeVault_CancelledContext(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(ctx, vault, vault, ImportOptions{})
 	if err == nil {
 		t.Fatal("expected context cancellation error, got nil")
 	}
@@ -517,7 +507,7 @@ func TestImportVibeVault_CancelledContext(t *testing.T) {
 }
 
 func TestImportVibeVault_KnowledgeMD(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
 	// Write a knowledge.md file in the project directory.
 	knowledgePath := filepath.Join(vault.Root, "Projects", "test-project", "knowledge.md")
@@ -525,7 +515,7 @@ func TestImportVibeVault_KnowledgeMD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -564,11 +554,8 @@ Content without a session ID.
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -577,10 +564,7 @@ Content without a session ID.
 	}
 
 	// Verify the marker was written using the filename fallback.
-	imported, checkErr := isSessionImported(vault, "noid-project", "fallback-name")
-	if checkErr != nil {
-		t.Fatalf("isSessionImported: %v", checkErr)
-	}
+	imported := sessionDone(t, vault, "noid-project", "fallback-name")
 	if !imported {
 		t.Error("session should be marked as imported under filename fallback ID")
 	}
@@ -590,11 +574,8 @@ func TestImportVibeVault_NoProjectsDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Do NOT create a Projects/ directory.
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err == nil {
 		t.Fatal("expected error for missing Projects dir, got nil")
 	}
@@ -622,11 +603,8 @@ func TestImportVibeVault_EmptySlugSkip(t *testing.T) {
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -658,11 +636,8 @@ func TestImportVibeVault_UnreadableFile(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -682,9 +657,9 @@ func TestImportVibeVault_UnreadableFile(t *testing.T) {
 // write that file, and tasks/{done,cancelled} beside it; the task archive
 // directories are now created on first use by the task mover.
 func TestImportVibeVault_ScaffoldsProjectAndWritesNoVaultConfig(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
-	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	_, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,10 +679,10 @@ func TestImportVibeVault_ScaffoldsProjectAndWritesNoVaultConfig(t *testing.T) {
 // an already-scaffolded project does not error and leaves the scaffold
 // byte-identical.
 func TestImportVibeVault_ScaffoldIdempotent(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 	ctx := context.Background()
 
-	if _, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{}); err != nil {
+	if _, err := ImportVibeVault(ctx, vault, vault, ImportOptions{}); err != nil {
 		t.Fatalf("first import: %v", err)
 	}
 
@@ -717,7 +692,7 @@ func TestImportVibeVault_ScaffoldIdempotent(t *testing.T) {
 		t.Fatalf("read scaffold README: %v", err)
 	}
 
-	if _, err := ImportVibeVault(ctx, vault, vault, engine, emb, cfg, ImportOptions{}); err != nil {
+	if _, err := ImportVibeVault(ctx, vault, vault, ImportOptions{}); err != nil {
 		t.Fatalf("second import: %v", err)
 	}
 
@@ -733,9 +708,9 @@ func TestImportVibeVault_ScaffoldIdempotent(t *testing.T) {
 // TestImportVibeVault_DryRunSkipsScaffold verifies dry-run does not scaffold
 // the destination project.
 func TestImportVibeVault_DryRunSkipsScaffold(t *testing.T) {
-	vault, engine, emb, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 
-	_, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{DryRun: true})
+	_, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -779,11 +754,8 @@ Identical body text for deduplication testing purposes.
 	}
 
 	vault := storage.NewVault(tmpDir)
-	emb := embedder.NewMock(384)
-	cfg := storage.Config{}
-	engine := search.NewEngine(emb, vault, cfg)
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, engine, emb, cfg, ImportOptions{})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -794,9 +766,9 @@ Identical body text for deduplication testing purposes.
 
 	// Both should have idempotency markers.
 	for _, id := range []string{"dedup-01", "dedup-02"} {
-		imported, err := isSessionImported(vault, "dedup-project", id)
+		imported, err := sessionDone(t, vault, "dedup-project", id), error(nil)
 		if err != nil {
-			t.Errorf("isSessionImported(%q): %v", id, err)
+			t.Errorf("sessionDone(%q): %v", id, err)
 		}
 		if !imported {
 			t.Errorf("session %q should be marked as imported", id)
@@ -808,13 +780,13 @@ Identical body text for deduplication testing purposes.
 // relies on: a dry run takes nil for both, never reaches the indexer (not for
 // sessions, not for knowledge.md), and still counts every session.
 func TestImportVibeVault_DryRunNilEngineAndEmbedder(t *testing.T) {
-	vault, _, _, cfg := setupTestVault(t)
+	vault := setupTestVault(t)
 	knowledgePath := filepath.Join(vault.Root, "Projects", "test-project", "knowledge.md")
 	if err := os.WriteFile(knowledgePath, []byte("# Project Knowledge\n\nImportant domain facts."), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := ImportVibeVault(context.Background(), vault, vault, nil, nil, cfg, ImportOptions{DryRun: true})
+	result, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("dry run with nil engine/embedder: %v", err)
 	}

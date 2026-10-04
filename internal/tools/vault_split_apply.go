@@ -782,7 +782,7 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 	var trees []splitPurgeSet
 	var unaccounted []string
 	for _, s := range m.Slugs {
-		for _, tree := range []string{"palace/.local/embed-cache/" + s, "palace/" + s, "Projects/" + s} {
+		for _, tree := range []string{"palace/.local/embed-cache/" + s, "palace/.local/imports/" + s, "palace/" + s, "Projects/" + s} {
 			set, err := splitPurgeCollect(vault.Root, tree)
 			if err != nil {
 				return nil, err

@@ -54,7 +54,7 @@ Body content for %s.
 
 	// Dry run first — remap should populate, no storage writes.
 	dryResult, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{
 			DryRun:   true,
 			Resolver: &migrate.AutoResolver{},
@@ -80,7 +80,7 @@ Body content for %s.
 
 	// Real run — both slugs end up with content.
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{Resolver: &migrate.AutoResolver{}},
 	)
 	if err != nil {
@@ -93,14 +93,18 @@ Body content for %s.
 		t.Errorf("SlugRemap[shared-name] = %q, want shared-name-vp", got)
 	}
 
-	// Verify drawers landed under both slugs (one per session).
-	n1, _ := countAllDrawers(t, h.Vault, "shared-name")
-	n2, _ := countAllDrawers(t, h.Vault, "shared-name-vp")
+	// Verify archives landed under both slugs (one per session).
+	countArchives := func(proj string) (int, error) {
+		m, err := filepath.Glob(filepath.Join(h.Vault.Root, "Projects", proj, "transcripts", "*.manifest.json"))
+		return len(m), err
+	}
+	n1, _ := countArchives("shared-name")
+	n2, _ := countArchives("shared-name-vp")
 	if n1 == 0 {
-		t.Error("expected drawers under shared-name")
+		t.Error("expected archives under shared-name")
 	}
 	if n2 == 0 {
-		t.Error("expected drawers under shared-name-vp")
+		t.Error("expected archives under shared-name-vp")
 	}
 }
 
@@ -125,7 +129,7 @@ func TestIntegrationMigrateSlugCollisionEscalatesPastOnDisk(t *testing.T) {
 	}
 
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{
 			DryRun: true,
 			// Nil resolver triggers default AutoResolver with on-disk seeded.

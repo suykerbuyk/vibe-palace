@@ -209,10 +209,6 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The index run lock. Non-test callers: pending-archive-ingester-and-per-archive-commit-step, explicit-resumable-index-rebuild-with-disk-watchdog and the lifecycle half of index-fingerprints-project-lifecycle-and-migration-marker. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.Tx.AddToBaseline",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: split-and-merge-exclude-derived-palace-paths (copy and merge) and importers-write-the-frozen-tracked-corpus (import). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.Tx.ClearBaseline",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, with the proof of a completed rebuild. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },

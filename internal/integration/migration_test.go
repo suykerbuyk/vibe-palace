@@ -17,10 +17,11 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// TestIntegrationVibeVaultImportToSearch proves that ImportVibeVault feeds
-// session transcripts through the capture pipeline and the resulting drawers
-// are searchable via the search engine, and KG entities are queryable.
-func TestIntegrationVibeVaultImportToSearch(t *testing.T) {
+// TestIntegrationVibeVaultImportWritesArchives proves that ImportVibeVault
+// writes each session as a transcript archive dated by the session, and
+// nothing derived: no drawers, no tracked KG, nothing searchable until the
+// host-local pending-archive ingester indexes the archives.
+func TestIntegrationVibeVaultImportWritesArchives(t *testing.T) {
 	h := newHarness(t, true) // real ONNX embedder for meaningful search
 
 	// Create a VibeVault-style project with session files.
@@ -82,7 +83,7 @@ and internal/auth/jwt.go wraps the RS256 signing.
 
 	// Run the import.
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -95,76 +96,44 @@ and internal/auth/jwt.go wraps the RS256 signing.
 		t.Fatalf("unexpected errors: %v", result.Errors)
 	}
 
-	// Prove drawers landed in storage.
-	wings, err := h.Vault.ListWings("test-project")
-	if err != nil {
-		t.Fatalf("ListWings: %v", err)
+	// The sessions are archived, dated by their own date, and nothing else
+	// is written: no drawers and no tracked KG (task
+	// importers-write-the-frozen-tracked-corpus, Scope 3).
+	if result.ArchivesWritten != 2 || result.DrawersCreated != 0 || result.EntitiesCreated != 0 {
+		t.Fatalf("archives %d, drawers %d, entities %d; want 2, 0, 0", result.ArchivesWritten, result.DrawersCreated, result.EntitiesCreated)
 	}
-	if len(wings) == 0 {
-		t.Fatal("expected at least one wing after import")
+	for _, day := range []string{"2026-04-01", "2026-04-02"} {
+		if m, _ := filepath.Glob(filepath.Join(h.Vault.Root, "Projects", "test-project", "transcripts", day+"-*.manifest.json")); len(m) != 1 {
+			t.Errorf("want one archive dated %s, got %v", day, m)
+		}
+	}
+	if wings, _ := h.Vault.ListWings("test-project"); len(wings) != 0 {
+		t.Errorf("the import wrote drawers: wings %v", wings)
+	}
+	if entities, _, _ := h.Vault.ListEntities("test-project"); len(entities) != 0 {
+		t.Errorf("the import wrote tracked KG entities: %d", len(entities))
 	}
 
-	totalDrawers, _ := countAllDrawers(t, h.Vault, "test-project")
-	if totalDrawers == 0 {
-		t.Fatal("expected drawers in storage after import")
-	}
-
-	// Prove imported content is searchable — query for database migration.
+	// The archives are not indexed on this host until the pending-archive
+	// ingester runs: that is what the import's last line says. This import is
+	// in place, so the session notes themselves are in Projects/<p>/sessions/
+	// and the note corpus serves their text (source_type session-note); no
+	// result may come from the archives (a transcript chunk, source_type
+	// session).
 	results, err := h.Engine.Search(context.Background(), "database migration PostgreSQL rollback",
-		search.SearchFilters{Project: "test-project"})
+		search.SearchFilters{Project: "test-project", IncludeRaw: true})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(results) == 0 {
-		t.Fatal("search for 'database migration' returned no results after import")
-	}
-
-	// Top result should be about database migration, not JWT auth.
-	top := strings.ToLower(results[0].Content)
-	if !strings.Contains(top, "migration") && !strings.Contains(top, "database") {
-		t.Errorf("top result should mention migration/database, got: %s", truncate(results[0].Content, 120))
-	}
-
-	// Search for JWT authentication — should find session 2.
-	jwtResults, err := h.Engine.Search(context.Background(), "JWT authentication middleware Bearer token",
-		search.SearchFilters{Project: "test-project"})
-	if err != nil {
-		t.Fatalf("Search JWT: %v", err)
-	}
-	if len(jwtResults) == 0 {
-		t.Fatal("search for 'JWT authentication' returned no results after import")
-	}
-
-	topJwt := strings.ToLower(jwtResults[0].Content)
-	if !strings.Contains(topJwt, "jwt") && !strings.Contains(topJwt, "auth") && !strings.Contains(topJwt, "token") {
-		t.Errorf("top JWT result should mention jwt/auth/token, got: %s", truncate(jwtResults[0].Content, 120))
-	}
-
-	// Prove KG entities were extracted from session transcripts.
-	entities, _, err := h.Vault.ListEntities("test-project")
-	if err != nil {
-		t.Fatalf("ListEntities: %v", err)
-	}
-	if len(entities) == 0 {
-		t.Fatal("expected KG entities from imported transcripts")
-	}
-
-	// Session 2 mentions internal/auth/middleware.go — verify file entity exists.
-	foundFile := false
-	for _, e := range entities {
-		if e.Type == "file" && strings.Contains(e.Name, "middleware.go") {
-			foundFile = true
-			break
+	for _, r := range results {
+		if r.SourceType == "session" {
+			t.Errorf("an archive's transcript was served before any ingest: %s", truncate(r.Content, 80))
 		}
-	}
-	if !foundFile {
-		t.Error("expected file entity for middleware.go from session 2 transcript")
 	}
 }
 
 // TestIntegrationVibeVaultIdempotentReimport proves that importing the same
-// sessions twice does not create duplicate drawers or KG entries, and that
-// previously imported content remains searchable.
+// sessions twice writes no second archive.
 func TestIntegrationVibeVaultIdempotentReimport(t *testing.T) {
 	h := newHarness(t, false) // mock embedder sufficient for idempotency test
 
@@ -191,7 +160,7 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 	ctx := context.Background()
 
 	// First import.
-	r1, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
+	r1, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -199,12 +168,14 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 		t.Fatalf("first: SessionsImported = %d, want 1", r1.SessionsImported)
 	}
 
-	// Count drawers and entities after first import.
-	drawers1, _ := countAllDrawers(t, h.Vault, "idempotent-proj")
-	entities1, _, _ := h.Vault.ListEntities("idempotent-proj")
+	// Count the archives after the first import.
+	manifests1, _ := filepath.Glob(filepath.Join(h.Vault.Root, "Projects", "idempotent-proj", "transcripts", "*.manifest.json"))
+	if len(manifests1) != 1 {
+		t.Fatalf("first import: %d archives, want 1", len(manifests1))
+	}
 
 	// Second import — should skip.
-	r2, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, h.Engine, h.Embedder, h.Config, migrate.ImportOptions{})
+	r2, err := migrate.ImportVibeVault(ctx, h.Vault, h.Vault, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -215,25 +186,10 @@ We also reviewed internal/cache/redis.go for connection pooling issues.
 		t.Errorf("second: SessionsImported = %d, want 0", r2.SessionsImported)
 	}
 
-	// Verify no new drawers or entities were created.
-	drawers2, _ := countAllDrawers(t, h.Vault, "idempotent-proj")
-	entities2, _, _ := h.Vault.ListEntities("idempotent-proj")
-
-	if drawers2 != drawers1 {
-		t.Errorf("drawer count changed: %d → %d", drawers1, drawers2)
-	}
-	if len(entities2) != len(entities1) {
-		t.Errorf("entity count changed: %d → %d", len(entities1), len(entities2))
-	}
-
-	// Verify content is still searchable after re-import.
-	results, err := h.Engine.Search(ctx, "caching Redis API gateway",
-		search.SearchFilters{Project: "idempotent-proj"})
-	if err != nil {
-		t.Fatalf("Search after reimport: %v", err)
-	}
-	if len(results) == 0 {
-		t.Error("expected search results after idempotent re-import")
+	// Verify no new archive was written.
+	manifests2, _ := filepath.Glob(filepath.Join(h.Vault.Root, "Projects", "idempotent-proj", "transcripts", "*.manifest.json"))
+	if len(manifests2) != len(manifests1) || r2.ArchivesWritten != 0 {
+		t.Errorf("archives changed: %d → %d (written %d)", len(manifests1), len(manifests2), r2.ArchivesWritten)
 	}
 }
 
@@ -498,7 +454,7 @@ We discussed internal/api/handler.go refactoring.
 	os.WriteFile(filepath.Join(sessDir, "2026-04-01-01.md"), []byte(session), 0o644)
 
 	result, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{DryRun: true},
 	)
 	if err != nil {
@@ -521,15 +477,15 @@ We discussed internal/api/handler.go refactoring.
 	}
 
 	// Verify no idempotency marker was written.
-	localDir, _ := h.Vault.LocalDir("dryrun-proj")
-	markerPath := filepath.Join(localDir, "imported-sessions.jsonl")
+	importsDir, _ := h.Vault.ImportsDir("dryrun-proj")
+	markerPath := filepath.Join(importsDir, "imported-sessions.jsonl")
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
 		t.Error("idempotency marker should not exist after dry run")
 	}
 
 	// Now do a real import — should succeed since dry run left no markers.
 	r2, err := migrate.ImportVibeVault(
-		context.Background(), h.Vault, h.Vault, h.Engine, h.Embedder, h.Config,
+		context.Background(), h.Vault, h.Vault,
 		migrate.ImportOptions{},
 	)
 	if err != nil {

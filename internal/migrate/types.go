@@ -36,7 +36,12 @@ type ImportResult struct {
 	DrawersCreated   int
 	EntitiesCreated  int
 	TriplesCreated   int
-	Errors           []ImportError
+	// ArchivesWritten counts the transcript archives a vibevault import wrote
+	// (sessions and knowledge.md); SessionsEmpty the sessions with no text,
+	// which get no archive.
+	ArchivesWritten int
+	SessionsEmpty   int
+	Errors          []ImportError
 	// SlugRemap records collision-resolved renames (originalSlug → finalSlug).
 	// Empty when no collisions occurred.
 	SlugRemap map[string]string
