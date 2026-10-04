@@ -84,8 +84,8 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 	}
 }
 
-// TestIntegrationConfigChunkSize proves that ChunkMaxChars config values
-// actually control how many chunks are produced from a transcript.
+// TestIntegrationConfigChunkSize proves that the host config's [chunker]
+// max_chars actually controls how many chunks are produced from a transcript.
 func TestIntegrationConfigChunkSize(t *testing.T) {
 	// Build a ~2000-char transcript with many short paragraphs.
 	// Each paragraph is ~100 chars, separated by \n\n.
@@ -96,20 +96,16 @@ func TestIntegrationConfigChunkSize(t *testing.T) {
 	}
 
 	// Small chunks: 200 chars → expect many chunks.
-	h1 := newHarness(t, false, func(c *storage.Config) {
-		c.ChunkMaxChars = 200
-		c.ChunkOverlap = 0
-	})
+	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 200\n", "")
+	h1 := newHarness(t, false)
 	if _, err := h1.Indexer.IndexTranscript(context.Background(), "s1", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}
 	smallDrawers, _ := countAllDrawers(t, h1.Vault, "proj")
 
 	// Large chunks: 1000 chars → expect fewer chunks.
-	h2 := newHarness(t, false, func(c *storage.Config) {
-		c.ChunkMaxChars = 1000
-		c.ChunkOverlap = 0
-	})
+	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 1000\n", "")
+	h2 := newHarness(t, false)
 	if _, err := h2.Indexer.IndexTranscript(context.Background(), "s2", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}

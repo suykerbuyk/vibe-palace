@@ -10,22 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/suykerbuyk/vibe-palace/internal/chunk"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
-	"github.com/suykerbuyk/vibe-palace/internal/kg"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
-	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // Indexer orchestrates transcript chunking, classification, embedding, and storage.
 type Indexer struct {
-	vault      *storage.Vault
-	engine     *search.Engine
-	embedder   embedder.Embedder
-	config     storage.Config
-	classifier *palace.RoomClassifier
+	vault    *storage.Vault
+	engine   *search.Engine
+	embedder embedder.Embedder
+	config   storage.Config
 }
 
 // IndexStats reports per-call counts of newly-written artifacts.
@@ -46,15 +42,15 @@ func (s *IndexStats) add(o IndexStats) {
 	s.Triples += o.Triples
 }
 
-// NewIndexer creates a transcript indexer.
-// Chunk settings are read from config (chunker.max_chars, chunker.overlap).
+// NewIndexer creates a transcript indexer. Chunking and classification follow
+// the project's own recipe (palace.ProjectIndexing), read per call, never cfg:
+// the chunks it writes and the recipe chunks.fingerprint records must agree.
 func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedder, cfg storage.Config) *Indexer {
 	return &Indexer{
-		vault:      vault,
-		engine:     engine,
-		embedder:   emb,
-		config:     cfg,
-		classifier: palace.BuildClassifierFromConfig(cfg),
+		vault:    vault,
+		engine:   engine,
+		embedder: emb,
+		config:   cfg,
 	}
 }
 
@@ -74,39 +70,54 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		return stats, nil
 	}
 
-	chunks := chunk.Chunk(transcript, idx.chunkConfig())
-	if len(chunks) == 0 {
+	// The write-free prepare step, with the project's own recipe (chunk
+	// settings, classifier and room keywords from palace.ProjectIndexing, the
+	// one assembler), and the indexer's clock as the date of every record.
+	ix, err := palace.ProjectIndexing(idx.vault, project)
+	if err != nil {
+		return stats, err
+	}
+	prep, err := palace.Prepare(ix, palace.PrepareInput{
+		Project:   project,
+		SourceRef: sessionID,
+		Date:      indexerNow(),
+		Text:      transcript,
+	})
+	if err != nil {
+		return stats, err
+	}
+	if len(prep.Chunks) == 0 {
 		return stats, nil
 	}
 
-	wing := palace.DetectWing(project, "")
-	now := indexerNow().UTC().Format(time.RFC3339)
+	wing := prep.Chunks[0].Wing
+	chunks := make([]string, len(prep.Chunks))
 
 	// Build drawers and collect texts for batch embedding.
 	type drawerLoc struct {
 		drawer storage.Drawer
 		room   string
 	}
-	locs := make([]drawerLoc, len(chunks))
+	locs := make([]drawerLoc, len(prep.Chunks))
 
-	for i, chunk := range chunks {
-		room := idx.classifier.Classify(chunk, "", idx.config.PalaceRoomKeywords)
-		hall := palace.DetectHall(chunk)
-
+	for i, pc := range prep.Chunks {
+		chunks[i] = pc.Content
 		d := storage.Drawer{
-			Hall:       hall,
-			Content:    chunk,
+			Hall:       pc.Hall,
+			Content:    pc.Content,
 			SourceType: "session",
-			SourceRef:  sessionID,
-			ChunkIndex: i,
-			FiledAt:    now,
+			SourceRef:  pc.SourceRef,
+			ChunkIndex: pc.ChunkIndex,
+			FiledAt:    pc.FiledAt,
 			AddedBy:    "capture",
 		}
 		// Pre-compute the ID the same way storage does, so we can use it
-		// for vector indexing even before AppendDrawer fills it in.
-		d.ID = storage.DrawerID(wing, chunk)
+		// for vector indexing even before AppendDrawer fills it in. Tracked
+		// drawers keep the 32-bit drawer id; the host-local store uses
+		// pc.ID (index.ChunkID).
+		d.ID = storage.DrawerID(pc.Wing, pc.Content)
 
-		locs[i] = drawerLoc{drawer: d, room: room}
+		locs[i] = drawerLoc{drawer: d, room: pc.Room}
 	}
 
 	// Store drawers in the vault (JSONL), ONE BATCH PER ROOM.
@@ -172,61 +183,47 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 		}
 	}
 
-	// Best-effort entity extraction and KG population.
-	stats.add(idx.extractEntities(project, sessionID, transcript, now))
+	// Best-effort KG population from the prepared entities and triples.
+	stats.add(idx.writeKG(project, prep))
 
 	return stats, nil
 }
 
-// extractEntities runs the unified kg.ExtractAll pass and writes every
-// deduplicated entity + relationship to the KG. Entities go out in ONE
-// AddEntities batch; triples still go one AddTriple at a time. Returns
-// per-call counts of newly-written entities and triples; dedup skips do not
-// increment — the batch reports them as a count, and AddTriple reports them as
-// an error containing "already exists".
+// writeKG writes the prepared entities and triples to the tracked KG.
+// Entities go out in ONE AddEntities batch; triples still go one AddTriple at
+// a time. Returns per-call counts of newly-written entities and triples; dedup
+// skips do not increment — the batch reports them as a count, and AddTriple
+// reports them as an error containing "already exists".
 //
 // KG writes are best-effort per PRD: failures do not propagate to the
 // caller, but every failure is captured via slog.Warn so maintainers have
-// a full audit trail. The originating extractor name is attached to each
-// log entry (via the Source field on ExtractedEntityRef) so post-hoc log
-// analysis can still tell which extractor produced a problematic write.
-func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp string) IndexStats {
+// a full audit trail.
+func (idx *Indexer) writeKG(project string, prep palace.Prepared) IndexStats {
 	var stats IndexStats
 
-	today := ""
-	if len(timestamp) >= 10 {
-		today = timestamp[:10] // YYYY-MM-DD from RFC3339
-	}
-
-	result := kg.ExtractAll(transcript, today, kg.ExtractAllOptions{})
-
-	// Entities are written in ONE batch, hoisted out of the per-entity loop
-	// below. AddEntity reads and scans the whole entities file to dedup, so
-	// calling it once per extracted entity cost O(entities in the graph) per
-	// entity — the quadratic term this batch removes. The triples still go one
-	// at a time because AddTriple is a different shape: one JSON file per
-	// triple, deduped by path collision, with no whole-file scan to amortize.
-	ents := make([]storage.Entity, 0, len(result.Entities))
-	for _, ent := range result.Entities {
+	// Entities are written in ONE batch, hoisted out of a per-entity loop.
+	// AddEntity reads and scans the whole entities file to dedup, so calling
+	// it once per extracted entity cost O(entities in the graph) per entity —
+	// the quadratic term this batch removes. The triples still go one at a
+	// time because AddTriple is a different shape: one JSON file per triple,
+	// deduped by path collision, with no whole-file scan to amortize.
+	ents := make([]storage.Entity, 0, len(prep.Entities))
+	for _, ent := range prep.Entities {
 		ents = append(ents, storage.Entity{
-			ID:        slug.Slugify(ent.Type + "-" + ent.Name),
+			ID:        ent.ID,
 			Name:      ent.Name,
 			Type:      ent.Type,
-			CreatedAt: timestamp,
+			CreatedAt: ent.CreatedAt,
 			Origin:    storage.OriginExtracted,
 		})
 	}
-	// KG writes are best-effort per PRD: a failure here must NOT propagate to
-	// the caller, so it is logged once and the triple pass still runs.
 	added, err := idx.vault.AddEntities(project, ents)
 	if err != nil {
 		slog.Warn("kg: add entities failed", "project", project,
 			"batch", len(ents), "err", err)
 	} else {
 		// stats.Entities is documented as excluding dedup skips, and the batch
-		// count is exactly the newly-written ones. Per-entity identity is no
-		// longer available at this point, so the skip log reports what is
-		// actually known: how many of the batch were already filed.
+		// count is exactly the newly-written ones.
 		stats.Entities += added
 		if skipped := len(ents) - added; skipped > 0 {
 			slog.Debug("kg: duplicate entities skipped",
@@ -234,62 +231,28 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 		}
 	}
 
-	for _, ent := range result.Entities {
-		err := idx.vault.AddTriple(project, storage.Triple{
-			Subject:       ent.Name,
-			Predicate:     "mentioned_in",
-			Object:        sessionID,
-			SourceSession: sessionID,
-			ExtractedAt:   timestamp,
-			Confidence:    ent.Confidence,
-			Origin:        storage.OriginExtracted,
-		})
-		switch {
-		case err == nil:
-			stats.Triples++
-		case strings.Contains(err.Error(), "already exists"):
-			slog.Debug("kg: duplicate mentioned_in triple skipped",
-				"entity", ent.Name, "source", ent.Source)
-		default:
-			slog.Warn("kg: add mentioned_in triple failed",
-				"entity", ent.Name, "source", ent.Source, "err", err)
-		}
-	}
-
-	for _, tr := range result.Triples {
+	for _, tr := range prep.Triples {
 		err := idx.vault.AddTriple(project, storage.Triple{
 			Subject:       tr.Subject,
 			Predicate:     tr.Predicate,
 			Object:        tr.Object,
 			Confidence:    tr.Confidence,
-			SourceSession: sessionID,
+			SourceSession: tr.SourceSession,
 			ValidFrom:     tr.ValidFrom,
-			ExtractedAt:   timestamp,
+			ExtractedAt:   tr.ExtractedAt,
 			Origin:        storage.OriginExtracted,
 		})
 		switch {
 		case err == nil:
 			stats.Triples++
 		case strings.Contains(err.Error(), "already exists"):
-			slog.Debug("kg: duplicate relationship triple skipped",
+			slog.Debug("kg: duplicate triple skipped",
 				"subject", tr.Subject, "predicate", tr.Predicate)
 		default:
-			slog.Warn("kg: add relationship triple failed",
+			slog.Warn("kg: add triple failed",
 				"subject", tr.Subject, "predicate", tr.Predicate, "err", err)
 		}
 	}
 
 	return stats
-}
-
-// chunkConfig returns a ChunkConfig from the indexer's config, falling back to defaults.
-func (idx *Indexer) chunkConfig() chunk.ChunkConfig {
-	cfg := chunk.DefaultChunkConfig()
-	if idx.config.ChunkMaxChars > 0 {
-		cfg.MaxChars = idx.config.ChunkMaxChars
-	}
-	if idx.config.ChunkOverlap > 0 {
-		cfg.Overlap = idx.config.ChunkOverlap
-	}
-	return cfg
 }

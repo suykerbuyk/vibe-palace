@@ -5,6 +5,9 @@ package capture
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -258,78 +261,95 @@ func TestIndexTranscriptPerformance(t *testing.T) {
 	}
 }
 
-func TestChunkConfigFromConfig(t *testing.T) {
-	v := testVault(t)
-
-	// Custom chunk settings via config.
-	cfg := storage.Config{ChunkMaxChars: 200, ChunkOverlap: 30}
-	idx := NewIndexer(v, nil, nil, cfg)
-
-	got := idx.chunkConfig()
-	if got.MaxChars != 200 {
-		t.Errorf("MaxChars = %d, want 200", got.MaxChars)
+// writeHostConfig points the process at a temp config home and writes the
+// host-global vault config (the [chunker] layer) when global is non-empty, and
+// project's host-local layer (palace.scoring) when local is non-empty: the
+// layers palace.ProjectIndexing reads, so IndexTranscript's chunking and
+// classification follow them.
+func writeHostConfig(t *testing.T, project, global, local string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+	if global != "" {
+		p, err := storage.VaultConfigFilePath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("[meta]\nversion_major = 1\n\n"+global), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got.Overlap != 30 {
-		t.Errorf("Overlap = %d, want 30", got.Overlap)
-	}
-
-	// Zero values fall back to defaults.
-	idx2 := NewIndexer(v, nil, nil, storage.Config{})
-	got2 := idx2.chunkConfig()
-	if got2.MaxChars != 800 {
-		t.Errorf("default MaxChars = %d, want 800", got2.MaxChars)
-	}
-	if got2.Overlap != 100 {
-		t.Errorf("default Overlap = %d, want 100", got2.Overlap)
-	}
-}
-
-func TestNewIndexerWithScoringOverrides(t *testing.T) {
-	v := testVault(t)
-	cfg := storage.Config{
-		PalaceScoringOverrides: map[string]storage.ScoringRoomOverride{
-			"ml": {
-				High:   []string{"neural network"},
-				Medium: []string{"training"},
-				Low:    []string{"epoch"},
-			},
-		},
-		PalaceMinScore: 0.3,
-	}
-	idx := NewIndexer(v, nil, nil, cfg)
-
-	// Verify the classifier was constructed with overrides.
-	// Neural network content should classify to "ml" via the override.
-	transcript := "Train the neural network on the transformer architecture dataset."
-	_, err := idx.IndexTranscript(context.Background(), "ml-session", "test-proj", transcript)
-	if err != nil {
-		t.Fatalf("IndexTranscript: %v", err)
-	}
-
-	wing := palace.DetectWing("test-proj", "")
-	drawers, _ := v.ListDrawers("test-proj", wing, "ml")
-	if len(drawers) == 0 {
-		t.Error("expected drawers in 'ml' room via scoring override, got none")
+	if local != "" {
+		p, err := storage.HostProjectConfigPath(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(local), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-func TestNewIndexerWithLoweredThreshold(t *testing.T) {
+// TestIndexTranscriptChunksWithTheProjectsRecipe: IndexTranscript chunks with
+// the project's recipe (palace.ProjectIndexing: the vault config's [chunker]
+// settings), not with the config the indexer was constructed with, so the
+// chunks it writes and the recipe chunks.fingerprint records cannot differ.
+func TestIndexTranscriptChunksWithTheProjectsRecipe(t *testing.T) {
+	writeHostConfig(t, "test-proj", "[chunker]\nmax_chars = 200\noverlap = 30\n", "")
 	v := testVault(t)
-	cfg := storage.Config{
-		PalaceMinScore: 0.3, // Lower threshold: lone "test" (0.3) should now classify
-	}
-	idx := NewIndexer(v, nil, nil, cfg)
+	idx := NewIndexer(v, nil, nil, storage.Config{ChunkMaxChars: 4000}) // ignored: the project's recipe wins
 
-	transcript := "Just test it quickly."
-	_, err := idx.IndexTranscript(context.Background(), "threshold-session", "test-proj", transcript)
-	if err != nil {
-		t.Fatalf("IndexTranscript: %v", err)
+	var b strings.Builder
+	for i := range 40 {
+		fmt.Fprintf(&b, "Sentence number %d talks about the indexer and its chunk settings. ", i)
 	}
-
+	if _, err := idx.IndexTranscript(context.Background(), "chunk-session", "test-proj", b.String()); err != nil {
+		t.Fatal(err)
+	}
 	wing := palace.DetectWing("test-proj", "")
-	drawers, _ := v.ListDrawers("test-proj", wing, "testing")
-	if len(drawers) == 0 {
-		t.Error("expected drawers in 'testing' room with lowered threshold, got none")
+	total, longest := 0, 0
+	rooms, _ := v.ListRooms("test-proj", wing)
+	for _, r := range rooms {
+		ds, _ := v.ListDrawers("test-proj", wing, r)
+		for _, d := range ds {
+			total++
+			longest = max(longest, len(d.Content))
+		}
+	}
+	if total < 5 || longest > 260 {
+		t.Fatalf("%d drawers, longest %d chars: the project's max_chars = 200 was not applied", total, longest)
+	}
+}
+
+// TestIndexTranscriptClassifiesWithTheProjectsScoring: a host-local scoring
+// override for the project steers classification (room overrides and a lowered
+// minimum score), through palace.ProjectIndexing.
+func TestIndexTranscriptClassifiesWithTheProjectsScoring(t *testing.T) {
+	writeHostConfig(t, "test-proj", "",
+		"[palace.scoring]\nmin_score = 0.3\n\n[palace.scoring.rooms.ml]\nhigh = [\"neural network\"]\nmedium = [\"training\"]\nlow = [\"epoch\"]\n")
+	v := testVault(t)
+	idx := NewIndexer(v, nil, nil, storage.Config{})
+	wing := palace.DetectWing("test-proj", "")
+
+	if _, err := idx.IndexTranscript(context.Background(), "ml-session", "test-proj",
+		"Train the neural network on the transformer architecture dataset."); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := v.ListDrawers("test-proj", wing, "ml"); len(ds) == 0 {
+		t.Error("expected a drawer in the 'ml' room from the project's scoring override")
+	}
+	if _, err := idx.IndexTranscript(context.Background(), "threshold-session", "test-proj", "Just test it quickly."); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := v.ListDrawers("test-proj", wing, "testing"); len(ds) == 0 {
+		t.Error("expected a drawer in 'testing' with the project's lowered min_score")
 	}
 }
 

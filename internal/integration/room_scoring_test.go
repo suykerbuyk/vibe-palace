@@ -135,18 +135,12 @@ credential validation and add permission checks.`,
 // flow through the full capture pipeline: config → NewIndexer → RoomClassifier →
 // drawer classification.
 func TestIntegrationScoringOverrides(t *testing.T) {
-	// Add a new "ml" room via scoring overrides and lower the threshold.
-	h := newHarness(t, false, func(cfg *storage.Config) {
-		cfg.PalaceScoringOverrides = map[string]storage.ScoringRoomOverride{
-			"ml": {
-				High:   []string{"neural network", "transformer"},
-				Medium: []string{"training"},
-				Low:    []string{"epoch"},
-			},
-		}
-		cfg.PalaceMinScore = 0.3
-	})
-	h.registerAllTools(t)
+	// Add a new "ml" room via the project's host-local scoring overrides and
+	// lower the threshold. Capture classifies with the project's config files
+	// (palace.ProjectIndexing), so the overrides are written there.
+	const scoringOverrides = "[palace.scoring]\nmin_score = 0.3\n\n" +
+		"[palace.scoring.rooms.ml]\nhigh = [\"neural network\", \"transformer\"]\n" +
+		"medium = [\"training\"]\nlow = [\"epoch\"]\n"
 
 	tests := []struct {
 		name       string
@@ -183,16 +177,8 @@ Testing the output now.`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h2 := newHarness(t, false, func(cfg *storage.Config) {
-				cfg.PalaceScoringOverrides = map[string]storage.ScoringRoomOverride{
-					"ml": {
-						High:   []string{"neural network", "transformer"},
-						Medium: []string{"training"},
-						Low:    []string{"epoch"},
-					},
-				}
-				cfg.PalaceMinScore = 0.3
-			})
+			writeHostConfig(t, "override-test", "", scoringOverrides)
+			h2 := newHarness(t, false)
 			h2.registerAllTools(t)
 
 			var result string

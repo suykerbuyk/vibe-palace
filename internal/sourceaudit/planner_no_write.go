@@ -63,6 +63,10 @@ var plannerFuncs = map[string]bool{
 	// RemoveNoLock/Move rows in plannerWriteCalls below are GENERIC and STAY:
 	// they tighten this rule for every planner, present and future.
 	"PlanProjectSlugMigration": true,
+	// The write-free prepare step every index writer shares
+	// (internal/palace, task importers-write-the-frozen-tracked-corpus,
+	// Scope 1): it chunks, classifies and extracts, and must never write.
+	"Prepare": true,
 }
 
 // plannerWriteCalls names the calls that write, or that hand back something that

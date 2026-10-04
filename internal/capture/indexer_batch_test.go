@@ -214,28 +214,29 @@ func TestIndexTranscriptBatchesEntities(t *testing.T) {
 	}
 }
 
-// TestExtractEntitiesDoesNotAddPerEntity is the structural pin. AddEntity reads
-// and scans the entire entities file, so calling it once per extracted entity
-// cost O(entities in the graph) per entity. A behavioural test cannot tell one
-// read from thirty; the shape is pinned here.
-func TestExtractEntitiesDoesNotAddPerEntity(t *testing.T) {
-	fn := findFuncDecl(t, "indexer.go", "extractEntities")
+// TestWriteKGDoesNotAddPerEntity is the structural pin. AddEntity reads and
+// scans the entire entities file, so calling it once per extracted entity cost
+// O(entities in the graph) per entity. A behavioural test cannot tell one read
+// from thirty; the shape is pinned here, on writeKG, which writes the entities
+// and triples palace.Prepare extracted.
+func TestWriteKGDoesNotAddPerEntity(t *testing.T) {
+	fn := findFuncDecl(t, "indexer.go", "writeKG")
 
 	if n := countSelectorCalls(fn, "AddEntity"); n != 0 {
-		t.Errorf("extractEntities makes %d AddEntity (singular) calls, want 0 — "+
+		t.Errorf("writeKG makes %d AddEntity (singular) calls, want 0 — "+
 			"the per-entity entry point rescans the whole entities file every time", n)
 	}
 	if n := countSelectorCalls(fn, "AddEntities"); n != 1 {
-		t.Errorf("extractEntities makes %d AddEntities calls, want exactly 1", n)
+		t.Errorf("writeKG makes %d AddEntities calls, want exactly 1", n)
 	}
 	if selectorCallInsideLoop(fn, "AddEntities") {
-		t.Error("extractEntities calls AddEntities inside a loop — the quadratic term is back")
+		t.Error("writeKG calls AddEntities inside a loop — the quadratic term is back")
 	}
-	// AddTriple is deliberately still per-entity: it is one JSON file per
+	// AddTriple is deliberately still per-triple: it is one JSON file per
 	// triple, deduped by path collision, with no whole-file scan to amortize.
-	if n := countSelectorCalls(fn, "AddTriple"); n != 2 {
-		t.Errorf("extractEntities makes %d AddTriple calls, want 2 "+
-			"(mentioned_in + relationship) — AddTriple was out of scope for the batch", n)
+	// Prepare emits the mentioned_in and relationship triples as one list.
+	if n := countSelectorCalls(fn, "AddTriple"); n != 1 {
+		t.Errorf("writeKG makes %d AddTriple calls, want 1 (one loop over the prepared triples)", n)
 	}
 }
 
