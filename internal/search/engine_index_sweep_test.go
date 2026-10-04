@@ -83,8 +83,10 @@ func TestEngineReapSweepsGoneProjectsIndexStores(t *testing.T) {
 	sweepWrite(t, root, "palace/resid/.local/x", "x\n")
 	sweepWrite(t, root, "palace/.local/index/resid/chunks.jsonl", "{}\n")
 
-	// kept: palace/kept/ holds an untracked regular file, so kept exists.
-	sweepWrite(t, root, "palace/kept/ingested-archives.jsonl", "{}\n")
+	// kept: palace/kept/ holds an untracked regular file that counts toward
+	// presence (a KG record; a derived file such as the ingest ledger would not),
+	// so kept exists.
+	sweepWrite(t, root, "palace/kept/kg/entities.jsonl", "{}\n")
 	sweepWrite(t, root, "palace/.local/index/kept/chunks.jsonl", "{}\n")
 
 	idxRoot := v.IndexRootDir()

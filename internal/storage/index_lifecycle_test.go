@@ -37,30 +37,35 @@ func TestVaultMigratedReadsTheKeyOnly(t *testing.T) {
 
 // IndexReapable is !ProjectExists plus the rename-pending keep. It is NOT the
 // embed cache's Lstat keep rule: palace/<p>/ holding only .local/ is no store, and
-// a departed slug whose palace/<p>/ still holds an untracked regular file (the
-// legacy ingested-archives.jsonl) is one.
+// a departed slug whose palace/<p>/ still holds a regular file that counts toward
+// presence is one. A derived file alone — the legacy ingested-archives.jsonl, a
+// drawer — does not count (the presence rule's derived clause, task
+// tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker), so a slug whose
+// palace residue is only the ledger is reapable.
 func TestIndexReapableIsProjectExistsAndThePendingKeep(t *testing.T) {
 	root := departedVault(t)
 	v := &Vault{Root: root}
 	sweepFile(t, root, "Projects/live/resume.md", "x\n")
 	sweepFile(t, root, "palace/localonly/.local/thing", "x\n")
-	sweepFile(t, root, "palace/residue/ingested-archives.jsonl", "{}\n")
+	sweepFile(t, root, "palace/residue/kg/entities.jsonl", "{}\n")
+	sweepFile(t, root, "palace/ledgeronly/ingested-archives.jsonl", "{}\n")
 	writeRecord(t, root, "movedres", departure.MovedToVault, departedLabel)
 	sweepFile(t, root, "Projects/movedres/resume.md", "x\n")
-	sweepFile(t, root, "palace/movedres/ingested-archives.jsonl", "{}\n")
+	sweepFile(t, root, "palace/movedres/kg/entities.jsonl", "{}\n")
 	writeRecord(t, root, "movedbare", departure.MovedToVault, departedLabel)
 	sweepFile(t, root, "Projects/movedbare/resume.md", "x\n")
 	sweepFile(t, root, "palace/movedbare/.local/x", "x\n")
 	writeRecord(t, root, "renamed", departure.Renamed, "live")
 
 	for slug, want := range map[string]bool{
-		"live":      false, // a project
-		"nothing":   true,  // nothing anywhere
-		"localonly": true,  // palace/<p>/.local/ only: not a store
-		"residue":   false, // a regular file outside .local/: a store
-		"movedres":  false, // departed, but palace residue makes it a store
-		"movedbare": true,  // departed, Projects/ side dropped, palace holds only .local/
-		"renamed":   true,  // renamed away, no record on this host
+		"live":       false, // a project
+		"nothing":    true,  // nothing anywhere
+		"localonly":  true,  // palace/<p>/.local/ only: not a store
+		"residue":    false, // a regular file outside .local/: a store
+		"ledgeronly": true,  // the derived ledger alone: not a store
+		"movedres":   false, // departed, but palace residue makes it a store
+		"movedbare":  true,  // departed, Projects/ side dropped, palace holds only .local/
+		"renamed":    true,  // renamed away, no record on this host
 	} {
 		ok, reason, err := v.IndexReapable(slug)
 		if err != nil {

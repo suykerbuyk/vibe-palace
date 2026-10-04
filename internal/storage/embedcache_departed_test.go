@@ -244,11 +244,12 @@ func TestDepartedCaches_UnrecordedSlugsAreJudgedAsToday(t *testing.T) {
 }
 
 // T9 (R1). A stale moved-to-vault record, Projects/<s> absent, but a real
-// palace/<s> store: the slug is still listed, so its cache is KEPT.
+// palace/<s> store: the slug is still listed, so its cache is KEPT. (The store
+// holds a KG record: a drawer alone is derived and makes no store.)
 func TestDepartedCaches_ListedStoreKeepsItsCache(t *testing.T) {
 	root := departedVault(t)
 	writeRecord(t, root, "qms", departure.MovedToVault, departedLabel)
-	sweepFile(t, root, "palace/qms/drawers/qms/general/drawers.jsonl", "{}\n")
+	sweepFile(t, root, "palace/qms/kg/entities.jsonl", "{}\n")
 	seedCache(t, root, "qms")
 	mustSweep(t, &Vault{Root: root})
 	if !cacheExists(root, "qms") {

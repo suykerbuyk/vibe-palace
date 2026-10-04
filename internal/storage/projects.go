@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,9 +201,10 @@ func listPalaceStores(palaceDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	rule := newPresenceRule(filepath.Dir(palaceDir))
 	stores := dirs[:0]
 	for _, s := range dirs {
-		holds, err := palaceDirHoldsFileOutsideLocal(filepath.Join(palaceDir, s))
+		holds, err := rule.holdsPresentFile(filepath.Join(palaceDir, s))
 		if err != nil || holds {
 			stores = append(stores, s)
 		}
@@ -210,33 +212,116 @@ func listPalaceStores(palaceDir string) ([]string, error) {
 	return stores, nil
 }
 
-// palaceDirHoldsFileOutsideLocal reports whether dir holds at least one regular
-// file anywhere beneath it, outside its top-level .local/. Empty directories and
+// THE PRESENCE RULE (task tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker,
+// Scope 4; palace-navigation-over-the-host-local-chunk-store cites it):
+//
+//	A file counts toward presence under palace/<p>/ when it is outside .local/
+//	AND does not match a derived pattern (palace/*/drawers/,
+//	palace/*/ingested-archives.jsonl). On a migrated vault, it must also not be
+//	an untracked file under kg/: a stray extracted triple left "??".
+//
+// The derived clause is UNCONDITIONAL: derived files are per-host (ignored on a
+// migrated vault, regenerable before it), and counting them is what made
+// presence differ between a host holding stray drawers and a clean one. So,
+// before the migration too, a project whose only palace/<p>/ files are drawers
+// is not a store. The kg/ clause applies only on a migrated vault, where a
+// tracked kg/ file is an authored record and an untracked one is residue.
+//
+// presenceRule is that rule for ONE enumeration. holdsPresentFile is the one
+// predicate; listPalaceStores (behind ListAllProjects) and PalaceNonStores both
+// call it, so the two still partition palace/ between them.
+type presenceRule struct {
+	vaultRoot string
+	migrated  bool
+
+	// untracked is the set of untracked, unignored files under palace/
+	// (vault-relative, slash-separated), listed at most once per enumeration
+	// and only when a migrated walk first meets a kg/ file.
+	untracked map[string]struct{}
+	listed    bool
+	listErr   error
+}
+
+// newPresenceRule reads the marker for one enumeration. Presence is a REPORTER,
+// so a marker that cannot be read takes the more inclusive pre-marker rule (no
+// kg/ clause: a project is never hidden by it) and is logged; the audit reports
+// the bad key.
+func newPresenceRule(vaultRoot string) *presenceRule {
+	migrated, err := VaultMigrated(vaultRoot)
+	if err != nil {
+		slog.Warn("presence: the migration marker cannot be read, so the pre-marker presence rule applies",
+			"vault", vaultRoot, "err", err)
+		migrated = false
+	}
+	return &presenceRule{vaultRoot: vaultRoot, migrated: migrated}
+}
+
+// holdsPresentFile reports whether dir (palace/<p>/) holds at least one regular
+// file that counts toward presence by the rule above. Empty directories and
 // empty subtrees do not count — git cannot carry them — and neither does
 // anything under .local/, which the vault's gitignore keeps machine-local.
 //
-// It is cheap on a real store: the walk stops at the first regular file, and a
-// store reaches .surface or its first drawers.jsonl within a few entries.
-// Symlinks are not regular files and are not followed.
-func palaceDirHoldsFileOutsideLocal(dir string) (bool, error) {
+// It is cheap on a real store: the walk stops at the first counting file, and
+// a store reaches .surface or its first kg/ record within a few entries. The
+// kg/ clause costs one `git ls-files` per enumeration, on a migrated vault
+// only. Symlinks are not regular files and are not followed.
+func (r *presenceRule) holdsPresentFile(dir string) (bool, error) {
 	found := false
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		top := filepath.Dir(p) == dir
 		if d.IsDir() {
-			if d.Name() == ".local" && filepath.Dir(p) == dir {
+			if top && (d.Name() == ".local" || d.Name() == "drawers") {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if d.Type().IsRegular() {
-			found = true
-			return fs.SkipAll
+		if !d.Type().IsRegular() || (top && d.Name() == "ingested-archives.jsonl") {
+			return nil
 		}
-		return nil
+		if r.migrated {
+			rel, _ := filepath.Rel(dir, p)
+			if strings.SplitN(filepath.ToSlash(rel), "/", 2)[0] == "kg" && r.isUntracked(p) {
+				return nil
+			}
+		}
+		found = true
+		return fs.SkipAll
 	})
 	return found, err
+}
+
+// isUntracked reports whether the file at abs is untracked and not ignored. A
+// listing that fails counts the file as tracked — present — and is logged:
+// "I could not look" never hides a project.
+func (r *presenceRule) isUntracked(abs string) bool {
+	if !r.listed {
+		r.listed = true
+		out, _, err := gitCmdStdin(r.vaultRoot, 30*time.Second, "", "ls-files", "-z", "--others", "--exclude-standard", "--", "palace")
+		if err != nil {
+			r.listErr = err
+			slog.Warn("presence: cannot list untracked palace files; kg/ files count as present",
+				"vault", r.vaultRoot, "err", err)
+		} else {
+			r.untracked = map[string]struct{}{}
+			for f := range strings.SplitSeq(out, "\x00") {
+				if f != "" {
+					r.untracked[f] = struct{}{}
+				}
+			}
+		}
+	}
+	if r.listErr != nil {
+		return false
+	}
+	rel, err := filepath.Rel(r.vaultRoot, abs)
+	if err != nil {
+		return false
+	}
+	_, ok := r.untracked[filepath.ToSlash(rel)]
+	return ok
 }
 
 // PalaceNonStore is one palace/<slug>/ directory that is NOT a store by the
@@ -249,9 +334,11 @@ type PalaceNonStore struct {
 	// could not be read.
 	HasLocal bool
 	Local    []LocalEntry
-	// EmptySubtree reports entries OUTSIDE .local/, none of which holds a regular
-	// file — in practice empty directories created ahead of a write that never
-	// landed, or left behind when a pull removed the files inside them.
+	// EmptySubtree reports entries OUTSIDE .local/, none of which holds a file
+	// that counts toward presence — in practice empty directories created ahead
+	// of a write that never landed or left behind when a pull removed the files
+	// inside them, derived files alone (drawers, the ingest ledger), or, on a
+	// migrated vault, untracked kg/ residue.
 	EmptySubtree bool
 	// InProjects reports whether Projects/<slug>/ exists on this host.
 	InProjects bool
@@ -280,10 +367,11 @@ func (v *Vault) PalaceNonStores() ([]PalaceNonStore, error) {
 		return nil, fmt.Errorf("list palace directories: %w", err)
 	}
 
+	rule := newPresenceRule(v.Root)
 	var out []PalaceNonStore
 	for _, s := range dirs {
 		dir := filepath.Join(palaceDir, s)
-		holds, err := palaceDirHoldsFileOutsideLocal(dir)
+		holds, err := rule.holdsPresentFile(dir)
 		if err != nil || holds {
 			continue
 		}

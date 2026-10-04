@@ -38,8 +38,9 @@ func newDivergentVault(t *testing.T) *Vault {
 		}
 	}
 
-	// In BOTH trees.
-	seed("palace", "vibe-palace", "drawers", "w", "r", "drawers.jsonl")
+	// In BOTH trees. (A drawer would not do: drawers are derived and never
+	// count toward presence.)
+	seed("palace", "vibe-palace", "kg", "triples", "s", "a.json")
 	mk("Projects", "vibe-palace")
 
 	// palace/ only — indexed, but no history was ever written.
@@ -296,14 +297,23 @@ func TestPresenceRule_PalaceStoreNeedsAFileOutsideLocal(t *testing.T) {
 		"palace/hollowkg/kg/triples/",
 		"palace/mixed/.local/embed-cache/x.vec",
 		"palace/mixed/drawers/",
+		// excluded: derived files alone, tracked or not (the derived clause is
+		// unconditional)
+		"palace/drawersonly/drawers/w/r/drawers.jsonl",
+		"palace/ledgeronly/ingested-archives.jsonl",
+		"palace/derivedlocal/.local/embed-cache/y.vec",
+		"palace/derivedlocal/drawers/w/r/drawers.jsonl",
+		"palace/derivedlocal/drawers/.local/f",
 		// included
 		"palace/kgonly/kg/entities.jsonl",
 		"palace/stamped/.surface",
-		"palace/zerolen/drawers/w/r/drawers.jsonl",
+		"palace/zerolen/kg/triples/s/t.json",
 		"palace/withlocal/.local/embed-cache/y.vec",
-		"palace/withlocal/drawers/w/r/drawers.jsonl",
+		"palace/withlocal/kg/triples/s/t.json",
 		// a nested .local is NOT the top-level one, so its file counts
-		"palace/nested/drawers/.local/f",
+		"palace/nested/kg/.local/f",
+		// a nested drawers/ or ledger is not the derived pattern
+		"palace/deepdrawers/kg/drawers/f",
 		// never a project
 		"palace/.local/embed-cache/p/z.vec",
 	)
@@ -319,7 +329,7 @@ func TestPresenceRule_PalaceStoreNeedsAFileOutsideLocal(t *testing.T) {
 			got = append(got, p.Slug)
 		}
 	}
-	want := []string{"kgonly", "nested", "stamped", "withlocal", "zerolen"}
+	want := []string{"deepdrawers", "kgonly", "nested", "stamped", "withlocal", "zerolen"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("stores = %v, want %v", got, want)
 	}

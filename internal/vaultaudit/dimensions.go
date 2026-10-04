@@ -339,10 +339,13 @@ const (
 	// directory (not a symlink) whose name is a valid slug. $d is the path, $s the name.
 	evidenceSlugDir = `[ -d "$d" ] && [ ! -L "$d" ] || continue; case $s in *[!a-z0-9-]*|-*|*-|*--*) continue;; esac; `
 	// evidencePalaceStore is the presence rule: a regular file somewhere under $d
-	// outside its top-level .local/. The start path carries no trailing slash, and
+	// outside its top-level .local/, and not derived (its top-level drawers/, its
+	// ingested-archives.jsonl). The start path carries no trailing slash, and
 	// there is no -quit, so GNU and BSD find print the same paths and the prune
-	// matches on both.
-	evidencePalaceStore = `[ -n "$(find "$d" -path "$d/.local" -prune -o -type f -print | head -n 1)" ]`
+	// matches on both. The rule's migrated-only kg/ clause (an untracked kg/ file
+	// does not count) needs git and is not reproduced here; on a migrated vault,
+	// add `git ls-files --others --exclude-standard -- "$d/kg"` to see it.
+	evidencePalaceStore = `[ -n "$(find "$d" \( -path "$d/.local" -o -path "$d/drawers" \) -prune -o -type f ! -path "$d/ingested-archives.jsonl" -print | head -n 1)" ]`
 
 	// Both halves apply listProjectDirs' filter, and the palace/ half adds the
 	// presence rule (storage/projects.go).

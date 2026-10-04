@@ -79,6 +79,11 @@ func seedArchiveDrawer(t *testing.T, vault *storage.Vault, p string) {
 	if err := os.WriteFile(filepath.Join(dir, "drawers.jsonl"), append(line, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The store's own stamp. A drawer alone is derived and makes no store (the
+	// presence rule, storage/projects.go); a real store carries its .surface.
+	if err := os.WriteFile(filepath.Join(vault.Root, "palace", p, ".surface"), []byte("surface = 8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // seedNote writes a session note so a manifest's back-link can resolve.
