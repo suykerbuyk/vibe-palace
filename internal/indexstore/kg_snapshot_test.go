@@ -122,6 +122,9 @@ func TestReadKGNeverReadsChunks(t *testing.T) {
 				t.Errorf("ReadKG did not read %s: %q", want, read)
 			}
 		}
+		if l, k := slices.Index(read, pf.ledger), slices.Index(read, pf.kg); l < 0 || k < 0 || l > k {
+			t.Errorf("ReadKG read the KG file before the ledger (ledger at %d, KG at %d): %q", l, k, read)
+		}
 	})
 	t.Run("unreadable chunks.jsonl", func(t *testing.T) {
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {

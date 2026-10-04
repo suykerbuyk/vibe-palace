@@ -367,11 +367,13 @@ func readKGFile(path string) (*kgFold, error) {
 // liveness depends on the ledger alone.
 //
 // The reader rule is Store's: read the change counter (ReadGeneration) BEFORE
-// the snapshot. A writer appends a record's KG lines before its ledger line,
-// and the snapshot reads the ledger first, so a read that races a commit can
-// only MISS that commit's records (they read as not yet live), for that one
-// call; it never shows a record the ledger does not make live. The commit's
-// counter bump makes the next comparison reload.
+// the snapshot, so a commit that lands during the read makes the next
+// comparison reload. Liveness is always judged against the snapshot's own
+// ledger, so a record shows only if that ledger makes it live; a read that
+// races a commit can miss some of that commit's records, for that one call.
+// The read order, ledger then KG (as ReadStore, and as a writer appends KG
+// lines before the ledger line), only changes which racing records are
+// missed.
 type KGSnapshot struct {
 	ledger *Ledger
 	kg     *kgFold

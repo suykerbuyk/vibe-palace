@@ -10,7 +10,7 @@
 //
 // The rules it applies:
 //   - Every entry point calls the vault data-format gate first.
-//   - Only local records with a live owner are read (Store.KG(true)).
+//   - Only local records with a live owner are read (KGSnapshot.KG(true)).
 //   - A local record's date and session are derived at read time from its
 //     earliest live owner, through Ledger.LiveOwner. The store keeps one
 //     owner-invariant payload per record id, so nothing in a payload depends on
