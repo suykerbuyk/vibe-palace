@@ -127,9 +127,13 @@ manifest for it. A marker left behind by a deleted, recreated, renamed or
 departed project therefore never suppresses an import. Archiving is
 idempotent anyway: a session whose archive is already there is skipped.
 Deleting or splitting a project removes its marker. A marker in the old
-location, `palace/<slug>/.local/imported-sessions.jsonl`, is read once,
-moved to the new file and deleted, and its emptied `palace/<slug>/.local/`
-directory is removed.
+location, `palace/<slug>/.local/imported-sessions.jsonl`, is copied into the
+new file, without duplicating lines already there. It is then deleted, and
+its emptied `palace/<slug>/.local/` directory removed, **unless git tracks
+anything under `palace/<slug>/.local/`**. That directory is not ignored, so
+a vault may have committed the old marker. A tracked file is left in place
+so the vault shows no deletion; removing it from the repository is the
+operator's call.
 
 **Source data format** (session markdown frontmatter):
 ```yaml

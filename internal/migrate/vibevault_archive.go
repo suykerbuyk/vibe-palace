@@ -80,7 +80,11 @@ type markers map[string][]string
 
 // loadMarkers reads the project's markers. A legacy marker file is read once:
 // its lines are appended to the new file, it is deleted, and its emptied
-// palace/<p>/.local/ directory is removed.
+// palace/<p>/.local/ directory is removed. palace/<p>/.local/ is not ignored,
+// so a vault may have committed the legacy file: when git tracks anything
+// under palace/<p>/.local/ (or cannot say), the legacy file is left in place
+// and only its lines the new file lacks are copied, so a re-run copies
+// nothing and the vault shows no deletion.
 func loadMarkers(destination *storage.Vault, project string) (markers, error) {
 	path, err := markerFile(destination, project)
 	if err != nil {
@@ -91,24 +95,9 @@ func loadMarkers(destination *storage.Vault, project string) (markers, error) {
 		return nil, err
 	}
 	if data, err := os.ReadFile(legacy); err == nil {
-		if err := storage.EnsureDir(filepath.Dir(path)); err != nil {
+		if err := moveLegacyMarker(destination, project, legacy, path, data); err != nil {
 			return nil, err
 		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return nil, err
-		}
-		_, werr := f.Write(data)
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			return nil, fmt.Errorf("move legacy import marker: %w", werr)
-		}
-		if err := os.Remove(legacy); err != nil {
-			return nil, fmt.Errorf("remove legacy import marker: %w", err)
-		}
-		_ = os.Remove(filepath.Dir(legacy)) // only when empty
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read legacy import marker: %w", err)
 	}
@@ -133,6 +122,55 @@ func loadMarkers(destination *storage.Vault, project string) (markers, error) {
 		m[mk.SessionID] = append(m[mk.SessionID], mk.Reason)
 	}
 	return m, nil
+}
+
+// moveLegacyMarker appends the legacy marker's lines the new file does not
+// already hold, then deletes the legacy file and its emptied directory unless
+// git tracks something under palace/<p>/.local/.
+func moveLegacyMarker(destination *storage.Vault, project, legacy, path string, data []byte) error {
+	if err := storage.EnsureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	if cur, err := os.ReadFile(path); err == nil {
+		for line := range strings.SplitSeq(string(cur), "\n") {
+			have[strings.TrimSpace(line)] = true
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read import marker: %w", err)
+	}
+	var add strings.Builder
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !have[line] {
+			have[line] = true
+			add.WriteString(line + "\n")
+		}
+	}
+	if add.Len() > 0 {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		_, werr := f.WriteString(add.String())
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return fmt.Errorf("copy legacy import marker: %w", werr)
+		}
+	}
+	tracked, err := destination.TrackedPalaceLocalFiles()
+	if err != nil || tracked[project] > 0 {
+		// Tracked, or git could not say: deleting would show as a deletion
+		// in the vault. The copy is done; the legacy file stays.
+		return nil
+	}
+	if err := os.Remove(legacy); err != nil {
+		return fmt.Errorf("remove legacy import marker: %w", err)
+	}
+	_ = os.Remove(filepath.Dir(legacy)) // only when empty
+	return nil
 }
 
 // done reports whether a session counts as imported. The marker is only a

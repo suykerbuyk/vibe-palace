@@ -513,6 +513,59 @@ func TestVibevaultLegacyMarkerIsReadOnceThenDeleted(t *testing.T) {
 	}
 }
 
+// TestVibevaultTrackedLegacyMarkerIsCopiedNotDeleted: palace/<p>/.local/ is
+// not ignored, so a vault may have committed the legacy marker. Its lines are
+// copied into the new marker once, the committed file stays (git shows no
+// deletion), and a second run copies nothing more.
+func TestVibevaultTrackedLegacyMarkerIsCopiedNotDeleted(t *testing.T) {
+	vault := setupTestVault(t)
+	git := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = vault.Root
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	importOnce(t, vault)
+	newMarker, _ := markerFile(vault, fixtureProject)
+	data := mustRead(t, newMarker)
+	if err := os.Remove(newMarker); err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ := legacyMarkerFile(vault, fixtureProject)
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(vault.Root, ".gitignore"), []byte("palace/.local/\n.vp-locks/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "a vault that committed its legacy marker")
+	rel := filepath.ToSlash(strings.TrimPrefix(legacy, vault.Root+string(filepath.Separator)))
+	if strings.TrimSpace(git("ls-files", "--", rel)) != rel {
+		t.Fatalf("precondition: git must track %s", rel)
+	}
+
+	for run := range 2 {
+		if res := importOnce(t, vault); res.SessionsSkipped != 3 || res.ArchivesWritten != 0 {
+			t.Fatalf("run %d with the tracked legacy marker: %+v", run, res)
+		}
+		if st := git("status", "--porcelain", "--", rel); st != "" {
+			t.Fatalf("run %d: the tracked legacy marker changed in git: %q", run, st)
+		}
+		if got := mustRead(t, newMarker); string(got) != string(data) {
+			t.Fatalf("run %d: the new marker holds\n%s\nwant the legacy lines once\n%s", run, got, data)
+		}
+	}
+}
+
 // TestVibevaultADeletedAndRecreatedProjectIsImportedAgain: the marker is a
 // hint. After a project's archives are gone (a project delete; a host where
 // the marker survived, as before the delete purged palace/.local/imports/), a
