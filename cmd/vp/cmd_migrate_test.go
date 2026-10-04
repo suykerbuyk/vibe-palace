@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -606,7 +607,15 @@ func TestMigrateMemPalaceOutputStatesTheCaveats(t *testing.T) {
 			t.Errorf("output names %q:\n%s", banned, stderr)
 		}
 	}
+	if m := namesAVPCommand.FindString(stderr); m != "" {
+		t.Errorf("output names a vp command (%q):\n%s", m, stderr)
+	}
 }
+
+// namesAVPCommand matches any vp subcommand named in output ("vp search",
+// "vp index …"): an import's output names no command at all, not only the
+// ones a word list remembers.
+var namesAVPCommand = regexp.MustCompile(`\bvp [a-z]`)
 
 // TestMigrateMemPalaceSaysWhichDayTheBatchesCarry: the output names the day
 // every batch carries and its source, and when nothing in the export parsed
@@ -880,6 +889,9 @@ func TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand(t *testing.T) {
 		if strings.Contains(lower, banned) {
 			t.Errorf("the output contains %q:\n%s", banned, stderr)
 		}
+	}
+	if m := namesAVPCommand.FindString(stderr); m != "" {
+		t.Errorf("the output names a vp command (%q):\n%s", m, stderr)
 	}
 	if m, _ := filepath.Glob(filepath.Join(vaultDir, "Projects", "p", "transcripts", "*.manifest.json")); len(m) != 2 {
 		t.Errorf("%d manifests, want 2 (s1 and knowledge.md)", len(m))
