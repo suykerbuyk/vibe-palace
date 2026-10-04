@@ -157,14 +157,6 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
-      "id": "uninvoked index.EntityRecord",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task authored-and-extracted-knowledge-graph-records (shared KG payloads). The only way to build a host-local KG entity record: its parameters are the identity fields alone, so a per-owner field cannot reach the store's one payload per id. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (ING, building ArchiveCommit.KG) and importers-write-the-frozen-tracked-corpus (the mempalace import, building BatchCommit.KG). This entry goes stale, and the gate then demands its removal, the moment the first of them lands."
-    },
-    {
-      "id": "uninvoked index.TripleRecord",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task authored-and-extracted-knowledge-graph-records (shared KG payloads). The only way to build a host-local KG triple record: its parameters are the identity fields alone, so a per-owner field cannot reach the store's one payload per id. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (ING, building ArchiveCommit.KG) and importers-write-the-frozen-tracked-corpus (the mempalace import, building BatchCommit.KG). This entry goes stale, and the gate then demands its removal, the moment the first of them lands."
-    },
-    {
       "id": "uninvoked indexstore.Ledger.InBaseline",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Read by pending-archive-ingester-and-per-archive-commit-step: automatic triggers ingest only pending archives outside the baseline set. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -225,16 +217,8 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The per-archive commit step. Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.Tx.CommitBatch",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: importers-write-the-frozen-tracked-corpus (one mempalace import batch). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.Tx.DeleteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (a corrupt or mismatched graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.EnsureLedger",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step (naming its trigger's archive) and explicit-resumable-index-rebuild-with-disk-watchdog. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.RecordFailure",
@@ -255,10 +239,6 @@
     {
       "id": "uninvoked indexstore.Tx.Supersede",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, for a re-archived session. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.UseRecipe",
-      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The recipe a writer records in chunks.fingerprint, set before any chunk-writing step (the EnsureLedger idiom; ErrNoRecipe without it). Non-test callers: pending-archive-ingester-and-per-archive-commit-step, explicit-resumable-index-rebuild-with-disk-watchdog (before Discard(DiscardChunks)) and decision-chunks-in-the-host-local-store, the writers of chunk lines, none of which has landed. This entry goes stale the moment the first of them does."
     },
     {
       "id": "uninvoked indexstore.Tx.WriteGraph",

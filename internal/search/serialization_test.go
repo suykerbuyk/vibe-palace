@@ -111,7 +111,7 @@ func TestRebuildAndIndexDrawersInterleave(t *testing.T) {
 	indexed := make(chan struct{})
 	go func() {
 		defer close(indexed)
-		ierr = eng.IndexDrawersWait(ctx, []DrawerInput{{Project: "proj", Wing: "wing", Room: "room", Drawer: inserted, Vec: vec}})
+		ierr = eng.indexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing", Room: "room", Drawer: inserted, Vec: vec}}, indexstore.NoTimeout)
 	}()
 	waitFor(t, snap, lockEvent{"mutex-wait", "proj"})
 	close(be.release)
@@ -222,7 +222,7 @@ func TestSemaphoreStormLeavesItFree(t *testing.T) {
 
 // holdMutexBlockedOnCommit makes engine eng hold project's mutex while it is
 // blocked on the project's commit lock, which the test holds: the shape of an
-// IndexDrawersWait waiting behind another process's ingest.
+// waiting IndexDrawers (no lock timeout) behind another process's ingest.
 // It returns once that state is reached, and a function that releases the
 // commit lock and waits for the blocked writer to finish.
 func holdMutexBlockedOnCommit(t *testing.T, eng *Engine, v *storage.Vault, project string, d storage.Drawer) func() {
@@ -242,7 +242,7 @@ func holdMutexBlockedOnCommit(t *testing.T, eng *Engine, v *storage.Vault, proje
 	t.Cleanup(func() { beforeCommitLockHook = nil })
 	done := make(chan error, 1)
 	go func() {
-		done <- eng.IndexDrawersWait(ctx, []DrawerInput{{Project: project, Wing: "wing", Room: "room", Drawer: d, Vec: unitVec(2)}})
+		done <- eng.indexDrawers(ctx, []DrawerInput{{Project: project, Wing: "wing", Room: "room", Drawer: d, Vec: unitVec(2)}}, indexstore.NoTimeout)
 	}()
 	<-blocked
 	return func() {
@@ -257,7 +257,7 @@ func holdMutexBlockedOnCommit(t *testing.T, eng *Engine, v *storage.Vault, proje
 
 // TestZeroTimeoutSearchDoesNotWaitOnTheProjectMutex: the engine is warm on P,
 // and another process has since committed to P (the counter moved), so the
-// next search must attempt a rebuild. Engine A's own IndexDrawersWait holds
+// next search must attempt a rebuild. Engine A's own waiting IndexDrawers holds
 // P's mutex, blocked on the commit lock another process holds. A search with a
 // zero lock timeout returns the loaded index at once instead of waiting, and
 // keeps P marked out of date: once the writer is through, the next search

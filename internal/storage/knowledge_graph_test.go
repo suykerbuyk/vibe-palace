@@ -460,29 +460,45 @@ func TestKGStatsEmpty(t *testing.T) {
 	}
 }
 
-func TestEntityWithProperties(t *testing.T) {
+// TestLegacyEntityLineWithPropertiesSurvives: Entity no longer has a
+// Properties field (its only writer, the tracked-KG mempalace importer, is
+// gone), but tracked vaults hold lines that carry "properties". Such a line
+// still lists, and a later append leaves it byte-for-byte as it was: the
+// entities file is appended to, never re-marshalled through Entity.
+func TestLegacyEntityLineWithPropertiesSurvives(t *testing.T) {
 	v := testVault(t)
-	e := Entity{
-		ID:         "e1",
-		Name:       "Kai",
-		Type:       "person",
-		Properties: map[string]string{"role": "engineer", "team": "platform"},
-		CreatedAt:  "2026-01-01T00:00:00Z",
+	if err := v.AddEntity("proj", Entity{ID: "e0", Name: "Ana", Type: "person", CreatedAt: "2026-01-01T00:00:00Z"}); err != nil {
+		t.Fatal(err)
 	}
-
-	if err := v.AddEntity("proj", e); err != nil {
+	path := entitiesPath(t, v, "proj")
+	legacy := `{"id":"e1","name":"Kai","type":"person","properties":{"role":"engineer"},"created_at":"2026-01-01T00:00:00Z"}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(legacy + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	ents, _, err := v.ListEntities("proj")
+	ents, skips, err := v.ListEntities("proj")
+	if err != nil || len(skips) != 0 {
+		t.Fatalf("ListEntities: %v, skips %v", err, skips)
+	}
+	if len(ents) != 2 || ents[1].ID != "e1" || ents[1].Name != "Kai" {
+		t.Fatalf("ListEntities = %+v, want e0 and the legacy e1", ents)
+	}
+
+	if err := v.AddEntity("proj", Entity{ID: "e2", Name: "Bo", Type: "person", CreatedAt: "2026-01-02T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("ListEntities: %v", err)
+		t.Fatal(err)
 	}
-	if len(ents) != 1 {
-		t.Fatalf("ListEntities returned %d entities, want 1", len(ents))
-	}
-	got := ents[0]
-	if got.Properties["role"] != "engineer" {
-		t.Errorf("Properties[role] = %q, want %q", got.Properties["role"], "engineer")
+	if !strings.Contains(string(raw), legacy+"\n") {
+		t.Fatalf("the legacy line was rewritten:\n%s", raw)
 	}
 }

@@ -19,11 +19,10 @@ import (
 
 // Entity represents a person, project, concept, or tool in the knowledge graph.
 type Entity struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	Type       string            `json:"type"`
-	Properties map[string]string `json:"properties,omitempty"`
-	CreatedAt  string            `json:"created_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	CreatedAt string `json:"created_at"`
 	// Origin is OriginAuthored or OriginExtracted (ADR-014 decision 5). A line
 	// written before the field existed has none; ClassifyEntityLine decides it.
 	Origin string `json:"origin,omitempty"`

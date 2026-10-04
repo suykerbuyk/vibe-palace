@@ -252,21 +252,26 @@ func scanOnDiskSlugsForResolver(projectsDir string) (map[string]bool, error) {
 
 var migrateMemPalaceFlags = []cli.FlagDef{
 	{Name: "--export-path", Arg: "PATH", Help: "Path to MemPalace JSON export file"},
+	{Name: "--project", Arg: "SLUG", Help: "Existing project to import into (required): the import is written to that project's host-local index on this host only"},
 	{Name: "--dry-run", Help: "Show what would be imported without writing or loading the embedding model"},
 }
 
 func cmdMigrateMemPalace() *cli.Command {
 	return &cli.Command{
 		Name:     "migrate mempalace",
-		Synopsis: "vp migrate mempalace --export-path PATH [--dry-run]",
-		Description: "Import data from a MemPalace JSON export into the palace. The export is " +
+		Synopsis: "vp migrate mempalace --export-path PATH --project SLUG [--dry-run]",
+		Description: "Import a MemPalace JSON export into an existing project's host-local index, " +
+			"as ledgered import batches: its drawers, entities and triples are written to this host only, " +
+			"never to the tracked vault, so no other host will have them. Keep the export file: an index " +
+			"rebuild discards the import (it has no archive), and re-running the import from the export is " +
+			"the only way back. --project must name a project the vault already holds. The export is " +
 			"read and parsed before anything else happens: a missing, directory, or malformed " +
 			"export exits 1 without loading the embedding model. --dry-run never loads the model, " +
 			"and neither does a real import whose drawers are all blank.",
 		Flags: migrateMemPalaceFlags,
 		Examples: []cli.Example{
-			{Cmd: "vp migrate mempalace --export-path ~/export.json", Comment: "Import from MemPalace export"},
-			{Cmd: "vp migrate mempalace --export-path ~/export.json --dry-run", Comment: "Preview import without writing"},
+			{Cmd: "vp migrate mempalace --export-path ~/export.json --project notes", Comment: "Import a MemPalace export into project notes on this host"},
+			{Cmd: "vp migrate mempalace --export-path ~/export.json --project notes --dry-run", Comment: "Preview the import without writing"},
 		},
 		Run: func(args []string) int {
 			fv, err := cli.ParseFlags(migrateMemPalaceFlags, args)
@@ -275,6 +280,7 @@ func cmdMigrateMemPalace() *cli.Command {
 				return cli.ExitUser
 			}
 			exportPath := fv.Get("--export-path")
+			project := fv.Get("--project")
 			dryRun := fv.Bool("--dry-run")
 
 			if exportPath == "" {
@@ -289,10 +295,21 @@ func cmdMigrateMemPalace() *cli.Command {
 				fmt.Fprintf(os.Stderr, "vp migrate mempalace: %v\n", err)
 				return migrateInputExit(err)
 			}
+			if project == "" {
+				fmt.Fprintln(os.Stderr, "vp migrate mempalace: --project is required (an existing project of this vault)")
+				return cli.ExitUser
+			}
 
 			dest, cfg, err := openMigrateDestination()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vp migrate: %v\n", err)
+				return cli.ExitUser
+			}
+			// The project must already exist: a slug in neither tree is not
+			// searchable, and the index sweep would remove its store. Checked
+			// before the model loads.
+			if exists, err := dest.ProjectExists(project); err != nil || !exists {
+				fmt.Fprintf(os.Stderr, "vp migrate mempalace: project %q is not in the vault (%v); import into an existing project\n", project, err)
 				return cli.ExitUser
 			}
 
@@ -317,8 +334,12 @@ func cmdMigrateMemPalace() *cli.Command {
 			}
 			fmt.Fprintln(os.Stderr, "Importing MemPalace data...")
 
+			var writers migrate.CacheWriterSource
+			if eng != nil {
+				writers = eng
+			}
 			result, err := migrate.ImportMemPalace(
-				context.Background(), dest, eng, emb, export,
+				context.Background(), dest, project, writers, emb, export,
 				migrate.ImportOptions{
 					DryRun:   dryRun,
 					Progress: migrateProgressFunc(),
@@ -330,9 +351,32 @@ func cmdMigrateMemPalace() *cli.Command {
 			}
 
 			printMigrateResult(result, dryRun)
+			if !dryRun {
+				fmt.Fprint(os.Stderr, mempalaceCaveat(result))
+			}
 			return cli.ExitOK
 		},
 	}
+}
+
+// mempalaceCaveat is what a mempalace import's output must say (task
+// importers-write-the-frozen-tracked-corpus, Scope 4 and plan revision R-2).
+// It names no command: the full index rebuild it warns about is not the
+// operator's to run on a live vault from this output.
+func mempalaceCaveat(r migrate.ImportResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%d import batches committed, %d already imported, %d blank drawers skipped.\n",
+		r.BatchesCommitted, r.BatchesSkipped, r.DrawersSkippedBlank)
+	b.WriteString("This import is single-host and not tracked: it lives in this host's local index only, " +
+		"and no other host will have it.\n")
+	b.WriteString("It has no archive: if the project's chunk recipe changes (chunks.fingerprint), the project " +
+		"is marked stale and the next full index rebuild discards this import. Keep the export file: " +
+		"re-running the import from it is the only way to restore it.\n")
+	if r.LedgerCreated {
+		b.WriteString("This import created the project's index ledger on this host: the project's existing " +
+			"tracked archives were recorded as historical backlog, which a later full index rebuild indexes.\n")
+	}
+	return b.String()
 }
 
 // openMigrateDestination opens the canonical write target — always the

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -115,6 +116,10 @@ func setupTest(t *testing.T) (string, *storage.Vault, *search.Engine, *embedder.
 	}
 	engine := search.NewEngine(emb, vault, cfg)
 	exportPath := filepath.Join(tmpDir, "export.json")
+	// The import targets an existing project.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "Projects", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return tmpDir, vault, engine, emb, exportPath
 }
 
@@ -123,7 +128,7 @@ func TestImportMemPalace_Basic(t *testing.T) {
 	fixture := testFixture()
 	writeExportJSON(t, exportPath, fixture)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace: %v", err)
 	}
@@ -148,7 +153,7 @@ func TestImportMemPalace_Idempotent(t *testing.T) {
 	writeExportJSON(t, exportPath, fixture)
 
 	// First import.
-	result1, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result1, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -157,7 +162,7 @@ func TestImportMemPalace_Idempotent(t *testing.T) {
 	}
 
 	// Second import: content-addressed dedup should skip all drawers.
-	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result2, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -171,7 +176,7 @@ func TestImportMemPalace_DryRun(t *testing.T) {
 	fixture := testFixture()
 	writeExportJSON(t, exportPath, fixture)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
+	result, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("ImportMemPalace dry run: %v", err)
 	}
@@ -187,7 +192,7 @@ func TestImportMemPalace_DryRun(t *testing.T) {
 	}
 
 	// Verify nothing was actually written: a real import should still create 3.
-	result2, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result2, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("post-dry-run import: %v", err)
 	}
@@ -197,7 +202,7 @@ func TestImportMemPalace_DryRun(t *testing.T) {
 }
 
 func TestImportMemPalace_WingRoomMapping(t *testing.T) {
-	_, vault, _, emb, exportPath := setupTest(t)
+	_, vault, engine, emb, exportPath := setupTest(t)
 
 	export := memPalaceExport{
 		ExportedAt: "2026-04-09T00:00:00Z",
@@ -220,7 +225,7 @@ func TestImportMemPalace_WingRoomMapping(t *testing.T) {
 	}
 	writeExportJSON(t, exportPath, export)
 
-	result, err := ImportMemPalace(context.Background(), vault, nil, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace: %v", err)
 	}
@@ -236,9 +241,17 @@ func TestImportMemPalace_WingRoomMapping(t *testing.T) {
 		t.Errorf("mapWing(Custom Wing) should be slugified, got %q", mapped)
 	}
 
-	// Verify empty room defaults to "general" by checking no error occurred.
-	if len(result.Errors) != 0 {
-		t.Errorf("unexpected errors: %v", result.Errors)
+	// The stored chunks carry the mapped wing, and an empty room is "general".
+	st, err := indexstore.ReadStore(vault, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{}
+	for _, c := range st.Chunks(true) {
+		labels[c.SourceRef] = c.Wing + "/" + c.Room
+	}
+	if labels["w1"] != "emotions/joy" || labels["w2"] != mapWing("Custom Wing")+"/general" {
+		t.Errorf("stored wing/room = %v", labels)
 	}
 }
 
@@ -252,7 +265,7 @@ func TestImportMemPalace_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := ImportMemPalace(ctx, vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	_, err := ImportMemPalace(ctx, vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err == nil {
 		t.Fatal("expected context cancellation error, got nil")
 	}
@@ -269,7 +282,7 @@ func TestImportMemPalace_EmptyExport(t *testing.T) {
 	}
 	writeExportJSON(t, exportPath, export)
 
-	result, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
+	result, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{})
 	if err != nil {
 		t.Fatalf("ImportMemPalace empty: %v", err)
 	}
@@ -390,13 +403,16 @@ func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]
 func TestImportMemPalace_DryRunEmbedsNothing(t *testing.T) {
 	tmpDir := t.TempDir()
 	vault := storage.NewVault(tmpDir)
+	if err := os.MkdirAll(filepath.Join(tmpDir, "Projects", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	emb := &countingEmbedder{Embedder: embedder.NewMock(384)}
 	engine := search.NewEngine(emb, vault, storage.Config{VaultPath: tmpDir})
 	exportPath := filepath.Join(tmpDir, "export.json")
 	writeExportJSON(t, exportPath, testFixture())
 	export := mustLoadExport(t, exportPath)
 
-	dry, err := ImportMemPalace(context.Background(), vault, engine, emb, export, ImportOptions{DryRun: true})
+	dry, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, export, ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
@@ -404,7 +420,7 @@ func TestImportMemPalace_DryRunEmbedsNothing(t *testing.T) {
 		t.Fatalf("dry run called EmbedBatch %d times, want 0", n)
 	}
 
-	live, err := ImportMemPalace(context.Background(), vault, engine, emb, export, ImportOptions{})
+	live, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, export, ImportOptions{})
 	if err != nil {
 		t.Fatalf("real run: %v", err)
 	}
@@ -425,10 +441,13 @@ func TestImportMemPalace_DryRunEmbedsNothing(t *testing.T) {
 func TestImportMemPalace_DryRunNilEngineAndEmbedder(t *testing.T) {
 	tmpDir := t.TempDir()
 	vault := storage.NewVault(tmpDir)
+	if err := os.MkdirAll(filepath.Join(tmpDir, "Projects", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	exportPath := filepath.Join(tmpDir, "export.json")
 	writeExportJSON(t, exportPath, testFixture())
 
-	result, err := ImportMemPalace(context.Background(), vault, nil, nil, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
+	result, err := ImportMemPalace(context.Background(), vault, "alpha", nil, nil, mustLoadExport(t, exportPath), ImportOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("dry run with nil engine/embedder: %v", err)
 	}
@@ -436,7 +455,7 @@ func TestImportMemPalace_DryRunNilEngineAndEmbedder(t *testing.T) {
 		t.Errorf("counts = %d/%d/%d, want 3/1/1",
 			result.DrawersCreated, result.EntitiesCreated, result.TriplesCreated)
 	}
-	if _, err := os.Stat(filepath.Join(tmpDir, "palace", "mempalace")); !os.IsNotExist(err) {
-		t.Errorf("dry run wrote palace/mempalace (stat err %v)", err)
+	if _, err := os.Stat(filepath.Join(tmpDir, "palace")); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote under palace/ (stat err %v)", err)
 	}
 }

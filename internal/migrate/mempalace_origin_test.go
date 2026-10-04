@@ -6,50 +6,38 @@ package migrate
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// A mempalace import marks its entity lines and triples as extracted: they
-// are derived records, never authored ones (ADR-014 decision 5), whatever
-// their valid_to.
+// A mempalace import's KG records are extracted, never authored (ADR-014
+// decision 5), whatever their valid_to: every entity and triple payload in
+// the local store says origin "extracted".
 func TestImportMemPalaceWritesExtractedOrigin(t *testing.T) {
 	_, vault, engine, emb, exportPath := setupTest(t)
 	writeExportJSON(t, exportPath, testFixture())
-	if _, err := ImportMemPalace(context.Background(), vault, engine, emb, mustLoadExport(t, exportPath), ImportOptions{}); err != nil {
+	if _, err := ImportMemPalace(context.Background(), vault, "alpha", engine, emb, mustLoadExport(t, exportPath), ImportOptions{}); err != nil {
 		t.Fatalf("ImportMemPalace: %v", err)
 	}
-	entities, _, err := vault.ListEntities("mempalace")
-	if err != nil || len(entities) == 0 {
-		t.Fatalf("ListEntities = %d, err %v", len(entities), err)
-	}
-	for _, e := range entities {
-		if e.Origin != storage.OriginExtracted {
-			t.Errorf("entity %s has origin %q, want extracted", e.ID, e.Origin)
-		}
-	}
-	dir, err := vault.KGTriplesDir("mempalace")
+	st, err := indexstore.ReadStore(vault, "alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
-	if len(files) == 0 {
-		t.Fatal("the import wrote no triples")
+	recs := st.KG(true)
+	if len(recs) != 2 {
+		t.Fatalf("%d local KG records, want 2 (one entity, one triple)", len(recs))
 	}
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
+	for _, r := range recs {
+		var p struct {
+			Origin string `json:"origin"`
+		}
+		if err := json.Unmarshal(r.Payload, &p); err != nil {
 			t.Fatal(err)
 		}
-		var tr storage.Triple
-		if err := json.Unmarshal(b, &tr); err != nil {
-			t.Fatal(err)
-		}
-		if tr.Origin != storage.OriginExtracted || storage.ClassifyTriple(tr) != storage.OriginExtracted {
-			t.Errorf("triple %s: origin %q, classified %q; want extracted", filepath.Base(f), tr.Origin, storage.ClassifyTriple(tr))
+		if p.Origin != storage.OriginExtracted {
+			t.Errorf("record %s has origin %q, want extracted", r.ID, p.Origin)
 		}
 	}
 }

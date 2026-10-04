@@ -295,11 +295,10 @@ func TestAddEntitiesLongLineDoesNotFailTheScan(t *testing.T) {
 	// One valid entity whose marshalled line is well over 64 KB and well under
 	// maxEntityLine (1 MiB).
 	big := Entity{
-		ID:         "big",
-		Name:       "Big",
-		Type:       "concept",
-		Properties: map[string]string{"note": strings.Repeat("x", 200*1024)},
-		CreatedAt:  "2026-08-25T00:00:00Z",
+		ID:        "big",
+		Name:      "Big " + strings.Repeat("x", 200*1024),
+		Type:      "concept",
+		CreatedAt: "2026-08-25T00:00:00Z",
 	}
 	if _, err := v.AddEntities(project, []Entity{big}); err != nil {
 		t.Fatalf("seed big entity: %v", err)

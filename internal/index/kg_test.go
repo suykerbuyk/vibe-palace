@@ -40,8 +40,7 @@ func TestKGBuildersIgnorePerOwnerInput(t *testing.T) {
 		t.Fatalf("per-owner fields reached the triple record:\n%s %s\n%s %s", idA, pA, idB, pB)
 	}
 
-	ea := storage.Entity{ID: "tool-go", Name: "Go", Type: "tool", CreatedAt: "2026-05-10T09:00:00Z",
-		Properties: map[string]string{"k": "1"}}
+	ea := storage.Entity{ID: "tool-go", Name: "Go", Type: "tool", CreatedAt: "2026-05-10T09:00:00Z"}
 	eb := storage.Entity{ID: "tool-go", Name: "Go", Type: "tool", CreatedAt: "2026-05-03T09:00:00Z"}
 	eidA, epA := index.EntityRecord(ea.ID, ea.Name, ea.Type)
 	eidB, epB := index.EntityRecord(eb.ID, eb.Name, eb.Type)

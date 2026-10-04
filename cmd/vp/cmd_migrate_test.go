@@ -16,6 +16,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -507,10 +508,11 @@ func TestMigrateMemPalaceUnreadableExportIsSystemError(t *testing.T) {
 
 func TestMigrateMemPalaceDryRunBuildsNoEmbedder(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
+	mkMigrateProject(t, vaultDir, "alpha")
 	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
 	var code int
 	stderr := captureStderr(t, func() {
-		code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--dry-run"})
+		code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--project", "alpha", "--dry-run"})
 	})
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
@@ -523,26 +525,86 @@ func TestMigrateMemPalaceDryRunBuildsNoEmbedder(t *testing.T) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(vaultDir, "palace", "mempalace")); !os.IsNotExist(err) {
-		t.Errorf("dry run wrote palace/mempalace (stat err %v)", err)
+	if _, err := os.Stat(filepath.Join(vaultDir, "palace")); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote under palace/ (stat err %v)", err)
+	}
+}
+
+// mkMigrateProject makes project exist in the vault, as a mempalace import's
+// --project must.
+func mkMigrateProject(t *testing.T, vaultDir, project string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMigrateMemPalaceRefusesAnUnknownProject: --project naming a project the
+// vault does not hold, or no --project at all, exits 1 before any model loads
+// and writes nothing.
+func TestMigrateMemPalaceRefusesAnUnknownProject(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
+	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
+	for _, args := range [][]string{{"--export-path", p, "--project", "nope"}, {"--export-path", p}} {
+		var code int
+		stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run(args) })
+		if code != cli.ExitUser || !strings.Contains(stderr, "project") {
+			t.Errorf("%v: exit %d, stderr:\n%s; want ExitUser naming the project", args, code, stderr)
+		}
+	}
+	if *constructed != 0 {
+		t.Errorf("a refused import loaded the model %d times", *constructed)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "palace")); !os.IsNotExist(err) {
+		t.Errorf("a refused import wrote under palace/ (stat err %v)", err)
 	}
 }
 
 func TestMigrateMemPalaceRealRunBuildsEmbedderOnce(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
+	mkMigrateProject(t, vaultDir, "alpha")
 	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
 	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
 	var code int
-	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--project", "alpha"}) })
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
 	}
 	if *constructed != 1 {
 		t.Errorf("embedder constructed %d times, want 1", *constructed)
 	}
-	wings, err := storage.NewVault(vaultDir).ListWings("mempalace")
-	if err != nil || len(wings) == 0 {
-		t.Errorf("no drawers on disk after a real import: wings=%v err=%v", wings, err)
+	st, err := indexstore.ReadStore(storage.NewVault(vaultDir), "alpha")
+	if err != nil || len(st.Chunks(true)) == 0 {
+		t.Errorf("no chunks in the local store after a real import: err=%v", err)
+	}
+}
+
+// TestMigrateMemPalaceOutputStatesTheCaveats (C6; 5-N2): the output says the
+// import is single-host and untracked, that a chunk-recipe change leads the
+// next full index rebuild to discard it, and to keep the export file; it
+// names no command. On a host where the import created the project's ledger,
+// it says the project's existing archives became historical backlog.
+func TestMigrateMemPalaceOutputStatesTheCaveats(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	mkMigrateProject(t, vaultDir, "alpha")
+	stubVaultEmbedder(t, embedder.NewMock(384))
+	p := writeMemPalaceExportFile(t, t.TempDir(), testExportDrawers, testExportEntities, testExportTriples)
+	var code int
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--project", "alpha"}) })
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d; stderr:\n%s", code, stderr)
+	}
+	for _, want := range []string{"single-host", "not tracked", "next full index rebuild discards this import", "Keep the export file", "historical backlog"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("output lacks %q:\n%s", want, stderr)
+		}
+	}
+	lower := strings.ToLower(stderr)
+	for _, banned := range []string{"vp_refresh_index", "vp index rebuild", "refresh_index", "restart the mcp"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("output names %q:\n%s", banned, stderr)
+		}
 	}
 }
 
@@ -550,12 +612,13 @@ func TestMigrateMemPalaceRealRunBuildsEmbedderOnce(t *testing.T) {
 // drawer is blank has nothing to embed, so a REAL run still loads no model —
 // entities and triples need no vectors.
 func TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder(t *testing.T) {
-	setupTestVaultEnv(t)
+	vaultDir := setupTestVaultEnv(t)
+	mkMigrateProject(t, vaultDir, "alpha")
 	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
 	blank := []map[string]any{{"id": "blank", "wing": "memory", "room": "x", "content": "   "}}
 	p := writeMemPalaceExportFile(t, t.TempDir(), blank, testExportEntities, testExportTriples)
 	var code int
-	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p}) })
+	stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--project", "alpha"}) })
 	if code != cli.ExitOK {
 		t.Fatalf("exit code = %d, want ExitOK; stderr:\n%s", code, stderr)
 	}

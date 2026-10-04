@@ -20,7 +20,12 @@ import (
 // 🔴 LOCK ORDER: the project's in-process mutex, THEN the project's index
 // commit lock (indexstore.Lock), THEN e.mu. lockProject and
 // (*projectLock).Tx are the only code in this package that takes a project
-// mutex or an index commit lock, so the order has one implementation:
+// mutex or an index commit lock, so the order has one implementation. The
+// other acquirers of the commit lock in this binary are the vp migrate
+// importers (internal/migrate): they take it raw, one Tx at a time and never
+// nested, because a KG-only mempalace import and a vibevault baseline
+// addition run with no engine; while one holds a Tx it calls no engine method
+// that locks (its only engine call is CacheWriter, which takes none).
 //
 //   - the commit lock is a leaf (ADR-014 decision 7): at most one is held by
 //     this engine at a time, and never the index run lock;

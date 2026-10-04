@@ -488,12 +488,15 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 	return e.indexDrawers(ctx, batch, searchLockTimeout)
 }
 
-// IndexDrawersWait is IndexDrawers with no lock timeout, for an explicit
-// operator run that must not drop vectors: the mempalace import. It is
-// transitional: importers-write-the-frozen-tracked-corpus moves the importer
-// to the store's CommitBatch and deletes it.
-func (e *Engine) IndexDrawersWait(ctx context.Context, batch []DrawerInput) error {
-	return e.indexDrawers(ctx, batch, indexstore.NoTimeout)
+// CacheWriter returns the embed cache's writer for the project whose index
+// commit lock tx holds: a thin exposure of EmbedCache.Writer, so an importer
+// that commits vectors through the store (Tx.CommitBatch) writes under this
+// engine's embedding regime. It is the same writer, with the same rules: the
+// regime is re-read under the lock (ErrEmbedRegimeMismatch on another regime
+// or unattributed vectors), a finished Tx is refused, and each vector is
+// written atomically. It takes no lock itself.
+func (e *Engine) CacheWriter(tx *indexstore.Tx) (*CacheWriter, error) {
+	return e.cache.Writer(tx)
 }
 
 func (e *Engine) indexDrawers(ctx context.Context, batch []DrawerInput, timeout time.Duration) error {

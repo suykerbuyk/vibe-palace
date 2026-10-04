@@ -41,7 +41,15 @@ type ImportResult struct {
 	// which get no archive.
 	ArchivesWritten int
 	SessionsEmpty   int
-	Errors          []ImportError
+	// BatchesCommitted and BatchesSkipped count a mempalace import's batches
+	// (a skipped batch was already ledgered); DrawersSkippedBlank its blank
+	// drawers; LedgerCreated whether the import created the project's ledger
+	// (the project's existing archives then became historical backlog).
+	BatchesCommitted    int
+	BatchesSkipped      int
+	DrawersSkippedBlank int
+	LedgerCreated       bool
+	Errors              []ImportError
 	// SlugRemap records collision-resolved renames (originalSlug → finalSlug).
 	// Empty when no collisions occurred.
 	SlugRemap map[string]string

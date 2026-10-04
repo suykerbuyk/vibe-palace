@@ -195,7 +195,7 @@ func s1() extraction {
 		triples: []storage.Triple{{Subject: tripleT[0], Predicate: tripleT[1], Object: tripleT[2],
 			Confidence: 0.6, ValidFrom: "2026-05-10", SourceSession: "S1", ExtractedAt: "2026-05-10T09:00:00Z"}},
 		entities: []storage.Entity{{ID: entityE[0], Name: entityE[1], Type: entityE[2],
-			CreatedAt: "2026-05-10T09:00:00Z", Properties: map[string]string{"seen": "s1"}}},
+			CreatedAt: "2026-05-10T09:00:00Z"}},
 	}
 }
 
@@ -204,7 +204,7 @@ func s2() extraction {
 		triples: []storage.Triple{{Subject: tripleT[0], Predicate: tripleT[1], Object: tripleT[2],
 			Confidence: 0.9, ValidFrom: "2026-05-03", SourceSession: "S2", ExtractedAt: "2026-05-03T09:00:00Z"}},
 		entities: []storage.Entity{{ID: entityE[0], Name: entityE[1], Type: entityE[2],
-			CreatedAt: "2026-05-03T09:00:00Z", Properties: map[string]string{"seen": "s2"}}},
+			CreatedAt: "2026-05-03T09:00:00Z"}},
 	}
 }
 
@@ -295,8 +295,8 @@ func TestOrderIndependence(t *testing.T) {
 	if tr.ExtractedAt != "2026-05-03T00:00:00Z" || tr.SourceSession != "S2" || tr.Confidence != 0 || tr.ValidFrom != "" {
 		t.Errorf("triple = %+v, want extracted_at 2026-05-03T00:00:00Z, session S2, no confidence, no valid_from", tr)
 	}
-	if en.CreatedAt != "2026-05-03T00:00:00Z" || len(en.Properties) != 0 {
-		t.Errorf("entity = %+v, want created_at 2026-05-03T00:00:00Z and no properties", en)
+	if en.CreatedAt != "2026-05-03T00:00:00Z" {
+		t.Errorf("entity = %+v, want created_at 2026-05-03T00:00:00Z", en)
 	}
 
 	// (c) a tie on the day goes to the smaller sha, in both orders.

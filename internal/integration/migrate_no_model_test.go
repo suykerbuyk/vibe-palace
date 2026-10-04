@@ -48,13 +48,13 @@ func TestIntegrationMigrateLoadsNoModel(t *testing.T) {
 	}{
 		{
 			name:     "mempalace missing export dry run",
-			args:     []string{"migrate", "mempalace", "--export-path", "{root}/nope.json", "--dry-run"},
+			args:     []string{"migrate", "mempalace", "--export-path", "{root}/nope.json", "--project", "p", "--dry-run"},
 			wantCode: 1,
 			wantOut:  "read export file",
 		},
 		{
 			name:     "mempalace valid export dry run",
-			args:     []string{"migrate", "mempalace", "--export-path", "{root}/export.json", "--dry-run"},
+			args:     []string{"migrate", "mempalace", "--export-path", "{root}/export.json", "--project", "p", "--dry-run"},
 			wantCode: 0,
 			wantOut:  "Would import: 0 projects, 0 sessions imported, 0 skipped, 1 drawers",
 		},

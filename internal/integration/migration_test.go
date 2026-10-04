@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
+	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -267,8 +268,11 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMemPalaceExport: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(h.Vault.Root, "Projects", "mp-proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	result, err := migrate.ImportMemPalace(
-		context.Background(), h.Vault, h.Engine, h.Embedder, mpExport,
+		context.Background(), h.Vault, "mp-proj", h.Engine, h.Embedder, mpExport,
 		migrate.ImportOptions{},
 	)
 	if err != nil {
@@ -287,37 +291,14 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 		t.Fatalf("unexpected errors: %v", result.Errors)
 	}
 
-	// Prove drawers landed in storage under "mempalace" project.
-	projects, err := h.Vault.ListAllProjects()
-	if err != nil {
-		t.Fatalf("ListAllProjects: %v", err)
-	}
-	foundMempalace := slices.ContainsFunc(projects, func(p storage.ProjectPresence) bool {
-		return p.Slug == "mempalace" && p.InPalace
-	})
-	if !foundMempalace {
-		t.Fatal("expected 'mempalace' project in vault after import")
+	// The import is local-only: nothing under the tracked palace/mp-proj/.
+	if _, err := os.Stat(filepath.Join(h.Vault.Root, "palace", "mp-proj")); !os.IsNotExist(err) {
+		t.Errorf("the import wrote tracked palace/mp-proj (stat err %v)", err)
 	}
 
-	// Prove wing mapping: "technical" and "emotions" should appear as wings.
-	wings, err := h.Vault.ListWings("mempalace")
-	if err != nil {
-		t.Fatalf("ListWings: %v", err)
-	}
-	wingSet := make(map[string]bool)
-	for _, w := range wings {
-		wingSet[w] = true
-	}
-	if !wingSet["technical"] {
-		t.Error("expected 'technical' wing in mempalace project")
-	}
-	if !wingSet["emotions"] {
-		t.Error("expected 'emotions' wing in mempalace project")
-	}
-
-	// Prove imported content is searchable.
+	// Prove the imported drawers are searchable from the host-local store.
 	results, err := h.Engine.Search(context.Background(), "concurrent worker pool goroutines channels",
-		search.SearchFilters{Project: "mempalace"})
+		search.SearchFilters{Project: "mp-proj"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -331,7 +312,7 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 
 	// Search across a different topic — should find the emotions drawer.
 	emotionResults, err := h.Engine.Search(context.Background(), "grateful progress knowledge graph memory palace",
-		search.SearchFilters{Project: "mempalace"})
+		search.SearchFilters{Project: "mp-proj"})
 	if err != nil {
 		t.Fatalf("Search emotions: %v", err)
 	}
@@ -340,7 +321,7 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	}
 
 	// Prove KG entities were imported.
-	entities, _, err := h.Vault.ListEntities("mempalace")
+	entities, _, err := kgread.ListEntities(h.Vault, "mp-proj")
 	if err != nil {
 		t.Fatalf("ListEntities: %v", err)
 	}
@@ -356,17 +337,16 @@ func TestIntegrationMemPalaceImportToSearch(t *testing.T) {
 	}
 
 	// Prove KG triples were imported.
-	triples, err := h.Vault.QueryEntity("mempalace", "Go", "", "out")
+	triples, err := kgread.QueryEntity(h.Vault, "mp-proj", "Go", "", "out")
 	if err != nil {
 		t.Fatalf("QueryEntity: %v", err)
 	}
 	foundTriple := false
 	for _, tr := range triples {
 		if tr.Predicate == "used_in" && tr.Object == "worker pool" {
+			// Host-local KG payloads keep identity fields and origin only
+			// (ruling C1): the export's confidence is not carried.
 			foundTriple = true
-			if tr.Confidence != 0.9 {
-				t.Errorf("triple confidence = %f, want 0.9", tr.Confidence)
-			}
 			break
 		}
 	}
@@ -406,7 +386,10 @@ func TestIntegrationMemPalaceIdempotent(t *testing.T) {
 	}
 
 	// First import.
-	r1, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
+	if err := os.MkdirAll(filepath.Join(h.Vault.Root, "Projects", "mp-proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r1, err := migrate.ImportMemPalace(ctx, h.Vault, "mp-proj", h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
@@ -414,10 +397,10 @@ func TestIntegrationMemPalaceIdempotent(t *testing.T) {
 		t.Fatalf("first: DrawersCreated = %d, want 1", r1.DrawersCreated)
 	}
 
-	drawers1, _ := countAllDrawers(t, h.Vault, "mempalace")
+	drawers1, _ := localChunks(t, h.Vault, "mp-proj")
 
 	// Second import — AppendDrawer dedup should prevent new drawers.
-	r2, err := migrate.ImportMemPalace(ctx, h.Vault, h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
+	r2, err := migrate.ImportMemPalace(ctx, h.Vault, "mp-proj", h.Engine, h.Embedder, mpExport, migrate.ImportOptions{})
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
@@ -425,7 +408,7 @@ func TestIntegrationMemPalaceIdempotent(t *testing.T) {
 		t.Errorf("second: DrawersCreated = %d, want 0", r2.DrawersCreated)
 	}
 
-	drawers2, _ := countAllDrawers(t, h.Vault, "mempalace")
+	drawers2, _ := localChunks(t, h.Vault, "mp-proj")
 	if drawers2 != drawers1 {
 		t.Errorf("drawer count changed: %d → %d", drawers1, drawers2)
 	}
@@ -494,4 +477,15 @@ We discussed internal/api/handler.go refactoring.
 	if r2.SessionsImported != 1 {
 		t.Errorf("real import: SessionsImported = %d, want 1", r2.SessionsImported)
 	}
+}
+
+// localChunks counts a project's chunks in the host-local store, visible or
+// not.
+func localChunks(t *testing.T, v *storage.Vault, project string) (int, error) {
+	t.Helper()
+	st, err := indexstore.ReadStore(v, project)
+	if err != nil {
+		return 0, err
+	}
+	return len(st.Chunks(false)), nil
 }

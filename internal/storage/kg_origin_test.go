@@ -83,7 +83,7 @@ func TestClassifyEntityLineTable(t *testing.T) {
 	}{
 		{"vp_kg_add shape", Entity{ID: "alice", Name: "Alice", Type: "unknown"}, OriginAuthored},
 		{"extractor line", Entity{ID: "person-alice", Name: "Alice", Type: "person", CreatedAt: "2026-01-01T00:00:00Z"}, OriginExtracted},
-		{"legacy mempalace line of the vp_kg_add shape", Entity{ID: "mp-1", Name: "X", Type: "unknown", Properties: map[string]string{"k": "v"}}, OriginAuthored},
+		{"legacy mempalace line of the vp_kg_add shape", Entity{ID: "mp-1", Name: "X", Type: "unknown"}, OriginAuthored},
 		{"origin wins", Entity{ID: "a", Type: "unknown", Origin: OriginExtracted}, OriginExtracted},
 	}
 	for _, c := range cases {
