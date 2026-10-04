@@ -185,10 +185,6 @@
       "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because a test in another package needs it: internal/search pins that the engine's index sweep (indexstore.ReapGoneProjects) never runs while the engine holds an index commit lock (the sweep would then hold two). A lock taken and released leaves no other trace, so without it the sweep could move after indexstore.Lock in Engine.reap and every test would pass. Production never sets it. Task index-fingerprints-project-lifecycle-and-migration-marker (code review S1)."
     },
     {
-      "id": "uninvoked indexstore.ReadFingerprint",
-      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The lock-free three-state compare of a project's chunks.fingerprint with a recipe (missing = unbuilt, never stale). Non-test caller: the opener of search-index-completeness-and-build-serialization, which sets the stale flag on a mismatch. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.RunLock.CompletedRebuild",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The only source of a RebuildProof. Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, when a rebuild run completes. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -223,6 +219,10 @@
     {
       "id": "uninvoked indexstore.Tx.ClearFailures",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, with the proof of a completed rebuild. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.Tx.ClearStale",
+      "reason": "STAGED API, ADR-014 decisions 3 and 8, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-2, R-3). Clears both stale reasons in completeness.json, refusing anything but a completed rebuild's RebuildProof. Non-test caller: the rebuild driver of explicit-resumable-index-rebuild-with-disk-watchdog, once every completed-rebuild condition holds. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.CommitArchive",
@@ -281,12 +281,20 @@
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
     },
     {
-      "id": "uninvoked palace.ProjectIndexing",
-      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The one assembler of a project's chunk recipe, classifier and chunk settings, from v.LoadConfig(project), so a writer and the recipe it records cannot diverge. Non-test callers: search-index-completeness-and-build-serialization (the opener's ReadFingerprint) and pending-archive-ingester-and-per-archive-commit-step (UseRecipe and every transcript chunk it writes). This entry goes stale the moment the first of them lands."
+      "id": "uninvoked search.ClearMissingVectors",
+      "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). Clears only the missing_vectors stale reason, with a RepairProof from a RepairScan under the same held commit lock. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },
     {
       "id": "uninvoked search.Engine.RemoveDrawer",
       "reason": "KEPT ON PURPOSE, task search-index-completeness-and-build-serialization (plan revisions 2026-10-04, R-5: eviction split into a lock-held and a locking path). RemoveDrawer is the engine's complete, self-locking eviction of one drawer (project mutex, index commit lock, in-memory index, metadata, cached vector) for a caller that holds no lock. Its one production caller used to be the orphan reaper, which now runs under a held commit lock and so uses the lock-held half, evictLocked, because a second commit-lock acquisition in one process deadlocks. No drawer-deletion path calls it today; delete it if none is planned."
+    },
+    {
+      "id": "uninvoked search.Engine.RepairScan",
+      "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). The scan under a held commit lock that finds a vector for every loaded local-tier chunk and mints the RepairProof ClearMissingVectors takes. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
+    },
+    {
+      "id": "uninvoked search.Engine.TrulyEmpty",
+      "reason": "STAGED API, ADR-014 decision 8, task search-index-completeness-and-build-serialization Scope 5. The one \"truly empty\" predicate (no notes, iterations, tracked transcript archives, store chunks, or, without the marker, tracked drawers), loading no embedder. Non-test callers: search-first-build-and-empty-corpus-answer and index-coverage-instrument, which must not re-derive it. This entry goes stale the moment the first of them lands."
     },
     {
       "id": "uninvoked sourceaudit.Baseline.Diff",

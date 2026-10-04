@@ -316,10 +316,6 @@ type Store struct {
 	ledger     *Ledger
 	chunks     *chunkFold
 	kg         *kgFold
-	// ChunksOffset is the byte offset just past the last complete line of
-	// chunks.jsonl. An incremental reader resumes there, so it never skips
-	// past a line still being written.
-	ChunksOffset int64
 }
 
 // ReadStore reads a project's index without any lock. A torn final line in
@@ -338,7 +334,7 @@ func readStoreFiles(pf projectFiles) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	cl, off, _, err := readLines(pf.chunks)
+	cl, _, _, err := readLines(pf.chunks)
 	if err != nil {
 		return nil, err
 	}
@@ -347,11 +343,10 @@ func readStoreFiles(pf projectFiles) (*Store, error) {
 		return nil, err
 	}
 	return &Store{
-		ledgerRecs:   recs,
-		ledger:       foldLedger(recs),
-		chunks:       foldChunkLines(decodeLines(pf.chunks, cl, validChunkLine)),
-		kg:           foldKGLines(decodeLines(pf.kg, kl, validKGLine)),
-		ChunksOffset: off,
+		ledgerRecs: recs,
+		ledger:     foldLedger(recs),
+		chunks:     foldChunkLines(decodeLines(pf.chunks, cl, validChunkLine)),
+		kg:         foldKGLines(decodeLines(pf.kg, kl, validKGLine)),
 	}, nil
 }
 

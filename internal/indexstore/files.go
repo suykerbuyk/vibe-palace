@@ -24,11 +24,13 @@ const (
 	kgDir      = "kg"
 	kgFile     = "records.jsonl"
 	graphFile  = "hnsw.idx"
+
+	completenessFile = "completeness.json"
 )
 
 // projectFiles are the paths of one project's index files.
 type projectFiles struct {
-	dir, chunks, ledger, kg, graph, fingerprint string
+	dir, chunks, ledger, kg, graph, fingerprint, completeness string
 }
 
 func filesFor(vault *storage.Vault, project string) (projectFiles, error) {
@@ -43,7 +45,8 @@ func filesFor(vault *storage.Vault, project string) (projectFiles, error) {
 		kg:     filepath.Join(dir, kgDir, kgFile),
 		graph:  filepath.Join(dir, graphFile),
 
-		fingerprint: filepath.Join(dir, fingerprintFile),
+		fingerprint:  filepath.Join(dir, fingerprintFile),
+		completeness: filepath.Join(dir, completenessFile),
 	}, nil
 }
 

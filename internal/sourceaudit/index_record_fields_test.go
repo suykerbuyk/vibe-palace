@@ -15,7 +15,7 @@ import (
 // payload builders' structs and the store's own line and ledger records.
 var indexRecordStructs = map[string][]string{
 	"internal/index/":      {"TriplePayload", "EntityPayload"},
-	"internal/indexstore/": {"kgLine", "chunkLine", "ledgerRecord"},
+	"internal/indexstore/": {"kgLine", "chunkLine", "ledgerRecord", "Completeness", "TierRecord", "StaleReason"},
 }
 
 // projectFields lists every field of the named structs, in the given sources,

@@ -1180,7 +1180,6 @@ func TestTornFinalLine(t *testing.T) {
 		return tx.CommitArchive(commitOf("S", "a", "2026-05-13", "x"), newRecordingVW(nil))
 	})
 	pf, _ := filesFor(v, "alpha")
-	whole, _ := os.ReadFile(pf.chunks)
 	for _, p := range []string{pf.chunks, pf.ledger} {
 		f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
@@ -1192,9 +1191,6 @@ func TestTornFinalLine(t *testing.T) {
 	s := ledgered(t, v)
 	if len(s.Chunks(true)) != 1 || !isLive(s.Ledger(), "S") {
 		t.Fatal("a torn tail hid the complete records")
-	}
-	if s.ChunksOffset != int64(len(whole)) {
-		t.Fatalf("offset %d, want %d (just before the torn line)", s.ChunksOffset, len(whole))
 	}
 	mustTx(t, v, func(tx *Tx) error {
 		return tx.CommitArchive(commitOf("S2", "b", "2026-05-13", "y"), newRecordingVW(nil))

@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -690,6 +692,17 @@ type RebuildStats struct {
 	CacheHits int
 	// Reaped is how many orphaned .vec files were unlinked.
 	Reaped int
+	// DecisionChunks is how many decision chunks came from the host-local
+	// store (notes tier: their misses are embedded).
+	DecisionChunks int
+	// LocalChunks is how many local-tier chunks (chunks of ledgered sources)
+	// were loaded, as embed-cache hits; LocalMisses is how many had no vector
+	// and were left out (they set the missing-vector stale reason).
+	LocalChunks int
+	LocalMisses int
+	// DedupedDrawers is how many tracked drawers were skipped because their
+	// content is already a store chunk (the glide-path dedup).
+	DedupedDrawers int
 }
 
 // Rebuild re-embeds a project's search index from its drawer store, its
@@ -726,15 +739,19 @@ func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout
 // called while the build still holds the project's mutex, so a writer waiting
 // on that mutex (IndexDrawers) sees the project as current the moment it gets
 // in, and inserts instead of deferring. A counter that could not be read is
-// not remembered: the next search rebuilds.
-func (e *Engine) remember(project string, g indexstore.Gen, readable bool) {
+// not remembered, and neither is a build that skipped a write because the
+// commit lock was busy (a vector batch, the completeness record): the next
+// search rebuilds and tries the write again (ADR-014 decision 7: a skipped
+// search-path write is redone by the next search that finds the same
+// condition).
+func (e *Engine) remember(project string, chain *genChain, start indexstore.Gen, readable bool) {
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	if !readable {
+	if !readable || chain.skipped {
 		delete(e.loaded, project)
 		return
 	}
-	e.loaded[project] = g
+	e.loaded[project] = chain.final(start)
 }
 
 // genChain follows a build's own commits from the counter it started at. A
@@ -743,8 +760,9 @@ func (e *Engine) remember(project string, g indexstore.Gen, readable bool) {
 // one that did not must keep the starting value, so the next search rebuilds
 // and picks up the other writer's change.
 type genChain struct {
-	cur    indexstore.Gen
-	broken bool
+	cur     indexstore.Gen
+	broken  bool
+	skipped bool // a write was skipped because the commit lock was busy
 }
 
 func (c *genChain) step(before, after indexstore.Gen) {
@@ -797,11 +815,6 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		return stats, fmt.Errorf("embed cache dir: %w", err)
 	}
 
-	wings, err := e.vault.ListWings(project)
-	if err != nil {
-		return stats, fmt.Errorf("list wings: %w", err)
-	}
-
 	var ids []string
 	var vecs [][]float32
 	var metas []drawerMeta
@@ -809,6 +822,77 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// Positions in vecs that still need an embedding, and their drawer text.
 	var missIdx []int
 	var missText []string
+
+	facts := buildFacts{tiers: map[string]indexstore.TierRecord{}}
+
+	// First corpus source: the host-local store, ledgered sources only
+	// (indexstore's Chunks(true): an archive that is a session's live archive,
+	// a ledgered import batch, or a note). A chunk left by a killed run before
+	// its ledger entry is invisible here, and never sets stale. Decision chunks
+	// are notes-tier: their misses are embedded. Every other chunk is
+	// local-tier: embed-cache hits only; a miss is counted and left for the
+	// ingester's repair pass or an explicit rebuild, never embedded here.
+	st, err := readStoreFn(e.vault, project)
+	if err != nil {
+		return stats, fmt.Errorf("read index store: %w", err)
+	}
+	storeIDs := map[string]bool{}
+	decisionNotes, localOwners := map[string]bool{}, map[string]bool{}
+	for _, c := range st.Chunks(true) {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
+		storeIDs[c.ID] = true
+		vec, _ := e.cache.Get(project, c.ID)
+		if c.SourceType == storage.SourceTypeDecision {
+			stats.DecisionChunks++
+			if c.Selected != nil {
+				decisionNotes[c.Selected.ID] = true
+			}
+			if vec == nil {
+				missIdx = append(missIdx, len(vecs))
+				missText = append(missText, c.Content)
+			}
+		} else {
+			if vec == nil {
+				facts.localMisses++
+				continue
+			}
+			facts.localHits++
+			if c.Selected != nil {
+				localOwners[c.Selected.Kind+"\x00"+c.Selected.SHA+c.Selected.ID] = true
+			}
+		}
+		ids = append(ids, c.ID)
+		vecs = append(vecs, vec)
+		metas = append(metas, storedChunkMeta(project, c))
+	}
+	stats.LocalChunks = facts.localHits
+	stats.LocalMisses = facts.localMisses
+	if stats.DecisionChunks > 0 {
+		facts.tiers[tierDecisions] = indexstore.TierRecord{Sources: len(decisionNotes)}
+	}
+	if facts.localHits > 0 || facts.localMisses > 0 {
+		facts.tiers[tierLocal] = indexstore.TierRecord{Sources: len(localOwners)}
+	}
+
+	// Second corpus source: the tracked drawers, the glide path, read only
+	// while the vault carries no migration marker (ADR-014 decision 11). A
+	// drawer whose content is already a store chunk is skipped, so the store's
+	// record (its wing, room and date) wins: the match is on the content hash
+	// alone (index.ChunkID), never on the drawer's 32-bit id, which collides at
+	// corpus scale, and never on the wing, so a reclassified copy is the same
+	// chunk.
+	migrated, err := storage.VaultMigrated(e.vault.Root)
+	if err != nil {
+		return stats, err
+	}
+	var wings []string
+	if !migrated {
+		if wings, err = e.vault.ListWings(project); err != nil {
+			return stats, fmt.Errorf("list wings: %w", err)
+		}
+	}
 
 	for _, wing := range wings {
 		rooms, err := e.vault.ListRooms(project, wing)
@@ -827,6 +911,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 				if err := ctx.Err(); err != nil {
 					return stats, err
 				}
+				if storeIDs[index.ChunkID(d.Content)] {
+					stats.DedupedDrawers++
+					continue
+				}
 				stats.Drawers++
 
 				// Try cache first; misses are embedded together below.
@@ -843,7 +931,11 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		}
 	}
 
-	// Second corpus source: Projects/<p>/iterations.md at H2 boundaries
+	if stats.Drawers > 0 {
+		facts.tiers[tierTrackedDrawers] = indexstore.TierRecord{Sources: stats.Drawers}
+	}
+
+	// Third corpus source: Projects/<p>/iterations.md at H2 boundaries
 	// (wrapstate.ParseEntries). No synthetic drawers.jsonl.
 	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(e.vault, project)
 	if err != nil {
@@ -864,7 +956,11 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		metas = append(metas, iterMetas[i])
 	}
 
-	// Third corpus source: the BODIES of Projects/<p>/sessions/*.md. No
+	if n := distinctSources(iterMetas, "/raw"); n > 0 {
+		facts.tiers[tierIterations] = indexstore.TierRecord{Sources: n}
+	}
+
+	// Fourth corpus source: the BODIES of Projects/<p>/sessions/*.md. No
 	// synthetic drawers.jsonl, and deliberately not routed through
 	// capture.IndexTranscript — so no knowledge-graph facts are extracted from
 	// wrap prose, structurally rather than by a flag.
@@ -887,6 +983,10 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		metas = append(metas, noteMetas[i])
 	}
 
+	if n := distinctSources(noteMetas, "/summary"); n > 0 {
+		facts.tiers[tierNotes] = indexstore.TierRecord{Sources: n}
+	}
+
 	stats.Indexed = len(ids)
 	stats.Embedded = len(missIdx)
 	stats.CacheHits = stats.Indexed - stats.Embedded
@@ -905,8 +1005,8 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		delete(e.indexes, project)
 		e.mu.Unlock()
 		e.closeReplaced(old)
-		stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain)
-		e.remember(project, chain.final(start), readable)
+		stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
+		e.remember(project, &chain, start, readable)
 		return stats, nil
 	}
 
@@ -935,9 +1035,40 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	e.mu.Unlock()
 	e.closeReplaced(old)
 
-	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain)
-	e.remember(project, chain.final(start), readable)
+	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
+	e.remember(project, &chain, start, readable)
 	return stats, nil
+}
+
+// distinctSources counts the distinct sources among metas: their SourceRefs
+// with suffix (the raw or summary row's marker) trimmed, so one note or one
+// iteration entry counts once.
+func distinctSources(metas []drawerMeta, suffix string) int {
+	seen := map[string]bool{}
+	for _, m := range metas {
+		seen[strings.TrimSuffix(m.SourceRef, suffix)] = true
+	}
+	return len(seen)
+}
+
+// storedChunkMeta is a host-local store chunk's search metadata, taken from
+// the store's fold (its selected owner's source fields and day).
+func storedChunkMeta(project string, c indexstore.StoredChunk) drawerMeta {
+	date := c.FiledAt
+	if len(date) >= 10 {
+		date = date[:10]
+	}
+	return drawerMeta{
+		Project:    project,
+		Wing:       c.Wing,
+		Room:       c.Room,
+		Hall:       c.Hall,
+		SourceType: c.SourceType,
+		SourceRef:  c.SourceRef,
+		Date:       date,
+		Content:    c.Content,
+		ChunkIndex: c.ChunkIndex,
+	}
 }
 
 // commitVectors commits one embed batch in its own short Tx. A busy commit
@@ -946,7 +1077,9 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 func (e *Engine) commitVectors(ctx context.Context, pl *projectLock, timeout time.Duration, batch map[string][]float32, chain *genChain) {
 	tx, err := pl.Tx(ctx, timeout)
 	if err != nil {
-		if !isLockTimeout(err) && !errors.Is(err, indexstore.ErrProjectGone) {
+		if isLockTimeout(err) {
+			chain.skipped = true
+		} else if !errors.Is(err, indexstore.ErrProjectGone) {
 			slog.Warn("embed cache commit skipped", "project", pl.project, "err", err)
 		}
 		return
@@ -961,13 +1094,16 @@ func (e *Engine) commitVectors(ctx context.Context, pl *projectLock, timeout tim
 	chain.step(before, after)
 }
 
-// finalCommit takes the build's last Tx and reaps orphans under it
+// finalCommit takes the build's last Tx, records what the build found in the
+// completeness record (writeCompletenessLocked) and reaps orphans under it
 // (reapLocked). It returns the number of vectors reaped. A busy commit lock
-// skips the reap: it is hygiene, and the next build reaps.
-func (e *Engine) finalCommit(ctx context.Context, pl *projectLock, timeout time.Duration, chain *genChain) int {
+// skips both: the next search that finds the same condition records it, and
+// the next build reaps.
+func (e *Engine) finalCommit(ctx context.Context, pl *projectLock, timeout time.Duration, chain *genChain, facts buildFacts) int {
 	tx, err := pl.Tx(ctx, timeout)
 	if isLockTimeout(err) {
-		slog.Info("reap skipped: the index commit lock is busy", "project", pl.project)
+		chain.skipped = true
+		slog.Info("completeness record and reap skipped: the index commit lock is busy", "project", pl.project)
 		return 0
 	}
 	if errors.Is(err, indexstore.ErrProjectGone) {
@@ -976,6 +1112,11 @@ func (e *Engine) finalCommit(ctx context.Context, pl *projectLock, timeout time.
 	if err != nil {
 		slog.Warn("reap skipped", "project", pl.project, "err", err)
 		return 0
+	}
+	werr := e.writeCompletenessLocked(tx, pl.project, facts)
+	if werr != nil {
+		slog.Warn("completeness record not written", "project", pl.project, "err", werr)
+		chain.skipped = true
 	}
 	n, rerr := e.reapLocked(tx, pl.project)
 	before, after, cerr := pl.finishTx()
@@ -1029,12 +1170,12 @@ func (e *Engine) detectCollision(id string, meta drawerMeta) bool {
 // index and metadata through evictLocked. It returns the number of vectors
 // reaped. It never takes a project mutex or a commit lock itself.
 //
-// The live set is read under the lock (liveSourceIDs), never taken from the
+// The live set is read under the lock (liveSet), never taken from the
 // set this Rebuild started with: another process may have committed chunks
 // since, and their vectors must survive. Tx.Reap adds every chunk id in the
 // host-local store itself.
 func (e *Engine) reapLocked(tx *indexstore.Tx, project string) (int, error) {
-	reaped, err := tx.Reap(func() (map[string]bool, error) { return e.liveSourceIDs(project) })
+	reaped, err := tx.Reap(func() (map[string]bool, error) { return e.liveSet(project) })
 	if err != nil {
 		return 0, err
 	}
@@ -1046,14 +1187,25 @@ func (e *Engine) reapLocked(tx *indexstore.Tx, project string) (int, error) {
 	return len(reaped), nil
 }
 
-// liveSourceIDs is the union of the ids every source Rebuild reads, re-read
-// from disk: tracked drawers, iteration chunks and note chunks. (The store's
-// own chunk ids are added by Tx.Reap.) It embeds nothing.
-func (e *Engine) liveSourceIDs(project string) (map[string]bool, error) {
+// liveSet is the orphan reaper's live set (Scope 2, XC3b): the union of the
+// ids every tier would contain on an explicit rebuild, re-read from disk under
+// the commit lock: notes and iterations, and tracked drawers while the vault
+// carries no migration marker. Tx.Reap adds every chunk id in the host-local
+// store itself, ledgered or not, which covers decision chunks and the local
+// tier, and keeps the vectors of a source whose ledger entry is not written
+// yet. It is never the subset a lazy build happened to embed. It embeds
+// nothing.
+func (e *Engine) liveSet(project string) (map[string]bool, error) {
 	live := map[string]bool{}
-	wings, err := e.vault.ListWings(project)
+	migrated, err := storage.VaultMigrated(e.vault.Root)
 	if err != nil {
-		return nil, fmt.Errorf("list wings: %w", err)
+		return nil, err
+	}
+	var wings []string
+	if !migrated {
+		if wings, err = e.vault.ListWings(project); err != nil {
+			return nil, fmt.Errorf("list wings: %w", err)
+		}
 	}
 	for _, wing := range wings {
 		rooms, err := e.vault.ListRooms(project, wing)

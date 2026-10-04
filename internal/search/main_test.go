@@ -22,6 +22,9 @@ var distanceRegistrationErr error
 // would be masked by whichever earlier test happened to construct one; here
 // nothing has.
 func TestMain(m *testing.M) {
+	if os.Getenv(helperModeEnv) != "" {
+		os.Exit(runHelper())
+	}
 	distanceRegistrationErr = checkDistanceRegistered()
 	os.Exit(m.Run())
 }

@@ -30,6 +30,7 @@ type countingEmbedder struct {
 	embedCalls int
 	batchCalls int
 	batchSizes []int
+	embedded   []string // every text EmbedBatch was given
 }
 
 func newCountingEmbedder(dims int) *countingEmbedder {
@@ -47,6 +48,7 @@ func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]
 	c.mu.Lock()
 	c.batchCalls++
 	c.batchSizes = append(c.batchSizes, len(texts))
+	c.embedded = append(c.embedded, texts...)
 	fail := c.batchFail
 	c.mu.Unlock()
 	if fail {
@@ -57,6 +59,13 @@ func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]
 
 func (c *countingEmbedder) Dimensions() (int, error) { return c.inner.Dimensions() }
 func (c *countingEmbedder) Close() error             { return c.inner.Close() }
+
+// sawText reports whether any EmbedBatch call was given text.
+func (c *countingEmbedder) sawText(text string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Contains(c.embedded, text)
+}
 
 func (c *countingEmbedder) counts() (embedCalls, batchCalls int) {
 	c.mu.Lock()

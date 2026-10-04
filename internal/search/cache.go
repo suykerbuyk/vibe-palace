@@ -320,12 +320,18 @@ func (c *EmbedCache) dir(project string) (string, error) {
 	return c.vault.EmbedCacheDir(project)
 }
 
-// classify reads one project directory's regime from disk: the sidecar, and
-// whether any vector exists.
+// classify reads one project directory's regime from disk.
 func (c *EmbedCache) classify(dir string) (cacheRegime, error) {
+	return classifyRegime(dir, c.fingerprint)
+}
+
+// classifyRegime reads a cache directory's regime against fingerprint: the
+// sidecar, and whether any vector exists. It writes nothing and loads no
+// model.
+func classifyRegime(dir, fingerprint string) (cacheRegime, error) {
 	cur, err := os.ReadFile(filepath.Join(dir, storage.EmbedCacheFingerprintFile))
 	if err == nil {
-		if strings.TrimSpace(string(cur)) == c.fingerprint {
+		if strings.TrimSpace(string(cur)) == fingerprint {
 			return regimeMatch, nil
 		}
 		return regimeMismatch, nil

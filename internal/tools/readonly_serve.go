@@ -102,7 +102,9 @@ import "sort"
 // palace/.local/ too: the vectors it embeds and their embedding-regime
 // sidecar, committed in batches under the index commit lock to
 // palace/.local/embed-cache/<slug>/ (atomically, through the cache's Writer),
-// the orphan reaper's rewrites of
+// the completeness record palace/.local/index/<slug>/completeness.json (what
+// was built, and the stale flag; rewritten only when it changes), the orphan
+// reaper's rewrites of
 // palace/.local/index/<slug>/chunks.jsonl and its KG records and its unlinks of
 // orphan vectors, the store change counter palace/.local/index/.generation/<slug>,
 // and the index lock files under palace/.local/locks/, and the index sweep's
