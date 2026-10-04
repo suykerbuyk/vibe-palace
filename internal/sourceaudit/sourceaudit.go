@@ -169,6 +169,12 @@ const (
 	// other than the one owner (storage.RefuseIfGitDisabled) and the reporting
 	// readers it allow-lists. See gitEnabledOwner.
 	KindGitEnabledOwner = "git-enabled-owner"
+
+	// KindLiteralPathspecOptOut: vp's git turned off literal pathspecs —
+	// gitenv.GlobPathspecs used outside its one owner, a pathspec-mode variable
+	// or flag spelled by hand, or a string literal beginning with pathspec
+	// magic. See literalPathspecOwner.
+	KindLiteralPathspecOptOut = "literal-pathspec-opt-out"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -261,6 +267,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)
 	findings = append(findings, gitEnabledOwner(files)...)
+	findings = append(findings, literalPathspecOwner(files)...)
 	findings = append(findings, departureRecordWriter(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
