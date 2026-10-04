@@ -21,7 +21,7 @@ import (
 // setupTestVaultEnv installs forbidVaultEmbedder, which fails any test that
 // constructs the model, and stubVaultEmbedder substitutes an embedder and
 // counts constructions. That guard covers the sites routed through here —
-// setupEmbedder (both `vp migrate` subcommands), `vp search`, bootstrap()
+// setupEmbedder (`vp migrate mempalace`), `vp search`, bootstrap()
 // (which captures the value once, before its lazy closure), and `vp check`'s
 // Embedder row, whose check.CheckEmbedder is handed a closure over this
 // variable by gatherCheckResults.

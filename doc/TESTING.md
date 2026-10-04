@@ -1525,6 +1525,76 @@ live-set read, and nothing is reaped; `internal/integration`'s
 (`TestRefreshIndexKeepsTheLegacyLedgerWhileDrawersAreTracked`,
 `TestRefreshIndexDeletesTheLegacyLedgerOnceDrawersAreUntracked`).
 
+### Importers write the frozen corpus (`importers-write-the-frozen-tracked-corpus`)
+
+The shared prepare step:
+
+| Test | What it proves |
+|------|----------------|
+| `internal/palace`: `TestPrepareMatchesTheGolden` | `palace.Prepare` on `testdata/prepare_fixture.md`, under the default config, yields the wings, rooms, halls, chunk indexes, contents, dates, entities and triples of `testdata/prepare_golden.json`; chunk ids are compared by content, since `Prepare` ids are `index.ChunkID` and the golden's are drawer ids |
+| `internal/palace`: `TestPrepareDoesNoIO` | A temp vault root, `HOME` and `TMPDIR` are byte-identical before and after a `Prepare` call; the sourceaudit planner rule, which lists `Prepare`, is the static half |
+| `internal/capture`: `TestIndexTranscriptMatchesThePrepareGolden` | `IndexTranscript` under the default config produced the committed golden, which pins that factoring `Prepare` out changed nothing |
+| `internal/capture`: `TestIndexTranscriptChunksWithTheProjectsRecipe`, `TestIndexTranscriptClassifiesWithTheProjectsScoring` | `IndexTranscript` takes its chunk recipe and room scoring from `palace.ProjectIndexing`, configured through host config files |
+| `internal/capture`: `TestWriteKGDoesNotAddPerEntity` | The KG write adds entities in one batch, not one call each |
+| `internal/archive`: `TestSessionDayReadsTheTranscriptStart`, `TestSessionDayFallsBackToCapturedAt`, `TestClaudeSessionStart` | An archived session's day is the UTC day of its first timestamped record, else of `captured_at`, in every process zone |
+| `internal/archive`: `TestSessionDayHasNoDecisionChunkCaller` | No capture, tools or palace code calls `SessionDay`: decision chunks take the ledger's day |
+
+**Regenerating the golden.** The golden is captured from
+`IndexTranscript`, not from `Prepare`, and committed as bytes. Regenerate it
+only when a change to chunking, classification or extraction is intended:
+
+```bash
+go test ./internal/capture -run TestIndexTranscriptMatchesThePrepareGolden -update-golden
+go test ./internal/palace ./internal/capture   # both must then pass
+```
+
+The vibevault importer (`internal/migrate/vibevault_archive_test.go`):
+
+| Test | What it proves |
+|------|----------------|
+| `TestVibevaultWritesArchivesOnly` | An import writes archives and manifests, and no tracked drawer or KG file |
+| `TestVibevaultArchiveDate` | An archive is dated by the session's `date:` at noon UTC, never the clock or midnight |
+| `TestVibevaultBaseline` | On a host with a ledger, only the archives this run brings in join the baseline set; with no ledger the import creates none, and a ledger created later holds every archive in its baseline |
+| `TestVibevaultBaselineBeforeCreate` | The baseline addition happens before the first archive is written |
+| `TestVibevaultCrossHostIdempotence` | A second host that already holds the archives adds nothing to its baseline and writes nothing |
+| `TestVibevaultKnowledgeDate` | `knowledge.md` takes its frontmatter date, else the fixed epoch |
+| `TestVibevaultEmptySession` | An empty session gets a marker and no archive |
+| `TestVibevaultReimportWritesNothing` | A re-run writes nothing |
+| `TestVibevaultRefusesABatchIDSessionID` | A session id shaped like a MemPalace batch id is refused |
+| `TestVibevaultLegacyMarkerIsReadOnceThenDeleted` | The old `palace/<p>/.local/` marker is migrated, deleted, and its empty directory removed |
+| `TestVibevaultADeletedAndRecreatedProjectIsImportedAgain` | The marker is a hint: with no manifest behind it, the session is archived again |
+
+The MemPalace importer (`internal/migrate/mempalace_store_test.go`). The
+rows that pin "exactly one batch record" count raw `"kind":"batch"` lines in
+`ledger.jsonl`, because the ledger fold is last-wins and would hide a
+duplicate.
+
+| Test | What it proves |
+|------|----------------|
+| `TestMempalaceRefusesAnUnknownProject` | A slug in neither tree is refused and nothing is written |
+| `TestMempalaceImportIsSearchableAndSurvivesTheSweep` | The import is found by search, and the index sweep keeps the store |
+| `TestMempalaceImportIsLocalOnlyAndBatchOwned` | 2,500 drawers and 40 + 60 KG records land only in the local store, as 3 + 1 batches, every chunk owned by its batch |
+| `TestMempalaceFinishesAHalfWrittenBatch` | A batch whose records were appended without its ledger record (seeded via `tx.Append`) is finished on the next run |
+| `TestMempalaceReimportIsIdempotent` | A re-run embeds nothing and leaves the ledger byte-identical; a changed export gets new batch ids |
+| `TestMempalaceReportsTheLedgerItCreated` | The import that creates the ledger reports it; one under an existing ledger does not |
+| `TestMempalaceBatchStartDay` | The start day is the UTC day of the earliest drawer `filed_at` in every zone, else the epoch |
+| `TestMempalaceRefusesABatchIDThatNamesASession` | A batch id the ledger records as a session is refused (`ErrBatchIsSession`), never read as imported |
+| `TestMempalaceWritesTheChunksFingerprint` | The first import records the project's chunk recipe; a later recipe change through config reads as a mismatch and the engine reports the project stale |
+| `TestMempalaceCommitsUnderTheLockInBatches` | 2,500 drawers and 100 KG records are exactly 4 `CommitBatch` calls, each under a held Tx; no two commit locks are held at once; the import waits for a lock another process holds |
+| `TestMempalaceRecheckUnderTheLock` | A batch committed between the pre-check and the lock is skipped, not committed twice |
+| `TestMempalaceAbortsOnAnotherEmbedRegime` | Another embedding regime aborts with `ErrEmbedRegimeMismatch` |
+| `TestMempalaceAbortsOnAnotherRecipe` | Another chunk recipe refuses with `ErrRecipeMismatch` and creates no ledger |
+| `TestMempalaceSkipsBlankDrawers` | Blank drawers are counted and skipped |
+
+Elsewhere:
+
+| Test | What it proves |
+|------|----------------|
+| `internal/integration`: `TestIntegrationVibeVaultImportWritesArchives`, `TestIntegrationVibeVaultIdempotentReimport` | End to end, vibevault archives sessions and a re-run adds nothing |
+| `internal/integration`: `TestIntegrationMemPalaceImportToSearch`, `TestIntegrationMemPalaceIdempotent` | End to end, a MemPalace import into an existing project is searchable and its KG readable through `kgread`; a re-run adds nothing |
+| `internal/storage`: `TestDelete*` (`delLeftovers`) | Deleting a project removes its `palace/.local/imports/<p>/` marker |
+| `internal/storage`: `TestLegacyEntityLineWithPropertiesSurvives` | `Entity` has no `Properties` field, but a tracked line that carries `properties` still lists and is never rewritten |
+
 ### Index fingerprints, the migration marker and the lifecycle removal
 
 Task `index-fingerprints-project-lifecycle-and-migration-marker` (ADR-014
@@ -2541,7 +2611,7 @@ call `t.Setenv` before touching the variable, so a test that has called
 gone.
 
 **What the guard covers, exactly:** the seam-routed sites — `setupEmbedder`
-(both migrate subcommands), `vp search`, `bootstrap()` (which captures the
+(`vp migrate mempalace`; `vp migrate vibevault` loads no model), `vp search`, `bootstrap()` (which captures the
 constructor once, before its lazy closure), and `vp check`'s Embedder row,
 whose `check.CheckEmbedder` takes a constructor that `gatherCheckResults` feeds
 from `newVaultEmbedder`. A `setupTestVaultEnv` test that drives `runCheck`
@@ -2557,14 +2627,16 @@ Flag Wiring").
 | `TestMigrateMemPalaceDirectoryExportIsUserError` | A directory as `--export-path` exits 1 |
 | `TestMigrateMemPalaceMalformedExportBuildsNoEmbedder` | `{` exits 1 with `parse export JSON` |
 | `TestMigrateMemPalaceUnreadableExportIsSystemError` | A mode-000 export stays exit 2: the exit-1 mapping covers not-found, directory, and malformed JSON only |
-| `TestMigrateMemPalaceDryRunBuildsNoEmbedder` | A valid dry run reports the export's counts and writes no `palace/mempalace` |
-| `TestMigrateMemPalaceRealRunBuildsEmbedderOnce` | A real run constructs exactly once and writes drawers |
+| `TestMigrateMemPalaceDryRunBuildsNoEmbedder` | A valid dry run reports the export's counts and writes nothing under `palace/` |
+| `TestMigrateMemPalaceRefusesAnUnknownProject` | A `--project` the vault does not hold exits 1 after the export is parsed, and builds no embedder |
+| `TestMigrateMemPalaceRealRunBuildsEmbedderOnce` | A real run constructs exactly once and commits chunks to the project's host-local store |
+| `TestMigrateMemPalaceOutputStatesTheCaveats` | The output says single-host, not tracked, that a full rebuild discards the import, and "Keep the export file"; it names no command |
 | `TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder` | An export whose only drawer is blank imports its entities and triples with zero constructions |
 | `TestMigrateVibeVaultDryRunBuildsNoEmbedder` | A seeded dry run names the session, counts it, and writes no import marker |
 | `TestMigrateVibeVaultMissingSourceBuildsNoEmbedder` | A `--vault-path` with no `Projects/` exits 1 for `--dry-run`, for `--yes`, and on the **prompt path** (neither flag, stdin a pipe) — where it must say `has no Projects/` and never `requires --yes`, pinning that the check runs before the confirmation gate |
 | `TestMigrateVibeVaultInPlaceEmptyVaultMessage` | An in-place run names the configured vault and never blames `--vault-path` |
 | `TestMigrateVibeVaultSourceProjectsIsFileIsUserError` / `…StatFailureIsSystemError` | A `Projects` file exits 1; an unstat-able source (ENOTDIR) exits 2 |
-| `TestMigrateVibeVaultRealRunBuildsEmbedderOnce` / `…NoSessionsBuildsNoEmbedder` | A real run constructs once; `--agentctx --no-sessions` never |
+| `TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand` / `…NoSessionsBuildsNoEmbedder` | A real run archives the session with zero constructions, says the archives are not indexed yet, and names no command; `--agentctx --no-sessions` never constructs either |
 
 ### `cmd/vp/cmd_search_test.go` (all under the guard, each in a temp cwd)
 
@@ -2592,7 +2664,7 @@ Flag Wiring").
 
 `TestIntegrationMigrateLoadsNoModel` runs the built `vp` with an explicit
 environment (temp `HOME`, config and cache dirs; `HTTPS_PROXY`/`HTTP_PROXY` at
-`http://127.0.0.1:1`) for: mempalace missing export / valid export `--dry-run`
+`http://127.0.0.1:1`) for: mempalace missing export / valid export `--dry-run` (both with `--project`)
 (exit 1 / 0), vibevault missing source / seeded `--dry-run` (1 / 0), and
 `vp search` with a bad slug, an unknown `-p`, and an unknown cwd-detected
 project (all 1). The observable is the HF hub cache directory — neither

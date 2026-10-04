@@ -82,24 +82,54 @@ Import all historical data into the palace knowledge store.
 
 #### VibeVault Session Import (Task 8.1)
 
-`internal/migrate/vibevault.go` — `ImportVibeVault(ctx, source, destination *storage.Vault, engine, emb, cfg, opts) (ImportResult, error)` — reads sessions from `source`, writes all palace data to `destination` (see "Source vs. destination" below).
+`internal/migrate/vibevault.go` — `ImportVibeVault(ctx, source, destination *storage.Vault, opts) (ImportResult, error)` — reads sessions from `source` and writes to `destination` (see "Source vs. destination" below).
 
-For each `Projects/*/sessions/*.md` file:
+The importer writes **transcript archives**, never tracked drawers or
+knowledge-graph files, and it loads no embedding model. For each project:
 
-1. Parse YAML frontmatter → extract metadata (date, project, friction score,
-   tool counts, summary, tags, session ID)
-2. Extract transcript content (everything after the `---` frontmatter)
-3. Run through the existing capture pipeline:
-   - Format detection (markdown, plain text, JSON-RPC chat)
-   - Sliding-window chunking (800 chars, 100 overlap, sentence-boundary aware)
-   - Room classification (keyword heuristics from chunk content)
-   - Hall classification (facts, events, discoveries, preferences, advice)
-   - Batch embedding (all-MiniLM-L6-v2, 384 dimensions)
-   - Index into `palace/{project}/drawers/`
-   - Entity extraction (file paths, URLs, function names) into KG
-4. Create session record in `palace/{project}/` linking to the original
-   `Projects/{project}/sessions/` file
-5. Skip if session ID already exists in palace (idempotent)
+1. Every `Projects/*/sessions/*.md` note is read: its YAML frontmatter
+   gives the session id and date, and the text after the frontmatter is
+   the transcript.
+2. Each session not yet archived becomes one inline-adapter archive under
+   the project, with its manifest. A session whose text is empty is
+   recorded as empty and gets no archive.
+3. The project's `knowledge.md`, when present and non-empty, is archived
+   once as session `knowledge-<slug>`.
+
+**Archive dates.** An archive is dated by its source, never by the clock:
+
+- A session is dated by its frontmatter `date:` at **12:00 UTC**. Its
+  `captured_at` is then that UTC day on every host. The archive's filename
+  day is taken in the host's local zone, so it is the same date on every
+  host whose zone is within **±11 h of UTC**. A host further out (UTC+12,
+  UTC+13, UTC+14) names the file one day later; the `captured_at` and the
+  content are the same.
+- `knowledge.md` is dated by its own frontmatter `date:` at 12:00 UTC.
+  Without one it takes a fixed epoch, **2000-01-01 12:00 UTC**, so every
+  host computes the same archive.
+- A session id of the form `mempalace:<sha256>:<n>` is refused: that is a
+  MemPalace import batch id (below), and a session must never carry one.
+
+**Not indexed yet.** The imported archives are not indexed on this host
+until a later release indexes archives; there is nothing to run now. The
+session notes themselves stay searchable as notes. On a host that already
+has an index ledger for the project, the import first adds the source
+hashes of the archives it brings in to that host's baseline set, so they
+are historical backlog there rather than pending work. Only archives with
+no `(session_id, source_sha256)` manifest in the vault yet are added, so a
+second host that pulls the archives adds nothing.
+
+**Idempotency marker.** Each project's import marker lives at
+`palace/.local/imports/<slug>/imported-sessions.jsonl` in the destination
+vault. That directory is git-ignored and host-local. The marker is only a
+**hint**: a session counts as imported only while the vault also holds a
+manifest for it. A marker left behind by a deleted, recreated, renamed or
+departed project therefore never suppresses an import. Archiving is
+idempotent anyway: a session whose archive is already there is skipped.
+Deleting or splitting a project removes its marker. A marker in the old
+location, `palace/<slug>/.local/imported-sessions.jsonl`, is read once,
+moved to the new file and deleted, and its emptied `palace/<slug>/.local/`
+directory is removed.
 
 **Source data format** (session markdown frontmatter):
 ```yaml
@@ -118,25 +148,66 @@ tags: [implementation]
 summary: "feat: restart (5+9 files, tests pass)"
 ```
 
-Also import from each project's directory:
-- `iterations.md` → iteration records
-- `tasks/` and `tasks/done/` → task records
-- `knowledge.md` → knowledge entries (if present)
+With `--agentctx`, each project's agentctx tree (resume, iterations,
+workflow, knowledge, tasks, memory) is also copied, if absent.
 
 #### MemPalace ChromaDB Import (Task 8.2)
 
-`internal/migrate/mempalace.go` — for importing from a JSON export
-produced by the MemPalace tool. Re-embeds all content with ONNX to
-ensure consistent embeddings.
+`internal/migrate/mempalace_store.go` — `ImportMemPalace(ctx, vault, project, writers, emb, export, opts)` — imports a JSON export produced by the MemPalace tool into one **existing** project, named with `--project`. A slug that is in neither `palace/` nor `Projects/` is refused.
+
+An export has no transcripts, so it has no archive. Its drawers, entities
+and triples go **only to this host's local index store**, as ledgered
+**import batches**:
+
+- A batch holds up to 1000 drawers, or 1000 entity and triple records.
+  Entities and triples share batches.
+- The batch ids are `mempalace:<sha256 of the export file>:<n>`.
+- Blank drawers are skipped.
+- Every drawer is embedded again with this host's model, for consistent
+  embeddings.
+- Every batch carries one start day: the UTC day of the export's earliest
+  drawer `filed_at`, or 2000-01-01 when no drawer has one.
+
+Each batch is committed in its own step under the project's index commit
+lock. A re-run skips every batch the ledger already records, without
+embedding it again; an interrupted import finishes on its next run.
+
+The import refuses, and writes nothing more, when:
+
+- the project's index records another chunk recipe
+  (`chunks.fingerprint`);
+- this host's embed cache holds vectors from another embedding model.
+
+Both conditions end with the next full index rebuild.
+
+**Caveats** (the command prints these):
+
+- **Single-host and not tracked.** The import lives only in this host's
+  local index, under the git-ignored `palace/.local/`. No other host
+  receives it.
+- **A full rebuild discards it.** If the project's chunk recipe changes,
+  the next full index rebuild discards the import, because there is no
+  archive to rebuild it from.
+- **Keep the export file.** Re-running the import from the export file is
+  the only way to restore a discarded import.
+- **A changed export.** Any change to the export file changes its hash, so
+  the next import adds it as new batches and embeds them again. The
+  batches of the old export stay live alongside them until a full index
+  rebuild.
+- **Historical backlog.** When the import creates the project's index
+  ledger on this host, the project's existing tracked archives are
+  recorded as historical backlog. A later full index rebuild indexes them.
 
 #### Import CLI (Task 8.3)
 
 ```bash
 vp migrate vibevault [--vault-path PATH] [--dry-run] [--yes] [--slug-map OLD=NEW,...] [--strict]
-vp migrate mempalace --export-path PATH [--dry-run]
+vp migrate mempalace --export-path PATH --project SLUG [--dry-run]
 ```
 
-- Progress reporting: session count, drawer count, entity count
+- Progress reporting: session and archive counts for vibevault; batch,
+  drawer, entity and triple counts for MemPalace
+- `vp migrate vibevault` never loads the embedding model, dry run or real.
 - `--dry-run` reports what would be imported without writing. It
   prompts for slug-collision resolution just like a real run; use
   `--yes` to auto-accept default rename suggestions. A dry run **loads no
@@ -152,12 +223,13 @@ vp migrate mempalace --export-path PATH [--dry-run]
   - What a dry run does **not** prove: a MemPalace dry run no longer runs the
     drawers' text through the embedder, so it cannot show that every drawer
     embeds cleanly.
-  - MemPalace dry-run counts ignore ID dedupe: over a vault that already holds
-    the export, the dry run over-reports what a real run would create. A
-    vibevault dry run does honour the session import markers, so its session
-    counts are exact.
+  - MemPalace dry-run counts ignore the ledger: over a project that already
+    holds the export, the dry run over-reports what a real run would commit.
+    A vibevault dry run does honour the import markers, so its session counts
+    are exact.
 - Individual item failures are reported but don't abort the import
-- Safe to re-run (idempotent by session ID)
+- Safe to re-run: vibevault is idempotent by session and source hash, and
+  MemPalace by batch id
 
 #### Source vs. destination (`--vault-path`)
 
@@ -165,9 +237,8 @@ vp migrate mempalace --export-path PATH [--dry-run]
 its `Projects/<name>/sessions/*.md` files. It is **not** a write target.
 The **destination** is always the configured `vault_path` from
 `~/.config/vibe-palace/config.toml`. Everything the migration writes —
-palace data (drawers, KG), per-project idempotency markers
-(`palace/*/.local/imported-sessions.jsonl`), the embed cache, the ONNX
-model cache, and the per-project `Projects/<slug>/{commands,skills}/`
+session archives, per-project import markers
+(`palace/.local/imports/*/imported-sessions.jsonl`), and the per-project `Projects/<slug>/{commands,skills}/`
 init scaffold — lands in the destination, never in the source. (Before
 v7.2.0 it also wrote a `Projects/<slug>/config.toml`; that per-project vault
 config is retired and nothing writes it now.)
@@ -197,15 +268,11 @@ confirmation: pass `--yes` to proceed non-interactively, or answer the
 interactive `[y/N]` prompt. With no TTY and no `--yes`, the command
 aborts before loading the embedder.
 
-**Orphan-marker warning.** If the source vault holds idempotency markers
-from a prior (pre-fix) contaminated run
-(`<source>/palace/*/.local/imported-sessions.jsonl`) but the destination
-has none, the command prints a non-blocking WARNING: those sessions will
-be re-processed (slow; they re-embed), but palace artifacts dedupe by
-session ID, so no corruption results. The one-time remediation is to copy
-the source marker files into the destination's matching
-`palace/*/.local/` directories before running, so previously imported
-sessions are skipped.
+**Orphan-marker note.** If the source vault holds import markers from a
+prior run but the destination has none, the command prints a non-blocking
+NOTE. Markers are read from the destination only, so those sessions are
+checked against their archives again. An archive already there is
+skipped, so nothing is duplicated and nothing needs copying.
 
 #### Slug collision resolution
 
@@ -297,8 +364,7 @@ vp check
 vp migrate vibevault --dry-run
 vp migrate vibevault
 
-# Verify: search should now find historical content
-# (via editor MCP tool vp_search)
+# The sessions are archived; a later release indexes the archives
 ```
 
 ### After Phase 9 is implemented
