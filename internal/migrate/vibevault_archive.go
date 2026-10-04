@@ -466,6 +466,9 @@ func importProjectSessions(ctx context.Context, destination *storage.Vault, dirP
 		}
 		if !res.Skipped {
 			result.ArchivesWritten++
+			if !p.marker {
+				result.KnowledgeArchived++
+			}
 		}
 		if p.marker {
 			mark(p.sessionID, "")

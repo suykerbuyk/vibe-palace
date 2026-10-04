@@ -641,7 +641,7 @@ func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "%d sessions were empty: no archive.\n", result.SessionsEmpty)
 	}
 	if !dryRun && result.ArchivesWritten > 0 {
-		fmt.Fprintln(os.Stderr, archivedNotice(result.ArchivesWritten))
+		fmt.Fprintln(os.Stderr, archivedNotice(result.ArchivesWritten, result.KnowledgeArchived))
 	}
 }
 
@@ -653,8 +653,28 @@ func printMigrateResult(result migrate.ImportResult, dryRun bool) {
 // archives, depends on this import and does not exist yet, and the operator
 // warning forbids a transcript backfill (vp_refresh_index) on a live vault
 // (task importers-write-the-frozen-tracked-corpus, plan revision R-2).
-func archivedNotice(n int) string {
-	return fmt.Sprintf("\n%d sessions archived; the archives are not indexed on this host until a later release indexes archives; nothing to run now.", n)
+//
+// n counts every archive written, knowledge of them the knowledge.md
+// archives: those are not sessions, so they are counted apart.
+func archivedNotice(n, knowledge int) string {
+	const tail = "; the archives are not indexed on this host until a later release indexes archives; nothing to run now."
+	sessions := n - knowledge
+	if knowledge == 0 {
+		return fmt.Sprintf("\n%s archived%s", countOf(sessions, "session", "sessions"), tail)
+	}
+	k := "knowledge.md"
+	if knowledge > 1 {
+		k = fmt.Sprintf("%d knowledge.md files", knowledge)
+	}
+	return fmt.Sprintf("\n%s written (%s, %s)%s", countOf(n, "archive", "archives"), countOf(sessions, "session", "sessions"), k, tail)
+}
+
+// countOf is n with the singular or plural noun.
+func countOf(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // printAgentctxResult renders the agentctx file-copy summary. It is a no-op

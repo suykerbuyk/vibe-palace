@@ -391,7 +391,11 @@ func TestVibevaultKnowledgeDate(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(vault.Root, "Projects", fixtureProject, "knowledge.md"), []byte(tc.body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		importOnce(t, vault)
+		res := importOnce(t, vault)
+		// knowledge.md is an archive, not a session.
+		if res.ArchivesWritten != 4 || res.KnowledgeArchived != 1 || res.SessionsImported != 3 {
+			t.Errorf("archives %d, knowledge %d, sessions %d; want 4, 1, 3", res.ArchivesWritten, res.KnowledgeArchived, res.SessionsImported)
+		}
 		found := false
 		for _, e := range entries(t, vault, fixtureProject) {
 			if e.Manifest.SessionID == "knowledge-"+fixtureProject {

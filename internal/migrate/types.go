@@ -40,7 +40,9 @@ type ImportResult struct {
 	// (sessions and knowledge.md); SessionsEmpty the sessions with no text,
 	// which get no archive.
 	ArchivesWritten int
-	SessionsEmpty   int
+	// KnowledgeArchived counts the knowledge.md archives among ArchivesWritten.
+	KnowledgeArchived int
+	SessionsEmpty     int
 	// BatchesCommitted and BatchesSkipped count a mempalace import's batches
 	// (a skipped batch was already ledgered); DrawersSkippedBlank its blank
 	// drawers; LedgerCreated whether the import created the project's ledger

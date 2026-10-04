@@ -617,6 +617,25 @@ func TestMigrateMemPalaceOutputStatesTheCaveats(t *testing.T) {
 // ones a word list remembers.
 var namesAVPCommand = regexp.MustCompile(`\bvp [a-z]`)
 
+// TestArchivedNoticeCountsSessionsApartFromKnowledge: a knowledge.md archive
+// is not a session, so the notice never counts it as one.
+func TestArchivedNoticeCountsSessionsApartFromKnowledge(t *testing.T) {
+	for _, c := range []struct {
+		n, knowledge int
+		want         string
+	}{
+		{3, 0, "3 sessions archived;"},
+		{1, 0, "1 session archived;"},
+		{4, 1, "4 archives written (3 sessions, knowledge.md);"},
+		{2, 1, "2 archives written (1 session, knowledge.md);"},
+		{5, 2, "5 archives written (3 sessions, 2 knowledge.md files);"},
+	} {
+		if got := archivedNotice(c.n, c.knowledge); !strings.Contains(got, c.want) {
+			t.Errorf("archivedNotice(%d, %d) = %q, want %q", c.n, c.knowledge, got, c.want)
+		}
+	}
+}
+
 // TestMigrateMemPalaceSaysWhichDayTheBatchesCarry: the output names the day
 // every batch carries and its source, and when nothing in the export parsed
 // as a date it says the epoch was used rather than presenting it as real.
@@ -879,7 +898,7 @@ func TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	last := lines[len(lines)-1]
-	for _, want := range []string{"2 sessions archived", "the archives are not indexed on this host", "nothing to run now"} {
+	for _, want := range []string{"2 archives written (1 session, knowledge.md)", "the archives are not indexed on this host", "nothing to run now"} {
 		if !strings.Contains(last, want) {
 			t.Errorf("last line %q lacks %q", last, want)
 		}
