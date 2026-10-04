@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/giterr"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
@@ -756,8 +757,21 @@ func GitTopLevel(dir string) (string, error) {
 // GitPathIgnored reports whether git would ignore the vault-relative path rel
 // (`git check-ignore -q`). Exit status 1 is the answer "not ignored"; any other
 // failure is an error.
+//
+// It is the one git call that runs WITHOUT literal pathspecs: check-ignore
+// refuses the mode outright ("pathspec magic not supported by this command:
+// 'literal'"), so it opts out with gitenv.GlobPathspecs. check-ignore reads its
+// arguments as pathnames, not globs, but a leading ':' would still be magic
+// (':x' misreports, ':!x' exits 128), so rel is passed as "./"+rel. Not
+// ":(top)"+rel: that anchors to the top of the repository git finds, which for
+// a vault nested in another repository (VaultGitNested) is the outer one, not
+// the vault cmd.Dir names. An empty rel is refused: "./" alone names the vault
+// root and would answer "not ignored" for a path nobody gave.
 func GitPathIgnored(vaultPath, rel string) (bool, error) {
-	_, err := gitCmd(vaultPath, 10*time.Second, "check-ignore", "-q", "--", rel)
+	if rel == "" {
+		return false, fmt.Errorf("check whether a path is ignored: empty path")
+	}
+	_, err := gitCmdEnv(vaultPath, 10*time.Second, []string{gitenv.GlobPathspecs}, "check-ignore", "-q", "--", "./"+rel)
 	if err == nil {
 		return true, nil
 	}
@@ -1039,7 +1053,8 @@ func GitPathIsTracked(vaultPath, relPath string) (bool, error) {
 // including as a symlink or directory) OR `git ls-files --error-unmatch -- P`
 // exits 0 (tracked, possibly deleted). Skip only when both fail.
 //
-// Paths are literal vault-relative strings; no glob matching is performed.
+// Paths are literal vault-relative strings; no glob matching is performed,
+// because SafeGitEnv gives every git call literal pathspecs.
 func filterStageablePaths(vaultPath string, paths []string) (keep, skipped []string) {
 	for _, p := range paths {
 		if _, err := os.Lstat(filepath.Join(vaultPath, p)); err == nil {
@@ -1589,6 +1604,12 @@ func checkIdentity(vaultPath string) error {
 // gitCmd runs a git command in the vault directory with a timeout. Output is
 // whitespace-trimmed — convenient for SHA / branch-name parsing.
 func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
+	return gitCmdEnv(dir, timeout, nil, args...)
+}
+
+// gitCmdEnv is gitCmd with extraEnv appended after its own environment, so an
+// entry there overrides SafeGitEnv's defaults for this one command.
+func gitCmdEnv(dir string, timeout time.Duration, extraEnv []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -1603,7 +1624,7 @@ func gitCmd(dir string, timeout time.Duration, args ...string) (string, error) {
 	// GIT_WORK_TREE (spawned from a git hook, or a shell exporting them) would
 	// otherwise have every vault git command answer for that other repository
 	// instead of dir.
-	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
+	cmd.Env = append(SafeGitEnv("GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true"), extraEnv...)
 
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))

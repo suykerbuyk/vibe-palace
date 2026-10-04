@@ -40,3 +40,50 @@ func TestSafeGitEnv(t *testing.T) {
 		t.Error("SafeGitEnv did not append its extra argument")
 	}
 }
+
+// lastValue returns the value exec would use for name: the last one in env.
+func lastValue(env []string, name string) (string, bool) {
+	val, found := "", false
+	for _, kv := range env {
+		if n, v, _ := strings.Cut(kv, "="); n == name {
+			val, found = v, true
+		}
+	}
+	return val, found
+}
+
+func TestSafeGitEnvReadsPathspecsLiterally(t *testing.T) {
+	t.Setenv("GIT_LITERAL_PATHSPECS", "0")
+	t.Setenv("GIT_GLOB_PATHSPECS", "1")
+	t.Setenv("GIT_NOGLOB_PATHSPECS", "1")
+	t.Setenv("GIT_ICASE_PATHSPECS", "1")
+	t.Setenv("git_glob_pathspecs", "1")
+	t.Setenv("Git_Icase_Pathspecs", "1")
+
+	env := SafeGitEnv("EXTRA=1")
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.EqualFold(name, "GIT_LITERAL_PATHSPECS") {
+			continue
+		}
+		if strings.HasSuffix(strings.ToUpper(name), "_PATHSPECS") {
+			t.Errorf("SafeGitEnv let an inherited pathspec mode through: %s", kv)
+		}
+	}
+	if v, ok := lastValue(env, "GIT_LITERAL_PATHSPECS"); !ok || v != "1" {
+		t.Errorf("GIT_LITERAL_PATHSPECS = %q (set %v), want 1 over the inherited 0", v, ok)
+	}
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_LITERAL_PATHSPECS=") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("GIT_LITERAL_PATHSPECS appears %d times, want 1 (the inherited one stripped)", n)
+	}
+
+	if v, _ := lastValue(SafeGitEnv(GlobPathspecs), "GIT_LITERAL_PATHSPECS"); v != "0" {
+		t.Errorf("with GlobPathspecs, GIT_LITERAL_PATHSPECS = %q, want the opt-out 0 to win", v)
+	}
+}
