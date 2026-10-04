@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1105,6 +1106,14 @@ var (
 // chunks whose combined argv-path bytes stay under stageBatchByteBudget.
 // Always emits the `--` separator so paths beginning with `-` are treated as
 // paths, not flags. limit bounds each batch.
+//
+// THE STAGING GUARD. Before each `git add`, the batch's ignored paths are
+// dropped (ignoredPaths: one `git check-ignore --no-index --stdin -z` per
+// batch) and logged. `git add` of a TRACKED file under an ignored directory
+// stages it AND exits 1, so a migrated vault — whose drawers are ignored —
+// would otherwise fail every tidy that met a re-tracked drawer. On a vault
+// without the derived ignore lines (no migration marker) nothing a capture
+// writes is ignored, so the guard drops nothing that would have been staged.
 func stageInBatches(vaultPath string, limit time.Duration, paths []string) error {
 	batch := make([]string, 0, len(paths))
 	bytes := 0
@@ -1112,11 +1121,23 @@ func stageInBatches(vaultPath string, limit time.Duration, paths []string) error
 		if len(batch) == 0 {
 			return nil
 		}
+		ignored, err := ignoredPaths(vaultPath, limit, batch)
+		if err != nil {
+			return err
+		}
 		args := make([]string, 0, len(batch)+2)
 		args = append(args, "add", "--")
-		args = append(args, batch...)
-		if _, err := gitCmd(vaultPath, limit, args...); err != nil {
-			return err
+		for _, p := range batch {
+			if _, skip := ignored[p]; skip {
+				slog.Info("stage: dropped an ignored path", "vault", vaultPath, "path", p)
+				continue
+			}
+			args = append(args, p)
+		}
+		if len(args) > 2 {
+			if _, err := gitCmd(vaultPath, limit, args...); err != nil {
+				return err
+			}
 		}
 		batch = batch[:0]
 		bytes = 0
@@ -1133,6 +1154,80 @@ func stageInBatches(vaultPath string, limit time.Duration, paths []string) error
 		bytes += cost
 	}
 	return flush()
+}
+
+// checkIgnoreRun runs one `git check-ignore` over a batch; a test seam counts
+// the calls.
+var checkIgnoreRun = gitCmdStdinEnv
+
+// ignoredPaths returns the members of paths that git's ignore rules match, by
+// path alone: `git check-ignore --no-index --stdin -z`, ONE process for the
+// whole batch.
+//
+// --no-index is the point. Without it check-ignore answers "not ignored" for a
+// tracked file, even one under an ignored directory — which is exactly the
+// file `git add` stages and then fails on (GitPathIgnored omits it, and is not
+// used here for that reason). Exit 1 means "none ignored"; any other failure
+// is an error.
+//
+// Like GitPathIgnored it runs WITHOUT literal pathspecs, the second sanctioned
+// user of gitenv.GlobPathspecs: check-ignore refuses literal mode outright
+// (exit 128, "pathspec magic not supported by this command: 'literal'"). Its
+// stdin lines are read as pathspecs, so a leading ':' would be magic (':!x'
+// exits 128); each path is therefore sent as "./"+path, which git reads as a
+// plain name and echoes back with the prefix, stripped here.
+func ignoredPaths(vaultPath string, limit time.Duration, paths []string) (map[string]struct{}, error) {
+	var in strings.Builder
+	for _, p := range paths {
+		in.WriteString("./" + p + "\x00")
+	}
+	out, code, err := checkIgnoreRun(vaultPath, limit, in.String(), []string{gitenv.GlobPathspecs},
+		"check-ignore", "--no-index", "--stdin", "-z")
+	if code == 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("git check-ignore: %w", err)
+	}
+	ignored := map[string]struct{}{}
+	for p := range strings.SplitSeq(out, "\x00") {
+		if p != "" {
+			ignored[strings.TrimPrefix(p, "./")] = struct{}{}
+		}
+	}
+	return ignored, nil
+}
+
+// gitCmdStdin is gitCmd with a standard input, raw (untrimmed) output for
+// NUL-delimited records, and the exit code (-1 when git did not exit).
+func gitCmdStdin(dir string, timeout time.Duration, stdin string, args ...string) (string, int, error) {
+	return gitCmdStdinEnv(dir, timeout, stdin, nil, args...)
+}
+
+// gitCmdStdinEnv is gitCmdStdin with extraEnv appended after SafeGitEnv's own
+// settings, so it wins (gitenv.GlobPathspecs, for check-ignore).
+func gitCmdStdinEnv(dir string, timeout time.Duration, stdin string, extraEnv []string, args ...string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = SafeGitEnv(append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true"}, extraEnv...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil {
+		return string(out), 0, nil
+	}
+	code := -1
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		code = exitErr.ExitCode()
+	}
+	if ctx.Err() != nil {
+		return string(out), code, &GitError{Err: fmt.Errorf("timed out after %s: %w: %w", timeout, ctx.Err(), err)}
+	}
+	return string(out), code, &GitError{Detail: gitDetailLine(strings.TrimSpace(stderr.String())), Err: err}
 }
 
 // chunkPaths splits paths into groups whose combined argv-path bytes stay under

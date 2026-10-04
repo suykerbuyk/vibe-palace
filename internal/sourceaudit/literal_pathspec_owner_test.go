@@ -29,10 +29,14 @@ const literalStorage = `package storage
 
 import "example.com/gitenv"
 
-// CLEAN: the one owner.
+// CLEAN: the owners.
 func GitPathIgnored(vaultPath, rel string) (bool, error) {
 	_ = gitenv.SafeGitEnv(gitenv.GlobPathspecs)
 	return false, nil
+}
+
+func ignoredPaths(vaultPath string, paths []string) []string {
+	return gitenv.SafeGitEnv(gitenv.GlobPathspecs)
 }
 
 // CLEAN: literal flags strengthen the default; a ':' inside a revision is not
@@ -158,6 +162,10 @@ import . "example.com/gitenv"
 func GitPathIgnored(vaultPath, rel string) (bool, error) {
 	_ = SafeGitEnv(GlobPathspecs)
 	return false, nil
+}
+
+func ignoredPaths(vaultPath string, paths []string) []string {
+	return SafeGitEnv(GlobPathspecs)
 }
 `
 	if got := literalFindings(t, map[string]string{"gitenv": literalGitenv, "storage": storage}); len(got) != 0 {

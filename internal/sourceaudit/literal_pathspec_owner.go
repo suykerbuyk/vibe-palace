@@ -59,6 +59,7 @@ import (
 // import-path suffix "/gitenv", so a stray package of that name counts.
 var globPathspecsOwners = map[string]string{
 	"storage.GitPathIgnored": "git check-ignore refuses literal mode; passes \"./\"+rel instead",
+	"storage.ignoredPaths":   "the staging guard's batched git check-ignore --stdin; sends \"./\"+path per line and strips it from the answer",
 }
 
 // literalPathspecBypasses are the substrings part 2 reports.
@@ -213,8 +214,8 @@ func globPathspecsFinding(f file, pos token.Pos, scope string) Finding {
 		Symbol: scope + " -> GlobPathspecs",
 		Pos:    posOf(f, pos),
 		Detail: fmt.Sprintf(
-			"%s uses gitenv.GlobPathspecs, which turns literal pathspecs off. Its one sanctioned user is "+
-				"storage.GitPathIgnored (git check-ignore refuses literal mode). Anywhere else it lets a "+
+			"%s uses gitenv.GlobPathspecs, which turns literal pathspecs off. Its sanctioned users are "+
+				"storage.GitPathIgnored and storage.ignoredPaths (git check-ignore refuses literal mode). Anywhere else it lets a "+
 				"vault path be read as a glob or as ':' magic. If this git command truly refuses literal "+
 				"mode, neutralise a leading ':' yourself and add the function to globPathspecsOwners.",
 			scope),

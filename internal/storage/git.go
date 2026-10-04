@@ -586,8 +586,11 @@ func GitStatusClean(dir string) (bool, error) {
 }
 
 // GitAdd stages the given pathspecs in the repo at dir (`git add -- <paths>`).
-// Ignored paths are silently skipped by git; use GitAddForce to stage a path
-// that a .gitignore rule would otherwise exclude.
+// An ignored path is NOT silently skipped: git refuses it and exits 1 ("The
+// following paths are ignored"), and a TRACKED file under an ignored directory
+// is staged AND exits 1. Use GitAddForce to stage a path that a .gitignore rule
+// would otherwise exclude; the vault's own staging (stageInBatches) drops
+// ignored paths first instead.
 func GitAdd(dir string, paths ...string) error {
 	if err := RefuseIfGitDisabled(dir, "stage"); err != nil {
 		return err
