@@ -101,8 +101,19 @@ func isPathspecMode(name string) bool {
 //
 // The setting reaches every process git itself spawns while vp is the parent:
 // the user's hooks, clean/smudge/process filter drivers, merge drivers, and
-// credential or remote helpers that run git. Any of those that passes git a
-// glob pathspec reads it literally under vp.
+// credential or remote helpers that run git. vp's commits run the vault's
+// hooks, so this changes what those can do:
+//
+//   - a glob pathspec they pass git is read literally;
+//   - a `git check-ignore` they run dies with exit 128 ("pathspec magic not
+//     supported by this command: 'literal'"), and a hook that fails that way
+//     fails vp's commit;
+//   - one that exports GIT_GLOB_PATHSPECS or GIT_ICASE_PATHSPECS and runs git
+//     also dies with exit 128, because git refuses those beside literal mode.
+//
+// That is not peculiar to the variable: git's own --literal-pathspecs flag
+// works by setting it for git's children, with the identical effect. A hook
+// that must run either command can unset GIT_LITERAL_PATHSPECS for it.
 //
 // The git-exec-unsafe-env source-audit rule checks that git subprocesses use
 // this, but it recognises only exec.Command calls naming a literal "git"; a
