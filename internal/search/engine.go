@@ -499,6 +499,28 @@ func (e *Engine) CacheWriter(tx *indexstore.Tx) (*CacheWriter, error) {
 	return e.cache.Writer(tx)
 }
 
+// errNoRegime: CachedVector on an engine that has no embedder, whose cache
+// therefore checks no regime.
+var errNoRegime = errors.New("search: CachedVector needs an engine with an embedder: its cache checks no embedding regime")
+
+// CachedVector returns project's cached vector for chunk id under this
+// engine's embedding regime, and whether it was a hit. The pending-archive
+// ingester embeds only the misses (plan revision D6). On a project whose cache
+// holds another regime's vectors, or vectors with no sidecar, every lookup is
+// a miss, so another regime's vector is never reused. It loads no model (the
+// regime is a function of the config) and takes no lock. An engine with no
+// embedder checks no regime, so it refuses.
+func (e *Engine) CachedVector(project, id string) ([]float32, bool, error) {
+	if e.cache.fingerprint == "" {
+		return nil, false, errNoRegime
+	}
+	vec, err := e.cache.Get(project, id)
+	if err != nil {
+		return nil, false, err
+	}
+	return vec, vec != nil, nil
+}
+
 func (e *Engine) indexDrawers(ctx context.Context, batch []DrawerInput, timeout time.Duration) error {
 	if len(batch) == 0 {
 		return nil

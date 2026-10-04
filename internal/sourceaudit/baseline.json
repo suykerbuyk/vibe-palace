@@ -377,6 +377,10 @@
       "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). Clears only the missing_vectors stale reason, with a RepairProof from a RepairScan under the same held commit lock. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },
     {
+      "id": "uninvoked search.Engine.CachedVector",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (ruling 3): the ingester embeds only the cache misses, and must never count another regime's vector as a hit. It lands one commit before ingest.IngestArchive, which invokes it; that commit deletes this entry."
+    },
+    {
       "id": "uninvoked search.Engine.RepairScan",
       "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). The scan under a held commit lock that finds a vector for every loaded local-tier chunk and mints the RepairProof ClearMissingVectors takes. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },
