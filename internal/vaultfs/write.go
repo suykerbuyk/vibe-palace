@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/scopetoken"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -129,7 +130,17 @@ func Write(vaultPath, relPath, content, expectedSha256 string) (WriteResult, err
 // atomicfile's rename would then replace that file. Callers that need the
 // window closed name the file by its content (templates.PreserveBackup does), so
 // a racing writer of the same name is writing the same bytes.
-func Create(vaultPath, relPath, content string) (WriteResult, error) {
+// CreateOption adjusts Create.
+type CreateOption func(*createConfig)
+
+type createConfig struct{ creatingProject bool }
+
+// CreatingProject marks a Create that creates the project it lands in (the
+// init scaffold's first README), forwarding atomicfile.CreatingProject. The
+// creating-project-owner source-audit rule allows it only there.
+func CreatingProject() CreateOption { return func(c *createConfig) { c.creatingProject = true } }
+
+func Create(vaultPath, relPath, content string, opts ...CreateOption) (WriteResult, error) {
 	if IsRefusedWritePath(relPath) {
 		return WriteResult{}, fmt.Errorf("%w: %s", ErrRefusedPath, relPath)
 	}
@@ -167,7 +178,15 @@ func Create(vaultPath, relPath, content string) (WriteResult, error) {
 	}
 
 	data := []byte(content)
-	if err := atomicfile.Write(vaultPath, abs, data, atomicfile.WithFsync()); err != nil {
+	var cc createConfig
+	for _, o := range opts {
+		o(&cc)
+	}
+	aopts := []atomicfile.Option{atomicfile.WithFsync()}
+	if cc.creatingProject {
+		aopts = append(aopts, atomicfile.CreatingProject())
+	}
+	if err := atomicfile.Write(vaultPath, abs, data, aopts...); err != nil {
 		return WriteResult{}, fmt.Errorf("vaultfs: atomic write %s: %w", relPath, err)
 	}
 	sum := sha256.Sum256(data)
@@ -432,6 +451,12 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 		return MoveResult{}, fmt.Errorf("vaultfs: move destination %s already exists", toPath)
 	} else if !errors.Is(statErr, fs.ErrNotExist) {
 		return MoveResult{}, fmt.Errorf("vaultfs: stat %s: %w", toPath, statErr)
+	}
+	// The rename below goes around atomicfile, so its gate is applied here:
+	// never move into a project the vault has not initialised (projectdir),
+	// before the destination's directories exist.
+	if err := projectdir.RefuseUninitialisedAbs(vaultPath, dstAbs); err != nil {
+		return MoveResult{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dstAbs), 0o755); err != nil {
 		return MoveResult{}, fmt.Errorf("vaultfs: mkdir %s parent: %w", toPath, err)

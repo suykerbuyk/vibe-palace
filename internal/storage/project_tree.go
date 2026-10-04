@@ -202,11 +202,13 @@ func CopyProjectTreeEntry(srcRoot, destRoot string, e ProjectTreeEntry) error {
 	h := sha256.New()
 	var n int64
 	dst := filepath.Join(destRoot, filepath.FromSlash(e.Path))
+	// A copy, split or merge destination is a project this write creates, so
+	// it passes the creating-project option (projectdir's gate).
 	if err := atomicfile.WriteStream(destRoot, dst, func(w io.Writer) error {
 		var cerr error
 		n, cerr = io.Copy(io.MultiWriter(w, h), f)
 		return cerr
-	}); err != nil {
+	}, atomicfile.CreatingProject()); err != nil {
 		return fmt.Errorf("copy %s: %w", e.Path, err)
 	}
 

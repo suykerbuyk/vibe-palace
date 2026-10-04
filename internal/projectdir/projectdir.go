@@ -3,7 +3,7 @@
 
 // Package projectdir is the one predicate for "is this an initialised
 // project": ClassifyProjectDir. It is a leaf (it imports only the standard
-// library and internal/slug) so the vault's write
+// library, internal/slug and internal/departedpath) so the vault's write
 // primitives, in internal/atomicfile and internal/vaultfs as well as
 // internal/storage, can all ask it before they write.
 package projectdir
@@ -13,8 +13,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
@@ -208,4 +211,69 @@ func pathErrCause(err error) error {
 		return pe.Err
 	}
 	return err
+}
+
+// ErrUninitialisedProject is the write primitives' refusal of a write into a
+// project the vault has not initialised: Projects/<slug>/ is absent, or holds
+// neither a scaffold marker nor history (Phantom). A write there would create
+// a project, and its .surface stamp, that no creator commits.
+var ErrUninitialisedProject = errors.New("project is not initialised in this vault")
+
+// RefuseUninitialisedAbs is THE gate every vault write primitive calls before
+// it writes a FILE: it refuses a file under Projects/<slug>/ or
+// palace/<slug>/ unless Projects/<slug> is initialised (ClassifyProjectDir). A
+// palace/<slug>/ write is judged by its project's Projects/<slug>. The path is
+// resolved as the departed-project check resolves it (departedpath.RelOfAbs),
+// so a symlinked vault root is judged too.
+//
+// Only a path strictly inside a project tree is judged. A file directly under
+// Projects/ or palace/ (Projects/config.toml) creates no project folder and no
+// project stamp, so it is not this gate's business; a DIRECTORY there would be
+// a project, and RefuseUninitialisedDirAbs judges that. A write with no vault
+// root (host-local), outside the project trees (Audits/, Templates/, root
+// files) or under a dot directory (palace/.local/) is not judged either. A
+// classifier error refuses: a tree that cannot be inspected is not known to be
+// a project.
+//
+// The project-CREATING writers do not call it: they pass a creating-project
+// option to their primitive (atomicfile.CreatingProject,
+// vaultfs.CreatingProject), and the creating-project-owner source-audit rule
+// allows that option only in the init scaffold and a lifecycle copy's
+// destination writes.
+func RefuseUninitialisedAbs(vaultRoot, absPath string) error {
+	return refuseUninitialised(vaultRoot, absPath, 3)
+}
+
+// RefuseUninitialisedDirAbs is RefuseUninitialisedAbs for a DIRECTORY about to
+// be created: Projects/<slug> itself is judged too, because creating it makes
+// the (phantom) project folder a refused write must not leave behind.
+func RefuseUninitialisedDirAbs(vaultRoot, absDir string) error {
+	return refuseUninitialised(vaultRoot, absDir, 2)
+}
+
+func refuseUninitialised(vaultRoot, absPath string, minDepth int) error {
+	// A departed project is never initialised, and its departure record is the
+	// refusal every writer owes (the record wins everywhere): answer with it,
+	// not with this gate's, whichever primitive asked first.
+	if err := departedpath.RefuseAbs(vaultRoot, absPath); err != nil {
+		return err
+	}
+	rel, ok := departedpath.RelOfAbs(vaultRoot, absPath)
+	if !ok {
+		return nil
+	}
+	project, ok := departedpath.TreeSlug(rel)
+	if !ok || len(strings.Split(strings.Trim(path.Clean(rel), "/"), "/")) < minDepth {
+		return nil
+	}
+	state, err := ClassifyProjectDir(vaultRoot, project)
+	if err != nil {
+		return fmt.Errorf("%w: project %s: %v; run `vp init <checkout>` (CLI) or the vp_init tool to initialise it, then retry",
+			ErrUninitialisedProject, project, err)
+	}
+	if !state.Initialised() {
+		return fmt.Errorf("%w: project %s is %s in this vault; run `vp init <checkout>` (CLI) or the vp_init tool to initialise it, then retry",
+			ErrUninitialisedProject, project, state)
+	}
+	return nil
 }

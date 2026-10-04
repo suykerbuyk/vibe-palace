@@ -585,7 +585,7 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 				// version internally, so no separate stampVaultWrite call
 				// is needed here (and mkdir is handled by atomicfile.Write).
 				relPath := r.relSubpath + "/" + kind + "/README.md"
-				if _, err := vaultfs.Create(r.vaultRoot, relPath, body); err != nil {
+				if _, err := vaultfs.Create(r.vaultRoot, relPath, body, vaultfs.CreatingProject()); err != nil {
 					if errors.Is(err, vaultfs.ErrExists) {
 						rep.Unchanged++
 						continue

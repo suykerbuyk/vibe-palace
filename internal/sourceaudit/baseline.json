@@ -1,6 +1,106 @@
 {
   "entries": [
     {
+      "id": "creating-project-owner raw-sink absorb.rewriteSourceFile",
+      "reason": "NOT A VAULT PATH: the backup directory is the project CHECKOUT's .vibe-palace/ (opts.ProjectRoot), outside any vault. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink archive.Create",
+      "reason": "GATED BEFORE ITS RAW SINKS: archive.Create calls projectdir.RefuseUninitialisedAbs on Projects/<slug>/transcripts before its os.MkdirAll, so the directory is made only for an initialised project; its vaultfs.RenameNoLock moves an existing manifest to a .bak beside it, inside that same tree. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink hook.WriteClaim",
+      "reason": "NOT A VAULT PATH: the claim sentinel lives in the checkout's .vibe-palace/ (or opts.ClaimDir), never in the vault. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink hook.writeSettings",
+      "reason": "NOT A VAULT PATH: the host's Claude settings.json. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink reconcile.TemplateTreeReconciler.applyScaffold",
+      "reason": "PROJECT CREATOR: the init scaffold (vp init, vp_init, config sync, the vibe-vault import) creates Projects/<slug>/{commands,skills}/ for the project it is creating; it is the creatingProjectOwners owner of the creating-project option at template_tree.go:588. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink reconcile.VaultReconciler.Apply",
+      "reason": "NOT A PROJECT TREE: creates the vault root directory itself on vp init. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.EnsureDir",
+      "reason": "THE UNGATED HELPER ITSELF, for directories outside the project trees (host config, logs, caches, palace/.local); storage may not call it (this rule's EnsureDir part) and uses (*Vault).EnsureVaultDir under a project tree. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.InstallPostCommitHook",
+      "reason": "NOT A VAULT PATH: the project checkout's git hooks directory. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.OpenSlugJournal",
+      "reason": "NOT A PROJECT TREE: the rename journal's auxiliary directory under host-local palace/.local/. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.ReplaySlugJournal",
+      "reason": "NO PROJECT CREATED: the rename's crash recovery puts an existing project's moved files back between its from/to trees, with raw renames that stamp nothing. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.Vault.EnsureVaultDir",
+      "reason": "THE GATED HELPER ITSELF: projectdir.RefuseUninitialisedAbs runs before its os.MkdirAll. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.Vault.MoveTaskToProject",
+      "reason": "GATED BEFORE ITS RAW SINK: the destination project's tasks directory is made with EnsureVaultDir (gated) before the vaultfs.RenameNoLock, so a move into an uninitialised project is refused first. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.Vault.moveTask",
+      "reason": "NO PROJECT CREATED: renames a task file between status directories of the project that holds it; the destination directory is made with EnsureVaultDir (gated) first. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.WriteCwdProjectConfig",
+      "reason": "NOT A VAULT PATH: the project checkout's .vibe-palace.toml. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.WriteGlobalConfig",
+      "reason": "NOT A VAULT PATH: the host's global config. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.applyProjectPlan",
+      "reason": "NO PROJECT CREATED: the KG filename migration renames files inside an existing palace/<p>/kg/ through vaultfs.RenameNoLock; a rename stamps nothing. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.migrateLegacyEmbedCache",
+      "reason": "NOT A PROJECT TREE: host-local palace/.local/embed-cache. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.newRemoteSnapshot",
+      "reason": "NOT A VAULT PATH: the user cache directory holding a lifecycle remote snapshot. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.rebindApplyAnchors",
+      "reason": "NOT A VAULT PATH: anchors copied into the project checkout by checkout rebind. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.slugCacheStep",
+      "reason": "NOT A PROJECT TREE: the rename moves the host-local embed cache, palace/.local/embed-cache/<slug>. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.slugMove",
+      "reason": "PROJECT RENAME: vp migrate project-slug moves an existing project's tracked files from Projects|palace/<from>/ to <to>/ with raw MkdirAll + RenameNoLock; a rename stamps nothing and the migration commits it. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.slugRemoveVec",
+      "reason": "NOT A PROJECT TREE: moves an embed-cache vector into the rename journal under host-local palace/.local/. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.snapshotFormat",
+      "reason": "NOT A VAULT PATH: a scratch directory inside a lifecycle remote snapshot. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink storage.writeScoringConfigAt",
+      "reason": "NOT A PROJECT TREE: the host-local per-project scoring config. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
+      "id": "creating-project-owner raw-sink vaultfs.Move",
+      "reason": "THE MOVE PRIMITIVE ITSELF: its destination is checked by projectdir.RefuseUninitialisedAbs before its os.MkdirAll and RenameNoLock. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
       "id": "departure-record-writer storage.Vault.writeDeparture",
       "reason": "THE ONE RECORD WRITER in storage. RecordDeparture, RecordDepartureForPurge and RecordDepartureForDelete all funnel here; it validates and encodes the record, derives date and base commit, and writes it through vaultfs.WriteDepartureRecord under the caller's root-lock token (or one it takes when the caller holds none). Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
     },

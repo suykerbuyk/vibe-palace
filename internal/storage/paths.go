@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -261,14 +262,24 @@ func (v *Vault) IndexCommitLockPath(project string) (string, error) {
 
 // EnsureDir creates the directory tree at path if it does not exist.
 // Uses os.MkdirAll with 0755 permissions. Idempotent.
+//
+// It is for directories OUTSIDE a vault's project trees (host logs, caches,
+// host-local state). A directory under Projects/<p>/ or palace/<p>/ is made
+// with EnsureVaultDir, which refuses a project the vault has not initialised;
+// the creating-project-owner source-audit rule refuses EnsureDir inside
+// internal/storage.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
-// EnsureVaultDir creates a directory in this vault: one under a project tree
-// (Projects/<p>/ or palace/<p>/). Storage makes every such directory here, so
-// one place decides whether a vault directory may be created.
+// EnsureVaultDir is EnsureDir for a directory in this vault: it first refuses
+// a directory under a project the vault has not initialised
+// (projectdir.RefuseUninitialisedDirAbs), so a refused write never leaves an
+// empty Projects/<p>/ behind, a Phantom other readers would then accept.
 func (v *Vault) EnsureVaultDir(path string) error {
+	if err := projectdir.RefuseUninitialisedDirAbs(v.Root, path); err != nil {
+		return err
+	}
 	return os.MkdirAll(path, 0755)
 }
 

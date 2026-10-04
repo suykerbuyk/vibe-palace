@@ -46,6 +46,7 @@ import (
 	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -56,6 +57,9 @@ type config struct {
 	inheritPerm bool
 	fsync       bool
 	dirFsync    bool
+	// creatingProject admits a write into a project that is not yet
+	// initialised (CreatingProject).
+	creatingProject bool
 	// recordHeld admits a write under Audits/departures/: the vault root lock
 	// token of a lifecycle command (ForDepartureRecord).
 	recordHeld *vaultlock.Held
@@ -90,6 +94,14 @@ func WithFsync() Option { return func(c *config) { c.fsync = true } }
 // an error as "the target is unchanged", only as "the write may not be
 // durable".
 func WithDirFsync() Option { return func(c *config) { c.dirFsync = true } }
+
+// CreatingProject marks a write that creates the project it lands in, so the
+// uninitialised-project gate (projectdir.RefuseUninitialisedAbs) admits it.
+// Only the project-creating writers pass it: the init scaffold, through
+// vaultfs.CreatingProject, and a lifecycle copy's destination writes
+// (storage.CopyProjectTreeEntry). The creating-project-owner source-audit
+// rule refuses every other caller.
+func CreatingProject() Option { return func(c *config) { c.creatingProject = true } }
 
 // syncObserver, when non-nil, is called with the path of every fsync this
 // package completes: the temp file before its rename (WithFsync), and the
@@ -206,21 +218,24 @@ func Write(vaultRoot, absPath string, data []byte, opts ...Option) error {
 // a compression failure reads as a compression failure, not as "write temp".
 // Any failure leaves absPath untouched and removes the temp file.
 //
-// # It stamps, and it takes no options
+// # It stamps, and it takes one option
 //
 // A streamed file is CONTENT, so this behaves like Write and not like the
 // removal sink (vaultfs.RemoveNoLock / RenameNoLock), which deliberately does
 // not stamp because it writes no content.
 //
-// There is deliberately no opts parameter. This primitive has exactly one
-// caller (archive.compressFile), and options nobody passes are the shape
-// sourceaudit's `uninvoked` rule exists to catch. In particular it does NOT
-// fsync: the hand-rolled temp+rename it replaced did not either, and matching
-// existing durability rather than silently improving it is the same parity rule
-// the append primitive followed. Add an option here when a second caller needs
-// one, not before.
-func WriteStream(vaultRoot, absPath string, fill func(io.Writer) error) error {
-	return writeAtomic(vaultRoot, absPath, config{perm: 0o644}, func(f *os.File) error {
+// Its callers are archive.compressFile and storage.CopyProjectTreeEntry. The
+// one option either passes is CreatingProject (the copy's destination writes);
+// it does NOT fsync: the hand-rolled temp+rename it replaced did not either,
+// and matching existing durability rather than silently improving it is the
+// same parity rule the append primitive followed. Add another option here when
+// a caller needs it, not before.
+func WriteStream(vaultRoot, absPath string, fill func(io.Writer) error, opts ...Option) error {
+	cfg := config{perm: 0o644}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return writeAtomic(vaultRoot, absPath, cfg, func(f *os.File) error {
 		return fill(f)
 	})
 }
@@ -241,6 +256,14 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 	}
 	if err := departedpath.RefuseRecordAbs(vaultRoot, absPath); err != nil {
 		if h := cfg.recordHeld; h == nil || h.RequireRoot() != nil || !sameDir(h.Root(), vaultRoot) {
+			return err
+		}
+	}
+	// Nor under a project the vault has not initialised, unless this write is
+	// the one that creates it: the write, its parent directories and its
+	// .surface stamp would make a project no creator commits (projectdir).
+	if !cfg.creatingProject {
+		if err := projectdir.RefuseUninitialisedAbs(vaultRoot, absPath); err != nil {
 			return err
 		}
 	}

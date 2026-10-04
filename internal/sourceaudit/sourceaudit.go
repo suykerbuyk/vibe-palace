@@ -175,6 +175,12 @@ const (
 	// or flag spelled by hand, or a string literal beginning with pathspec
 	// magic. See literalPathspecOwner.
 	KindLiteralPathspecOptOut = "literal-pathspec-opt-out"
+
+	// KindCreatingProjectOwner: a caller of the creating-project option outside
+	// its owners, a raw sink (vaultfs.RenameNoLock, os.MkdirAll in a vault
+	// writer) the uninitialised-project gate does not sit on, or EnsureDir
+	// inside internal/storage. See creatingProjectOwner.
+	KindCreatingProjectOwner = "creating-project-owner"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -268,6 +274,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, evidenceWalkIndependence(files)...)
 	findings = append(findings, gitEnabledOwner(files)...)
 	findings = append(findings, literalPathspecOwner(files)...)
+	findings = append(findings, creatingProjectOwner(files)...)
 	findings = append(findings, departureRecordWriter(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })

@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -132,6 +133,12 @@ func (v *Vault) appendUnderLock(absPath string, data []byte) error {
 	// And never a departure record: those are written whole, only by the
 	// lifecycle commands (vaultfs.WriteDepartureRecord).
 	if err := departedpath.RefuseRecordAbs(v.Root, absPath); err != nil {
+		return err
+	}
+	// Nor into a project the vault has not initialised: the append would
+	// create the file, and its stamp, in a project nobody committed
+	// (projectdir).
+	if err := projectdir.RefuseUninitialisedAbs(v.Root, absPath); err != nil {
 		return err
 	}
 	// O_APPEND rather than O_RDWR + Seek(0, io.SeekEnd): both land at EOF under

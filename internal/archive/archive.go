@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -158,6 +158,12 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	}
 
 	transcriptsDir := filepath.Join(opts.VaultRoot, "Projects", opts.ProjectSlug, "transcripts")
+	// The directory is made here, before atomicfile's gated writes, so the
+	// uninitialised-project gate is applied first: a refused archive must not
+	// leave an empty Projects/<slug>/transcripts/ (projectdir).
+	if err := projectdir.RefuseUninitialisedDirAbs(opts.VaultRoot, transcriptsDir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(transcriptsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create transcripts dir: %w", err)
 	}
