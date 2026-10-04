@@ -248,7 +248,7 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		branch = branchOrMain(vaultPath)
 		if len(remotes) > 0 {
 			var rerr error
-			if reconcileErrs, rerr = reconcileIfAhead(vaultPath, remotes, branch); rerr != nil {
+			if reconcileErrs, rerr = reconcileIfAhead(vaultPath, remotes, branch, &result.Derived); rerr != nil {
 				for _, rel := range paths {
 					out.keep(rel, "prune deferred: the vault is not in a state to commit into")
 				}

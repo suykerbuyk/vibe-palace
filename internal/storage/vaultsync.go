@@ -46,6 +46,9 @@ type PushResult struct {
 	// not-yet-created path (e.g. an empty Projects/<slug>/memory/) or a
 	// misspelled path the caller should notice.
 	SkippedPaths []string
+	// Derived is what the reconcile merges did to derived index paths on a
+	// migrated vault (healed conflicts, untracked re-tracks).
+	Derived DerivedMergeReport
 }
 
 // AllPushed was DELETED at 209 — see the AllPulled note in vaultpull.go for the full
@@ -318,7 +321,7 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		// new commit stacks on top of it and compounds the strand. Gated on
 		// push && len(remotes) > 0 so it never fires on the downgrade path.
 		var rerr error
-		if reconcileErrs, rerr = reconcileIfAhead(vaultPath, remotes, branch); rerr != nil {
+		if reconcileErrs, rerr = reconcileIfAhead(vaultPath, remotes, branch, &result.Derived); rerr != nil {
 			return nil, rerr
 		}
 	}
@@ -951,7 +954,7 @@ func downgradePush(vaultPath string, push bool) (effective, downgraded bool, err
 // Otherwise HEAD now descends from the remote tip with the prior commit
 // unchanged beneath the merge, and the new commit will fast-forward. The
 // returned map is nil when nothing was recorded.
-func reconcileIfAhead(vaultPath string, remotes []string, branch string) (map[string]error, error) {
+func reconcileIfAhead(vaultPath string, remotes []string, branch string, rep *DerivedMergeReport) (map[string]error, error) {
 	var reconcileErrs map[string]error
 	for _, remote := range remotes {
 		ref := remote + "/" + branch
@@ -971,7 +974,7 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string) (map[st
 		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote); err != nil {
 			continue
 		}
-		mergeErr := mergeFetchedTip(vaultPath, remote, branch)
+		mergeErr := mergeFetchedTip(vaultPath, remote, branch, rep)
 		var notStarted *mergeNotStartedError
 		var unsafe *vaultTreeUnsafeError
 		switch {
@@ -1463,7 +1466,14 @@ func commitPathspec(vaultPath string, limit time.Duration, message string, paths
 //  6. Anything else is git refusing before it changed anything — staged
 //     changes in the index, or the incoming change touching a modified or
 //     untracked file in the way — returned as *mergeNotStartedError.
-func mergeFetchedTip(vaultPath, remote, branch string) error {
+//
+// On a migrated vault two more steps run (derived_merge.go): a conflict whose
+// every unmerged path is derived is HEALED (the paths deleted, the merge
+// concluded) instead of aborted, and after every successful merge the derived
+// paths the merged tree tracks are UNTRACKED and committed. A failed untrack
+// is *derivedUntrackError: the merge stands, and the caller does not push.
+// rep, when non-nil, collects what both did.
+func mergeFetchedTip(vaultPath, remote, branch string, rep *DerivedMergeReport) error {
 	ref := remote + "/" + branch
 	if op, err := operationInProgress(vaultPath); err != nil {
 		return &vaultTreeUnsafeError{fmt.Errorf("refusing to merge %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", ref, err)}
@@ -1475,7 +1485,7 @@ func mergeFetchedTip(vaultPath, remote, branch string) error {
 	}
 	_, mergeErr := gitCmd(vaultPath, mergeTimeout, "merge", ref)
 	if mergeErr == nil {
-		return nil
+		return untrackAfterMerge(vaultPath, rep)
 	}
 	if killed := killedMergeError(vaultPath, ref, mergeErr); killed != nil {
 		return &vaultTreeUnsafeError{killed}
@@ -1487,8 +1497,45 @@ func mergeFetchedTip(vaultPath, remote, branch string) error {
 	if op != "MERGE_HEAD" && len(unmergedPaths(vaultPath)) == 0 {
 		return &mergeNotStartedError{mergeErr}
 	}
+	var (
+		healed, named []string
+		handled       bool
+	)
+	entries, healErr := unmergedPathsZ(vaultPath)
+	if healErr == nil && len(entries) > 0 {
+		healed, named, handled, healErr = healConflicts(vaultPath, entries)
+	}
+	if healErr == nil && handled {
+		rep.add(DerivedMergeReport{Healed: healed})
+		return untrackAfterMerge(vaultPath, rep)
+	}
+	mergeErr = joinHealOutcome(mergeErr, named, healErr)
 	if _, abortErr := gitCmd(vaultPath, 10*time.Second, "merge", "--abort"); abortErr != nil {
 		return &vaultTreeUnsafeError{fmt.Errorf("%w; abort failed: %w", mergeErr, abortErr)}
+	}
+	return mergeErr
+}
+
+// untrackAfterMerge runs the post-merge untrack and reports it, wrapping a
+// failure as *derivedUntrackError.
+func untrackAfterMerge(vaultPath string, rep *DerivedMergeReport) error {
+	untracked, err := untrackDerivedAfterMerge(vaultPath)
+	if err != nil {
+		return &derivedUntrackError{err}
+	}
+	rep.add(DerivedMergeReport{Untracked: untracked})
+	return nil
+}
+
+// joinHealOutcome adds to a conflicted merge's error what the heal found: a
+// kg/entities.jsonl both sides changed, named, and a heal that could not run
+// (a marker that cannot be read, for one).
+func joinHealOutcome(mergeErr error, named []string, healErr error) error {
+	for _, p := range named {
+		mergeErr = fmt.Errorf("%w; unresolved conflict on %s: both sides changed it, which the migration's \"every writer host synced, pushed and clean\" attestation exists to prevent — resolve it by hand", mergeErr, p)
+	}
+	if healErr != nil {
+		mergeErr = fmt.Errorf("%w; derived-path heal not run: %w", mergeErr, healErr)
 	}
 	return mergeErr
 }
@@ -1576,7 +1623,7 @@ func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult)
 	// failure (a departure refusal, an aborted conflict, a refusal before the
 	// merge started, a killed merge) skips the push for this remote — the
 	// commit stays local (Stranded surfaces it).
-	if mergeErr := mergeFetchedTip(vaultPath, remote, branch); mergeErr != nil {
+	if mergeErr := mergeFetchedTip(vaultPath, remote, branch, &result.Derived); mergeErr != nil {
 		result.RemoteResults[remote] = reconcileFailure("merge of "+remote+"/"+branch+" failed", mergeErr)
 		return false
 	}

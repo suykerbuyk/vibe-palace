@@ -767,6 +767,9 @@ func printPullOutput(remotes []string, res *storage.PullResult) {
 	for _, f := range res.FailedHeals {
 		fmt.Fprintf(os.Stderr, "vp vault pull: [heal] FAILED to clear %s: %s — path is still dirty and may block the merge\n", f.Path, f.Reason)
 	}
+	for _, l := range res.Derived.Lines() {
+		fmt.Fprintf(os.Stderr, "vp vault pull: %s\n", l)
+	}
 	for _, remote := range remotes {
 		fmt.Fprintf(os.Stderr, "Pulling from %s...\n", remote)
 		if out := strings.TrimSpace(res.RemoteOutput[remote]); out != "" {

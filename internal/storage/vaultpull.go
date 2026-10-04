@@ -51,6 +51,9 @@ type PullResult struct {
 	// reported here — see the reconciliation at the end of Pull. Only paths
 	// that were never healed are listed, so "still an obstruction" stays true.
 	FailedHeals []HealFailure
+	// Derived is what the merges did to derived index paths on a migrated
+	// vault: conflicted paths healed (deleted) and re-tracked paths untracked.
+	Derived DerivedMergeReport
 }
 
 // HealFailure is one candidate path whose heal checkout failed, with git's own
@@ -272,6 +275,36 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 			out, err := gitCmd(vaultPath, 120*time.Second, "merge", ref)
 			result.RemoteOutput[remote] = out
 			result.RemoteResults[remote] = err
+
+			// On a migrated vault (derived_merge.go): a conflict on derived paths
+			// alone is healed and the merge concluded, so this remote's result is
+			// OVERWRITTEN to success; a conflict the heal does not take stays the
+			// operator's, with what the heal found joined to it. Every successful
+			// merge then untracks the derived paths it (re-)tracked; a failed
+			// untrack is this remote's result, so SyncVault does not push.
+			if err != nil {
+				var (
+					healedDerived, named []string
+					handled              bool
+				)
+				entries, healErr := unmergedPathsZ(vaultPath)
+				if healErr == nil && len(entries) > 0 {
+					healedDerived, named, handled, healErr = healConflicts(vaultPath, entries)
+				}
+				switch {
+				case healErr == nil && handled:
+					result.Derived.add(DerivedMergeReport{Healed: healedDerived})
+					result.RemoteResults[remote] = nil
+					err = nil
+				case healErr != nil || len(named) > 0:
+					result.RemoteResults[remote] = joinHealOutcome(err, named, healErr)
+				}
+			}
+			if err == nil {
+				if uerr := untrackAfterMerge(vaultPath, &result.Derived); uerr != nil {
+					result.RemoteResults[remote] = uerr
+				}
+			}
 
 			// A merge that left unmerged paths makes the tree unmergeable: no later
 			// remote can merge onto a conflicted tree, and continuing would only run

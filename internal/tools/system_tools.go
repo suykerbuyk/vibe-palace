@@ -429,6 +429,9 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				fmt.Fprintf(&output, "Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
 			}
 			if res.Pull != nil {
+				for _, l := range res.Pull.Derived.Lines() {
+					fmt.Fprintln(&output, l)
+				}
 				for _, remote := range remotes {
 					fmt.Fprintf(&output, "[pull %s] %s\n", remote, strings.TrimSpace(res.Pull.RemoteOutput[remote]))
 				}
@@ -515,6 +518,9 @@ func gitPull(root string, remotes []string) (string, error) {
 	// the consequence — the causal link is the entire point.
 	for _, f := range res.FailedHeals {
 		fmt.Fprintf(&buf, "[heal] FAILED to clear %s: %s — path is still dirty and may block the merge\n", f.Path, f.Reason)
+	}
+	for _, l := range res.Derived.Lines() {
+		fmt.Fprintln(&buf, l)
 	}
 	for _, remote := range remotes {
 		fmt.Fprintf(&buf, "[pull %s] %s\n", remote, strings.TrimSpace(res.RemoteOutput[remote]))
