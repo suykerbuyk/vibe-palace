@@ -798,7 +798,7 @@ This section maps the mechanism onto the code.
 | `vp vault clone <url> <path> [--bind <p>…]` | — | `cmd_vault_clone.go`, `storage/vault_clone.go` | Clone a published vault, adding and fetching every remote in `remotes.toml`; `--bind` makes it this host's vault for those projects. No commit, no push |
 | `vp vault copy <p>… --from <remote-url> [--at <sha>]` | `vp_vault_copy` | `cmd_vault_copy.go`, `storage/lifecycle_copy.go`, `tools/vault_copy.go` | Receiver-run copy from another vault's **published remote** (never a host path), through a private blobless snapshot; one commit with `Vp-Copy-*` trailers, footprint hash checked against the source |
 | `vp vault project delete <p>… (--moved-to <url> \| --discard)` | `vp_vault_project_delete` | `cmd_vault_project_delete.go`, `storage/lifecycle_delete.go`, `tools/vault_project_delete_tool.go` | One published commit that removes the projects and adds their departure records; `--moved-to` refuses unless the destination's remote holds a verified copy |
-| — | `vp_vault_split`, `vp_vault_merge` | `tools/vault_split.go`, `tools/vault_merge.go` | MCP-only (`plan` / `apply` / `verify`, plus `purge` for split) split of named slugs into a new standalone vault, or merge of disjoint slugs from one |
+| — | `vp_vault_split`, `vp_vault_merge` | `tools/vault_split.go`, `tools/vault_merge.go` | MCP-only (`plan` / `apply` / `verify`, plus `purge` for split) split of named slugs into an existing, migrated `vp vault init` vault, or merge of disjoint slugs from one; both refuse every pairing but migrated into migrated and leave derived residue (untracked, ignored drawers and ingest ledgers) behind |
 | `vp config bind <slug>… --vault <path>` | `vp_config_bind` | `cmd/vp/cmd_config_bind.go`, `storage/project_bind.go`, `tools/config_bind_tool.go` | Write `[project_vaults]` lines (below) |
 
 `vp_config_bind` and `vp_vault_project_delete` are registered on the stdio
@@ -1860,8 +1860,8 @@ the only thing that removes an override:
    `internal/reconcile/template_tree.go`. Runs the table above over
    every embedded resource (commands + skills): prunes vp-shipped copies,
    keeps overrides, never prompts and never writes a template. (Vault
-   split's destination scaffold no longer runs it: a fresh destination
-   has nothing to reconcile.)
+   split no longer scaffolds a destination at all: it copies into an
+   existing, migrated `vp vault init` vault.)
 2. **Report** (`vp commands upgrade`, `vp skills upgrade`) —
    `commands.Plan` in `internal/commands/upgrade.go`. Classifies an
    *existing* vault copy with the same `templates.ClassifyVaultCopy` (an

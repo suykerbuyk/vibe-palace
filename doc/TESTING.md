@@ -2364,6 +2364,22 @@ cache. That property used to depend on reading the cache before listing
 projects; with the per-slug existence check, swapping the two reads is an
 equivalent mutant, so the test pins the property rather than the order.
 
+### Split, merge and copy between migrated vaults (task `split-and-merge-exclude-derived-palace-paths`)
+
+Split's destination is now made the way an operator makes one: a v9 `vp vault
+init` (`splitInitDest`, against a local bare remote). The split, merge and copy
+suites write the migration marker into both vaults (`splitFixtureVault`,
+`formatManifest`, the copy tool and CLI fixtures). Tests that assumed split
+creates its destination now assert the destination is unchanged instead.
+
+| Test | What it proves |
+|---|---|
+| `internal/storage`: `TestDerivedResidue_TrackedDrawerIsNever`, `TestDerivedResidue_PathAndUntrackedAndIgnored`, `TestDerivedResidue_RechecksEveryLine`, `TestDerivedResidue_OneGitCall`, `TestDerivedResidue_GitFailureIsAnError`, `TestDerivedResidue_NotAGitVault` | The residue is untracked AND ignored AND derived (never a tracked drawer, never an ignored `*.bak`), every listed line is re-checked with `isDerivedPath`, one git call for all slugs, and a git failure is an error |
+| `internal/tools`: `TestVaultSplit_RefusesEveryPairingButMigratedIntoMigrated`, `TestVaultMerge_RefusesEveryPairingButMigratedIntoMigrated`; `internal/storage`: `TestCopy_RefusesEveryPairingButMigratedIntoMigrated`, `TestCopy_ReadsTheSourceMarkerAtTheTip` | Each command refuses every pairing but migrated into migrated, and an unreadable marker, before any write (plan, apply and verify for split and merge; the dry run lists copy's refusal); copy reads the source marker at the tip |
+| `TestVaultSplitApply_IntoAVaultInitDestination`, `TestVaultSplitApply_RefusesAnUnsafeExistingDestination`, `TestVaultSplitApply_RefusesADestinationInsideAnotherRepository` | Split copies into a `vp vault init` destination end to end (its remote and `Audits/.surface` pass verify, its `vault.toml` is never rewritten), and refuses a destination that already holds the slug, carries a pending lifecycle marker, has an unrecorded remote, or is nested in another repository |
+| `TestVaultSplitPlan_LeavesOutDerivedResidueOnly`, `TestVaultSplitPlan_KeepsAnUnignoredDerivedFile`, `TestVaultSplit_ResidueApplyVerifyPurge`, `TestVaultSplitVerify_InventoryUsesTheSourceResidue`, `TestVaultSplitPlan_GlobalWalksIgnoreTheResidueRule`, `TestVaultMergePlan_LeavesOutDerivedResidue` | Split and merge leave the source's residue out, keep the `*.bak` manifests and unignored files, verify's inventory uses the source's residue set, purge's unaccounted check skips the residue and its cleanup removes it; the global walks are untouched |
+| `TestBaselineAdd_MergeAddsTheIncomingArchives`, `TestBaselineAdd_NoLedgerWritesNothing`, `TestBaselineAdd_NeverFailsTheCommand`, `TestBaselineAdd_CopyAddsAfterThePublishOnly` | Copy and merge add the incoming archives to this host's baseline set under one commit lock, write nothing without a ledger, warn rather than fail on a lock timeout, and a refused copy adds nothing |
+
 ### `internal/tools/vault_split_apply_test.go` — purge reaps the moved cache
 
 `TestVaultSplitPurge_RemovesSourceTreesAfterVerify` seeds each slug's cache at

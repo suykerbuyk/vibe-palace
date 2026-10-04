@@ -1556,12 +1556,11 @@ alone.
   constant is 9. At `a32a2d4`, `vp vault init` (`InitVault`,
   `internal/storage/vault_init.go:108`) writes no `.surface` stamp. The marker must be
   written in `InitVault` itself, never in the shared scaffold.
-- *(shipped)* `reconcile.ScaffoldNewVault` has two callers at `a32a2d4`: `InitVault`
-  (`internal/storage/vault_init.go:148`) and the split destination
-  (`internal/tools/vault_split_apply.go:359`). The marker never goes in the shared scaffold, so
-  a destination the split scaffolds itself starts unmigrated. Once
-  `split-and-merge-exclude-derived-palace-paths` merges, a split into such a destination is
-  refused (below). `vp init`, `vp config sync` and onboarding use
+- *(shipped)* `reconcile.ScaffoldNewVault` has one caller, `InitVault`
+  (`internal/storage/vault_init.go`). The split destination scaffold it had at `a32a2d4` is gone
+  (`split-and-merge-exclude-derived-palace-paths`): a split copies into an existing, migrated
+  vault that a v9 `vp vault init` made, and refuses any other destination (below). The marker
+  never goes in the shared scaffold. `vp init`, `vp config sync` and onboarding use
   the vault reconciler directly, and a vault they create also starts unmigrated, without marker
   or lines.
 - **Split, copy and merge need two migrated vaults.** The destination must already be a
@@ -1894,10 +1893,9 @@ palace/*/ingested-archives.jsonl
   vault-level stamp `Audits/.surface` at `MCPSurfaceVersion`, never a literal 9 (§7.8; ADR-014
   decision 11). Only `vp vault init` creates a vault born migrated, writing the marker in
   `InitVault`, never in the shared scaffold. A vault that `vp init`, `vp config sync` or onboarding
-  create through the vault reconciler starts unmigrated, and so does a destination the split
-  scaffolds itself through `reconcile.ScaffoldNewVault`; a split, copy or merge must therefore
-  refuse a destination without the marker (§7.8), and a split into a destination it scaffolds is
-  refused. The reconciler must emit them only on a marked
+  create through the vault reconciler starts unmigrated; a split, copy or merge therefore
+  refuses a destination without the marker (§7.8), and a split no longer scaffolds a destination
+  at all: it copies into an existing `vp vault init` vault. The reconciler must emit them only on a marked
   vault, so neither an unmigrated vault nor a reverted one ever receives them.
 - **What they cover.** The first covers every drawer file an older binary may still
   create. The second covers a legacy ingest ledger.
