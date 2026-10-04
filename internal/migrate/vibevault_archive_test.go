@@ -459,6 +459,30 @@ func allFiles(t *testing.T, root string) []string {
 	return out
 }
 
+// TestVibevaultDiagnosticMarkerIsWrittenOnce: an undated session is reported
+// on every run, but its no_date marker line is written once, not appended
+// again by each re-run.
+func TestVibevaultDiagnosticMarkerIsWrittenOnce(t *testing.T) {
+	vault := setupTestVault(t)
+	undated := "---\nsession_id: \"undated-1\"\nproject: " + fixtureProject + "\n---\nNo date here.\n"
+	if err := os.WriteFile(filepath.Join(vault.Root, "Projects", fixtureProject, "sessions", "undated.md"), []byte(undated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for run := range 3 {
+		res, err := ImportVibeVault(context.Background(), vault, vault, ImportOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Errors) != 1 {
+			t.Fatalf("run %d: errors %v, want the undated session reported", run, res.Errors)
+		}
+	}
+	marker, _ := markerFile(vault, fixtureProject)
+	if n := strings.Count(string(mustRead(t, marker)), `"reason":"`+markerReasonNoDate+`"`); n != 1 {
+		t.Fatalf("%d no_date marker lines after three runs, want 1", n)
+	}
+}
+
 // TestVibevaultRefusesABatchIDSessionID: a session whose id has the form of a
 // mempalace import batch id is refused, with a message, and gets no archive.
 func TestVibevaultRefusesABatchIDSessionID(t *testing.T) {

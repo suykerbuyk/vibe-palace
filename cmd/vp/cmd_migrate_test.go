@@ -564,7 +564,7 @@ func TestMigrateMemPalaceDryRunBuildsNoEmbedder(t *testing.T) {
 	}
 	for _, want := range []string{
 		"the embedding model is not loaded",
-		"Would import: 0 projects, 0 sessions imported, 0 skipped, 2 drawers, 1 entities, 1 triples",
+		"Would import: 2 batches, 2 drawers, 1 entities, 1 triples",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr)
@@ -594,8 +594,8 @@ func TestMigrateMemPalaceRefusesAnUnknownProject(t *testing.T) {
 	for _, args := range [][]string{{"--export-path", p, "--project", "nope"}, {"--export-path", p}} {
 		var code int
 		stderr := captureStderr(t, func() { code = cmdMigrateMemPalace().Run(args) })
-		if code != cli.ExitUser || !strings.Contains(stderr, "project") {
-			t.Errorf("%v: exit %d, stderr:\n%s; want ExitUser naming the project", args, code, stderr)
+		if code != cli.ExitUser || !strings.Contains(stderr, "project") || strings.Contains(stderr, "<nil>") {
+			t.Errorf("%v: exit %d, stderr:\n%s; want ExitUser naming the project, and no \"<nil>\"", args, code, stderr)
 		}
 	}
 	if *constructed != 0 {
@@ -654,12 +654,38 @@ func TestMigrateMemPalaceOutputStatesTheCaveats(t *testing.T) {
 	if m := namesAVPCommand.FindString(stderr); m != "" {
 		t.Errorf("output names a vp command (%q):\n%s", m, stderr)
 	}
+	// The summary and progress tell the truth: batches, not "0 projects";
+	// each committed batch named with its position, never "[0/0]".
+	for _, want := range []string{"Done: 2 batches committed, 0 already imported, 2 drawers, 1 entities, 1 triples", "committed mempalace:", "[1/2]", "[2/2]"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("output lacks %q:\n%s", want, stderr)
+		}
+	}
+	for _, banned := range []string{"[0/0]", "projects", "sessions imported"} {
+		if strings.Contains(stderr, banned) {
+			t.Errorf("output contains %q:\n%s", banned, stderr)
+		}
+	}
 }
 
 // namesAVPCommand matches any vp subcommand named in output ("vp search",
 // "vp index …"): an import's output names no command at all, not only the
 // ones a word list remembers.
 var namesAVPCommand = regexp.MustCompile(`\bvp [a-z]`)
+
+// TestProgressLineNeverClaimsAPositionItLacks: an event with no count prints
+// no "[0/0]"; an event with no session id prints its message.
+func TestProgressLineNeverClaimsAPositionItLacks(t *testing.T) {
+	if got := progressCount(migrate.ProgressEvent{SessionID: "s"}); got != "" {
+		t.Errorf("progressCount with no total = %q, want empty", got)
+	}
+	if got := progressCount(migrate.ProgressEvent{Current: 2, Total: 3}); got != " [2/3]" {
+		t.Errorf("progressCount = %q, want \" [2/3]\"", got)
+	}
+	if got := progressLabel(migrate.ProgressEvent{Message: "committed b"}); got != "committed b" {
+		t.Errorf("progressLabel with no session id = %q, want the message", got)
+	}
+}
 
 // TestArchivedNoticeCountsSessionsApartFromKnowledge: a knowledge.md archive
 // is not a session, so the notice never counts it as one.
@@ -955,6 +981,9 @@ func TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand(t *testing.T) {
 	}
 	if m := namesAVPCommand.FindString(stderr); m != "" {
 		t.Errorf("the output names a vp command (%q):\n%s", m, stderr)
+	}
+	if !strings.Contains(stderr, "s1 [1/1]") || strings.Contains(stderr, "[0/0]") {
+		t.Errorf("the archived session's progress line must carry its position, never [0/0]:\n%s", stderr)
 	}
 	if m, _ := filepath.Glob(filepath.Join(vaultDir, "Projects", "p", "transcripts", "*.manifest.json")); len(m) != 2 {
 		t.Errorf("%d manifests, want 2 (s1 and knowledge.md)", len(m))

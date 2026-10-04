@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -271,6 +272,7 @@ type pendingArchive struct {
 	text      string
 	date      time.Time
 	marker    bool // record an import marker once archived (sessions; not knowledge.md)
+	index     int  // the session's position among the project's session files
 }
 
 // addToBaseline adds the archives an import brings in to this host's
@@ -340,6 +342,12 @@ func importProjectSessions(ctx context.Context, destination *storage.Vault, dirP
 	}
 	mark := func(id, reason string) {
 		if opts.DryRun {
+			return
+		}
+		// A diagnostic reason already recorded for the session is not
+		// recorded again: an undated session is reported on every run, but
+		// its marker line is written once.
+		if reason != "" && slices.Contains(mk[id], reason) {
 			return
 		}
 		if err := appendMarker(destination, projSlug, id, "vibevault", reason); err != nil {
@@ -420,7 +428,7 @@ func importProjectSessions(ctx context.Context, destination *storage.Vault, dirP
 			progress(opts, ProgressEvent{Type: ProgressSessionDone, Project: projSlug, SessionID: sessionID, Current: i + 1, Total: total})
 			continue
 		}
-		pending = append(pending, pendingArchive{sessionID: sessionID, file: sf, text: text, date: date, marker: true})
+		pending = append(pending, pendingArchive{sessionID: sessionID, file: sf, text: text, date: date, marker: true, index: i})
 	}
 
 	// knowledge.md, archived under knowledge-<slug>, dated by its own
@@ -473,7 +481,7 @@ func importProjectSessions(ctx context.Context, destination *storage.Vault, dirP
 		if p.marker {
 			mark(p.sessionID, "")
 			result.SessionsImported++
-			progress(opts, ProgressEvent{Type: ProgressSessionDone, Project: projSlug, SessionID: p.sessionID})
+			progress(opts, ProgressEvent{Type: ProgressSessionDone, Project: projSlug, SessionID: p.sessionID, Current: p.index + 1, Total: total})
 		}
 	}
 	return nil

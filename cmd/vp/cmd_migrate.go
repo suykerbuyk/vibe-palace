@@ -321,8 +321,13 @@ func cmdMigrateMemPalace() *cli.Command {
 			// The project must already exist: a slug in neither tree is not
 			// searchable, and the index sweep would remove its store. Checked
 			// before the model loads.
-			if exists, err := dest.ProjectExists(project); err != nil || !exists {
-				fmt.Fprintf(os.Stderr, "vp migrate mempalace: project %q is not in the vault (%v); import into an existing project\n", project, err)
+			exists, err := dest.ProjectExists(project)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp migrate mempalace: could not check project %q: %v\n", project, err)
+				return cli.ExitSystem
+			}
+			if !exists {
+				fmt.Fprintf(os.Stderr, "vp migrate mempalace: project %q is not in the vault; import into an existing project\n", project)
 				return cli.ExitUser
 			}
 
@@ -363,7 +368,7 @@ func cmdMigrateMemPalace() *cli.Command {
 				return cli.ExitSystem
 			}
 
-			printMigrateResult(result, dryRun)
+			printMemPalaceResult(result, dryRun)
 			fmt.Fprintln(os.Stderr, mempalaceDayLine(result))
 			if !dryRun {
 				fmt.Fprint(os.Stderr, mempalaceCaveat(result))
@@ -371,6 +376,26 @@ func cmdMigrateMemPalace() *cli.Command {
 			return importExit(result)
 		},
 	}
+}
+
+// printMemPalaceResult prints a mempalace import's summary: batches and
+// records, never the vibevault summary's projects and sessions, which a
+// mempalace import has none of.
+func printMemPalaceResult(r migrate.ImportResult, dryRun bool) {
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "\nWould import: %s, %d drawers, %d entities, %d triples",
+			countOf(r.BatchesCommitted, "batch", "batches"), r.DrawersCreated, r.EntitiesCreated, r.TriplesCreated)
+	} else {
+		fmt.Fprintf(os.Stderr, "\nDone: %s committed, %d already imported, %d drawers, %d entities, %d triples",
+			countOf(r.BatchesCommitted, "batch", "batches"), r.BatchesSkipped, r.DrawersCreated, r.EntitiesCreated, r.TriplesCreated)
+	}
+	if r.DrawersSkippedBlank > 0 {
+		fmt.Fprintf(os.Stderr, "; %s skipped", countOf(r.DrawersSkippedBlank, "blank drawer", "blank drawers"))
+	}
+	if len(r.Errors) > 0 {
+		fmt.Fprintf(os.Stderr, " (%s)", countOf(len(r.Errors), "error", "errors"))
+	}
+	fmt.Fprintln(os.Stderr)
 }
 
 // mempalaceDayLine says which day every batch of the import carries, and
@@ -393,9 +418,7 @@ func mempalaceDayLine(r migrate.ImportResult) string {
 // operator's to run on a live vault from this output.
 func mempalaceCaveat(r migrate.ImportResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n%d import batches committed, %d already imported, %d blank drawers skipped.\n",
-		r.BatchesCommitted, r.BatchesSkipped, r.DrawersSkippedBlank)
-	b.WriteString("This import is single-host and not tracked: it lives in this host's local index only, " +
+	b.WriteString("\nThis import is single-host and not tracked: it lives in this host's local index only, " +
 		"and no other host will have it.\n")
 	b.WriteString("It has no archive: if the project's chunk recipe changes (chunks.fingerprint), the project " +
 		"is marked stale and the next full index rebuild discards this import. Keep the export file: " +
@@ -586,9 +609,9 @@ func migrateProgressFunc() migrate.ProgressFunc {
 			lastProject = evt.Project
 			fmt.Fprintf(os.Stderr, "  %s:\n", evt.Project)
 		case migrate.ProgressSessionDone:
-			fmt.Fprintf(os.Stderr, "    %s [%d/%d]\n", evt.SessionID, evt.Current, evt.Total)
+			fmt.Fprintf(os.Stderr, "    %s%s\n", progressLabel(evt), progressCount(evt))
 		case migrate.ProgressSessionSkip:
-			fmt.Fprintf(os.Stderr, "    %s (skipped) [%d/%d]\n", evt.SessionID, evt.Current, evt.Total)
+			fmt.Fprintf(os.Stderr, "    %s (skipped)%s\n", progressLabel(evt), progressCount(evt))
 		case migrate.ProgressProjectDone:
 			// newline between projects handled by next ProjectStart
 		case migrate.ProgressError:
@@ -599,6 +622,24 @@ func migrateProgressFunc() migrate.ProgressFunc {
 			}
 		}
 	}
+}
+
+// progressLabel names a progress event's item: its session id, else its
+// message (a mempalace batch).
+func progressLabel(evt migrate.ProgressEvent) string {
+	if evt.SessionID != "" {
+		return evt.SessionID
+	}
+	return evt.Message
+}
+
+// progressCount is " [i/n]", or nothing for an event that carries no count:
+// a "[0/0]" would claim a position the event does not have.
+func progressCount(evt migrate.ProgressEvent) string {
+	if evt.Total <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" [%d/%d]", evt.Current, evt.Total)
 }
 
 // migrateProgressFuncDeferred wraps migrateProgressFunc with a one-shot
