@@ -509,3 +509,36 @@ func TestEmbedCacheWritesWaitForTheCommitLock(t *testing.T) {
 	}
 
 }
+
+// TestCaptureTimeoutDuringABuildIsNotLost (code review R1): a capture insert
+// that times out on the project MUTEX while a build holds it, after the build
+// has already listed the drawers, marks the project out of date. The build
+// must not overwrite that mark when it finishes: the counter never moved, so
+// only the mark makes the next search rebuild and find the captured drawer.
+func TestCaptureTimeoutDuringABuildIsNotLost(t *testing.T) {
+	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
+	addDrawer(t, v, "proj", "wing", "room", "a drawer the build embeds", "facts")
+	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	t.Cleanup(func() { eng.Close() })
+	ctx := context.Background()
+
+	built := make(chan error, 1)
+	go func() { _, err := eng.Rebuild(ctx, "proj"); built <- err }()
+	<-be.started // the build has listed the drawers and holds the mutex
+
+	withSearchLockTimeout(t, 0)
+	d := addDrawer(t, v, "proj", "wing", "room", "a drawer captured during the build", "facts")
+	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing", Room: "room", Drawer: d, Vec: unitVec(3)}}); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	close(be.release)
+	if err := <-built; err != nil {
+		t.Fatal(err)
+	}
+	withSearchLockTimeout(t, time.Minute)
+	if _, found := findHitContaining(mustSearch(t, eng, d.Content), d.Content); !found {
+		t.Fatal("the drawer whose capture insert timed out during a build is never found: the build overwrote the out-of-date mark")
+	}
+}

@@ -72,9 +72,16 @@ type Engine struct {
 	// incremental load). A project with no entry has never been built, or was
 	// invalidated (a capture insert that timed out), and the next search
 	// builds it.
-	buildMu   sync.Mutex
-	loaded    map[string]indexstore.Gen // project -> counter its index was built at
-	buildsRun map[string]*projectBuild  // project -> in-flight build
+	//
+	// invalidated counts, per project, the marks "out of date" a capture insert
+	// made when its lock wait ran out (insertSkipped). A build records the
+	// count when it starts and does not remember itself as current if the
+	// count moved while it ran: the insert it raced may be a drawer the build
+	// had already listed past, and the counter does not move for it.
+	buildMu     sync.Mutex
+	loaded      map[string]indexstore.Gen // project -> counter its index was built at
+	buildsRun   map[string]*projectBuild  // project -> in-flight build
+	invalidated map[string]uint64         // project -> capture invalidations so far
 
 	// sems are the per-project mutexes (see lock.go). semMu guards the map.
 	semMu sync.Mutex
@@ -106,15 +113,16 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		cache.fingerprint = embedder.Fingerprint(cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
 	}
 	return &Engine{
-		embedder:  emb,
-		vault:     vault,
-		cache:     cache,
-		config:    cfg,
-		indexes:   make(map[string]VectorIndex),
-		metadata:  make(map[string]drawerMeta),
-		loaded:    make(map[string]indexstore.Gen),
-		buildsRun: make(map[string]*projectBuild),
-		sems:      make(map[string]chan struct{}),
+		embedder:    emb,
+		vault:       vault,
+		cache:       cache,
+		config:      cfg,
+		indexes:     make(map[string]VectorIndex),
+		metadata:    make(map[string]drawerMeta),
+		loaded:      make(map[string]indexstore.Gen),
+		buildsRun:   make(map[string]*projectBuild),
+		invalidated: make(map[string]uint64),
+		sems:        make(map[string]chan struct{}),
 	}
 }
 
@@ -591,6 +599,7 @@ func (e *Engine) insertSkipped(project string, cause error) error {
 	}
 	e.buildMu.Lock()
 	delete(e.loaded, project)
+	e.invalidated[project]++
 	e.buildMu.Unlock()
 	slog.Info("index insert skipped: the project is busy; the next search rebuilds it", "project", project, "err", cause)
 	return nil
@@ -707,9 +716,20 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 // cache forgets its remembered regime, so a regime another process replaced
 // is read afresh.
 func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration) (RebuildStats, error) {
+	e.buildMu.Lock()
+	inv := e.invalidated[project]
+	e.buildMu.Unlock()
 	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.cache.Forget(project)
-	return e.rebuild(ctx, project, timeout, g, gerr == nil)
+	return e.rebuild(ctx, project, timeout, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
+}
+
+// buildStart is what a build knew when it started: the store counter (and
+// whether it could be read) and the project's capture-invalidation count.
+type buildStart struct {
+	gen         indexstore.Gen
+	readable    bool
+	invalidated uint64
 }
 
 // remember records the counter project's in-memory index now matches. It is
@@ -720,15 +740,17 @@ func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout
 // commit lock was busy (a vector batch, the completeness record): the next
 // search rebuilds and tries the write again (ADR-014 decision 7: a skipped
 // search-path write is redone by the next search that finds the same
-// condition).
-func (e *Engine) remember(project string, chain *genChain, start indexstore.Gen, readable bool) {
+// condition). Nor is a build during which a capture insert timed out and
+// marked the project out of date (Engine.invalidated): the drawer it carried
+// may postdate the build's listing, and no counter change will announce it.
+func (e *Engine) remember(project string, chain *genChain, start buildStart) {
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	if !readable || chain.skipped {
+	if !start.readable || chain.skipped || e.invalidated[project] != start.invalidated {
 		delete(e.loaded, project)
 		return
 	}
-	e.loaded[project] = chain.final(start)
+	e.loaded[project] = chain.final(start.gen)
 }
 
 // genChain follows a build's own commits from the counter it started at. A
@@ -775,14 +797,14 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 // past timeout skips that write: the batch serves this process from memory and
 // is embedded again later, and the reap waits for the next build. Only a busy
 // mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
-func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, start indexstore.Gen, readable bool) (RebuildStats, error) {
+func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, start buildStart) (RebuildStats, error) {
 	var stats RebuildStats
 	pl, err := e.lockProject(ctx, project, timeout)
 	if err != nil {
 		return stats, err
 	}
 	defer pl.release()
-	chain := genChain{cur: start}
+	chain := genChain{cur: start.gen}
 
 	// The embed cache's directory first: resolving it runs the cache's one-time
 	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
@@ -983,7 +1005,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		e.mu.Unlock()
 		e.closeReplaced(old)
 		stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
-		e.remember(project, &chain, start, readable)
+		e.remember(project, &chain, start)
 		return stats, nil
 	}
 
@@ -1013,7 +1035,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	e.closeReplaced(old)
 
 	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
-	e.remember(project, &chain, start, readable)
+	e.remember(project, &chain, start)
 	return stats, nil
 }
 
