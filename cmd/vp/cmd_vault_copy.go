@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
 var vaultCopyFlags = []cli.FlagDef{
@@ -70,6 +72,12 @@ func runVaultCopy(c *cli.Command, args []string, out, errOut io.Writer) int {
 		At: fv.Get("--at"), Expect: fv.Get("--expect"), DryRun: fv.Bool("--dry-run"),
 	}
 	res, err := storage.ApplyCopy(req)
+	// After the exact publish, on this host only, and never failing the copy:
+	// the incoming archives join this host's baseline set.
+	var warnings []string
+	if err == nil && !req.DryRun {
+		warnings = tools.AddIncomingArchivesToBaseline(context.Background(), storage.NewVault(root), req.Projects)
+	}
 	if fv.Bool("--json") {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -77,9 +85,15 @@ func runVaultCopy(c *cli.Command, args []string, out, errOut io.Writer) int {
 		if err != nil {
 			payload["error"] = err.Error()
 		}
+		if len(warnings) > 0 {
+			payload["baseline_warnings"] = warnings
+		}
 		_ = enc.Encode(payload)
 	} else if res != nil {
 		printCopy(out, res, req.DryRun)
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(errOut, "vp vault copy: warning: %s\n", w)
 	}
 	if err != nil {
 		fmt.Fprintf(errOut, "vp vault copy: %v\n", err)

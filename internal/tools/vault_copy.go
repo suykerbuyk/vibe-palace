@@ -74,16 +74,20 @@ func VaultCopyTool(vault *storage.Vault) mcp.Tool {
 }
 
 type vaultCopyResult struct {
-	Action   string              `json:"action"`
-	Plan     *storage.CopyPlan   `json:"plan,omitempty"`
-	Commit   string              `json:"commit,omitempty"`
-	Redo     storage.RedoOutcome `json:"redo,omitempty"`
-	Undo     []string            `json:"undo,omitempty"`
-	Complete bool                `json:"complete"`
+	Action string              `json:"action"`
+	Plan   *storage.CopyPlan   `json:"plan,omitempty"`
+	Commit string              `json:"commit,omitempty"`
+	Redo   storage.RedoOutcome `json:"redo,omitempty"`
+	Undo   []string            `json:"undo,omitempty"`
+	// BaselineWarnings names each project whose incoming archives could not
+	// be added to this host's baseline set (AddIncomingArchivesToBaseline).
+	// The copy itself succeeded.
+	BaselineWarnings []string `json:"baseline_warnings,omitempty"`
+	Complete         bool     `json:"complete"`
 }
 
 func vaultCopyHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p vaultCopyParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -104,7 +108,10 @@ func vaultCopyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err != nil {
 				return nil, classifyCopyErr(err)
 			}
-			return &vaultCopyResult{Action: "apply", Plan: res.Plan, Commit: res.Commit, Redo: res.Redo, Undo: res.Undo, Complete: true}, nil
+			// After the exact publish: a rolled-back copy never gets here.
+			warnings := AddIncomingArchivesToBaseline(ctx, vault, p.Slugs)
+			return &vaultCopyResult{Action: "apply", Plan: res.Plan, Commit: res.Commit, Redo: res.Redo, Undo: res.Undo,
+				BaselineWarnings: warnings, Complete: true}, nil
 		default:
 			return nil, apperr.Caller(fmt.Errorf("invalid action %q: expected plan or apply", p.Action))
 		}

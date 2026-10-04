@@ -217,8 +217,12 @@ type vaultMergeApplyResult struct {
 	FilesCopied        int      `json:"files_copied"`
 	BytesCopied        int64    `json:"bytes_copied"`
 	DestinationRemotes []string `json:"destination_remotes"`
-	Notes              []string `json:"notes"`
-	Complete           bool     `json:"complete"`
+	// BaselineWarnings names each project whose incoming archives could not
+	// be added to this host's baseline set (AddIncomingArchivesToBaseline).
+	// The merge itself succeeded.
+	BaselineWarnings []string `json:"baseline_warnings,omitempty"`
+	Notes            []string `json:"notes"`
+	Complete         bool     `json:"complete"`
 }
 
 // vaultMergeVerifyResult is the payload for action "verify".
@@ -933,6 +937,10 @@ func vaultMergeApply(vault *storage.Vault, p vaultMergeParams) (*vaultMergeApply
 		bytes += e.Size
 	}
 
+	// After the copy loop, on this host only, and never failing the merge:
+	// the incoming archives join this host's baseline set.
+	warnings := AddIncomingArchivesToBaseline(context.Background(), vault, m.Slugs)
+
 	return &vaultMergeApplyResult{
 		Action:             "apply",
 		Source:             p.Source,
@@ -942,6 +950,7 @@ func vaultMergeApply(vault *storage.Vault, p vaultMergeParams) (*vaultMergeApply
 		FilesCopied:        files,
 		BytesCopied:        bytes,
 		DestinationRemotes: remotes,
+		BaselineWarnings:   warnings,
 		Notes: append(mergePlanNotes(m, remotes),
 			"The source vault is untouched. There is no purge action on merge: removing "+
 				"the source copy is a separate decision an operator makes by hand.",
