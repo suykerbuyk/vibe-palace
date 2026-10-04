@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // The pull self-heal and the post-merge untrack (task
@@ -220,13 +219,11 @@ func dropDerivedPaths(vaultPath string, paths []string, deleteFiles bool) error 
 	if !deleteFiles {
 		return nil
 	}
-	root := filepath.Clean(vaultPath)
+	// Through vaultfs.Delete, the vault's removal primitive: it resolves the
+	// path safely under the vault and takes the path's own advisory lock (a
+	// different key from the commit lock the caller holds).
 	for _, p := range paths {
-		abs := filepath.Join(root, filepath.FromSlash(p))
-		if !strings.HasPrefix(abs, root+string(filepath.Separator)) {
-			return fmt.Errorf("delete derived path %q: not under the vault", p)
-		}
-		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if _, err := vaultfs.Delete(vaultPath, p, ""); err != nil && !errors.Is(err, vaultfs.ErrFileNotFound) {
 			return fmt.Errorf("delete derived path %s: %w", p, err)
 		}
 	}

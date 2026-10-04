@@ -170,6 +170,13 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// raise the vault's version ARRIVE BY PULL. A host that pulled once would
 	// lock itself out of every subsequent pull and could never reach the state —
 	// or the fix — that resolves the mismatch.
+	//
+	// The pull's one other worktree write is the derived-path merge heal: on a
+	// MIGRATED vault, a conflict on drawers or the ingest ledger alone is
+	// concluded by deleting them (vaultfs.Delete), which is the deletion the
+	// incoming migration commit already records. Transport too: it authors
+	// nothing and stamps nothing (sourceaudit baseline, ungated-vault-writer
+	// main.cmdVaultPull / main.cmdVaultSync).
 	reg.Register(cmdVaultPull())
 	reg.Register(cmdVaultPush())
 	// `vault sync` is UNWRAPPED for the same reason as pull and push above, and

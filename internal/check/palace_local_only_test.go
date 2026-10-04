@@ -71,7 +71,7 @@ func plDigest(t *testing.T, root string) string {
 func TestCheckPalaceLocalOnly_PassOnCleanVault(t *testing.T) {
 	root := t.TempDir()
 	plTree(t, root,
-		"palace/real/drawers/w/r/drawers.jsonl",
+		"palace/real/kg/entities.jsonl",
 		"palace/.local/embed-cache/real/a.vec",
 		"Projects/notes/sessions/n.md",
 	)
@@ -168,7 +168,7 @@ func TestCheckPalaceLocalOnly_NeverWrites(t *testing.T) {
 	plTree(t, root,
 		"palace/husk/.local/embed-cache/a.vec",
 		"palace/bare/",
-		"palace/real/drawers/w/r/drawers.jsonl",
+		"palace/real/kg/entities.jsonl",
 	)
 	before := plDigest(t, root)
 	_ = CheckPalaceLocalOnly(storage.NewVault(root))
