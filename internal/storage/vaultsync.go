@@ -415,8 +415,16 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
-	if err := stageInBatches(vaultPath, limits.add, keep); err != nil {
+	dropped, err := stageInBatches(vaultPath, limits.add, keep)
+	if err != nil {
 		return false, fmt.Errorf("git add: %w", err)
+	}
+	// The ignored paths the guard dropped leave the commit too: a path-scoped
+	// commit would otherwise take their working-tree bytes (a re-tracked drawer
+	// committed after all) or fail on a path git does not know.
+	commitPaths := withoutPaths(keep, dropped)
+	if len(commitPaths) == 0 {
+		return false, nil
 	}
 
 	// Check if anything to commit — ASKED ABOUT OUR PATHS, not the whole index.
@@ -436,7 +444,7 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	// (`rev-parse --verify --quiet`, `ls-files --error-unmatch`,
 	// `rev-parse --is-inside-work-tree`, `ls-remote --exit-code`,
 	// `var GIT_AUTHOR_IDENT`) are the same shape.
-	staged, derr := stagedChangesIn(vaultPath, limits.commit, keep)
+	staged, derr := stagedChangesIn(vaultPath, limits.commit, commitPaths)
 	if derr != nil {
 		return false, derr
 	}
@@ -452,7 +460,7 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	// A failure here — a departure backstop that fired after staging, a
 	// rejecting hook, any git error — restores the index (the deferred
 	// restoreIndexEntries above).
-	if err := commitOnlyPathsFor(vaultPath, caller, limits.commit, fullMsg, keep); err != nil {
+	if err := commitOnlyPathsFor(vaultPath, caller, limits.commit, fullMsg, commitPaths); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -677,8 +685,15 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 		return nil, err
 	}
 	if len(stage) > 0 {
-		if err := stageInBatches(vaultPath, gitAddTimeout, stage); err != nil {
+		dropped, err := stageInBatches(vaultPath, gitAddTimeout, stage)
+		if err != nil {
 			return fail(fmt.Errorf("git add: %w", err))
+		}
+		// An ignored path the guard dropped is not committed either (see
+		// stageInBatches).
+		commit = withoutPaths(commit, dropped)
+		if len(commit) == 0 {
+			return result, nil
 		}
 	}
 	staged, err := stagedChangesIn(vaultPath, gitCommitTimeout, commit)
@@ -1117,7 +1132,15 @@ var (
 // would otherwise fail every tidy that met a re-tracked drawer. On a vault
 // without the derived ignore lines (no migration marker) nothing a capture
 // writes is ignored, so the guard drops nothing that would have been staged.
-func stageInBatches(vaultPath string, limit time.Duration, paths []string) error {
+//
+// It returns the paths it dropped. A caller that commits must remove them from
+// the paths it hands the commit (withoutPaths): `git commit --only` takes the
+// WORKING-TREE bytes of every path it names, so a dropped tracked file would
+// be committed anyway, and a dropped untracked one fails the whole commit
+// ("pathspec ... did not match"). A directory a caller names is not a dropped
+// path: `git add -- <dir>` still updates tracked files under it, ignored or
+// not, so callers name files.
+func stageInBatches(vaultPath string, limit time.Duration, paths []string) (dropped []string, err error) {
 	batch := make([]string, 0, len(paths))
 	bytes := 0
 	flush := func() error {
@@ -1133,6 +1156,7 @@ func stageInBatches(vaultPath string, limit time.Duration, paths []string) error
 		for _, p := range batch {
 			if _, skip := ignored[p]; skip {
 				slog.Info("stage: dropped an ignored path", "vault", vaultPath, "path", p)
+				dropped = append(dropped, p)
 				continue
 			}
 			args = append(args, p)
@@ -1150,13 +1174,34 @@ func stageInBatches(vaultPath string, limit time.Duration, paths []string) error
 		cost := len(p) + 1
 		if len(batch) > 0 && bytes+cost > stageBatchByteBudget {
 			if err := flush(); err != nil {
-				return err
+				return dropped, err
 			}
 		}
 		batch = append(batch, p)
 		bytes += cost
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return dropped, err
+	}
+	return dropped, nil
+}
+
+// withoutPaths returns paths minus every member of drop, in order.
+func withoutPaths(paths, drop []string) []string {
+	if len(drop) == 0 {
+		return paths
+	}
+	gone := make(map[string]struct{}, len(drop))
+	for _, p := range drop {
+		gone[p] = struct{}{}
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if _, ok := gone[p]; !ok {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // checkIgnoreRun runs one `git check-ignore` over a batch; a test seam counts

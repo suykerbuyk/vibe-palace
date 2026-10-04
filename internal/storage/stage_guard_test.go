@@ -33,7 +33,7 @@ func TestStageInBatches_DropsATrackedFileUnderAnIgnoredDirectory(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	if err := stageInBatches(dir, gitAddTimeout, []string{fixtureDrawer, "README.md"}); err != nil {
+	if _, err := stageInBatches(dir, gitAddTimeout, []string{fixtureDrawer, "README.md"}); err != nil {
 		t.Fatalf("stageInBatches: %v", err)
 	}
 	if after := gitRun(t, dir, "ls-files", "-s", "--", fixtureDrawer); after != before {
@@ -49,7 +49,7 @@ func TestStageInBatches_DropsATrackedFileUnderAnIgnoredDirectory(t *testing.T) {
 func TestStageInBatches_UnmigratedDrawerIsStaged(t *testing.T) {
 	dir := layUnmigratedDrawerVault(t)
 	writeFile(t, dir, fixtureDrawer, `{"id":"d1"}`+"\n"+`{"id":"d2"}`+"\n")
-	if err := stageInBatches(dir, gitAddTimeout, []string{fixtureDrawer}); err != nil {
+	if _, err := stageInBatches(dir, gitAddTimeout, []string{fixtureDrawer}); err != nil {
 		t.Fatalf("stageInBatches: %v", err)
 	}
 	if st := gitRun(t, dir, "status", "--porcelain", "--", fixtureDrawer); st != "M  "+fixtureDrawer {
@@ -78,7 +78,7 @@ func TestStageInBatches_OneCheckIgnorePerBatch(t *testing.T) {
 		return prev(d, l, in, env, args...)
 	}
 	t.Cleanup(func() { checkIgnoreRun = prev })
-	if err := stageInBatches(dir, gitAddTimeout, paths); err != nil {
+	if _, err := stageInBatches(dir, gitAddTimeout, paths); err != nil {
 		t.Fatalf("stageInBatches: %v", err)
 	}
 	if calls != batches {
@@ -100,7 +100,7 @@ func TestStageInBatches_MagicLookingNamesAreNames(t *testing.T) {
 	gitRun(t, dir, "commit", "-q", "-m", "ignore")
 	writeFile(t, dir, ":!x.md", "a\n")
 	writeFile(t, dir, ":(top)y.md", "b\n")
-	if err := stageInBatches(dir, gitAddTimeout, []string{":!x.md", ":(top)y.md"}); err != nil {
+	if _, err := stageInBatches(dir, gitAddTimeout, []string{":!x.md", ":(top)y.md"}); err != nil {
 		t.Fatalf("stageInBatches: %v", err)
 	}
 	staged := gitRun(t, dir, "diff", "--cached", "--name-only")
@@ -108,5 +108,47 @@ func TestStageInBatches_MagicLookingNamesAreNames(t *testing.T) {
 		if !strings.Contains(staged, want) {
 			t.Errorf("%q not staged: %q", want, staged)
 		}
+	}
+}
+
+// R1, probe 1: an enriched, re-tracked drawer named beside an authored file on
+// a migrated vault. The guard drops it from `git add`, and the path-scoped
+// commit must not take its working-tree bytes either. Mutant: the dropped set
+// left in the commit's paths.
+func TestCommitAndPushPaths_DoesNotCommitADroppedTrackedDrawer(t *testing.T) {
+	dir := layMigratedVault(t)
+	writeFile(t, dir, fixtureDrawer, `{"id":"re-tracked"}`+"\n")
+	gitRun(t, dir, "add", "-f", "--", fixtureDrawer)
+	gitRun(t, dir, "commit", "-q", "-m", "re-tracked")
+	before := gitRun(t, dir, "rev-parse", "HEAD:"+fixtureDrawer)
+	writeFile(t, dir, fixtureDrawer, `{"id":"re-tracked"}`+"\n"+`{"id":"enriched"}`+"\n")
+	writeFile(t, dir, "README.md", "edited\n")
+	if _, err := CommitAndPushPaths(dir, "authored", []string{fixtureDrawer, "README.md"}, false); err != nil {
+		t.Fatalf("CommitAndPushPaths: %v", err)
+	}
+	if names := gitRun(t, dir, "show", "--name-only", "--format=", "HEAD"); names != "README.md" {
+		t.Errorf("commit touched %q, want only README.md", names)
+	}
+	if after := gitRun(t, dir, "rev-parse", "HEAD:"+fixtureDrawer); after != before {
+		t.Errorf("the drawer's committed blob changed: %s -> %s", before, after)
+	}
+}
+
+// R1, probe 2: a new, untracked drawer named beside an authored file. The
+// commit of the authored file succeeds instead of failing on a pathspec git
+// does not know. Mutant: the dropped set left in the commit's paths.
+func TestCommitAndPushPaths_AnUntrackedDroppedDrawerDoesNotFailTheCommit(t *testing.T) {
+	dir := layMigratedVault(t)
+	nd := strings.Replace(fixtureDrawer, ".jsonl", "-new.jsonl", 1)
+	writeFile(t, dir, nd, `{"id":"new"}`+"\n")
+	writeFile(t, dir, "README.md", "edited\n")
+	if _, err := CommitAndPushPaths(dir, "authored", []string{nd, "README.md"}, false); err != nil {
+		t.Fatalf("CommitAndPushPaths: %v", err)
+	}
+	if names := gitRun(t, dir, "show", "--name-only", "--format=", "HEAD"); names != "README.md" {
+		t.Errorf("commit touched %q, want only README.md", names)
+	}
+	if tracked := gitRun(t, dir, "ls-files", "--", nd); tracked != "" {
+		t.Errorf("the new drawer was tracked: %q", tracked)
 	}
 }

@@ -423,8 +423,14 @@ func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPur
 		removed = true
 	}
 	if len(c.Records) > 0 {
-		if err := stageInBatches(vaultPath, gitAddTimeout, c.Records); err != nil {
+		dropped, err := stageInBatches(vaultPath, gitAddTimeout, c.Records)
+		if err != nil {
 			return nil, rollback(fmt.Errorf("stage departure records: %w", err))
+		}
+		// A departure record must be committed: one the vault's .gitignore
+		// ignores would silently leave the purge without it.
+		if len(dropped) > 0 {
+			return nil, rollback(fmt.Errorf("stage departure records: ignored by the vault's .gitignore: %s", strings.Join(dropped, ", ")))
 		}
 	}
 	// Audits/.surface is restamped by the record write when its content
@@ -438,8 +444,12 @@ func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPur
 			return nil, rollback(fmt.Errorf("check %s: %w", surfaceRel, err))
 		}
 		if dirty {
-			if err := stageInBatches(vaultPath, gitAddTimeout, []string{surfaceRel}); err != nil {
+			dropped, err := stageInBatches(vaultPath, gitAddTimeout, []string{surfaceRel})
+			if err != nil {
 				return nil, rollback(fmt.Errorf("stage %s: %w", surfaceRel, err))
+			}
+			if len(dropped) > 0 {
+				return nil, rollback(fmt.Errorf("stage %s: ignored by the vault's .gitignore", surfaceRel))
 			}
 			pathspecs = append(pathspecs, surfaceRel)
 		}

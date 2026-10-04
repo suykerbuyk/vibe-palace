@@ -537,8 +537,20 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 		out.Errors = append(out.Errors, err)
 		return result, out, out.err()
 	}
-	if err := stageInBatches(vaultPath, gitAddTimeout, stage); err != nil {
+	dropped, err := stageInBatches(vaultPath, gitAddTimeout, stage)
+	if err != nil {
 		return fail(fmt.Errorf("git add: %w", err))
+	}
+	// An ignored path the guard dropped is not committed either (see
+	// stageInBatches); it stays kept, not pruned.
+	if len(dropped) > 0 {
+		for _, rel := range dropped {
+			out.keep(rel, "prune deferred: the path is ignored by the vault's .gitignore")
+		}
+		stage = withoutPaths(stage, dropped)
+		if len(stage) == 0 {
+			return result, out, out.err()
+		}
 	}
 	hostname, _ := os.Hostname()
 	if hostname == "" {
