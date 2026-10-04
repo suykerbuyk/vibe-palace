@@ -233,12 +233,11 @@ func (tx *Tx) beginDestructive() error {
 // releases the commit lock. A Tx that wrote nothing leaves the counter alone.
 // Calling it twice is an error; Release after Commit is a no-op.
 //
-// Known limit: the counter is bumped after the records are written, so a
-// process that dies between the two leaves records no counter announces. A
-// running engine then misses that append until the next counter change; the
-// next Commit on the project covers it, and a fresh process reads the store
-// whole. Whether coverage must also notice it is
-// search-index-completeness-and-build-serialization's to decide.
+// The counter is bumped after the records are written, so a process that dies
+// between the two leaves records no counter announces. A writer still sees
+// them: its cached state is valid only while the store files keep the sizes
+// it recorded (see state). A lock-free reader that keys on the counter alone
+// misses that append until the next counter change.
 func (tx *Tx) Commit() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
@@ -274,7 +273,9 @@ func (tx *Tx) finishLocked() error {
 	case tx.broken || gerr != nil:
 		putState(tx.vault.Root, tx.project, nil)
 	case tx.st != nil:
+		// Still under the lock: the sizes this Tx's own appends left.
 		tx.st.gen = tx.gen
+		tx.st.sizes = storeSizes(tx.files)
 		putState(tx.vault.Root, tx.project, tx.st)
 	}
 	rerr := tx.release()

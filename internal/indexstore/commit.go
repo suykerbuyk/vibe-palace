@@ -107,13 +107,13 @@ func distinctIDs(chunks []OwnedChunk) int {
 }
 
 // state returns the Tx's view of the store, loading it if needed: the
-// process's cached state when it matches the counter Lock found, else a fresh
-// read.
+// process's cached state when it matches the counter Lock found and the store
+// files' sizes, else a fresh read.
 func (tx *Tx) state() (*state, error) {
 	if tx.st != nil {
 		return tx.st, nil
 	}
-	if s := cachedState(tx.vault.Root, tx.project, tx.lockGen); s != nil {
+	if s := cachedState(tx.vault.Root, tx.project, tx.lockGen, tx.files); s != nil {
 		tx.st = s
 		return s, nil
 	}
