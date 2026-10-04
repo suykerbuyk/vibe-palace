@@ -95,6 +95,7 @@ type Ledger struct {
 	sessions   map[string]SessionRecord
 	superseded map[string]struct{} // archives replaced or recorded superseded
 	liveDays   map[string]string   // live archive sha -> its session's start day
+	liveSess   map[string]string   // live archive sha -> its session id
 	batches    map[string]batchRecord
 	failures   map[string]int
 }
@@ -106,6 +107,7 @@ func foldLedger(recs []ledgerRecord) *Ledger {
 		sessions:   map[string]SessionRecord{},
 		superseded: map[string]struct{}{},
 		liveDays:   map[string]string{},
+		liveSess:   map[string]string{},
 		batches:    map[string]batchRecord{},
 		failures:   map[string]int{},
 	}
@@ -151,6 +153,7 @@ func foldLedger(recs []ledgerRecord) *Ledger {
 	for _, s := range l.sessions {
 		if s.State == StateLive {
 			l.liveDays[s.SHA] = s.StartDay
+			l.liveSess[s.SHA] = s.SessionID
 		}
 	}
 	return l
@@ -230,6 +233,34 @@ func (l *Ledger) Pending(archives []ArchiveRef) []ArchiveRef {
 		}
 	}
 	return out
+}
+
+// LiveOwner reports a KG or chunk owner's session and start day when the owner
+// is live, for a reader that derives a shared record's date and session from
+// its earliest live owner (authored-and-extracted-knowledge-graph-records).
+//
+//   - An archive owner is live when some session's latest record is live with
+//     that source_sha256: its session id and start day.
+//   - A batch owner is live when its batch is ledgered: no session, and the
+//     batch's start day.
+//   - Anything else (an unledgered or superseded archive, a session
+//     mid-supersede, a note owner) is not: ok is false.
+func (l *Ledger) LiveOwner(o Owner) (sessionID, day string, ok bool) {
+	switch o.Kind {
+	case OwnerArchive:
+		d, live := l.liveDays[o.SHA]
+		if !live {
+			return "", "", false
+		}
+		return l.liveSess[o.SHA], d, true
+	case OwnerBatch:
+		b, ledgered := l.batches[o.ID]
+		if !ledgered {
+			return "", "", false
+		}
+		return "", b.startDay, true
+	}
+	return "", "", false
 }
 
 // liveDay is the day of an owner that is live: an archive that is a session's

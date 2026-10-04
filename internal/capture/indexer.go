@@ -208,6 +208,7 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			Name:      ent.Name,
 			Type:      ent.Type,
 			CreatedAt: timestamp,
+			Origin:    storage.OriginExtracted,
 		})
 	}
 	// KG writes are best-effort per PRD: a failure here must NOT propagate to
@@ -236,6 +237,7 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			SourceSession: sessionID,
 			ExtractedAt:   timestamp,
 			Confidence:    ent.Confidence,
+			Origin:        storage.OriginExtracted,
 		})
 		switch {
 		case err == nil:
@@ -258,6 +260,7 @@ func (idx *Indexer) extractEntities(project, sessionID, transcript, timestamp st
 			SourceSession: sessionID,
 			ValidFrom:     tr.ValidFrom,
 			ExtractedAt:   timestamp,
+			Origin:        storage.OriginExtracted,
 		})
 		switch {
 		case err == nil:

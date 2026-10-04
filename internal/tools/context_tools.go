@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -668,7 +669,7 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// nil) and a missing triples dir globs to no matches. So absence never
 	// reaches this branch at all, and an fs.ErrNotExist guard here would be a
 	// plausible-looking line that can never run.
-	if stats, err := vault.KGStats(project); err == nil {
+	if stats, err := kgread.KGStats(vault, project); err == nil {
 		result.KGSnapshot = &stats
 	} else {
 		result.KGUnreadable = err.Error()

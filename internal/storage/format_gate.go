@@ -29,3 +29,9 @@ func (v *Vault) SetMigratorExempt(exempt bool) { v.migratorExempt = exempt }
 func (v *Vault) checkFormatGate() error {
 	return surface.EnforceFormatFailStop(v.Root, v.migratorExempt)
 }
+
+// CheckFormatGate is checkFormatGate for the KG union readers in
+// internal/kgread, which sit above storage (internal/indexstore imports
+// storage, so the union cannot live here). It keeps the migrator exemption,
+// which a direct surface.EnforceFormatFailStop call would drop.
+func (v *Vault) CheckFormatGate() error { return v.checkFormatGate() }

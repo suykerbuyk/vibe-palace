@@ -294,6 +294,19 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
       `source_sha256`, or a batch id). The result then does not depend on the order in which the
       owners were ingested, so a rebuild reproduces it. Whenever ownership changes, for example
       when a supersede removes an owner, both are recomputed from the owners that remain.
+      - **KG records** (*operator ruling, 2026-10-03*). For a host-local KG record, the
+        shared-record rule above derives only the record's **date** (`extracted_at` for a triple,
+        `created_at` for an entity) and its **session** (`source_session`, from an archive owner;
+        none from an import batch). Both are computed at read time from the live owner with the
+        earliest UTC start day, ties going to the smaller owner kind and then the smaller owner key,
+        and neither is stored. A KG record stores one payload per record id, and that payload holds
+        only fields that are identical for every owner of the id. For a triple these are subject,
+        predicate, object and `valid_to`; for an entity they are id, name and type. Those fields
+        also form the record id. Fields that can differ between owners are not kept: a triple's
+        `confidence` and extracted `valid_from`, an import's `source_session`, an entity's
+        `properties`, and any source-supplied `created_at`. The store's first-written payload is
+        therefore the same whichever owner wrote it, and no ingest order changes a record. Neither a
+        record id nor a payload carries a project slug: the project is the index directory.
   - **Why `captured_at` alone is not the session date.**
     - It is the time the archive was made, in UTC. `vp archive create` passes no time
       (`cmd/vp/cmd_archive.go:93-102`), so an old transcript archived today would be dated today.

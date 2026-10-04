@@ -24,6 +24,9 @@ type Entity struct {
 	Type       string            `json:"type"`
 	Properties map[string]string `json:"properties,omitempty"`
 	CreatedAt  string            `json:"created_at"`
+	// Origin is OriginAuthored or OriginExtracted (ADR-014 decision 5). A line
+	// written before the field existed has none; ClassifyEntityLine decides it.
+	Origin string `json:"origin,omitempty"`
 }
 
 // Triple represents a temporal fact in the knowledge graph.
@@ -36,6 +39,9 @@ type Triple struct {
 	Confidence    float64 `json:"confidence,omitempty"`
 	SourceSession string  `json:"source_session,omitempty"`
 	ExtractedAt   string  `json:"extracted_at,omitempty"`
+	// Origin is OriginAuthored or OriginExtracted (ADR-014 decision 5). A file
+	// written before the field existed has none; ClassifyTriple decides it.
+	Origin string `json:"origin,omitempty"`
 }
 
 // KGStats summarizes knowledge graph contents.

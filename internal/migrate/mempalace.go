@@ -299,6 +299,7 @@ func ImportMemPalace(
 				Type:       e.Type,
 				Properties: e.Properties,
 				CreatedAt:  e.CreatedAt,
+				Origin:     storage.OriginExtracted,
 			})
 		}
 		added, addErr := vault.AddEntities("mempalace", ents)
@@ -334,6 +335,7 @@ func ImportMemPalace(
 			Confidence:    t.Confidence,
 			SourceSession: t.SourceSession,
 			ExtractedAt:   now,
+			Origin:        storage.OriginExtracted,
 		}
 		addErr := vault.AddTriple("mempalace", st)
 		if addErr != nil {

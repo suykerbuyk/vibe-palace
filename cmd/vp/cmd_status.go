@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -129,7 +130,7 @@ func runStatus(vault *storage.Vault, proj string, vaultSource string, warnings [
 		fmt.Fprintf(os.Stderr, "vp status: project config sources unreadable: %v\n", err)
 	}
 
-	if stats, err := vault.KGStats(proj); err == nil {
+	if stats, err := kgread.KGStats(vault, proj); err == nil {
 		result.KG = &stats
 	} else {
 		fmt.Fprintf(os.Stderr, "vp status: knowledge graph unreadable: %v\n", err)

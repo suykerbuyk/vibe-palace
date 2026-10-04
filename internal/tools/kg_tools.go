@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -209,7 +210,7 @@ func kgQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
 			direction = "both"
 		}
 
-		triples, err := vault.QueryEntity(p.Project, p.Entity, p.AsOf, direction)
+		triples, err := kgread.QueryEntity(vault, p.Project, p.Entity, p.AsOf, direction)
 		if err != nil {
 			return nil, fmt.Errorf("query entity: %w", err)
 		}
@@ -241,9 +242,10 @@ func kgAddHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// Ensure both entities exist (catch "already exists" and continue).
 		for _, name := range []string{p.Subject, p.Object} {
 			err := vault.AddEntity(p.Project, storage.Entity{
-				ID:   slugifyKG(name),
-				Name: name,
-				Type: "unknown",
+				ID:     slugifyKG(name),
+				Name:   name,
+				Type:   "unknown",
+				Origin: storage.OriginAuthored,
 			})
 			if err != nil && !strings.Contains(err.Error(), "already exists") {
 				return nil, fmt.Errorf("add entity %q: %w", name, err)
@@ -257,7 +259,7 @@ func kgAddHandler(vault *storage.Vault) mcp.HandlerFunc {
 			Confidence: confidence,
 			ValidFrom:  p.ValidFrom,
 		}
-		if err := vault.AddTriple(p.Project, triple); err != nil {
+		if err := vault.AddAuthoredTriple(p.Project, triple); err != nil {
 			return nil, fmt.Errorf("add triple: %w", err)
 		}
 
@@ -278,7 +280,7 @@ func kgInvalidateHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("subject, predicate, object, and ended are required")
 		}
 
-		if err := vault.InvalidateTriple(p.Project, p.Subject, p.Predicate, p.Object, p.Ended); err != nil {
+		if err := kgread.InvalidateTriple(vault, p.Project, p.Subject, p.Predicate, p.Object, p.Ended); err != nil {
 			return nil, fmt.Errorf("invalidate triple: %w", err)
 		}
 
@@ -299,7 +301,7 @@ func kgTimelineHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("entity is required")
 		}
 
-		triples, err := vault.Timeline(p.Project, p.Entity)
+		triples, err := kgread.Timeline(vault, p.Project, p.Entity)
 		if err != nil {
 			return nil, fmt.Errorf("timeline: %w", err)
 		}
@@ -320,7 +322,7 @@ func kgStatsHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("project is required")
 		}
 
-		stats, err := vault.KGStats(p.Project)
+		stats, err := kgread.KGStats(vault, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("kg stats: %w", err)
 		}
@@ -329,7 +331,7 @@ func kgStatsHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// The skips already ride on stats.SkippedRecords (KGStats reads the same
 		// listing), so this call takes them only to satisfy the compiler — the
 		// report reaches the caller through the stats block rather than twice.
-		entities, _, err := vault.ListEntities(p.Project)
+		entities, _, err := kgread.ListEntities(vault, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("list entities: %w", err)
 		}

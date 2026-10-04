@@ -153,6 +153,14 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked index.EntityRecord",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task authored-and-extracted-knowledge-graph-records (shared KG payloads). The only way to build a host-local KG entity record: its parameters are the identity fields alone, so a per-owner field cannot reach the store's one payload per id. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (ING, building ArchiveCommit.KG) and importers-write-the-frozen-tracked-corpus (the mempalace import, building BatchCommit.KG). This entry goes stale, and the gate then demands its removal, the moment the first of them lands."
+    },
+    {
+      "id": "uninvoked index.TripleRecord",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task authored-and-extracted-knowledge-graph-records (shared KG payloads). The only way to build a host-local KG triple record: its parameters are the identity fields alone, so a per-owner field cannot reach the store's one payload per id. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (ING, building ArchiveCommit.KG) and importers-write-the-frozen-tracked-corpus (the mempalace import, building BatchCommit.KG). This entry goes stale, and the gate then demands its removal, the moment the first of them lands."
+    },
+    {
       "id": "uninvoked indexstore.Ledger.InBaseline",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Read by pending-archive-ingester-and-per-archive-commit-step: automatic triggers ingest only pending archives outside the baseline set. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -165,16 +173,8 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The note owner of a decision chunk. Non-test caller: decision-chunks-in-the-host-local-store. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.ReadGeneration",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The lock-free read of the store change counter. Non-test callers: search-index-completeness-and-build-serialization (the engine's reload rule), authored-and-extracted-knowledge-graph-records (the local KG reader) and index-coverage-instrument. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.ReadHolder",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The lock-free read of the run lock's holder record. Non-test callers: explicit-resumable-index-rebuild-with-disk-watchdog (vp index rebuild names the holder; vp_refresh_index checks it before spawning) and index-coverage-instrument (the status probe). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.ReadStore",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The lock-free store reader. Non-test callers: this task's slice 3 (the reaper's live set reads every stored chunk id) and search-index-completeness-and-build-serialization (the engine's load). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.RunLock.CompletedRebuild",
@@ -195,10 +195,6 @@
     {
       "id": "uninvoked indexstore.Store.CountChunks",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: pending-archive-ingester-and-per-archive-commit-step's repair pass, which compares it with the ledger's chunk count. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Store.Ledger",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and index-coverage-instrument, which read the ledger through a lock-free snapshot. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.TryRunLock",
@@ -231,10 +227,6 @@
     {
       "id": "uninvoked indexstore.Tx.EnsureLedger",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step (naming its trigger's archive) and explicit-resumable-index-rebuild-with-disk-watchdog. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.Ledger",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, which read the ledger under the commit lock before deciding to commit, supersede or record superseded. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.RecordFailure",

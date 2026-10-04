@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
@@ -363,12 +364,12 @@ func getKnowledgeHandler(vault *storage.Vault) mcp.HandlerFunc {
 			limit = 100
 		}
 
-		stats, err := vault.KGStats(p.Project)
+		stats, err := kgread.KGStats(vault, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("kg stats: %w", err)
 		}
 
-		triples, err := vault.ListTriples(p.Project)
+		triples, err := kgread.ListTriples(vault, p.Project)
 		if err != nil {
 			return nil, fmt.Errorf("list triples: %w", err)
 		}
