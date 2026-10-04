@@ -46,9 +46,35 @@ type PushResult struct {
 	// not-yet-created path (e.g. an empty Projects/<slug>/memory/) or a
 	// misspelled path the caller should notice.
 	SkippedPaths []string
+	// SkipReasons says why a path in SkippedPaths was not committed, for the
+	// paths whose reason is not the default "absent" (matched nothing in the
+	// worktree or the index). Today that is SkipIgnored: a path the staging
+	// guard dropped because the vault's .gitignore ignores it — a tracked file
+	// under a user's own ignore pattern, a force-added *.bak, a re-tracked
+	// drawer on a migrated vault. Such a path used to fail `git add` loudly;
+	// it is now left out of the commit and reported here.
+	SkipReasons map[string]string
 	// Derived is what the reconcile merges did to derived index paths on a
 	// migrated vault (healed conflicts, untracked re-tracks).
 	Derived DerivedMergeReport
+}
+
+// SkipIgnored is the SkipReasons entry for a path the vault's .gitignore
+// ignores.
+const SkipIgnored = "ignored by .gitignore; not committed"
+
+// skipIgnored records paths the staging guard dropped as skipped, with why.
+func (r *PushResult) skipIgnored(paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	if r.SkipReasons == nil {
+		r.SkipReasons = make(map[string]string, len(paths))
+	}
+	for _, p := range paths {
+		r.SkippedPaths = append(r.SkippedPaths, p)
+		r.SkipReasons[p] = SkipIgnored
+	}
 }
 
 // AllPushed was DELETED at 209 — see the AllPulled note in vaultpull.go for the full
@@ -326,10 +352,11 @@ func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool
 		}
 	}
 
-	committed, err := stageAndCommitLocked(vaultPath, nil, defaultCommitLimits, message, "", keep)
+	committed, dropped, err := stageAndCommitLocked(vaultPath, nil, defaultCommitLimits, message, "", keep)
 	if err != nil {
 		return nil, err
 	}
+	result.skipIgnored(dropped)
 	if !committed {
 		return result, nil
 	}
@@ -393,7 +420,10 @@ func prepareCommitPaths(vaultPath string, paths []string) (*PushResult, []string
 // caller is the committer's own root-lock token when it has one
 // (commitPathsLocked), or nil: the backstop guard exempts a lifecycle marker
 // only for the very token that wrote it.
-func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commitLimits, message, trailers string, keep []string) (committed bool, err error) {
+//
+// dropped is the paths the staging guard left out because the vault ignores
+// them; the caller reports them (PushResult.skipIgnored).
+func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commitLimits, message, trailers string, keep []string) (committed bool, dropped []string, err error) {
 	// What the index held for these paths BEFORE this call staged anything.
 	// On any failure below, the index is put back to exactly this — every
 	// entry this call staged is undone, and nothing it did not stage moves:
@@ -403,7 +433,7 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	// only `??` as untracked), splitting a scaffold across two commits.
 	before, err := indexEntriesFor(vaultPath, keep)
 	if err != nil {
-		return false, fmt.Errorf("read the index before staging: %w", err)
+		return false, nil, fmt.Errorf("read the index before staging: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -415,16 +445,16 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 
 	// Stage only the surviving paths. Chunk under a conservative argv byte
 	// budget to stay clear of MAX_ARG_LEN ceilings.
-	dropped, err := stageInBatches(vaultPath, limits.add, keep)
+	dropped, err = stageInBatches(vaultPath, limits.add, keep)
 	if err != nil {
-		return false, fmt.Errorf("git add: %w", err)
+		return false, nil, fmt.Errorf("git add: %w", err)
 	}
 	// The ignored paths the guard dropped leave the commit too: a path-scoped
 	// commit would otherwise take their working-tree bytes (a re-tracked drawer
 	// committed after all) or fail on a path git does not know.
 	commitPaths := withoutPaths(keep, dropped)
 	if len(commitPaths) == 0 {
-		return false, nil
+		return false, dropped, nil
 	}
 
 	// Check if anything to commit — ASKED ABOUT OUR PATHS, not the whole index.
@@ -446,10 +476,10 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	// `var GIT_AUTHOR_IDENT`) are the same shape.
 	staged, derr := stagedChangesIn(vaultPath, limits.commit, commitPaths)
 	if derr != nil {
-		return false, derr
+		return false, nil, derr
 	}
 	if !staged {
-		return false, nil
+		return false, dropped, nil
 	}
 
 	// Stamp with hostname, and put any trailers AFTER the stamp: git reads
@@ -461,9 +491,9 @@ func stageAndCommitLocked(vaultPath string, caller *vaultlock.Held, limits commi
 	// rejecting hook, any git error — restores the index (the deferred
 	// restoreIndexEntries above).
 	if err := commitOnlyPathsFor(vaultPath, caller, limits.commit, fullMsg, commitPaths); err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return true, nil
+	return true, dropped, nil
 }
 
 // indexEntriesFor returns the index entries (`git ls-files -s` lines: "mode
@@ -566,10 +596,11 @@ func commitPathsLocked(held *vaultlock.Held, limits commitLimits, message, trail
 	if err := refuseOnPendingDeparturesFor(vaultPath, held); err != nil {
 		return nil, err
 	}
-	committed, err := stageAndCommitLocked(vaultPath, held, limits, message, trailers, keep)
+	committed, dropped, err := stageAndCommitLocked(vaultPath, held, limits, message, trailers, keep)
 	if err != nil {
 		return nil, err
 	}
+	result.skipIgnored(dropped)
 	if !committed {
 		return result, nil
 	}
@@ -690,7 +721,8 @@ func CommitRemovals(vaultPath, message string, rels []string) (*PushResult, erro
 			return fail(fmt.Errorf("git add: %w", err))
 		}
 		// An ignored path the guard dropped is not committed either (see
-		// stageInBatches).
+		// stageInBatches), and is reported as skipped.
+		result.skipIgnored(dropped)
 		commit = withoutPaths(commit, dropped)
 		if len(commit) == 0 {
 			return result, nil

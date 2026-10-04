@@ -544,7 +544,14 @@ func pruneMirrors(vaultPath string, paths []string, push, commit bool, v PruneVe
 	// An ignored path the guard dropped is not committed either (see
 	// stageInBatches); it stays kept, not pruned.
 	if len(dropped) > 0 {
+		// Kept, not pruned: put the file back from HEAD, so the deletion this
+		// call made does not sit in the worktree as " D" for every later run to
+		// find and drop again.
 		for _, rel := range dropped {
+			if _, cerr := gitCmd(vaultPath, 10*time.Second, append(requiredFilterArgs(drivers), "--literal-pathspecs", "checkout", "HEAD", "--", rel)...); cerr != nil {
+				out.Failed = append(out.Failed, PruneFailure{Path: rel, Err: fmt.Errorf("restore a mirror the vault ignores: %w", cerr)})
+				continue
+			}
 			out.keep(rel, "prune deferred: the path is ignored by the vault's .gitignore")
 		}
 		stage = withoutPaths(stage, dropped)

@@ -319,7 +319,9 @@ func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 			"add -A is never used. Supplied paths that match nothing in both the " +
 			"worktree and the index are skipped and reported in skipped_paths " +
 			"rather than aborting the commit; a tracked-but-deleted path is still " +
-			"staged so its removal is committed.",
+			"staged so its removal is committed. A path the vault's .gitignore " +
+			"ignores is not committed either: it is listed in skipped_paths with " +
+			"skip_reasons naming why.",
 		Schema:  vaultSyncSchema,
 		Handler: vaultSyncHandler(vault),
 	}
@@ -393,6 +395,7 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"stranded":       res.Stranded(),
 				"remote_results": remoteResults,
 				"skipped_paths":  res.SkippedPaths,
+				"skip_reasons":   res.SkipReasons,
 			}, nil
 		}
 

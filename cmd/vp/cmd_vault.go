@@ -298,7 +298,11 @@ func cmdVaultCommit() *cli.Command {
 				return cli.ExitSystem
 			}
 			for _, sp := range res.SkippedPaths {
-				fmt.Fprintf(os.Stderr, "Skipped (absent): %s\n", sp)
+				reason := "absent"
+				if r, ok := res.SkipReasons[sp]; ok {
+					reason = r
+				}
+				fmt.Fprintf(os.Stderr, "Skipped (%s): %s\n", reason, sp)
 			}
 			if res.CommitSHA == "" {
 				fmt.Fprintln(os.Stderr, "vp vault commit: nothing to commit for the given paths")

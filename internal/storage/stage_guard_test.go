@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +153,88 @@ func TestCommitAndPushPaths_AnUntrackedDroppedDrawerDoesNotFailTheCommit(t *test
 	}
 	if tracked := gitRun(t, dir, "ls-files", "--", nd); tracked != "" {
 		t.Errorf("the new drawer was tracked: %q", tracked)
+	}
+}
+
+// D2: a TRACKED authored file that an ignore line matches (here a user's own
+// pattern) is not committed, and the result says so: it is in SkippedPaths
+// with SkipIgnored as its reason. Before the guard, `git add` failed loudly;
+// silence would hide it. Mutant: the dropped paths not reported.
+func TestCommitAndPushPaths_ReportsAnIgnoredPathAsSkipped(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "notes/keep.md", "v1\n")
+	gitRun(t, dir, "add", "--", "notes/keep.md")
+	gitRun(t, dir, "commit", "-q", "-m", "notes")
+	writeFile(t, dir, ".gitignore", "notes/\n")
+	gitRun(t, dir, "add", "--", ".gitignore")
+	gitRun(t, dir, "commit", "-q", "-m", "a user's own ignore line")
+	writeFile(t, dir, "notes/keep.md", "v2\n")
+	writeFile(t, dir, "README.md", "edited\n")
+	res, err := CommitAndPushPaths(dir, "authored", []string{"notes/keep.md", "README.md"}, false)
+	if err != nil {
+		t.Fatalf("CommitAndPushPaths: %v", err)
+	}
+	if !slices.Contains(res.SkippedPaths, "notes/keep.md") || res.SkipReasons["notes/keep.md"] != SkipIgnored {
+		t.Errorf("SkippedPaths %q, SkipReasons %q; want notes/keep.md skipped as %q", res.SkippedPaths, res.SkipReasons, SkipIgnored)
+	}
+	if names := gitRun(t, dir, "show", "--name-only", "--format=", "HEAD"); names != "README.md" {
+		t.Errorf("commit touched %q, want only README.md", names)
+	}
+}
+
+// D1: CommitRemovals leaves a removal the vault ignores out of its commit and
+// reports it, rather than committing it through the path-scoped commit. The
+// path is a Templates/ mirror under a custom ignore line. Mutant: the dropped
+// set left in the commit.
+func TestCommitRemovals_DropsAnIgnoredRemoval(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "Templates/commands/a.md", "a\n")
+	writeFile(t, dir, "Templates/commands/b.md", "b\n")
+	gitRun(t, dir, "add", "--", "Templates")
+	gitRun(t, dir, "commit", "-q", "-m", "mirrors")
+	writeFile(t, dir, ".gitignore", "Templates/commands/b.md\n")
+	gitRun(t, dir, "add", "--", ".gitignore")
+	gitRun(t, dir, "commit", "-q", "-m", "ignore b")
+	for _, f := range []string{"a.md", "b.md"} {
+		if err := os.Remove(filepath.Join(dir, "Templates/commands", f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := CommitRemovals(dir, "remove mirrors", []string{"Templates/commands/a.md", "Templates/commands/b.md"})
+	if err != nil {
+		t.Fatalf("CommitRemovals: %v", err)
+	}
+	if names := gitRun(t, dir, "show", "--name-only", "--format=", "HEAD"); names != "Templates/commands/a.md" {
+		t.Errorf("commit touched %q, want only Templates/commands/a.md", names)
+	}
+	if res.SkipReasons["Templates/commands/b.md"] != SkipIgnored {
+		t.Errorf("SkipReasons %q, want b.md skipped as ignored", res.SkipReasons)
+	}
+}
+
+// D1: the mirror prune keeps a mirror the vault ignores (reported, not pruned)
+// rather than committing its removal through the path-scoped commit. Mutant:
+// the dropped set left in the commit.
+func TestPruneMirrors_KeepsAnIgnoredMirror(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "T/a.md", "mirror\n")
+	writeFile(t, dir, "T/b.md", "mirror\n")
+	gitRun(t, dir, "add", "--", "T")
+	gitRun(t, dir, "commit", "-q", "-m", "mirrors")
+	writeFile(t, dir, ".gitignore", "T/b.md\n")
+	gitRun(t, dir, "add", "--", ".gitignore")
+	gitRun(t, dir, "commit", "-q", "-m", "ignore b")
+	_, out, err := pruneMirrors(dir, []string{"T/a.md", "T/b.md"}, false, true, acceptOnly(nil, "mirror\n"))
+	if err != nil {
+		t.Fatalf("prune: %v (%+v)", err, out)
+	}
+	if names := gitRun(t, dir, "show", "--name-only", "--format=", "HEAD"); names != "T/a.md" {
+		t.Errorf("commit touched %q, want only T/a.md", names)
+	}
+	if !slices.Contains(out.Committed, "T/a.md") || slices.Contains(out.Committed, "T/b.md") {
+		t.Errorf("Committed = %q", out.Committed)
+	}
+	if st := gitRun(t, dir, "status", "--porcelain", "--", "T"); st != "" {
+		t.Errorf("the kept mirror was left deleted: %q", st)
 	}
 }
