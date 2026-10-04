@@ -1557,11 +1557,13 @@ The vibevault importer (`internal/migrate/vibevault_archive_test.go`):
 | `TestVibevaultBaseline` | On a host with a ledger, only the archives this run brings in join the baseline set; with no ledger the import creates none, and a ledger created later holds every archive in its baseline |
 | `TestVibevaultBaselineBeforeCreate` | The baseline addition happens before the first archive is written |
 | `TestVibevaultCrossHostIdempotence` | A second host that already holds the archives adds nothing to its baseline and writes nothing |
-| `TestVibevaultKnowledgeDate` | `knowledge.md` takes its frontmatter date, else the fixed epoch |
+| `TestVibevaultKnowledgeDate` | `knowledge.md` takes its frontmatter date, else the fixed epoch, and counts as an archive, not a session |
 | `TestVibevaultEmptySession` | An empty session gets a marker and no archive |
 | `TestVibevaultReimportWritesNothing` | A re-run writes nothing |
 | `TestVibevaultRefusesABatchIDSessionID` | A session id shaped like a MemPalace batch id is refused |
 | `TestVibevaultLegacyMarkerIsReadOnceThenDeleted` | The old `palace/<p>/.local/` marker is migrated, deleted, and its empty directory removed |
+| `TestVibevaultTrackedLegacyMarkerIsCopiedNotDeleted` | A legacy marker that git tracks is copied once and left in place: git shows no deletion, and a second run copies nothing more |
+| `TestVibevaultDiagnosticMarkerIsWrittenOnce` | An undated session is reported on every run, but its `no_date` marker line is written once |
 | `TestVibevaultADeletedAndRecreatedProjectIsImportedAgain` | The marker is a hint: with no manifest behind it, the session is archived again |
 
 The MemPalace importer (`internal/migrate/mempalace_store_test.go`). The
@@ -1578,6 +1580,9 @@ duplicate.
 | `TestMempalaceReimportIsIdempotent` | A re-run embeds nothing and leaves the ledger byte-identical; a changed export gets new batch ids |
 | `TestMempalaceReportsTheLedgerItCreated` | The import that creates the ledger reports it; one under an existing ledger does not |
 | `TestMempalaceBatchStartDay` | The start day is the UTC day of the earliest drawer `filed_at` in every zone, else the epoch |
+| `TestMempalaceStartDayReadsPythonIsoformat` | A zone-less `filed_at` with microseconds (`2026-03-15T10:00:00.123456`, Python's `isoformat()`) is read as UTC in every zone |
+| `TestMempalaceStartDayFallsBackToValidFrom` | A KG-only export takes the earliest triple `valid_from`; with nothing parseable, the epoch, and the result names the source |
+| `TestParseExportTime` | The accepted timestamp forms, and the ones refused |
 | `TestMempalaceRefusesABatchIDThatNamesASession` | A batch id the ledger records as a session is refused (`ErrBatchIsSession`), never read as imported |
 | `TestMempalaceWritesTheChunksFingerprint` | The first import records the project's chunk recipe; a later recipe change through config reads as a mismatch and the engine reports the project stale |
 | `TestMempalaceCommitsUnderTheLockInBatches` | 2,500 drawers and 100 KG records are exactly 4 `CommitBatch` calls, each under a held Tx; no two commit locks are held at once; the import waits for a lock another process holds |
@@ -1593,6 +1598,7 @@ Elsewhere:
 | `internal/integration`: `TestIntegrationVibeVaultImportWritesArchives`, `TestIntegrationVibeVaultIdempotentReimport` | End to end, vibevault archives sessions and a re-run adds nothing |
 | `internal/integration`: `TestIntegrationMemPalaceImportToSearch`, `TestIntegrationMemPalaceIdempotent` | End to end, a MemPalace import into an existing project is searchable and its KG readable through `kgread`; a re-run adds nothing |
 | `internal/storage`: `TestDelete*` (`delLeftovers`) | Deleting a project removes its `palace/.local/imports/<p>/` marker |
+| `internal/tools`: `TestVaultSplitPurge_RemovesSourceTreesAfterVerify`, `TestPurgeCommitsItsWholeResultInOneCommit` | A split departure purges the slug's `palace/.local/imports/<s>/` marker and leaves another slug's |
 | `internal/storage`: `TestLegacyEntityLineWithPropertiesSurvives` | `Entity` has no `Properties` field, but a tracked line that carries `properties` still lists and is never rewritten |
 
 ### Index fingerprints, the migration marker and the lifecycle removal
@@ -2630,13 +2636,16 @@ Flag Wiring").
 | `TestMigrateMemPalaceDryRunBuildsNoEmbedder` | A valid dry run reports the export's counts and writes nothing under `palace/` |
 | `TestMigrateMemPalaceRefusesAnUnknownProject` | A `--project` the vault does not hold exits 1 after the export is parsed, and builds no embedder |
 | `TestMigrateMemPalaceRealRunBuildsEmbedderOnce` | A real run constructs exactly once and commits chunks to the project's host-local store |
-| `TestMigrateMemPalaceOutputStatesTheCaveats` | The output says single-host, not tracked, that a full rebuild discards the import, and "Keep the export file"; it names no command |
+| `TestMigrateMemPalaceOutputStatesTheCaveats` | The output says single-host, not tracked, that a full rebuild discards the import, and "Keep the export file"; it names no command (no match of `\bvp [a-z]`); its summary counts batches, never "projects", and each batch's progress line carries its position |
+| `TestMigrateMemPalaceSaysWhichDayTheBatchesCarry` | The output names the batches' day and its source, and says when the epoch was used |
+| `TestMigrateVibeVaultExitsNonZeroWhenAnItemFailed` | An undated session, or an archive write that fails, ends the import with "The import is incomplete" and exit 2 |
+| `TestArchivedNoticeCountsSessionsApartFromKnowledge`, `TestProgressLineNeverClaimsAPositionItLacks` | The notice never counts `knowledge.md` as a session; a progress line never prints `[0/0]` |
 | `TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder` | An export whose only drawer is blank imports its entities and triples with zero constructions |
 | `TestMigrateVibeVaultDryRunBuildsNoEmbedder` | A seeded dry run names the session, counts it, and writes no import marker |
 | `TestMigrateVibeVaultMissingSourceBuildsNoEmbedder` | A `--vault-path` with no `Projects/` exits 1 for `--dry-run`, for `--yes`, and on the **prompt path** (neither flag, stdin a pipe) — where it must say `has no Projects/` and never `requires --yes`, pinning that the check runs before the confirmation gate |
 | `TestMigrateVibeVaultInPlaceEmptyVaultMessage` | An in-place run names the configured vault and never blames `--vault-path` |
 | `TestMigrateVibeVaultSourceProjectsIsFileIsUserError` / `…StatFailureIsSystemError` | A `Projects` file exits 1; an unstat-able source (ENOTDIR) exits 2 |
-| `TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand` / `…NoSessionsBuildsNoEmbedder` | A real run archives the session with zero constructions, says the archives are not indexed yet, and names no command; `--agentctx --no-sessions` never constructs either |
+| `TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand` / `…NoSessionsBuildsNoEmbedder` | A real run archives the session and `knowledge.md` with zero constructions, says the archives are not indexed yet, and names no command (no match of `\bvp [a-z]`); `--agentctx --no-sessions` never constructs either |
 
 ### `cmd/vp/cmd_search_test.go` (all under the guard, each in a temp cwd)
 
