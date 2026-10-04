@@ -102,7 +102,7 @@ func mergeWithArchives(t *testing.T, dest string) *vaultMergeApplyResult {
 		writeSplitFile(t, src, rel, body)
 	}
 	p := mergePlanned(t, dest, src, "alpha")
-	res, err := vaultMergeApply(storage.NewVault(dest), p)
+	res, err := vaultMergeApply(context.Background(), storage.NewVault(dest), p)
 	if err != nil {
 		t.Fatalf("merge apply: %v", err)
 	}

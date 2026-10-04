@@ -241,7 +241,7 @@ type vaultMergeVerifyResult struct {
 }
 
 func vaultMergeHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p vaultMergeParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -255,7 +255,7 @@ func vaultMergeHandler(vault *storage.Vault) mcp.HandlerFunc {
 		case "plan":
 			return vaultMergePlan(vault, p)
 		case "apply":
-			return vaultMergeApply(vault, p)
+			return vaultMergeApply(ctx, vault, p)
 		case "verify":
 			return vaultMergeVerify(vault, p)
 		default:
@@ -901,7 +901,7 @@ func mergeRefuseUnmigratedPair(source, dest string) error {
 
 // vaultMergeApply copies the manifest from the source into the bound vault. It
 // writes nothing to the source and configures no remotes.
-func vaultMergeApply(vault *storage.Vault, p vaultMergeParams) (*vaultMergeApplyResult, error) {
+func vaultMergeApply(ctx context.Context, vault *storage.Vault, p vaultMergeParams) (*vaultMergeApplyResult, error) {
 	// Cheap, total refusals first: the bind on its own shape, then the source
 	// path, then the destination's publication surface. Only then the expensive
 	// walk, and only then any copy.
@@ -939,7 +939,7 @@ func vaultMergeApply(vault *storage.Vault, p vaultMergeParams) (*vaultMergeApply
 
 	// After the copy loop, on this host only, and never failing the merge:
 	// the incoming archives join this host's baseline set.
-	warnings := AddIncomingArchivesToBaseline(context.Background(), vault, m.Slugs)
+	warnings := AddIncomingArchivesToBaseline(ctx, vault, m.Slugs)
 
 	return &vaultMergeApplyResult{
 		Action:             "apply",
