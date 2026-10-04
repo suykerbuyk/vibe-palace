@@ -20,8 +20,8 @@ import (
 // a vault path is always a name: without it a file named a[1].md also commits
 // a1.md, and one named ':!x.md' commits everything EXCEPT x.md (task
 // commit-paths-read-as-pathspec-globs). git check-ignore refuses literal mode,
-// so storage.GitPathIgnored turns it off with gitenv.GlobPathspecs and
-// neutralises a leading ':' itself. Every other way back to pattern semantics
+// so storage.checkIgnored (behind GitPathIgnored and the staging guard) turns
+// it off with gitenv.GlobPathspecs and neutralises a leading ':' itself. Every other way back to pattern semantics
 // is a silent reopening of the bug, which no behavioural test of today's call
 // sites can catch, so it is caught here.
 //
@@ -58,8 +58,7 @@ import (
 // exec.Command calls naming a literal "git"). The gitenv package is matched by
 // import-path suffix "/gitenv", so a stray package of that name counts.
 var globPathspecsOwners = map[string]string{
-	"storage.GitPathIgnored": "git check-ignore refuses literal mode; passes \"./\"+rel instead",
-	"storage.ignoredPaths":   "the staging guard's batched git check-ignore --stdin; sends \"./\"+path per line and strips it from the answer",
+	"storage.checkIgnored": "git check-ignore refuses literal mode; sends \"./\"+path per stdin line and strips it from the answer",
 }
 
 // literalPathspecBypasses are the substrings part 2 reports.
@@ -214,8 +213,8 @@ func globPathspecsFinding(f file, pos token.Pos, scope string) Finding {
 		Symbol: scope + " -> GlobPathspecs",
 		Pos:    posOf(f, pos),
 		Detail: fmt.Sprintf(
-			"%s uses gitenv.GlobPathspecs, which turns literal pathspecs off. Its sanctioned users are "+
-				"storage.GitPathIgnored and storage.ignoredPaths (git check-ignore refuses literal mode). Anywhere else it lets a "+
+			"%s uses gitenv.GlobPathspecs, which turns literal pathspecs off. Its one sanctioned user is "+
+				"storage.checkIgnored (git check-ignore refuses literal mode). Anywhere else it lets a "+
 				"vault path be read as a glob or as ':' magic. If this git command truly refuses literal "+
 				"mode, neutralise a leading ':' yourself and add the function to globPathspecsOwners.",
 			scope),

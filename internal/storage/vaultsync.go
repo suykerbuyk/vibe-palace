@@ -774,31 +774,20 @@ func GitTopLevel(dir string) (string, error) {
 }
 
 // GitPathIgnored reports whether git would ignore the vault-relative path rel
-// (`git check-ignore -q`). Exit status 1 is the answer "not ignored"; any other
-// failure is an error.
-//
-// It is the one git call that runs WITHOUT literal pathspecs: check-ignore
-// refuses the mode outright ("pathspec magic not supported by this command:
-// 'literal'"), so it opts out with gitenv.GlobPathspecs. check-ignore reads its
-// arguments as pathnames, not globs, but a leading ':' would still be magic
-// (':x' misreports, ':!x' exits 128), so rel is passed as "./"+rel. Not
-// ":(top)"+rel: that anchors to the top of the repository git finds, which for
-// a vault nested in another repository (VaultGitNested) is the outer one, not
-// the vault cmd.Dir names. An empty rel is refused: "./" alone names the vault
-// root and would answer "not ignored" for a path nobody gave.
+// (`git check-ignore`, consulting the index: a TRACKED file is reported not
+// ignored). It runs through checkIgnored, the one git call that runs without
+// literal pathspecs. An empty rel is refused: "./" alone names the vault root
+// and would answer "not ignored" for a path nobody gave.
 func GitPathIgnored(vaultPath, rel string) (bool, error) {
 	if rel == "" {
 		return false, fmt.Errorf("check whether a path is ignored: empty path")
 	}
-	_, err := gitCmdEnv(vaultPath, 10*time.Second, []string{gitenv.GlobPathspecs}, "check-ignore", "-q", "--", "./"+rel)
-	if err == nil {
-		return true, nil
+	ignored, err := checkIgnored(vaultPath, 10*time.Second, []string{rel}, false)
+	if err != nil {
+		return false, err
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) && ee.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, err
+	_, ok := ignored[rel]
+	return ok, nil
 }
 
 // pushCommitted pushes the commit a caller just made to every remote, with the
@@ -1209,28 +1198,40 @@ func withoutPaths(paths, drop []string) []string {
 var checkIgnoreRun = gitCmdStdinEnv
 
 // ignoredPaths returns the members of paths that git's ignore rules match, by
-// path alone: `git check-ignore --no-index --stdin -z`, ONE process for the
-// whole batch.
+// path alone, for the staging guard: checkIgnored with --no-index, ONE process
+// for the whole batch.
 //
 // --no-index is the point. Without it check-ignore answers "not ignored" for a
 // tracked file, even one under an ignored directory — which is exactly the
-// file `git add` stages and then fails on (GitPathIgnored omits it, and is not
-// used here for that reason). Exit 1 means "none ignored"; any other failure
-// is an error.
-//
-// Like GitPathIgnored it runs WITHOUT literal pathspecs, the second sanctioned
-// user of gitenv.GlobPathspecs: check-ignore refuses literal mode outright
-// (exit 128, "pathspec magic not supported by this command: 'literal'"). Its
-// stdin lines are read as pathspecs, so a leading ':' would be magic (':!x'
-// exits 128); each path is therefore sent as "./"+path, which git reads as a
-// plain name and echoes back with the prefix, stripped here.
+// file `git add` stages and then fails on.
 func ignoredPaths(vaultPath string, limit time.Duration, paths []string) (map[string]struct{}, error) {
+	return checkIgnored(vaultPath, limit, paths, true)
+}
+
+// checkIgnored is the vault's one `git check-ignore`: it returns the members of
+// paths git would ignore, in one process (`--stdin -z`). With noIndex it
+// judges by the ignore rules alone (`--no-index`); without, a tracked file is
+// never ignored.
+//
+// It is THE one git call that runs WITHOUT literal pathspecs, the sole owner
+// of gitenv.GlobPathspecs: check-ignore refuses literal mode outright (exit 128,
+// "pathspec magic not supported by this command: 'literal'"). Its stdin lines
+// are read as pathspecs, so a leading ':' would be magic (':!x' exits 128,
+// ':x' misreports). Each path is therefore sent as "./"+path, which git reads
+// as a plain name and echoes back with the prefix, stripped here. Not
+// ":(top)"+path: that anchors to the top of the repository git finds, which
+// for a vault nested in another repository (VaultGitNested) is the outer one.
+// Exit 1 means "none ignored"; any other failure is an error.
+func checkIgnored(vaultPath string, limit time.Duration, paths []string, noIndex bool) (map[string]struct{}, error) {
 	var in strings.Builder
 	for _, p := range paths {
 		in.WriteString("./" + p + "\x00")
 	}
-	out, code, err := checkIgnoreRun(vaultPath, limit, in.String(), []string{gitenv.GlobPathspecs},
-		"check-ignore", "--no-index", "--stdin", "-z")
+	args := []string{"check-ignore", "--stdin", "-z"}
+	if noIndex {
+		args = append(args, "--no-index")
+	}
+	out, code, err := checkIgnoreRun(vaultPath, limit, in.String(), []string{gitenv.GlobPathspecs}, args...)
 	if code == 1 {
 		return nil, nil
 	}

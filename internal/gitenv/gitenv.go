@@ -66,9 +66,9 @@ const literalPathspecs = "GIT_LITERAL_PATHSPECS=1"
 // GlobPathspecs turns literal pathspecs back off for one command. Appended to
 // SafeGitEnv's extra it wins, because exec keeps the last value of a repeated
 // key. It exists for the one git command that refuses literal mode,
-// `git check-ignore` (storage.GitPathIgnored, and the staging guard's batched
-// storage.ignoredPaths), and the literal-pathspec-opt-out source-audit rule
-// allows it nowhere else: a command run with it reads a
+// `git check-ignore` (storage.checkIgnored, behind both GitPathIgnored and the
+// staging guard), and the literal-pathspec-opt-out source-audit rule allows it
+// nowhere else: a command run with it reads a
 // leading ':' as pathspec magic, so its caller must neutralise that itself.
 const GlobPathspecs = "GIT_LITERAL_PATHSPECS=0"
 

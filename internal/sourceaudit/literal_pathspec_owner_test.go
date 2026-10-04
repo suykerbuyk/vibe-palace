@@ -29,13 +29,8 @@ const literalStorage = `package storage
 
 import "example.com/gitenv"
 
-// CLEAN: the owners.
-func GitPathIgnored(vaultPath, rel string) (bool, error) {
-	_ = gitenv.SafeGitEnv(gitenv.GlobPathspecs)
-	return false, nil
-}
-
-func ignoredPaths(vaultPath string, paths []string) []string {
+// CLEAN: the one owner.
+func checkIgnored(vaultPath string, paths []string, noIndex bool) []string {
 	return gitenv.SafeGitEnv(gitenv.GlobPathspecs)
 }
 
@@ -159,12 +154,7 @@ func TestLiteralPathspecOwnerAllowsTheOwnerUnderADotImport(t *testing.T) {
 
 import . "example.com/gitenv"
 
-func GitPathIgnored(vaultPath, rel string) (bool, error) {
-	_ = SafeGitEnv(GlobPathspecs)
-	return false, nil
-}
-
-func ignoredPaths(vaultPath string, paths []string) []string {
+func checkIgnored(vaultPath string, paths []string, noIndex bool) []string {
 	return SafeGitEnv(GlobPathspecs)
 }
 `
@@ -198,7 +188,7 @@ func TestLiteralPathspecOwnerAnchors(t *testing.T) {
 	got := literalFindings(t, map[string]string{"tools": "package tools\n"})
 	for _, want := range []string{
 		"sourceaudit.literalPathspecOwner/ABSENT/gitenv.GlobPathspecs",
-		"sourceaudit.literalPathspecOwner/ABSENT/storage.GitPathIgnored",
+		"sourceaudit.literalPathspecOwner/ABSENT/storage.checkIgnored",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing anchor %q in %q", want, got)
