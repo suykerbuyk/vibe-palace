@@ -136,18 +136,28 @@ func Refuse(vaultRoot, relPath string) error {
 // RefuseAbs is Refuse for an absolute path; a path outside vaultRoot is not
 // judged.
 func RefuseAbs(vaultRoot, absPath string) error {
-	if vaultRoot == "" {
+	rel, ok := RelOfAbs(vaultRoot, absPath)
+	if !ok {
 		return nil
+	}
+	return Refuse(vaultRoot, rel)
+}
+
+// RelOfAbs is absPath relative to vaultRoot, slash-separated: lexically when
+// absPath is inside vaultRoot, and otherwise once both are resolved, so a
+// vault reached through a symlinked root is still recognised. ok is false
+// when vaultRoot is "" or the path lies outside the vault. It is the one way
+// the write primitives' path checks compute the vault-relative path.
+func RelOfAbs(vaultRoot, absPath string) (string, bool) {
+	if vaultRoot == "" {
+		return "", false
 	}
 	rel, err := filepath.Rel(vaultRoot, absPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		// Lexically outside; a symlinked root may still resolve inside.
-		if r, ok := resolvedRel(vaultRoot, absPath); ok {
-			return Refuse(vaultRoot, r)
-		}
-		return nil
+		return resolvedRel(vaultRoot, absPath)
 	}
-	return Refuse(vaultRoot, rel)
+	return filepath.ToSlash(rel), true
 }
 
 type record struct {
