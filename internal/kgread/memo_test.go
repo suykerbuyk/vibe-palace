@@ -4,6 +4,7 @@
 package kgread
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -126,7 +127,22 @@ func TestDerivedSetsAreRebuiltOnEveryReload(t *testing.T) {
 func TestKGReadResultsDoNotAliasTheCache(t *testing.T) {
 	v := newVault(t)
 	ingestAll(t, v, ingest{"S1", "aa11", "2026-05-10", s1()}, ingest{"S2", "bb22", "2026-05-03", s2()})
-	want := view(t, v, project)
+	// The expected answers are frozen as JSON first: a result that aliased
+	// the cache would otherwise change the expectation along with the cache.
+	frozen := func(x any) string {
+		t.Helper()
+		b, err := json.Marshal(x)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	want := frozen(view(t, v, project))
+	firstTriples, err := ListTriples(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTriples := frozen(firstTriples)
 	triples, err := ListTriples(v, project)
 	if err != nil {
 		t.Fatal(err)
@@ -154,8 +170,15 @@ func TestKGReadResultsDoNotAliasTheCache(t *testing.T) {
 		ents[i].ID, ents[i].Name = "MUTATED", "MUTATED"
 	}
 	_ = append(ents, storage.Entity{ID: "APPENDED"})
-	if got := view(t, v, project); !reflect.DeepEqual(got, want) {
-		t.Fatalf("a mutated result reached the cache:\n got  %+v\n want %+v", got, want)
+	if got := frozen(view(t, v, project)); got != want {
+		t.Fatalf("a mutated result reached the cache:\n got  %s\n want %s", got, want)
+	}
+	got, err := ListTriples(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := frozen(got); g != wantTriples {
+		t.Fatalf("a mutated ListTriples result reached the cache:\n got  %s\n want %s", g, wantTriples)
 	}
 }
 
