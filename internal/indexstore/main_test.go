@@ -402,6 +402,31 @@ func runHelper(mode string) int {
 		}
 		return 0
 
+	case "write-then-exit":
+		// Write to alpha under the commit lock, then exit without Commit or
+		// Release, as a process killed before its counter bump would: the
+		// records are durable, the OS drops the lock, the counter is unchanged.
+		// VP_INDEXSTORE_WRITE picks the write: "commit-S-A" commits archive A
+		// of session S; "fail-S2-B" records one failure of archive B.
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		tx.UseRecipe(testRecipe)
+		switch w := os.Getenv("VP_INDEXSTORE_WRITE"); w {
+		case "commit-S-A":
+			err = tx.CommitArchive(commitOf("S", "A", "2026-05-13", "X", "Y"), noVectors{})
+		case "fail-S2-B":
+			err = tx.RecordFailure("S2", "B", errors.New("helper failure"))
+		default:
+			err = fmt.Errorf("unknown write %q", w)
+		}
+		if err != nil {
+			return fail("%v", err)
+		}
+		os.Exit(0)
+		return 0
+
 	case "discard-crash":
 		// Start a chunk discard of alpha and die after it removed the ledger
 		// and the chunks: exit without releasing anything, as a killed
