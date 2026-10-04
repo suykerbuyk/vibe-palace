@@ -44,6 +44,7 @@ func TestDerivedResidue_PathAndUntrackedAndIgnored(t *testing.T) {
 	writeFile(t, dir, "Projects/p/transcripts/x.manifest.json.abc.bak", "{}\n")
 	writeFile(t, dir, "palace/p/kg/triples/s/a.json", "{}\n")       // untracked, NOT ignored
 	writeFile(t, dir, "palace/q/drawers/w/r/drawers.jsonl", "{}\n") // another slug
+
 	set, err := DerivedResidue(dir, []string{"p"})
 	if err != nil {
 		t.Fatal(err)
@@ -94,5 +95,21 @@ func TestDerivedResidue_NotAGitVault(t *testing.T) {
 	writeFile(t, dir, "palace/p/drawers/w/r/drawers.jsonl", "{}\n")
 	if set, err := DerivedResidue(dir, []string{"p"}); err != nil || len(set) != 0 {
 		t.Fatalf("%v, %v; want empty", residueKeys(set), err)
+	}
+}
+
+// Every listed line is re-checked with isDerivedPath: a DIRECTORY named
+// ingested-archives.jsonl matches the ledger's pathspec and the ignore line,
+// so git lists the files under it, but none of them is the ledger. Mutant:
+// the re-check removed.
+func TestDerivedResidue_RechecksEveryLine(t *testing.T) {
+	dir := layMigratedVault(t)
+	writeFile(t, dir, "palace/p/ingested-archives.jsonl/x", "{}\n")
+	set, err := DerivedResidue(dir, []string{"p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != 0 {
+		t.Errorf("residue = %q, want empty: a file under a directory named like the ledger is not derived", residueKeys(set))
 	}
 }
