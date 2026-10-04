@@ -207,8 +207,12 @@ func TestPull_RestartFlow(t *testing.T) {
 	// under the vault commit lock, whose sidecar directory .vp-locks/ a real
 	// vault gitignores (CanonicalGitignorePatterns) and this bare test repo
 	// does not; it is lock state, not merge residue.
-	if dirty, _ := HasUncommittedChanges(dir, ".", ":(exclude).vp-locks"); dirty {
-		t.Errorf("working tree should be clean after restart pull")
+	// Filtered here, not with an ':(exclude)' pathspec: vp's git reads
+	// pathspecs literally.
+	for line := range strings.SplitSeq(gitRun(t, dir, "status", "--porcelain", "-uall"), "\n") {
+		if line != "" && !strings.HasPrefix(line[3:], ".vp-locks/") {
+			t.Errorf("working tree should be clean after restart pull: %q", line)
+		}
 	}
 }
 
