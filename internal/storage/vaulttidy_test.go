@@ -50,7 +50,7 @@ func TestClassifyDirty_SweepRulesPositive(t *testing.T) {
 			if base, ok := strings.CutSuffix(c.path, ".jsonl.zst"); ok {
 				writeFile(t, vaultPath, base+".manifest.json", "{}\n")
 			}
-			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}})
+			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}}, false)
 			if !hasPath(swept, c.path) {
 				t.Errorf("expected %q swept, got swept=%v reported=%v deferred=%v", c.path, swept, reported, deferred)
 			}
@@ -89,7 +89,7 @@ func TestClassifyDirty_NegativeCasesReported(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}})
+			swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: c.status, Path: c.path}}, false)
 			if !hasPath(reported, c.path) {
 				t.Errorf("expected %q reported, got swept=%v reported=%v deferred=%v", c.path, swept, reported, deferred)
 			}
@@ -118,7 +118,7 @@ func TestClassifyDirty_FilesystemProbeSkipped(t *testing.T) {
 	vaultPath := t.TempDir()
 	probe := ".vp-fs-probe-12345-1700000000000000000-1-a:b"
 
-	swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: probe}})
+	swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: probe}}, false)
 	if hasPath(swept, probe) {
 		t.Errorf("probe must never be committed, got swept=%v", swept)
 	}
@@ -133,7 +133,7 @@ func TestClassifyDirty_FilesystemProbeSkipped(t *testing.T) {
 	// CONTAINS the prefix deeper in the tree is not a probe and still needs
 	// human eyes — default-deny is what makes tidy trustworthy.
 	nested := "Projects/p/.vp-fs-probe-12345-1-1-a:b"
-	_, reported, _ = classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: nested}})
+	_, reported, _ = classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: nested}}, false)
 	if !hasPath(reported, nested) {
 		t.Errorf("a nested %q must still be reported — the skip must not generalize", nested)
 	}
@@ -147,7 +147,7 @@ func TestClassifyDirty_SurfaceStatusGate(t *testing.T) {
 
 	for _, status := range []string{" M", "M ", "MM"} {
 		t.Run("sweep_"+strings.ReplaceAll(status, " ", "_"), func(t *testing.T) {
-			swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: status, Path: surf}})
+			swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: status, Path: surf}}, false)
 			if !hasPath(swept, surf) {
 				t.Errorf("status %q: expected %q swept, got swept=%v reported=%v", status, surf, swept, reported)
 			}
@@ -158,7 +158,7 @@ func TestClassifyDirty_SurfaceStatusGate(t *testing.T) {
 	// reported, NOT swept (split-brain commit guard, H2).
 	t.Run("untracked_reported", func(t *testing.T) {
 		const stray = "Projects/p/.surface"
-		swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: stray}})
+		swept, reported, _ := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: stray}}, false)
 		if !hasPath(reported, stray) {
 			t.Errorf("untracked %q must be reported, got swept=%v reported=%v", stray, swept, reported)
 		}
@@ -180,7 +180,7 @@ func TestClassifyDirty_TranscriptPairSplit(t *testing.T) {
 	// not reported.
 	t.Run("lone_zst_deferred", func(t *testing.T) {
 		vaultPath := t.TempDir()
-		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: zst}})
+		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: zst}}, false)
 		if !hasPath(deferred, zst) {
 			t.Errorf("lone zst must be deferred, got swept=%v reported=%v deferred=%v", swept, reported, deferred)
 		}
@@ -200,7 +200,7 @@ func TestClassifyDirty_TranscriptPairSplit(t *testing.T) {
 		swept, _, deferred := classifyDirty(vaultPath, []PorcelainEntry{
 			{Status: "??", Path: zst},
 			{Status: "??", Path: manifest},
-		})
+		}, false)
 		for _, want := range []string{zst, manifest} {
 			if !hasPath(swept, want) {
 				t.Errorf("complete pair: expected %q swept, got swept=%v deferred=%v", want, swept, deferred)
@@ -215,7 +215,7 @@ func TestClassifyDirty_TranscriptPairSplit(t *testing.T) {
 	// dirty) is ALWAYS swept — never deferred.
 	t.Run("lone_manifest_swept", func(t *testing.T) {
 		vaultPath := t.TempDir()
-		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: manifest}})
+		swept, reported, deferred := classifyDirty(vaultPath, []PorcelainEntry{{Status: "??", Path: manifest}}, false)
 		if !hasPath(swept, manifest) {
 			t.Errorf("lone manifest must sweep, got swept=%v reported=%v deferred=%v", swept, reported, deferred)
 		}
@@ -255,7 +255,7 @@ func TestParsePorcelainZ_RenameAlignment(t *testing.T) {
 		t.Errorf("delete entry mis-parsed: %#v", entries[2])
 	}
 
-	swept, reported, _ := classifyDirty(t.TempDir(), entries)
+	swept, reported, _ := classifyDirty(t.TempDir(), entries, false)
 	if !hasPath(reported, "Projects/vibe-palace/notes/new.md") {
 		t.Errorf("rename should be reported, got reported=%v", reported)
 	}

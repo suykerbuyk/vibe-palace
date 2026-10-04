@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,8 +77,11 @@ var sweepRules = []SweepRule{
 				(suffix(p, ".manifest.json") || suffix(p, ".jsonl.zst"))
 		}},
 
-	// Palace machine-generated knowledge/capture store (MUST be swept).
-	{Category: "Knowledge graph entities", Pattern: "palace/*/kg/entities.jsonl",
+	// Palace knowledge/capture store. On a vault WITHOUT the migration marker
+	// all three are machine-generated and swept. On a migrated vault the
+	// drawers are derived per-host data (gitignored, never swept) and a KG
+	// record is swept only when it is authored; see classifyDirty.
+	{Category: kgEntitiesCategory, Pattern: "palace/*/kg/entities.jsonl",
 		Match: func(p []string) bool {
 			return len(p) == 4 && p[0] == "palace" && p[2] == "kg" && p[3] == "entities.jsonl"
 		}},
@@ -85,11 +89,11 @@ var sweepRules = []SweepRule{
 	// match deep. A single-level palace/*/kg/triples/*.json would match ZERO real
 	// triples. Triple paths legitimately contain .claude/ segments (L2) — never
 	// add a .claude exclusion here.
-	{Category: "Knowledge graph triples", Pattern: "palace/*/kg/triples/**/*.json",
+	{Category: kgTriplesCategory, Pattern: "palace/*/kg/triples/**/*.json",
 		Match: func(p []string) bool {
 			return len(p) >= 5 && p[0] == "palace" && p[2] == "kg" && p[3] == "triples" && suffix(p, ".json")
 		}},
-	{Category: "Drawers (capture artifacts)", Pattern: "palace/*/drawers/**/*.jsonl",
+	{Category: drawersCategory, Pattern: "palace/*/drawers/**/*.jsonl",
 		Match: func(p []string) bool {
 			return len(p) >= 4 && p[0] == "palace" && p[2] == "drawers" && suffix(p, ".jsonl")
 		}},
@@ -206,7 +210,21 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 // deletions). Rename/copy (R/C in either column) never matches a sweep rule's
 // intent — capture artifacts are append-only and timestamped, so a rename
 // signals human activity — and is routed to Reported.
-func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported, deferred []string) {
+//
+// Migrated vaults (migrated == true; the vault carries the migration marker,
+// ADR-014 decision 11):
+//   - drawers are never swept: they are derived per-host data, gitignored, and
+//     a dirty one means a re-tracked drawer, which is reported;
+//   - a KG triple file is swept only when storage.ClassifyTriple calls it
+//     authored. An extracted triple, or one tidy cannot read (deleted, or not
+//     valid JSON), is reported, never an error;
+//   - kg/entities.jsonl is swept only when every line it adds against HEAD is
+//     one storage.ClassifyEntityLine calls authored; otherwise the whole file
+//     is reported.
+//
+// The classifiers are the ones the KG readers and the kg-tracked-extracted
+// audit use, so tidy and the audit cannot disagree about a record.
+func classifyDirty(vaultPath string, entries []PorcelainEntry, migrated bool) (swept, reported, deferred []string) {
 	for _, e := range entries {
 		// .vp-locks/ holds transient advisory-lock sidecars — pure runtime state,
 		// never content. Production vaults gitignore it so it never reaches
@@ -254,6 +272,11 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported,
 			continue
 		}
 
+		if migrated && !sweepableWhenMigrated(vaultPath, rule, e.Path) {
+			reported = append(reported, e.Path)
+			continue
+		}
+
 		// Transcript pair-split guard: a lone .jsonl.zst whose sibling manifest is
 		// not yet on disk is deferred, not swept.
 		if base, ok := strings.CutSuffix(e.Path, ".jsonl.zst"); ok {
@@ -267,6 +290,78 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry) (swept, reported,
 		swept = append(swept, e.Path)
 	}
 	return swept, reported, deferred
+}
+
+// Category names of the palace store rules, which a migrated vault gates.
+const (
+	kgEntitiesCategory = "Knowledge graph entities"
+	kgTriplesCategory  = "Knowledge graph triples"
+	drawersCategory    = "Drawers (capture artifacts)"
+)
+
+// sweepableWhenMigrated applies a migrated vault's rules to a path that
+// matched rule. Paths outside the palace store rules are unaffected.
+func sweepableWhenMigrated(vaultPath string, rule *SweepRule, rel string) bool {
+	switch rule.Category {
+	case drawersCategory:
+		return false
+	case kgTriplesCategory:
+		return isAuthoredTripleFile(vaultPath, rel)
+	case kgEntitiesCategory:
+		return entitiesAddOnlyAuthoredLines(vaultPath, rel)
+	}
+	return true
+}
+
+// isAuthoredTripleFile reports whether the triple file at rel reads as an
+// authored record. A file that is gone or does not decode is not.
+func isAuthoredTripleFile(vaultPath, rel string) bool {
+	data, err := os.ReadFile(filepath.Join(vaultPath, filepath.FromSlash(rel)))
+	if err != nil {
+		return false
+	}
+	var t Triple
+	if err := json.Unmarshal(data, &t); err != nil {
+		return false
+	}
+	return ClassifyTriple(t) == OriginAuthored
+}
+
+// entitiesAddOnlyAuthoredLines reports whether every line the entities file
+// at rel adds against HEAD is an authored entity line. A file that is gone,
+// HEAD that cannot be read, or an added line that does not decode, is not.
+// Lines are compared as a multiset, so a re-ordered or repeated line is not
+// mistaken for an addition.
+func entitiesAddOnlyAuthoredLines(vaultPath, rel string) bool {
+	data, err := os.ReadFile(filepath.Join(vaultPath, filepath.FromSlash(rel)))
+	if err != nil {
+		return false
+	}
+	base, err := headBlob(vaultPath, rel)
+	if err != nil {
+		return false
+	}
+	had := map[string]int{}
+	for l := range strings.SplitSeq(string(base), "\n") {
+		had[l]++
+	}
+	for l := range strings.SplitSeq(string(data), "\n") {
+		if had[l] > 0 {
+			had[l]--
+			continue
+		}
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		var e Entity
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			return false
+		}
+		if ClassifyEntityLine(e) != OriginAuthored {
+			return false
+		}
+	}
+	return true
 }
 
 // isUserMemoryPath reports whether a vault-relative path is user-persistent
@@ -347,11 +442,19 @@ const DefaultTidyScanTimeout = 30 * time.Second
 // bootstrap alert and SyncVault's refusal gate cannot come to different verdicts
 // about the same worktree.
 func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, error) {
+	// The marker decides the palace store rules. A marker that cannot be read
+	// fails the scan (and so every tidy and sync): tidy is a writer, and
+	// reading the error as "unmigrated" would sweep extracted records into a
+	// migrated vault.
+	migrated, err := VaultMigrated(vaultPath)
+	if err != nil {
+		return nil, fmt.Errorf("tidy: %w", err)
+	}
 	raw, err := scanPorcelain(vaultPath, timeout)
 	if err != nil {
 		return nil, err
 	}
-	swept, reported, deferred := classifyDirty(vaultPath, parsePorcelainZ(raw))
+	swept, reported, deferred := classifyDirty(vaultPath, parsePorcelainZ(raw), migrated)
 	swept, leftDeparted := splitDepartedSweep(vaultPath, swept)
 	return &TidyResult{
 		Swept:               swept,
