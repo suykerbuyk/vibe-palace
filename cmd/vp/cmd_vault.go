@@ -401,7 +401,9 @@ func cmdVaultTidy() *cli.Command {
 		Synopsis: "vp vault tidy [--dry-run] [--no-push] [--vault PATH]",
 		Description: "Scan the whole vault and commit ONLY classified capture artifacts " +
 			"(session summaries, transcript archives, knowledge-graph entities/triples, " +
-			"drawers, and tracked .surface stamps) with a hostname-stamped message. " +
+			"and tracked .surface stamps; on a vault without the migration marker also " +
+			"drawers and every KG record, on a migrated vault only authored KG records " +
+			"and never drawers) with a hostname-stamped message. " +
 			"git add -A is NEVER used: every other dirty file is reported for your eyes " +
 			"and left untouched. By default the tidy commit is pushed to all configured " +
 			"remotes (downgrading to a local-only commit when none are configured); " +

@@ -656,7 +656,9 @@ func VaultTidyTool(vault *storage.Vault) mcp.Tool {
 		ReadOnlyWhen: vaultTidyReadOnly,
 		Description: "Scan the whole vault and commit ONLY classified capture " +
 			"artifacts (session summaries, transcript archives, knowledge-graph " +
-			"entities/triples, drawers, and tracked .surface stamps) with a " +
+			"entities/triples, and tracked .surface stamps; on a vault without the " +
+			"migration marker also drawers and every KG record, on a migrated vault " +
+			"only authored KG records and never drawers) with a " +
 			"hostname-stamped message. git add -A is NEVER used: every other dirty " +
 			"file is reported for human eyes and left untouched. With dry_run, " +
 			"classifies without committing. With push (default true), pushes the " +

@@ -107,7 +107,8 @@ type VaultDirt struct {
 func vaultDirtMessage(count int) string {
 	return fmt.Sprintf(
 		"🔴 VAULT DIRT: %d uncommitted non-artifact file(s) — vp_vault_sync REFUSES before it commits "+
-			"anything, so sessions, transcripts, drawers and KG triples are blocked too, not just these "+
+			"anything, so sessions, transcripts, KG triples and (on a vault not yet migrated) drawers "+
+			"are blocked too, not just these "+
 			"files. See vault_dirt.paths; vp_vault_tidy dry_run lists them all.",
 		count)
 }

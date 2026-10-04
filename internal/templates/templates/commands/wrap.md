@@ -672,7 +672,8 @@ never a blocker.
 After the narrative sync, sweep the machine-generated capture
 artifacts this session produced — the `.surface` stamp churn from the
 wrap itself, plus any session summaries, transcript archives, and
-knowledge-graph / drawer writes that the narrative `vp_vault_sync`
+knowledge-graph writes (and drawer writes, on a vault not yet
+migrated) that the narrative `vp_vault_sync`
 (which commits only the explicit `--paths` you named) did not include.
 
 Call `vp_vault_tidy` (the MCP tool — prefer it over Bash so the

@@ -1540,7 +1540,7 @@ that task.
 | `TestManifestBytes_UnchangedWithoutMarker` | With no marker the one encoder writes exactly `format = <n>`, so `isBornCurrentStamp` and a clean `vp init` are unchanged |
 | `TestWriteVaultManifest_IsOneWrite` | Every field reaches disk in one write; a failed write leaves the old file |
 | `internal/storage`: `TestVaultMigratedReadsTheKeyOnly` | The marker is the key, never the ignore lines; a malformed marker is an error |
-| `TestIndexReapableIsProjectExistsAndThePendingKeep` | Reapable is `!ProjectExists` plus the rename-pending keep, never the embed cache's `Lstat` rule; a departed slug with palace residue is kept |
+| `TestIndexReapableIsProjectExistsAndThePendingKeep` | Reapable is `!ProjectExists` plus the rename-pending keep, never the embed cache's `Lstat` rule; a departed slug with palace residue that counts toward presence (a KG record) is kept, and one whose only residue is the derived ingest ledger is reapable (the presence rule's derived clause) |
 | `TestIndexReapCandidates` | Only valid, non-dot, reapable directories; nothing under the embed-cache sweep's guards (empty listing, symlinked root) |
 | `TestRenamePendingRecords` | The record path is slug-validated; a damaged record is an error |
 | `internal/palace`: `TestRoomClassifierIsDeterministic` | Overrides merge in sorted key order: a tie between override-only rooms and the digest are the same over 200 builds |
@@ -1551,7 +1551,7 @@ that task.
 | `TestLifecycleLockForm` | `LockLifecycle` takes a gone project's lock; `LifecycleTx` has exactly three methods (reflection); a held lock times out |
 | `TestRemoveProjectReChecksUnderTheLock`, `TestRemoveProjectCrashPoints` | The removal re-checks under the lock; a crash leaves the whole store or the whole tombstone, the next sweep finishes, a re-created slug is unbuilt |
 | `TestReapGoneProjectsRemovesUnderTheLock`, `TestReapGoneProjectsSkipsABusySlug`, `TestRenamePendingKeepOnTheRenamingHostOnly`, `TestRemoveGoneProjectOutcomes` | The sweep removes under the commit lock and keeps the counter and lock files, skips a busy lock, keeps a store only while this host's rename-pending record exists and reports a stale one; the delete/split entry point runs with the vault root lock free |
-| `internal/search`: `TestIndexSweepIsNotInsideTheEmbedCacheSweep`, `TestEngineReapSweepsGoneProjectsIndexStores` | A cache's first `Put` under a commit lock does not run the index pass; the engine path reaps gone stores before its own `Lock` |
+| `internal/search`: `TestIndexSweepIsNotInsideTheEmbedCacheSweep`, `TestEngineReapSweepsGoneProjectsIndexStores` | A cache's first `Put` under a commit lock does not run the index pass; the engine path reaps gone stores before its own `Lock` (the kept project's palace residue is a KG record: a derived file alone no longer makes a store) |
 | `internal/tools`: `TestVaultSyncToolPullRemovesGoneProjectsIndexStore`, `TestSplitPurgeRemovesPurgedProjectsIndexStores`, `TestVaultProjectDeleteToolRemovesIndexStore`, `TestFingerprintNeverGatesAVaultWrite` | Pull and sync, the split purge and `vp_vault_project_delete` remove the gone stores (the delete lists them unhashed and reports `index_removal`); a mismatched fingerprint never blocks `vp_kg_add` |
 | `cmd/vp`: `TestVaultPullAndSyncCLIRemoveGoneProjectsIndexStore`, `TestVaultProjectDeleteCLIRemovesIndexStore` | The same for `vp vault pull`, `vp vault sync` and `vp vault project delete` |
 | Code review, 2026-10-03: `internal/search` `TestEngineSweepRunsBeforeTheCommitLock` | Through the `indexstore.ObserveCommitLocks` test seam: the engine's sweep never takes a gone project's commit lock while the engine holds one |
@@ -2155,14 +2155,45 @@ top-level `.local/` (see ARCHITECTURE, "What counts as a palace store"). The
 tests pin the predicate, its one consumer on each side, and the instrument that
 reports the complement.
 
+### Marker-gated tidy, pull and audit (task `tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker`)
+
+Toy-repo fixtures only (`marker_fixtures_test.go`): a "migrated" vault is the
+marker, the derived ignore lines and the drawers untracked and deleted in one
+commit; "migrated then reverted" adds `git revert`. None runs the migration.
+
+| Test | What it proves |
+|---|---|
+| `internal/surface`: `TestParseVaultManifest_SameAsTheFileReader` | The bytes parser the git readers use and the file reader agree, and a malformed marker names `authored_only` |
+| `internal/storage`: `TestVaultGitignore_LinesNeverPrecedeTheMarker`, `TestVaultGitignore_RevertedVaultStaysClean` | No derived ignore line reaches a vault without the marker through either reconciler path, and a dirty tracked drawer still tidies |
+| `TestVaultGitignore_MigratedVaultGetsTheLines`, `TestVaultGitignore_MalformedMarkerFailsBeforeAnyWrite` | With the marker both paths add exactly the two lines; an unreadable marker fails every writer before it writes |
+| `TestCommitVaultInit_MigratedTopUpIsCommitted`, `TestCommitVaultInit_MalformedMarkerFailsAndCommitsNothing` | `vp init` recognises its own top-up of the derived lines and leaves the vault clean; a malformed marker commits nothing |
+| `internal/reconcile`: `TestVaultReconcile_CreateBranchIsNotBornMigrated`, `TestScaffoldNewVault_IsNotBornMigrated`, `TestVaultReconcile_TopUpFollowsTheMarker`, `TestVaultReconcile_MalformedMarkerWritesNothing` | Born migrated is `InitVault`-only; the reconciler's top-up follows the marker; a malformed marker is a Skip naming the key |
+| `internal/storage`: `TestInitVault_BornMigrated`, `TestInitVault_ResumedIsBornMigrated` | A new vault's first commit holds the marker, the lines and `Audits/.surface` at `surface.MCPSurfaceVersion` (symbolic, never a literal 9), fresh and resumed through both init seams. `TestInitVault_AdminStep1TwoRemotes` now lists `Audits/.surface` among the tracked files |
+| `TestStageInBatches_DropsATrackedFileUnderAnIgnoredDirectory`, `TestStageInBatches_UnmigratedDrawerIsStaged`, `TestStageInBatches_OneCheckIgnorePerBatch` | The staging guard drops a tracked file under an ignored directory (which `GitPathIgnored` calls not ignored) and logs it, drops nothing on an unmigrated vault, and costs one `check-ignore` per batch |
+| `TestTidy_MigratedTriplesByOrigin`, `TestTidy_UnmigratedTriplesAllSwept`, `TestTidy_MigratedUnreadableTripleIsReported`, `TestTidy_MigratedEntitiesLineDiff`, `TestTidy_MigratedDrawerIsNotSwept`, `TestTidy_MalformedMarkerFailsTheRun` | On a migrated vault tidy sweeps only authored KG records (`ClassifyTriple`, `ClassifyEntityLine` over the lines added against HEAD), reports unreadable ones without erroring, never sweeps a drawer; a malformed marker fails tidy |
+| `TestPresence_SameAcrossHosts`, `TestPresence_BeforeTheMarker`, `TestPresence_IgnoresTheLockDirectory`, `TestPresence_KGClause`, `TestPresence_MalformedMarkerIsInclusiveAndLogged` | The presence rule: derived files never count (before the marker too), untracked `kg/` residue does not count once migrated, the two callers still partition `palace/`; a malformed marker takes the inclusive rule and logs a line naming `authored_only` |
+| `TestHeal_LaggingHostPullsTheMigration`, `TestHeal_MigratedHostMergesALaggingDrawerCommit` | The heal: `UD` through `pullCore` (result overwritten, `SyncVault` pushes, no `healed/`), and `DU` through the push-rejection reconcile, the commit-and-push reconcile and the mirror prune — the marker read from the merged index, not `MERGE_HEAD` |
+| `TestHeal_FastForwardOfTheMigrationNeverCallsTheHeal`, `TestHeal_RefusedMergeIsLeftAlone`, `TestHeal_MixedConflictIsNotHealed`, `TestHeal_NonDerivedConflictStillAborts`, `TestHeal_UnmergedManifestFailsClosed`, `TestHeal_NonASCIIDerivedPath`, `TestHeal_EntitiesBothChangedIsNamed`, `TestHeal_MalformedMarkerInTheMergedTree` | No heal without unmerged paths; all-or-nothing; a non-derived conflict still aborts; an unmerged `vault.toml` is an error, never "unmigrated"; names survive non-ASCII; a both-changed `entities.jsonl` is named, not resolved; a malformed marker in the merged tree fails both sites closed |
+| `TestUntrack_CleanMergeReTracksADrawer`, `TestUntrack_UnmigratedCleanMergeUntracksNothing`, `TestUntrack_RetriedOnAnUpToDateRun`, `TestUntrack_DrawerRewrittenBeforeTheCommit`, `TestUntrack_FailureRestoresTheIndex`, `TestUntrack_MalformedHEADManifest` | The post-merge untrack at both sites keeps the file on disk, runs on an up-to-date merge too, commits from the index (a rewrite in between is harmless), restores the index on failure, and fails closed on a malformed marker |
+| `TestIsDerivedPath`, `TestPull_IsTheWayOutOfAMalformedMarker` | The derived predicate needs a valid slug segment; `vp vault pull` still repairs a malformed marker that makes `SyncVault` refuse |
+| `internal/vaultaudit`: `TestKGTrackedExtracted_ReportsOnAMigratedVault`, `TestMarkerAuditChanges_OffWithoutTheMarker`, `TestPalaceStoreDrawers_SkippedWhenMigrated`, `TestMarkerAuditChanges_MalformedMarker` | `kg-tracked-extracted` reports tracked extracted records only with the marker (`kg-portability` unchanged); `palace-store-drawers` is skipped, with its reason, only with the marker; a malformed marker is one finding naming the key |
+
+Fixtures elsewhere that built a "real store" from a drawer or the ingest ledger
+alone now use a KG record or a `.surface` stamp, because a derived file no
+longer counts toward presence: `newDivergentVault` (`TestListAllProjects_UnionOfBothTrees`),
+`TestDepartedCaches_ListedStoreKeepsItsCache`, `TestEngineReapSweepsGoneProjectsIndexStores`,
+`TestIndexReapableIsProjectExistsAndThePendingKeep`, and `seedArchiveDrawer` in
+`internal/vaultaudit/archive_test.go`.
+
 ### `internal/storage/projects_test.go` — the presence rule
 
 `TestPresenceRule_PalaceStoreNeedsAFileOutsideLocal` enumerates every shape:
 `.local`-only (an embed-cache husk, an `imported-sessions.jsonl` marker), a bare
-directory, an empty `drawers/` or `kg/` subtree, and `.local` plus an empty
-subtree are **not** stores; a `kg/` file, a lone `.surface`, a zero-length
-`drawers.jsonl` and a nested (non-top-level) `.local/` file **are**; `palace/.local`
-is never a project; and `ListAllProjects` agrees with `listPalaceStores`, the only
+directory, an empty `drawers/` or `kg/` subtree, `.local` plus an empty
+subtree, and derived files alone (a drawer, the `ingested-archives.jsonl` ledger,
+drawers plus `.local`) are **not** stores; a `kg/` file (zero-length too), a lone
+`.surface`, a nested (non-top-level) `.local/` file and a `drawers/` that is not
+the top-level one **are**; `palace/.local` is never a project; and `ListAllProjects` agrees with `listPalaceStores`, the only
 path palace/ is enumerated through. Deleting the
 predicate turns the `.local`-only case red. `TestPresenceRule_UnreadableDirCountsAsStore`
 pins that an unwalkable directory is counted rather than dropped, and does not

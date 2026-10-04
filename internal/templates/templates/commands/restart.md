@@ -78,7 +78,9 @@ command works in AI hosts without arbitrary-shell support; fall back
 to `vp vault tidy` via Bash only if the tool is unavailable). It
 commits **only** machine-generated capture artifacts (session
 summaries, transcript archives, `.surface` stamps, knowledge-graph
-entities/triples, drawers) and pushes to every configured remote,
+entities/triples; on a vault that carries the migration marker only
+authored knowledge-graph records and never drawers, which are then
+per-host derived data) and pushes to every configured remote,
 degrading to a local-only commit when no remote is configured. It
 **never** runs `git add -A`: non-artifact dirt is reported, never
 committed.

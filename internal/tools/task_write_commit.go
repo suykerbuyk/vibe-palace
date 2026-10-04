@@ -174,7 +174,8 @@ func commitTaskWrite(vault *storage.Vault, project, taskSlug, action string) map
 			"%v — THE TASK FILE IS WRITTEN AND IS SAFE ON DISK; only the commit failed. "+
 				"Do not re-send the write. Fix the cause (a missing git identity is the usual one) and "+
 				"run vp_vault_sync, which will pick the file up. Until it is committed, vp_vault_sync "+
-				"REFUSES, so sessions, transcripts, drawers and KG triples cannot be saved either", err))
+				"REFUSES, so sessions, transcripts, KG triples and (on a vault not yet migrated) drawers "+
+				"cannot be saved either", err))
 	}
 	sha := ""
 	if res != nil {
