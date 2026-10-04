@@ -472,12 +472,15 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   - an asserted recall bar;
   - a delete-and-upsert churn phase.
 
-    The ≥50k test cannot run in `make test`, which is `go test -race -short` (`Makefile:98-99`).
+    The ≥50k test cannot run in `make test`, which is `go test -race -short` (`Makefile:102-103`).
   - A 50k build takes minutes, and `-race` makes it about four times slower.
-  - It therefore runs in `make hnsw-measure`, behind a build tag.
+  - It therefore runs in `make hnsw-measure`, behind the `VP_HNSW_MEASURE=1` environment gate, in
+    the nightly `.github/workflows/hnsw-measure.yml` workflow, not behind a build tag.
   - It runs in CI through a new `.github/workflows/hnsw-measure.yml`, with dispatch and nightly
     triggers, because `ci.yml` has neither (`.github/workflows/ci.yml:3-6`).
-  - `make test` keeps a 5k regression floor.
+  - `make test` keeps no HNSW recall floor: the 5k regression floor, `TestHNSWChurnRecallFloor5k`,
+    runs in `make hnsw-slow`, in the CI `hnsw` job, because a 5k build costs about a minute under
+    `-race`.
   - Both belong to `hnsw-parameters-from-real-vector-recall-and-production-wiring`.
 
   A persistence test asserts that loading ran no graph build and no `Add`. Each test is broken

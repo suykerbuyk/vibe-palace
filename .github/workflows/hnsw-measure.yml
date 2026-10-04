@@ -1,0 +1,39 @@
+name: HNSW measure
+
+# The asserted HNSW recall test at 50k vectors with churn, and the 10k harness
+# slice (`make hnsw-measure`; task
+# hnsw-parameters-from-real-vector-recall-and-production-wiring, ADR-014
+# decision 6). A 50k build takes minutes and `-race` makes it about four times
+# slower, so it cannot run in `make test`, and it is too long for the PR-time
+# `hnsw` job in ci.yml (20 minutes). It runs here instead, nightly and on
+# demand: ci.yml has neither trigger.
+#
+#     gh workflow run hnsw-measure.yml --ref <branch>
+#
+# It never runs the real-vector or grid targets: those read a copy of a host's
+# embed caches and are the operator's runs.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hnsw-measure:
+    runs-on: ubuntu-latest
+    # The target's own -timeout is 30m; this leaves room for setup. If a run
+    # passes 20 minutes, the limits are raised only by the Chair's ruling (the
+    # task's Scope 6 records the fallback).
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - run: make hnsw-measure

@@ -292,6 +292,7 @@ lists them):
 | `model` | `make model-test` | The real-ONNX tier (see Tier 2), with a `~/.cache/huggingface` cache and `timeout-minutes: 15` |
 | `source-audit` | `make source-audit` | Of the jobs that run on pull requests as well as pushes, the only one that runs the type-checked derived-gate rule, which skips under `-short` (see *Source Audit*) |
 | `hnsw` | `make hnsw-check` | `goreleaser build --snapshot --clean` of `./cmd/vp` for every goreleaser target (the only PR-time cross-build), the vendored `coder-hnsw` drift check, and the slow HNSW recall-floor and search-cost tests (`VP_HNSW_SLOW=1`, no `-race`); `timeout-minutes: 20` |
+| `hnsw-measure` (its own workflow, `.github/workflows/hnsw-measure.yml`, nightly and `workflow_dispatch`, never on a push or PR) | `make hnsw-measure` | The asserted 50k HNSW recall test with churn and the 10k harness slice (`VP_HNSW_MEASURE=1`, no `-race`), too long for the PR-time `hnsw` job; `timeout-minutes: 45` |
 | `windows-lock` | `go test -short ./internal/vaultlock/...`, then `go test -run TestIntegration_VaultLockCrossProcess ./internal/integration/` | The sole runtime proof of the Windows byte-range lock (`flock_windows.go`); the rest of CI is Linux-only |
 | `build` | `CGO_ENABLED=0 go build -o vp ./cmd/vp`, then `./vp version` | The shipped zero-CGO build links and runs |
 | `init-e2e` | `go test -race -run '^TestIntegrationE2EInit' -v ./internal/integration/...` | Exec-based e2e tier |
@@ -1323,7 +1324,7 @@ implementations):
 | `TestHNSWSearchFillsKPastTombstones` | When tombstones crowd the first answer, `Search` widens its request until it has `k` live results |
 | `TestHNSWConcurrentSearchDuringInsert` | Under `-race`: eight readers and one writer |
 | `TestHNSWChurnSafety` | `-short`, under `-race` (≈1.3 s; 300 random 32-dimension vectors, shrunk from 2k × 384 at 19.8 s with both churn mutants still killed): 30% deletes, 20% re-inserts, colliding ids, and a tombstone rebuild started during the churn (asserted; deterministic, because the trigger runs synchronously in the crossing write). Searches are checked while the rebuild may still run and again after it finishes, and the index is closed. No panic, no deleted id, no stale vector, `Len` equal to the live count |
-| `TestHNSWChurnRecallFloor5k` | `VP_HNSW_SLOW=1`, `make hnsw-slow`: after churn on seeded random 5k vectors, recall@10 at (16, 100) ≥ 0.44 (12-run minimum 0.4645 − 0.02), and at `EfSearch` 20 at least 0.02 below the floor |
+| `TestHNSWChurnRecallFloor5k` | `VP_HNSW_SLOW=1`, `make hnsw-slow`: after churn on seeded random 5k vectors, recall@10 at the provisional (16, 100) ≥ 0.44 (12-run minimum 0.4645 − 0.02), and at `EfSearch` 20 at least 0.02 below the floor, on every run. Random, not clustered: on the clustered corpus the `EfSearch` 100/20 gap after churn is 0.011 (0.9745 against 0.9635), under the margin, so only random data can catch `EfSearch` left at 20. This is the only test that asserts the `ef` gate. `make test` keeps no HNSW recall floor (ADR-014, operator ruling) |
 | `TestHNSWTombstoneHeavySearchCost` | `VP_HNSW_SLOW=1`: on seeded random 10k vectors with rebuilds pinned off, 15% tombstones cost ≤ 2× the distance evaluations per query and ≤ 1 + ⌈log2(Len/k)⌉ library searches |
 | `TestHNSWUpsertsAloneCrossTheThreshold` | Upserts alone trigger the tombstone rebuild; exactly one starts and the swapped graph holds no tombstone |
 | `TestHNSWWritesDuringAHeldRebuild` | Writes made while a rebuild is held after its snapshot (more than `finalReplayMax`, so the swap first catches up off-lock) are all applied: a deleted id never returns, an upsert answers with its new vector, a second trigger starts no second build |
@@ -1334,6 +1335,72 @@ implementations):
 | `TestHNSWBuildResetsTheRebuildBackoff` | `Build` resets an inherited rebuild backoff, so the fresh graph's first threshold crossing rebuilds at once |
 | `TestRebuildBackoffGens` | The backoff rule: `MinTombstones` writes (at least 1) after the first abandon, ×4 per further consecutive abandon, capped |
 | `TestHNSWTombstoneMeasurement` | `VP_HNSW_MEASURE=1`, by hand, asserts nothing: the 0–20% tombstone table at 5k and 20k behind `TombstoneRatio`, then one rebuild under a flat-out writer (swap or abandon, and what the lock replayed) |
+
+**HNSW recall measurement** (`hnsw_realcache_test.go`, `hnsw_harness_test.go`,
+`hnsw_recall_measure_test.go`; task
+`hnsw-parameters-from-real-vector-recall-and-production-wiring`). Every test
+below was broken once on purpose and failed; the mutants are recorded in that
+task.
+
+- **Recall is tie-aware, at two k:** k = 10 and k = `candidateCount(10)` = 30,
+  the engine's real request. Each returned id is first checked against its
+  CURRENT vector, as `checkChurnedSearches` does: a non-live id, an id returned
+  twice, or a reported distance that is not the distance to the id's current
+  vector (a stale vector answered) fails. A hit is a result whose recomputed
+  distance is within τ + 1e-5, τ being the k-th oracle distance; the epsilon
+  covers ties only. Set-overlap recall@10 is logged for information only.
+- **Held-out queries** are partitioned out before `Build`: a seeded permutation,
+  the first 1,000 or 2% of the union as queries, never in the index.
+- **Churn** is the shared `churn` helper (30% deleted, 20% re-inserted, 5%
+  upserted, 1% colliding ids at `Build`), always with tombstone rebuilds pinned
+  off. Its `replaced` record drives an old-vector probe: a replaced id searched
+  by its old vector is absent or at its current vector's distance, never ≈ 0.
+- **The real-vector source** is a scratch COPY of a host's embed caches, read
+  raw through an `fs.FS`, never through `EmbedCache` (whose first use can
+  delete vectors). `VP_HNSW_REAL_CACHE` is the trigger: unset, the real tests
+  skip; set, a missing allow-list (`VP_HNSW_REAL_ALLOWLIST`, a file of slugs in
+  scratch, never committed), fingerprint (`VP_HNSW_REAL_FINGERPRINT`, the
+  expected `.fingerprint` text) or directory fails. The quantum projects
+  `qa-metabuild-system` and `orchestrator` are excluded in code: an allow-list
+  naming one refuses before anything is read, and the walk never opens a
+  directory it skips. A file loads only as a `.vec` of exactly 1536 bytes with a
+  usable vector; ids are `<project>/<stem>`.
+
+| Test | Where | What it proves |
+|---|---|---|
+| `TestRealCacheSetButEmptyFails` | `make test` | The shared input check returns an error naming an empty or nonexistent cache once `VP_HNSW_REAL_CACHE` is set, and returns "no run" with no error when it is unset |
+| `TestRealCacheInputsRequired` | `make test` | With the cache set, a nonexistent cache directory, an unset, missing or empty allow-list, an unset or blank fingerprint, and (for the grid) an unset `VP_HNSW_GRID_OUT` are each an error, never a skip |
+| `TestRealCacheExclusionRefuses` | `make test` | An allow-list naming either quantum project refuses before the loader opens anything, and the input check refuses it too |
+| `TestRealCacheSkippedDirsNeverOpened` | `make test` | An open-counting `fs.FS` records nothing under `orchestrator/`, `qa-metabuild-system/` or an unlisted directory; each is reported by name |
+| `TestRealCacheDecoyTree` | `make test` | On the committed decoys (`testdata/hnsw-realcache-decoys/`): a non-`.vec` file, 1532- and 1540-byte `.vec` files, and an all-zero and a NaN vector of the right length are skipped and counted by reason; a wrong-regime project and a project with no `.fingerprint` are each skipped whole; a 32-hex stem loads as an opaque id |
+| `TestRealCacheNamespacesIdsByProject` | `make test` | One stem in two projects loads as two ids, counts as one cross-project stem, and survives `Build` |
+| `TestHNSWLibraryVersionMatchesGoMod` | `make test` | `hnswLibraryVersion` (`hnsw_index.go`, a graph-fingerprint input) equals go.mod's `require` pseudo-version for `github.com/coder/hnsw`, parsed with `golang.org/x/mod/modfile`, not the `replace` target |
+| `TestTieAwareRecall` | `make test` | A tie at the k boundary counts as a hit where set-overlap undercounts; a stale vector (even 1e-3 off), a non-live id and a duplicate id are each an error |
+| `TestTieAwareRecallMissBeyondTau` | `make test` | With every distance distinct (no tie at k or k+1), the (k+1)-th neighbour, 5e-4 beyond τ, or a far result, in place of the k-th scores 0.5, not 1; with fewer live ids than k, returning all of them scores 1 |
+| `TestHeldOutQueriesNotInCorpus` | `make test` | Queries and corpus are disjoint by id AND by vector (each query is its own id's vector, and none equals a pool vector), the query count is min(1,000, 2%), and the built index holds no tombstone |
+| `TestHNSWMeasureGridResumes` | `make test` | The grid driver skips cells recorded under the run identity, re-runs a cell recorded under an identity differing in any one component (ids, fingerprint, seed, query count, library version, harness version), truncates a torn final line, and appends each cell before the next starts |
+| `TestHNSWClusteredChurnRecall50k` | `make hnsw-measure` | Seeded clustered 50k at the provisional (16, 100), churned: tie-aware recall at k = 10 and 30 ≥ 0.92 (lowest of 5 runs 0.9498 − 0.02, rounded down); no deleted id, no stale vector, no old vector. Breaks: the tombstone filter removed fails it, and so does `EfSearch` left at 20 (0.78–0.81 at k = 10, 0.87–0.90 at k = 30), unlike the 5k clustered gap |
+| `TestHNSWHarnessSlice10k` | `make hnsw-measure` | A generated 10k cache tree plus the decoys through the real loader, the partition and both recall measures: decoys skipped and counted, no query in the index |
+| `TestHNSWRealVectorRecall` | `make hnsw-measure-real` | The 50k assertions on a copy of real embed caches, against 0.90 at both k, with churn's fresh vectors from the union's reserve; fails, naming the shortfall, below a 50k corpus |
+| `TestHNSWMeasureGrid` | `make hnsw-measure-grid` | The measurement itself, asserting nothing: M ∈ {16, 24, 32} × ef ∈ {100, 200, 400} × n ∈ {5k, 10k, 20k, 50k, all}, one subtest per cell, each result fsynced as a JSON line to `VP_HNSW_GRID_OUT` under its run identity, then the crossover table. The library has one `ef` for build and query |
+
+**Targets.** All four HNSW test targets share one recipe (`hnsw_run_named` in
+the Makefile): an anchored `-run` list, no `-race`, the output and wall time
+printed, and a failure unless every listed test printed `--- PASS: <name>`, so
+a filter that matches nothing or a test that skips cannot pass.
+
+| Target | Gate | Tests | `-timeout` | Run by |
+|---|---|---|---|---|
+| `make hnsw-slow` | `VP_HNSW_SLOW=1` | `TestHNSWChurnRecallFloor5k`, `TestHNSWTombstoneHeavySearchCost` | 15m | the CI `hnsw` job |
+| `make hnsw-measure` | `VP_HNSW_MEASURE=1` | `TestHNSWClusteredChurnRecall50k`, `TestHNSWHarnessSlice10k` | 30m | `.github/workflows/hnsw-measure.yml` (nightly and dispatch), and by hand |
+| `make hnsw-measure-real` | `VP_HNSW_MEASURE=1` plus `VP_HNSW_REAL_CACHE`, `VP_HNSW_REAL_ALLOWLIST`, `VP_HNSW_REAL_FINGERPRINT` | `TestHNSWRealVectorRecall` | 2h | the operator |
+| `make hnsw-measure-grid` | as above plus `VP_HNSW_GRID_OUT` | `TestHNSWMeasureGrid` | 6h | the operator |
+
+A bare `VP_HNSW_MEASURE=1 go test ./internal/search/` runs
+`TestHNSWClusteredChurnRecall50k`, `TestHNSWHarnessSlice10k` and
+`TestHNSWTombstoneMeasurement` (the real-vector test and the grid skip without
+`VP_HNSW_REAL_CACHE`), under go test's default 10-minute timeout, which a 50k
+build can exceed: use the targets.
 
 **Engine lifecycle** (`engine_index_lifecycle_test.go`):
 

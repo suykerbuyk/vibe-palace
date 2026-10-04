@@ -20,11 +20,21 @@ import (
 // logs how long the swap's replay of those writes took. The table is recorded
 // in task vector-index-interface-and-coder-hnsw-wrapper.
 func TestHNSWTombstoneMeasurement(t *testing.T) {
-	if os.Getenv("VP_HNSW_MEASURE") != "1" {
-		t.Skip("measurement: set VP_HNSW_MEASURE=1")
-	}
+	requireHNSWMeasure(t)
 	for _, n := range []int{5000, 20000} {
 		measureTombstones(t, n)
+	}
+}
+
+// requireHNSWMeasure skips a test unless VP_HNSW_MEASURE=1, the gate of every
+// HNSW measurement: this by-hand table and the tests of the three
+// hnsw-measure* targets (ADR-014: an environment gate, not a build tag). It is
+// never set by `make test`, and -short alone cannot confine these tests,
+// because `make model-test` runs this package without -short.
+func requireHNSWMeasure(t *testing.T) {
+	t.Helper()
+	if os.Getenv("VP_HNSW_MEASURE") != "1" {
+		t.Skip("measurement: set VP_HNSW_MEASURE=1")
 	}
 }
 

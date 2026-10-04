@@ -150,6 +150,33 @@ empty :=
 space := $(empty) $(empty)
 HNSW_SLOW_TESTS := TestHNSWChurnRecallFloor5k TestHNSWTombstoneHeavySearchCost
 
+# hnsw_run_named runs ./internal/search/'s tests named in $(3), anchored, with
+# the environment $(1) and the -timeout $(2), never -race. It prints go test's
+# output and the wall time, propagates go test's exit code, and fails unless
+# every named test printed `--- PASS: <name>`: a -run filter that matched
+# nothing, or a test that skipped, cannot pass. $(4) is the target's name.
+# Every HNSW test target uses it, so the guard has one copy.
+define hnsw_run_named
+@start=$$(date +%s); \
+out="$$($(1) go test -count=1 -timeout $(2) -v \
+	-run '^($(subst $(space),|,$(3)))$$' ./internal/search/ 2>&1)"; rc=$$?; \
+printf '%s\n' "$$out"; \
+echo "$(4): wall $$(( $$(date +%s) - start )) s"; \
+[ $$rc -eq 0 ] || exit $$rc; \
+for t in $(3); do \
+	printf '%s\n' "$$out" | grep -q -- "--- PASS: $$t " || { \
+		echo "$(4): $$t did not report PASS (renamed, skipped or filtered out)" >&2; exit 1; }; \
+done
+endef
+
+# hnsw_require_env fails the recipe at once, naming the variable, unless every
+# variable in $(1) is set and non-empty. $(2) is the target's name.
+define hnsw_require_env
+@for v in $(1); do \
+	[ -n "$$(printenv $$v)" ] || { echo "$(2): $$v is not set; see doc/TESTING.md" >&2; exit 1; }; \
+done
+endef
+
 .PHONY: hnsw-check hnsw-crossbuild hnsw-vendor hnsw-slow
 hnsw-check: hnsw-crossbuild hnsw-vendor hnsw-slow ## The HNSW cross-build, vendored-copy drift check and slow recall/cost tests (CI job `hnsw`)
 
@@ -162,14 +189,36 @@ hnsw-vendor: ## Verify third_party/coder-hnsw is upstream plus vp.patch (needs n
 	scripts/check-hnsw-vendor.sh
 
 hnsw-slow: ## Run the slow HNSW recall-floor and search-cost tests
-	@out="$$(VP_HNSW_SLOW=1 go test -count=1 -timeout 15m -v \
-		-run '^($(subst $(space),|,$(HNSW_SLOW_TESTS)))$$' ./internal/search/ 2>&1)"; rc=$$?; \
-	printf '%s\n' "$$out"; \
-	[ $$rc -eq 0 ] || exit $$rc; \
-	for t in $(HNSW_SLOW_TESTS); do \
-		printf '%s\n' "$$out" | grep -q -- "--- PASS: $$t " || { \
-			echo "hnsw-slow: $$t did not report PASS (renamed, skipped or filtered out)" >&2; exit 1; }; \
-	done
+	$(call hnsw_run_named,VP_HNSW_SLOW=1,15m,$(HNSW_SLOW_TESTS),hnsw-slow)
+
+# THE HNSW MEASUREMENTS (task
+# hnsw-parameters-from-real-vector-recall-and-production-wiring). None is in
+# hnsw-check or `make test`; every test is gated on VP_HNSW_MEASURE=1 and runs
+# without -race:
+#   - hnsw-measure: the asserted 50k clustered recall test with churn, and the
+#     10k harness slice. Run by the nightly/dispatch hnsw-measure workflow.
+#   - hnsw-measure-real: the asserted recall test on a scratch COPY of a host's
+#     embed caches (VP_HNSW_REAL_CACHE, the allow-list file named by
+#     VP_HNSW_REAL_ALLOWLIST, and the expected sidecar text in
+#     VP_HNSW_REAL_FINGERPRINT). The operator's run; never in CI.
+#   - hnsw-measure-grid: the M x ef x n grid on that copy, streamed to
+#     VP_HNSW_GRID_OUT and resumable. Hours; the operator's run; never in CI.
+HNSW_MEASURE_TESTS := TestHNSWClusteredChurnRecall50k TestHNSWHarnessSlice10k
+HNSW_MEASURE_REAL_TESTS := TestHNSWRealVectorRecall
+HNSW_MEASURE_GRID_TESTS := TestHNSWMeasureGrid
+HNSW_REAL_ENV := VP_HNSW_REAL_CACHE VP_HNSW_REAL_ALLOWLIST VP_HNSW_REAL_FINGERPRINT
+
+.PHONY: hnsw-measure hnsw-measure-real hnsw-measure-grid
+hnsw-measure: ## Run the asserted 50k HNSW recall test and the 10k harness slice (nightly CI)
+	$(call hnsw_run_named,VP_HNSW_MEASURE=1,30m,$(HNSW_MEASURE_TESTS),hnsw-measure)
+
+hnsw-measure-real: ## Run the asserted HNSW recall test on a copy of real embed caches (operator)
+	$(call hnsw_require_env,$(HNSW_REAL_ENV),hnsw-measure-real)
+	$(call hnsw_run_named,VP_HNSW_MEASURE=1,2h,$(HNSW_MEASURE_REAL_TESTS),hnsw-measure-real)
+
+hnsw-measure-grid: ## Run the resumable HNSW parameter grid on a copy of real embed caches (operator)
+	$(call hnsw_require_env,$(HNSW_REAL_ENV) VP_HNSW_GRID_OUT,hnsw-measure-grid)
+	$(call hnsw_run_named,VP_HNSW_MEASURE=1,6h,$(HNSW_MEASURE_GRID_TESTS),hnsw-measure-grid)
 
 .PHONY: test-full
 test-full: build vet ## Run full test suite including ONNX integration tests

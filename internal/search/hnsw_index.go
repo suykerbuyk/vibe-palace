@@ -65,6 +65,14 @@ var provisionalHNSWParams = hnswParams{
 	MinTombstones:  64,
 }
 
+// hnswLibraryVersion is the github.com/coder/hnsw version this package is built
+// against: the `require` pseudo-version in go.mod, not the `replace` target that
+// points at the vendored copy (scripts/check-hnsw-vendor.sh ties that copy to
+// this version). It is an input of the graph fingerprint, so a graph saved by
+// one library version is never loaded by another (ADR-014 decision 3).
+// TestHNSWLibraryVersionMatchesGoMod keeps it equal to go.mod.
+const hnswLibraryVersion = "v0.6.2-0.20260622133054-36cab6028fed"
+
 // rebuildBatch is how many nodes a rebuild adds between cancellation checks.
 const rebuildBatch = 256
 

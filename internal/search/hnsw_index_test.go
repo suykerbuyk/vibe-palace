@@ -327,13 +327,36 @@ func TestHNSWConcurrentSearchDuringInsert(t *testing.T) {
 type churnResult struct {
 	live    map[string][]float32 // id -> current vector
 	deleted map[string]bool      // ids deleted and never re-inserted
+	// replaced holds, per id, every vector the id has held and no longer
+	// holds: the earlier occurrence of a colliding id in the Build batch, the
+	// vector a re-inserted id had before its delete, and the vector an
+	// upserted id had before the upsert. No search may answer with one.
+	replaced map[string][][]float32
+
+	ids []string // the original ids, in corpus order
 }
+
+// churnFreshCount is how many vectors churn draws from fresh for a corpus of
+// n: n/100 colliding ids in the Build batch, n*20/100 re-inserts and n*5/100
+// upserts.
+func churnFreshCount(n int) int { return n/100 + n*20/100 + n*5/100 }
 
 // churn builds idx from vecs with colliding ids injected, deletes 30% of the
 // ids, re-inserts 20% of the original count with new vectors (deleted ids
 // first), and upserts 5% of the live ids with new vectors. fresh draws a new
 // vector. It returns the live set an exact index must agree with.
 func churn(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32, fresh func() []float32) churnResult {
+	t.Helper()
+	cr := churnBuild(t, idx, rng, vecs, fresh)
+	churnMutate(t, idx, rng, &cr, fresh)
+	return cr
+}
+
+// churnBuild is churn's first phase: it builds idx from vecs with 1% colliding
+// ids injected into the Build batch, the later occurrence winning. A
+// measurement that wants the index before its deletes runs between the two
+// phases.
+func churnBuild(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32, fresh func() []float32) churnResult {
 	t.Helper()
 	n := len(vecs)
 	ids := make([]string, n)
@@ -348,23 +371,33 @@ func churn(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32, fres
 	for i, id := range ids {
 		live[id] = vecs[i]
 	}
+	replaced := make(map[string][][]float32)
 	for i := 0; i < n/100; i++ {
 		id := ids[rng.Intn(n)]
 		v := fresh()
 		batchIDs = append(batchIDs, id)
 		batchVecs = append(batchVecs, v)
+		replaced[id] = append(replaced[id], live[id])
 		live[id] = v
 	}
 	if err := idx.Build(batchVecs, batchIDs); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	return churnResult{live: live, deleted: make(map[string]bool), replaced: replaced, ids: ids}
+}
 
-	deleted := make(map[string]bool)
+// churnMutate is churn's second phase, on an index churnBuild built.
+func churnMutate(t *testing.T, idx VectorIndex, rng *rand.Rand, cr *churnResult, fresh func() []float32) {
+	t.Helper()
+	ids, live, deleted, replaced := cr.ids, cr.live, cr.deleted, cr.replaced
+	n := len(ids)
+	gone := make(map[string][]float32) // a deleted id's last vector
 	order := rng.Perm(n)
 	for _, i := range order[:n*30/100] {
 		if !idx.Delete(ids[i]) {
 			t.Fatalf("Delete(%s) = false for a live id", ids[i])
 		}
+		gone[ids[i]] = live[ids[i]]
 		delete(live, ids[i])
 		deleted[ids[i]] = true
 	}
@@ -377,6 +410,7 @@ func churn(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32, fres
 		if err := idx.Insert(ids[i], v); err != nil {
 			t.Fatalf("re-Insert: %v", err)
 		}
+		replaced[ids[i]] = append(replaced[ids[i]], gone[ids[i]])
 		live[ids[i]] = v
 		delete(deleted, ids[i])
 		reinserted++
@@ -390,10 +424,10 @@ func churn(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32, fres
 		if err := idx.Insert(ids[i], v); err != nil {
 			t.Fatalf("upsert Insert: %v", err)
 		}
+		replaced[ids[i]] = append(replaced[ids[i]], live[ids[i]])
 		live[ids[i]] = v
 		upserted++
 	}
-	return churnResult{live: live, deleted: deleted}
 }
 
 // checkChurnedSearches runs queries against idx and fails on any id that is
