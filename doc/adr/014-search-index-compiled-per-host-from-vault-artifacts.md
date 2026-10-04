@@ -758,8 +758,11 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
     them.
   - **The ledger's per-session generation stays** (*Re-archived sessions*, above). It tells
     per-session readers, such as coverage and the repair pass, that one session was rewritten.
-  - **Reload.** When only `gen` grew, the engine loads what was appended. Any other change forces
-    a full reload of that project.
+  - **Reload.** Any change to `gen` or `epoch`, a missing counter or an unreadable one forces a
+    full reload of that project. There is no incremental load: the operator ruled on 2026-10-03
+    for the simpler shape (`search-index-completeness-and-build-serialization`, plan revisions
+    of 2026-10-04, R-6). A commit that rewrites nothing the engine reads, such as an unchanged
+    `completeness.json`, is not written and moves nothing.
   - A project removed mid-ingest is detected under the index commit lock, and the ingester stops for
     it without recreating `index/<p>/`.
 - **Chunk ids are wide content hashes** (*Rulings on spec review round 5*).

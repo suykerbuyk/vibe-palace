@@ -762,11 +762,13 @@ func vaultSplitPurge(vault *storage.Vault, p vaultSplitParams) (*vaultSplitPurge
 
 	// The slug's embed cache lives outside both of its own trees
 	// (storage.Vault.EmbedCacheDir). It never travels, but purge used to remove
-	// it along with palace/<slug>/, and leaving it now would hand old vectors to
-	// a slug later reused on this host: note and iteration cache IDs are the
-	// slug, the note or entry, the chunk and a content tag, so the reused slug's
-	// rows can land on the departed slug's IDs, and the orphan reaper keeps any
-	// ID that is live again.
+	// it along with palace/<slug>/, and leaving it now would hand the departed
+	// slug's vectors, and its embedding-regime sidecar, to a slug later reused on
+	// this host. A reused slug's row whose ID matches one of them (the same text
+	// at the same note, entry or drawer) would be served a vector the reused
+	// slug never embedded, possibly under another regime; the old sidecar would
+	// decide the reused slug's regime; and the orphan reaper keeps any ID that
+	// is live again.
 	//
 	// On a vault that commits, it is removed LAST, with the other untracked
 	// rows, after the purge commit has landed (see splitPurgeCleanup): a

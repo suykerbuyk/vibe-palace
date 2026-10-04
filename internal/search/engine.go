@@ -92,7 +92,8 @@ type Engine struct {
 	beforeIndexClose func()
 
 	// indexSweep runs the host-local index sweep (indexstore.ReapGoneProjects)
-	// once per engine, from reap, before reap takes any commit lock.
+	// once per engine, from lockProject, before the engine takes any project
+	// mutex or commit lock.
 	indexSweep sync.Once
 }
 

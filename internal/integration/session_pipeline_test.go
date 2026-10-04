@@ -47,6 +47,23 @@ the entire migration is rolled back. The migrations table is only updated
 after a successful commit. This ensures atomicity — either the migration
 fully applies or it has no effect.`
 
+	// A decoy: another project's session about the same subject. A
+	// project-scoped search must never return any of it. Session ids are per
+	// project and can coincide, so the decoy is told apart by its project and
+	// by a marker in every one of its texts.
+	const decoyMarker = "ZEBRA_DECOY_MARKER"
+	var decoyResult string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
+		"project":    "decoy-proj",
+		"summary":    "Also discussed PostgreSQL database migrations " + decoyMarker + ".",
+		"tag":        "planning",
+		"transcript": "## Human\n\nHow should PostgreSQL database migrations be versioned? " + decoyMarker + "\n\n## Assistant\n\nUse a migrations table and run each migration in a transaction. " + decoyMarker,
+		"decisions":  []string{"Version database migrations in a migrations table " + decoyMarker},
+	}, &decoyResult))
+	if !strings.Contains(decoyResult, `"status":"ok"`) && !strings.Contains(decoyResult, `"status": "ok"`) {
+		t.Fatalf("decoy capture: %s", decoyResult)
+	}
+
 	var result string
 	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "test-proj",
@@ -99,17 +116,29 @@ fully applies or it has no effect.`
 	// whole project, notes and decisions included: capture's IndexDrawers on a
 	// cold engine no longer makes the project look built with the transcript
 	// alone (task search-index-completeness-and-build-serialization, defect 1).
-	sawTranscript := false
+	sawTranscript, sawNote := false, false
 	for i, r := range results {
 		if !strings.Contains(r.SourceRef, captureResult.SessionID) {
 			t.Errorf("result[%d] source_ref = %q, want one of session %s", i, r.SourceRef, captureResult.SessionID)
 		}
+		if r.Project != "test-proj" || strings.Contains(r.Content, decoyMarker) {
+			t.Errorf("result[%d] comes from the decoy project's session: %+v", i, r)
+		}
 		if r.SourceType == "session" && r.SourceRef == captureResult.SessionID {
 			sawTranscript = true
+		}
+		if r.SourceType == "session-note" && r.SourceRef == "sessions/"+captureResult.SessionID+".md" {
+			sawNote = true
 		}
 	}
 	if !sawTranscript {
 		t.Errorf("no transcript chunk of session %s among the results: %+v", captureResult.SessionID, results)
+	}
+	// The session note is indexed by the first search's build. Before the
+	// cold-insert fix, capture's IndexDrawers made the project look built with
+	// the transcript alone, and the note never appeared.
+	if !sawNote {
+		t.Errorf("the session note row of %s is not among the results: %+v", captureResult.SessionID, results)
 	}
 
 	// Search for unrelated content — should score lower.
