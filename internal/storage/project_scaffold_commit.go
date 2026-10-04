@@ -223,7 +223,8 @@ type VaultInitCommitOptions struct {
 	Wrote bool
 }
 
-// CommitVaultInit commits the vault-level files `vp init`'s vault step wrote —
+// CommitVaultInit commits the vault-level files `vp init`'s vault step wrote,
+// and the .gitignore `vp config sync`'s Vault tier created or topped up —
 // the vault .gitignore (created, or topped up with canonical lines) and, on a
 // vault this run created, the .vibe-palace/vault.toml data-format stamp — as
 // ONE local, path-scoped commit through CommitAndPushPaths (push=false). It is

@@ -419,6 +419,16 @@ func runConfigSync(args []string) int {
 	// Determine whether any action requires prompting.
 	if !autoYes && !anyActionable(plans) {
 		fmt.Fprintln(os.Stdout, "Nothing to do — all tiers in sync.")
+		// Nothing to write, but a vault .gitignore an earlier run topped up
+		// and never committed is still committed here (the heal): the apply
+		// loop below, where it is committed otherwise, is not reached.
+		for i, r := range order {
+			if r == all["Vault"] {
+				if _, err := commitSyncedVaultFiles(os.Stdout, plans[i], false); err != nil {
+					preErrors = append(preErrors, err)
+				}
+			}
+		}
 		return preErrorsExit(preErrors)
 	}
 
@@ -510,6 +520,17 @@ func runConfigSync(args []string) int {
 		mergeReports(&totalReport, rep)
 		for _, n := range rep.Notes {
 			fmt.Fprintf(os.Stdout, "  %s: %s\n", r.Name(), n)
+		}
+		// The Vault tier's .gitignore is committed right after the Apply that
+		// wrote it, not at the end of the run, so a later 'q' cannot lose it.
+		if r == all["Vault"] {
+			skip, err := commitSyncedVaultFiles(os.Stdout, plans[i], rep.Created+rep.Updated > 0)
+			if err != nil {
+				totalReport.Errors = append(totalReport.Errors, err)
+			}
+			if skip != "" {
+				fmt.Fprintf(os.Stdout, "  [Info] %s\n", skip)
+			}
 		}
 		// On a git vault the Templates prunes happen HERE, right after the
 		// Apply that handed them over, not at the end of the run: the loop can
@@ -924,6 +945,65 @@ func deferPrunes(p reconcile.Plan, vaultPath, reason string) (reconcile.Plan, in
 		out.Actions = append(out.Actions, a)
 	}
 	return out, n
+}
+
+// commitSyncedVaultFiles commits the vault .gitignore the Vault tier created
+// or topped up (storage.CommitVaultInit, the rule `vp init` uses), so the next
+// vault sync does not refuse over a file vp itself wrote. It commits only
+// bytes that are exactly HEAD's .gitignore plus vp's missing lines
+// (storage.VaultGitignorePatterns, so a migrated vault's derived lines too);
+// anything else is an operator's edit, named and left alone. It runs whether
+// or not this run wrote, so a top-up an earlier run left uncommitted is
+// committed now (Chair ruling, 2026-10-04: heal). The commit is local; the
+// next vault sync publishes it. Nothing is committed for a plan whose
+// .gitignore action is a Skip: its reason is already on the plan's row.
+//
+// It returns the reason no commit was attempted, when wrote says this run
+// wrote and git is disabled or the vault is not its own repository; a failed
+// commit is an error, so the run exits non-zero.
+func commitSyncedVaultFiles(w io.Writer, p reconcile.Plan, wrote bool) (skipReason string, err error) {
+	vaultRoot := ""
+	for _, a := range p.Actions {
+		if filepath.Base(a.Target) == ".gitignore" {
+			if a.Kind == reconcile.ActionSkip {
+				return "", nil
+			}
+			vaultRoot = filepath.Dir(a.Target)
+		}
+	}
+	if vaultRoot == "" {
+		return "", nil
+	}
+	vc, err := storage.CommitVaultInit(vaultRoot, storage.VaultInitCommitOptions{Wrote: wrote})
+	if reason, skipped := gitDisabledSkipReason(err); skipped {
+		if !wrote {
+			return "", nil
+		}
+		return "vault .gitignore commit — skipped: " + reason + " — nothing committed", nil
+	}
+	if err != nil {
+		paths := vc.Paths
+		if len(paths) == 0 {
+			paths = []string{".gitignore"}
+		}
+		return "", fmt.Errorf("commit the vault .gitignore: %w — vp vault sync refuses until it is committed; to finish: %s",
+			err, storage.VaultInitCommitRemedy(vaultRoot, paths))
+	}
+	if vc.Committed {
+		sha := vc.SHA
+		if len(sha) > 9 {
+			sha = sha[:9]
+		}
+		fmt.Fprintf(w, "  [Pass] vault .gitignore committed %s, local only: %s\n", sha, strings.Join(vc.Paths, ", "))
+	}
+	if len(vc.Kept) > 0 {
+		fmt.Fprintf(w, "  [Info] vault files left uncommitted — not vp's own write, so vp does not commit them: %s\n",
+			strings.Join(vc.Kept, ", "))
+	}
+	if vc.Skipped != "" {
+		return "vault .gitignore not committed: " + vc.Skipped, nil
+	}
+	return "", nil
 }
 
 // commitSyncedScaffold commits the markers a project scaffold wrote
