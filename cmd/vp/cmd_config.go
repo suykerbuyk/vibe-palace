@@ -313,6 +313,12 @@ func runConfigSync(args []string) int {
 	// scaffoldSlug maps each project scaffolder to its slug, so the apply loop
 	// can commit what the scaffold wrote (storage.CommitProjectScaffold).
 	scaffoldSlug := map[reconcile.Reconciler]string{}
+	// scaffoldCreates marks the scaffolders whose project does not exist
+	// before this run (Projects/<slug> absent, judged at plan time, before any
+	// Apply): only --project/--cwd names such a project. Its scaffold, and the
+	// .surface it writes, are this run's own, so they are committed as vp init
+	// commits them (commitSyncedScaffold).
+	scaffoldCreates := map[reconcile.Reconciler]bool{}
 	addScaffold := func(name string) {
 		r := reconcile.NewTemplateTree(vaultPathForTemplates, "Projects/"+name,
 			reconcile.TemplateTreeSeed{Mode: reconcile.TemplateModeScaffold})
@@ -322,6 +328,8 @@ func runConfigSync(args []string) int {
 		// there — so there is nothing to commit, and no commit is attempted.
 		if slug.Validate(name) == nil {
 			scaffoldSlug[r] = name
+			state, err := storage.ClassifyProjectDir(vaultPathForTemplates, name)
+			scaffoldCreates[r] = err == nil && state == storage.ProjectAbsent
 		}
 	}
 	if vaultPathForTemplates != "" {
@@ -551,7 +559,7 @@ func runConfigSync(args []string) int {
 			}
 		}
 		if slug, ok := scaffoldSlug[r]; ok {
-			skip, err := commitSyncedScaffold(os.Stdout, vaultPathForTemplates, slug, rep.Created+rep.Updated > 0)
+			skip, err := commitSyncedScaffold(os.Stdout, vaultPathForTemplates, slug, rep.Created+rep.Updated > 0, scaffoldCreates[r])
 			if err != nil {
 				totalReport.Errors = append(totalReport.Errors, err)
 			}
@@ -1008,12 +1016,20 @@ func commitSyncedVaultFiles(w io.Writer, p reconcile.Plan, wrote bool) (skipReas
 
 // commitSyncedScaffold commits the markers a project scaffold wrote
 // (storage.CommitProjectScaffold), so the next vault sync does not refuse over
-// stub READMEs vp itself laid down — but ONLY for a project whose .surface is
+// stub READMEs vp itself laid down.
+//
+// For a project that existed before this run, ONLY when its .surface is
 // already tracked, and never the .surface itself (RequireTrackedStamp, no
 // IncludeStamp). Sync scaffolds every WithContent directory, and that includes
 // a stray hook capture made in a slug nobody initialised: committing anything
 // for it would end the review tidy's untracked-.surface gate exists to force.
-// `vp init` is the deliberate act that adopts a project; sync is not.
+// Adopting an existing project is `vp init`'s deliberate act, not sync's.
+//
+// For a project this run CREATED (created: Projects/<slug> was absent before
+// any Apply, which only --project/--cwd can name), the scaffold and the
+// .surface are this run's own writes and nothing else is in the tree, so they
+// are committed exactly as `vp init` commits them (IncludeStamp). Leaving them
+// would make the next vault sync refuse over files vp itself just created.
 //
 // It returns the reason no commit was attempted, if any; the caller prints
 // each distinct reason once. A vault-wide reason (git disabled, the vault not
@@ -1022,8 +1038,12 @@ func commitSyncedVaultFiles(w io.Writer, p reconcile.Plan, wrote bool) (skipReas
 // returned whenever a stub marker is waiting uncommitted. A failed commit is returned as an error, so the run
 // exits non-zero. Markers whose bytes are not the current stub are named and
 // left alone.
-func commitSyncedScaffold(w io.Writer, vaultRoot, slug string, wrote bool) (skipReason string, err error) {
-	sc, err := storage.CommitProjectScaffold(vaultRoot, slug, storage.ScaffoldCommitOptions{RequireTrackedStamp: true, Wrote: wrote})
+func commitSyncedScaffold(w io.Writer, vaultRoot, slug string, wrote, created bool) (skipReason string, err error) {
+	opts := storage.ScaffoldCommitOptions{RequireTrackedStamp: true, Wrote: wrote}
+	if created {
+		opts = storage.ScaffoldCommitOptions{IncludeStamp: true, Wrote: wrote}
+	}
+	sc, err := storage.CommitProjectScaffold(vaultRoot, slug, opts)
 	if reason, skipped := gitDisabledSkipReason(err); skipped {
 		if !wrote {
 			return "", nil

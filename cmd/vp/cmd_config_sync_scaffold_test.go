@@ -193,3 +193,57 @@ func TestConfigSyncCommitsNothingForAStray(t *testing.T) {
 		t.Errorf("vault sync must still refuse on the stray: refused=%v err=%v", refused, err)
 	}
 }
+
+// `vp config sync --project <new>` creates the project: Projects/<new> did not
+// exist before the run, so its scaffold and .surface are this run's own
+// writes. They are committed as vp init commits them, so the vault is clean
+// and the next vault sync is not refused over files vp itself just made.
+func TestConfigSyncProjectFlagCommitsTheProjectItCreates(t *testing.T) {
+	vaultPath := syncScaffoldVault(t)
+	head := gitRun(t, vaultPath, "rev-parse", "HEAD")
+
+	out, code := runSyncWithStdin(t, "", []string{"--project", "newp", "--yes"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(vaultPath, "Projects", "newp", "commands", "README.md")); err != nil {
+		t.Fatalf("fixture: sync did not scaffold newp: %v\n%s", err, out)
+	}
+	if got := gitRun(t, vaultPath, "rev-parse", "HEAD"); got == head {
+		t.Fatalf("config sync --project newp committed nothing\n%s", out)
+	}
+	files := strings.Split(gitRun(t, vaultPath, "show", "--name-only", "--format=", "HEAD"), "\n")
+	want := []string{"Projects/newp/.surface", "Projects/newp/commands/README.md", "Projects/newp/skills/README.md"}
+	if strings.Join(files, ",") != strings.Join(want, ",") {
+		t.Errorf("config sync commit touched %q, want exactly %q\n%s", files, want, out)
+	}
+	if st := gitRun(t, vaultPath, "status", "--porcelain", "-uall"); st != "" {
+		t.Errorf("git status not clean after config sync --project newp:\n%s\n%s", st, out)
+	}
+	if _, refused, err := storage.SyncPreview(vaultPath); refused || err != nil {
+		t.Errorf("the next vault sync is refused: refused=%v err=%v", refused, err)
+	}
+}
+
+// --project naming a project that ALREADY exists as a stray (untracked .surface
+// from a hook capture) does not create it, so sync still adopts nothing: the
+// stray stays for review and vault sync still refuses on it.
+func TestConfigSyncProjectFlagDoesNotAdoptAStray(t *testing.T) {
+	vaultPath := syncScaffoldVault(t)
+	putFile(t, vaultPath, "Projects/stray/sessions/x.md", "a captured session\n")
+	putFile(t, vaultPath, "Projects/stray/.surface", "surface = 8\n")
+	head := gitRun(t, vaultPath, "rev-parse", "HEAD")
+
+	out, code := runSyncWithStdin(t, "", []string{"--project", "stray", "--yes"})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if got := gitRun(t, vaultPath, "rev-parse", "HEAD"); got != head {
+		t.Errorf("config sync --project stray committed for a stray: HEAD %s -> %s\n%s\n%s", head, got,
+			gitRun(t, vaultPath, "show", "--stat", "HEAD"), out)
+	}
+	_, refused, err := storage.SyncPreview(vaultPath)
+	if !refused || err == nil || !strings.Contains(err.Error(), "Projects/stray/.surface") {
+		t.Errorf("vault sync must still refuse on the stray: refused=%v err=%v", refused, err)
+	}
+}
