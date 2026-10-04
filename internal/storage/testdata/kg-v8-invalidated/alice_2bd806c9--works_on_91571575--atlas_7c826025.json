@@ -1,0 +1,10 @@
+{
+  "subject": "alice",
+  "predicate": "works_on",
+  "object": "atlas",
+  "valid_from": "2026-05-03",
+  "valid_to": "2026-06-01",
+  "confidence": 0.7,
+  "source_session": "session-v8",
+  "extracted_at": "2026-05-03T10:00:00Z"
+}
