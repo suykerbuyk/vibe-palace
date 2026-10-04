@@ -237,14 +237,6 @@
       "reason": "TRANSPORT, same ruling and same writes as `ungated-vault-writer main.cmdVaultPull`: SyncVault contains the pull (cmd/vp/commands.go registration comment), so on a migrated vault it runs the derived-path merge heal and the post-merge untrack, bounded by storage.isDerivedPath and gated by the marker read from the merged index (heal) or HEAD (untrack). One difference: sync then PUSHES, so the untrack commit (and a heal's merge commit) is published to the remotes, which is the point: the derived paths leave every host's tree. Task tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker, Plan revisions R1. RULED: ACCEPTED by the vibe-palace Chair, 2026-10-04, after implementor3's code review."
     },
     {
-      "id": "uninvoked archive.Manifest.SessionDay",
-      "reason": "STAGED API, ADR-014 decision 4, task importers-write-the-frozen-tracked-corpus Scope 2 (plan revisions R-1). The UTC start day of an archived session, from the first timestamped transcript record (StartReader) or captured_at, which the ledger records as start_day and start_day_source. Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, once per archive; decision chunks never call it (TestSessionDayHasNoDecisionChunkCaller). This entry goes stale the moment the first of them lands."
-    },
-    {
-      "id": "uninvoked archive.ReadVerified",
-      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step: the whole-archive verified read (ADR-014 decision 7, 'Reading an archive') lands one commit before its caller, ingest.IngestArchive, which reads every archive through it. The commit that adds the ingester invokes it and deletes this entry."
-    },
-    {
       "id": "uninvoked atomicfile.SetSyncObserver",
       "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because tests in other packages need it (internal/indexstore pins that its counter and holder-record writes are fsynced with their directory). An fsync leaves no other trace, so without it a caller that drops WithFsync or WithDirFsync passes every test. Production never sets it. Task host-local-index-store-ledger-and-fingerprint (slice 1 review, D1)."
     },
@@ -329,20 +321,12 @@
       "reason": "STAGED API, ADR-014 decisions 3 and 8, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-2, R-3). Clears both stale reasons in completeness.json, refusing anything but a completed rebuild's RebuildProof. Non-test caller: the rebuild driver of explicit-resumable-index-rebuild-with-disk-watchdog, once every completed-rebuild condition holds. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.Tx.CommitArchive",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The per-archive commit step. Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.Tx.DeleteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (a corrupt or mismatched graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.RecordFailure",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, for an archive that failed. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.RecordSuperseded",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: pending-archive-ingester-and-per-archive-commit-step, for an older archive met after its session's newer one. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.ReplaceOwned",
@@ -353,12 +337,12 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: palace-navigation-over-the-host-local-chunk-store (the relabel) and index-fingerprints-project-lifecycle-and-migration-marker (the project rename's wing rewrite). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.Tx.Supersede",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, for a re-archived session. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.Tx.WriteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (saving the graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked ingest.IngestArchive",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step: the per-archive commit step lands one commit before ingest.Run, its first caller (and later the rebuild driver's). The commit that adds Run deletes this entry."
     },
     {
       "id": "uninvoked mcp.KnowledgeURI",
@@ -375,10 +359,6 @@
     {
       "id": "uninvoked search.ClearMissingVectors",
       "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). Clears only the missing_vectors stale reason, with a RepairProof from a RepairScan under the same held commit lock. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
-    },
-    {
-      "id": "uninvoked search.Engine.CachedVector",
-      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (ruling 3): the ingester embeds only the cache misses, and must never count another regime's vector as a hit. It lands one commit before ingest.IngestArchive, which invokes it; that commit deletes this entry."
     },
     {
       "id": "uninvoked search.Engine.RepairScan",
