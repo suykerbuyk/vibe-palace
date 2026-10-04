@@ -22,7 +22,14 @@ type copyFix struct {
 	V, VBare     string
 }
 
+// formatManifest is a MIGRATED vault's vault.toml: copy moves projects only
+// from a migrated vault into a migrated vault (ADR-014 decision 11).
 func formatManifest() string {
+	return fmt.Sprintf("format = %d\nauthored_only = \"2026-10-04\"\n", surface.RequiredDataFormat)
+}
+
+// unmigratedManifest is a vault.toml without the migration marker.
+func unmigratedManifest() string {
 	return fmt.Sprintf("format = %d\n", surface.RequiredDataFormat)
 }
 

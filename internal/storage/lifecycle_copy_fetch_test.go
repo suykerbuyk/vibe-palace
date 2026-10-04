@@ -290,7 +290,7 @@ func TestSnapshotFormat_AbsentIsNotAVaultUnreadableIsAnError(t *testing.T) {
 
 	// The tree lists the manifest, its blob was never fetched, and the remote
 	// is gone: the read fails on any git, with or without GIT_NO_LAZY_FETCH.
-	_, err := snapshotFormat(s, s.Tip)
+	_, _, err := snapshotFormat(s, s.Tip)
 	if err == nil || errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), vaultManifestRel) || strings.Contains(err.Error(), "not a vault") {
 		t.Errorf("an unreadable manifest must be an error naming %s, not a refusal; got %v", vaultManifestRel, err)
 	}
@@ -301,7 +301,7 @@ func TestSnapshotFormat_AbsentIsNotAVaultUnreadableIsAnError(t *testing.T) {
 	if gitRun(t, s.Dir, "ls-tree", root, "--", vaultManifestRel) != "" {
 		t.Fatalf("fixture: the root commit %s holds a manifest", root)
 	}
-	if _, err := snapshotFormat(s, root); !errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), "not a vault") {
+	if _, _, err := snapshotFormat(s, root); !errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), "not a vault") {
 		t.Errorf("a source with no manifest must be refused as not a vault; got %v", err)
 	}
 }
@@ -362,7 +362,7 @@ func TestRemoteSnapshot_ReadFileReturnsAFailedListingAsAnError(t *testing.T) {
 	if _, found, err := s.readFile(noSuchCommit, vaultManifestRel); err == nil {
 		t.Errorf("a listing that fails must be an error, not absent; found=%v", found)
 	}
-	if _, err := snapshotFormat(s, noSuchCommit); err == nil || errors.Is(err, ErrCopyRefused) {
+	if _, _, err := snapshotFormat(s, noSuchCommit); err == nil || errors.Is(err, ErrCopyRefused) {
 		t.Errorf("snapshotFormat over a failed listing must be an error, not the not-a-vault refusal; got %v", err)
 	}
 }

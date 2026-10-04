@@ -253,9 +253,12 @@ func ApplyCopy(req CopyRequest) (*CopyResult, error) {
 		return nil, err
 	}
 	refusals = append(refusals, srcRefusals...)
-	srcFormat, err := snapshotFormat(snap, tip)
+	srcFormat, srcManifest, err := snapshotFormat(snap, tip)
 	if err := refuse(err); err != nil {
 		return nil, err
+	}
+	if err == nil {
+		refusals = append(refusals, copyMarkerRefusals(srcManifest, tip, req.Vault)...)
 	}
 	vFormat, err := surface.ReadFormat(req.Vault)
 	if err != nil {
@@ -643,28 +646,58 @@ func footprintFiles(snap *remoteSnapshot, commit, p string) ([]CopyFile, []strin
 	return files, bad, nil
 }
 
-// snapshotFormat reads the source's .vibe-palace/vault.toml at commit. A source
-// without one is refused as not a vault; one that cannot be read is an error.
-func snapshotFormat(snap *remoteSnapshot, commit string) (int, error) {
+// snapshotFormat reads the source's .vibe-palace/vault.toml at commit, once,
+// and returns its data format and its raw bytes (for the migration marker,
+// copyMarkerRefusals). A source without one is refused as not a vault; one
+// that cannot be read is an error.
+func snapshotFormat(snap *remoteSnapshot, commit string) (int, string, error) {
 	data, found, err := snap.readFile(commit, vaultManifestRel)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if !found {
-		return 0, copyRefuse("the source at %s holds no %s: it is not a vault", shortSHA(commit), vaultManifestRel)
+		return 0, "", copyRefuse("the source at %s holds no %s: it is not a vault", shortSHA(commit), vaultManifestRel)
 	}
 	dir, err := os.MkdirTemp(snap.root, "fmt-")
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	p := surface.VaultManifestPath(dir)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if err := os.WriteFile(p, []byte(data+"\n"), 0o600); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return surface.ReadFormat(dir)
+	format, err := surface.ReadFormat(dir)
+	return format, data, err
+}
+
+// copyMarkerRefusals is copy's two-marker rule (ADR-014 decision 11; Chair
+// ruling C7): copy moves projects only from a migrated source into a migrated
+// destination, and refuses every other pairing before the lock and before any
+// write. The source's marker is read from the vault.toml bytes the snapshot
+// already fetched at the tip (srcManifest), so no second fetch runs; the
+// destination's is read from the served vault. A marker that cannot be read
+// refuses, naming the key: copy is a writer, and a writer fails closed. Copy
+// never writes a marker.
+func copyMarkerRefusals(srcManifest, tip, vault string) []string {
+	var out []string
+	if m, err := surface.ParseVaultManifest([]byte(srcManifest)); err != nil {
+		out = append(out, fmt.Sprintf("the source's migration marker at %s cannot be read: %v", shortSHA(tip), err))
+	} else if m.AuthoredOnly == "" {
+		out = append(out, fmt.Sprintf("the source at %s carries no migration marker (authored_only in %s): "+
+			"copy moves projects only from a migrated vault into a migrated vault; migrate the source first",
+			shortSHA(tip), vaultManifestRel))
+	}
+	if migrated, err := VaultMigrated(vault); err != nil {
+		out = append(out, fmt.Sprintf("%s's migration marker cannot be read: %v", vault, err))
+	} else if !migrated {
+		out = append(out, fmt.Sprintf("%s carries no migration marker: copy moves projects only into a "+
+			"migrated vault and never writes a marker; create the destination with a v9 `vp vault init`, "+
+			"or run the migration on it", vault))
+	}
+	return out
 }
 
 // walkCopyScratch inventories the fresh footprint checkout and proves it holds

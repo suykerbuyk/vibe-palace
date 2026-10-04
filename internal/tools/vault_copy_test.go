@@ -36,7 +36,8 @@ func vcRepo(t *testing.T, files map[string]string) (dir, bare string) {
 	vcGit(t, dir, "init", "-q", "-b", "main")
 	vcGit(t, dir, "config", "user.email", "t@example.com")
 	vcGit(t, dir, "config", "user.name", "T")
-	files[".vibe-palace/vault.toml"] = fmt.Sprintf("format = %d\n", surface.RequiredDataFormat)
+	// Both vaults are migrated: copy moves projects only between migrated vaults.
+	files[".vibe-palace/vault.toml"] = fmt.Sprintf("format = %d\nauthored_only = \"2026-10-04\"\n", surface.RequiredDataFormat)
 	for rel, c := range files {
 		p := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

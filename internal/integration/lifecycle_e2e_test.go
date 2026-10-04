@@ -137,7 +137,9 @@ func newLCWorld(t *testing.T, seedExtra map[string]string) *lcWorld {
 	lcGit(t, seed, "config", "user.email", "seed@example.com")
 	lcGit(t, seed, "config", "user.name", "Seed")
 	files := map[string]string{
-		".vibe-palace/vault.toml":                     fmt.Sprintf("format = %d\n", surface.RequiredDataFormat),
+		// A migrated vault: copy moves projects only from a migrated vault into
+		// a migrated one, and Q, made by `vp vault init`, is born migrated.
+		".vibe-palace/vault.toml":                     fmt.Sprintf("format = %d\nauthored_only = \"2026-10-04\"\n", surface.RequiredDataFormat),
 		".gitignore":                                  strings.Join(storage.CanonicalGitignorePatterns, "\n") + "\n",
 		"Projects/qms/resume.md":                      "# qms\n",
 		"Projects/qms/sessions/2026-09-01-aaaa-01.md": "---\nproject: qms\n---\n# a session\n",
