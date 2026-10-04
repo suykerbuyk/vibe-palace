@@ -23,7 +23,9 @@
 //     line hides every local entity record with its id.
 //   - A process caches each project's decoded local records with the store
 //     change counter read BEFORE the snapshot, and reloads in full on any
-//     change to it.
+//     change to it. The cache entry also holds what every read derives from
+//     the records (the collapsed triples, the sorted entities), built once
+//     per load, so a warm read does not redo them.
 package kgread
 
 import (
@@ -52,11 +54,15 @@ type localEntity struct {
 }
 
 // localKG is one project's decoded local KG, valid for one store counter.
+// It is built complete under cacheMu, then published, and never written
+// again: a reload replaces it, so a caller holding one reads a consistent
+// load.
 type localKG struct {
-	gen      indexstore.Gen
-	triples  []localTriple
-	entities []localEntity
-	skips    []storage.RecordSkip
+	gen         indexstore.Gen
+	triples     []localTriple // every live record, as decoded (invalidation)
+	readTriples []localTriple // triples collapsed for read (collapseFn)
+	entities    []localEntity // sorted by entity id, then record id
+	skips       []storage.RecordSkip
 }
 
 var (
@@ -67,6 +73,10 @@ var (
 	// is the KG-only snapshot: the ledger and the KG records, never the
 	// chunks, which the KG view does not depend on.
 	readKGFn = indexstore.ReadKG
+
+	// collapseFn is the read collapse, run once per load (loadLocal) and
+	// nowhere else; a seam so a test can count collapses.
+	collapseFn = collapseForRead
 )
 
 // loadLocal returns the project's decoded local KG. It reads the store
@@ -93,6 +103,13 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 		return nil, err
 	}
 	kg.gen = g
+	kg.readTriples = collapseFn(kg.triples)
+	slices.SortFunc(kg.entities, func(a, b localEntity) int {
+		if c := strings.Compare(a.e.ID, b.e.ID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.id, b.id)
+	})
 	cache[key] = kg
 	return kg, nil
 }
@@ -329,7 +346,7 @@ func involving(v *storage.Vault, project, name, direction string) ([]dated, erro
 		return nil, err
 	}
 	var involved []localTriple
-	for _, lt := range collapseForRead(local.triples) {
+	for _, lt := range local.readTriples {
 		if matches(lt.t, name, direction) {
 			involved = append(involved, lt)
 		}
@@ -384,7 +401,7 @@ func listTriples(v *storage.Vault, project string) ([]storage.Triple, error) {
 	if err != nil {
 		return nil, err
 	}
-	return union(tracked, collapseForRead(local.triples)), nil
+	return union(tracked, local.readTriples), nil
 }
 
 // ListEntities returns every entity of the project, from the union, one row
@@ -412,14 +429,7 @@ func listEntities(v *storage.Vault, project string) ([]storage.Entity, []storage
 		hidden[e.ID] = true
 	}
 	out := tracked
-	locals := slices.Clone(local.entities)
-	slices.SortFunc(locals, func(a, b localEntity) int {
-		if c := strings.Compare(a.e.ID, b.e.ID); c != 0 {
-			return c
-		}
-		return strings.Compare(a.id, b.id)
-	})
-	for _, le := range locals {
+	for _, le := range local.entities {
 		if !hidden[le.e.ID] {
 			out = append(out, le.e)
 		}
