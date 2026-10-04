@@ -13,8 +13,8 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
-// Per-project serialization of the engine's writers (Rebuild, IndexDrawers,
-// RemoveDrawer), task search-index-completeness-and-build-serialization,
+// Per-project serialization of the engine's writers (Rebuild and
+// IndexDrawers), task search-index-completeness-and-build-serialization,
 // Scope 9.
 //
 // 🔴 LOCK ORDER: the project's in-process mutex, THEN the project's index

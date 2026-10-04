@@ -285,10 +285,6 @@
       "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). Clears only the missing_vectors stale reason, with a RepairProof from a RepairScan under the same held commit lock. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },
     {
-      "id": "uninvoked search.Engine.RemoveDrawer",
-      "reason": "KEPT ON PURPOSE, task search-index-completeness-and-build-serialization (plan revisions 2026-10-04, R-5: eviction split into a lock-held and a locking path). RemoveDrawer is the engine's complete, self-locking eviction of one drawer (project mutex, index commit lock, in-memory index, metadata, cached vector) for a caller that holds no lock. Its one production caller used to be the orphan reaper, which now runs under a held commit lock and so uses the lock-held half, evictLocked, because a second commit-lock acquisition in one process deadlocks. No drawer-deletion path calls it today; delete it if none is planned."
-    },
-    {
       "id": "uninvoked search.Engine.RepairScan",
       "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). The scan under a held commit lock that finds a vector for every loaded local-tier chunk and mints the RepairProof ClearMissingVectors takes. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },

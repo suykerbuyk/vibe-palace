@@ -75,10 +75,10 @@ func TestIndexSweepIsNotInsideTheEmbedCacheSweep(t *testing.T) {
 // process may hold two. The observer sees every commit lock taken and
 // released; the gone project's must be taken while no other is held. Each
 // entry point that takes a commit lock through lockProject (a lazy search's
-// Rebuild, IndexDrawers, RemoveDrawer) is driven on a fresh engine, so each is
+// Rebuild, IndexDrawers) is driven on a fresh engine, so each is
 // the engine's first lock and runs the sweep.
 func TestEngineSweepRunsBeforeTheCommitLock(t *testing.T) {
-	for _, entry := range []string{"search", "rebuild", "index-drawers", "remove-drawer"} {
+	for _, entry := range []string{"search", "rebuild", "index-drawers"} {
 		t.Run(entry, func(t *testing.T) {
 			eng, v := testEngine(t)
 			ctx := context.Background()
@@ -123,8 +123,6 @@ func TestEngineSweepRunsBeforeTheCommitLock(t *testing.T) {
 			case "index-drawers":
 				err = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing", Room: "room",
 					Drawer: storage.Drawer{ID: "d1", Content: "x"}, Vec: []float32{1, 0, 0}}})
-			case "remove-drawer":
-				err = eng.RemoveDrawer("proj", "d1")
 			}
 			if err != nil {
 				t.Fatal(err)

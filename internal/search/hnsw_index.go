@@ -467,7 +467,7 @@ func (h *hnswIndex) maybeRebuildLocked() {
 	// Vectors are copies the index owns and never mutates, so the snapshot
 	// shares them. Ordering by key re-adds them in their original order.
 	// COST: this copy and sort are O(n log n) and run under h.mu, and the
-	// engine's callers (RemoveDrawer, IndexDrawers) also hold e.mu here. At
+	// engine's callers (evictMemory, IndexDrawers) also hold e.mu here. At
 	// today's sizes that is milliseconds; revisit for 100k-vector indexes
 	// (recorded in task hnsw-parameters-from-real-vector-recall-and-production-wiring).
 	snap := make([]rebuildItem, 0, len(h.st.live))

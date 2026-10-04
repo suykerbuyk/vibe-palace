@@ -222,7 +222,7 @@ func TestSemaphoreStormLeavesItFree(t *testing.T) {
 
 // holdMutexBlockedOnCommit makes engine eng hold project's mutex while it is
 // blocked on the project's commit lock, which the test holds: the shape of an
-// IndexDrawersWait (or RemoveDrawer) waiting behind another process's ingest.
+// IndexDrawersWait waiting behind another process's ingest.
 // It returns once that state is reached, and a function that releases the
 // commit lock and waits for the blocked writer to finish.
 func holdMutexBlockedOnCommit(t *testing.T, eng *Engine, v *storage.Vault, project string, d storage.Drawer) func() {
@@ -475,9 +475,9 @@ func TestColdInsertWritesTheCache(t *testing.T) {
 }
 
 // TestEmbedCacheWritesWaitForTheCommitLock: while another process holds the
-// project's commit lock, a Rebuild's vector commit and a RemoveDrawer's unlink
-// (both waiting with no timeout) block; each is seen reaching the lock through
-// the hook, and only the release lets them through.
+// project's commit lock, a Rebuild's vector commit (waiting with no timeout)
+// blocks; it is seen reaching the lock through the hook, and only the release
+// lets it through.
 func TestEmbedCacheWritesWaitForTheCommitLock(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
@@ -508,26 +508,4 @@ func TestEmbedCacheWritesWaitForTheCommitLock(t *testing.T) {
 		t.Fatalf("the vector was not written once the lock was free: %v", err)
 	}
 
-	held, err = indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for len(reached) > 0 {
-		<-reached // the Rebuild's own later commits
-	}
-	removed := make(chan error, 1)
-	go func() { removed <- eng.RemoveDrawer("proj", d.ID) }()
-	<-reached
-	if _, err := os.Stat(p); err != nil {
-		t.Fatal("RemoveDrawer unlinked the vector while another process held the commit lock")
-	}
-	if err := held.Release(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-removed; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(p); !os.IsNotExist(err) {
-		t.Fatal("RemoveDrawer did not unlink the vector once the lock was free")
-	}
 }

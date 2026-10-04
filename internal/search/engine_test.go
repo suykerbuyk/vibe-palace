@@ -334,30 +334,10 @@ func TestCrossProjectSearch(t *testing.T) {
 	}
 }
 
-func TestIndexAndRemoveDrawer(t *testing.T) {
-	eng, v := testEngine(t)
-	ctx := context.Background()
-
-	d := addDrawer(t, v, "proj", "wing-a", "room-1", "removable content", "facts")
-	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}})
-
-	results, _ := eng.Search(ctx, "removable", SearchFilters{Project: "proj"})
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result before remove, got %d", len(results))
-	}
-
-	eng.RemoveDrawer("proj", d.ID)
-
-	results, _ = eng.Search(ctx, "removable", SearchFilters{Project: "proj"})
-	if len(results) != 0 {
-		t.Errorf("expected 0 results after remove, got %d", len(results))
-	}
-}
-
-// TestRemoveDrawerUnlinksVec verifies that eviction is complete: RemoveDrawer
-// drops the drawer from search AND unlinks its cached .vec file, so nothing is
-// left to leak or to serve.
-func TestRemoveDrawerUnlinksVec(t *testing.T) {
+// TestEvictLockedIsComplete verifies that eviction under a held commit lock
+// is complete: the drawer drops out of search AND its cached .vec is unlinked,
+// so nothing is left to leak or to serve.
+func TestEvictLockedIsComplete(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
 
@@ -366,22 +346,34 @@ func TestRemoveDrawerUnlinksVec(t *testing.T) {
 	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}}); err != nil {
 		t.Fatal(err)
 	}
-
+	if results, _ := eng.Search(ctx, "removable", SearchFilters{Project: "proj"}); len(results) != 1 {
+		t.Fatalf("expected 1 result before the eviction, got %d", len(results))
+	}
 	vecPath, _ := eng.cache.path("proj", d.ID)
 	if _, err := os.Stat(vecPath); err != nil {
 		t.Fatalf("precondition: .vec should exist after index: %v", err)
 	}
 
-	if err := eng.RemoveDrawer("proj", d.ID); err != nil {
-		t.Fatalf("RemoveDrawer: %v", err)
+	tx, err := indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.evictLocked(tx, "proj", d.ID); err != nil {
+		t.Fatalf("evictLocked: %v", err)
+	}
+	if err := tx.Release(); err != nil {
+		t.Fatal(err)
 	}
 
 	if _, err := os.Stat(vecPath); !os.IsNotExist(err) {
-		t.Errorf("expected .vec unlinked after RemoveDrawer, stat err = %v", err)
+		t.Errorf("expected .vec unlinked after the eviction, stat err = %v", err)
 	}
-	results, _ := eng.Search(ctx, "removable", SearchFilters{Project: "proj"})
-	if len(results) != 0 {
-		t.Errorf("expected 0 results after remove, got %d", len(results))
+	eng.mu.RLock()
+	_, stillMeta := eng.metadata[d.ID]
+	n := eng.indexes["proj"].Len()
+	eng.mu.RUnlock()
+	if stillMeta || n != 0 {
+		t.Errorf("after the eviction: metadata kept = %v, index holds %d; want neither", stillMeta, n)
 	}
 }
 

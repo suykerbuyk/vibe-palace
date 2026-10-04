@@ -1409,7 +1409,7 @@ build can exceed: use the targets.
 | `TestEngineRebuildClosesTheReplacedIndexOffLock` | On both `Rebuild` paths (replace, and the empty-corpus drop) the old index is closed, its rebuild cancelled and exited, and `e.mu` is free when it closes (`beforeIndexClose` hook, `TryLock`) |
 | `TestEngineCloseClosesEveryIndex` | `Engine.Close` closes every index before the embedder |
 | `TestEngineCloseClearsTheBuiltMemo` | `Engine.Close` clears the lazy-build memo with the index map, so no project reads as built without an index |
-| `TestEngineRebuildRunsOffLock` | A rebuild triggered by `RemoveDrawer` (under `e.mu`) is held while `RemoveDrawer` returns and searches on the same and another project return; every wait is bounded at 60 s with a goroutine dump, never a timing assertion |
+| `TestEngineRebuildRunsOffLock` | A rebuild triggered by the engine's eviction (`evictMemory`, under `e.mu`) is held while the eviction returns and searches on the same and another project return; every wait is bounded at 60 s with a goroutine dump, never a timing assertion |
 | `TestEngineSearchHugeLimit` | `Search` with `Limit = math.MaxInt` neither errors nor allocates by the limit |
 
 **Vendored copy:** `scripts/check-hnsw-vendor.sh` (`make hnsw-vendor`, networked)

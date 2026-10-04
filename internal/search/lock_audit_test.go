@@ -122,7 +122,7 @@ func TestLockDiscipline(t *testing.T) {
 			}
 			if fn.name == "Engine.reapLocked" || fn.name == "Engine.evictLocked" {
 				switch c {
-				case ".lockProject", ".Tx", "indexstore.Lock", ".RemoveDrawer", "acquireSem":
+				case ".lockProject", ".Tx", "indexstore.Lock", "acquireSem":
 					t.Errorf("%s runs under a held commit lock but calls %s", fn.name, c)
 				}
 			}

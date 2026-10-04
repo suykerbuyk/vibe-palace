@@ -614,33 +614,10 @@ func (e *Engine) putVectorsLocked(tx *indexstore.Tx, vecs map[string][]float32) 
 	}
 }
 
-// RemoveDrawer evicts a drawer completely: it drops the vector from the
-// in-memory index, drops the global metadata entry, and unlinks the drawer's
-// cached .vec file. It takes the project's mutex and index commit lock, as
-// every embed-cache write does, waiting for them; a caller that already holds
-// the commit lock uses evictLocked instead. A missing .vec is not an error.
-func (e *Engine) RemoveDrawer(project, id string) error {
-	ctx := context.Background()
-	pl, err := e.lockProject(ctx, project, indexstore.NoTimeout)
-	if err != nil {
-		return err
-	}
-	defer pl.release()
-	tx, err := pl.Tx(ctx, indexstore.NoTimeout)
-	if errors.Is(err, indexstore.ErrProjectGone) {
-		e.evictMemory(project, id)
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	err = e.evictLocked(tx, project, id)
-	_, _, cerr := pl.finishTx()
-	return errors.Join(err, cerr)
-}
-
-// evictLocked is RemoveDrawer for a caller that ALREADY HOLDS the project's
-// index commit lock (tx): the reaper. It never takes a project mutex or a
+// evictLocked evicts a drawer completely, for a caller that ALREADY HOLDS
+// the project's index commit lock (tx): the reaper. It drops the vector from
+// the in-memory index, drops the global metadata entry, and unlinks the cached
+// .vec (a missing one is not an error). It never takes a project mutex or a
 // commit lock itself; taking the commit lock again here would deadlock,
 // because a second acquisition by the same process blocks.
 func (e *Engine) evictLocked(tx *indexstore.Tx, project, id string) error {
@@ -791,7 +768,7 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 }
 
 // rebuild is Rebuild's body. It holds the project's mutex for the whole run,
-// so it never interleaves with IndexDrawers or RemoveDrawer on the project
+// so it never interleaves with IndexDrawers on the project
 // (their inserts can no longer be dropped by its swap, nor their vectors
 // reaped). It embeds without the commit lock, commits each embed batch in its
 // own short Tx, and takes one final Tx for the reap. A commit lock that is busy

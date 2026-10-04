@@ -103,9 +103,9 @@ func TestEngineCloseClosesEveryIndex(t *testing.T) {
 	}
 }
 
-// TestEngineRebuildRunsOffLock: RemoveDrawer holds e.mu while it deletes, and
-// the delete that crosses the tombstone threshold starts the rebuild. While that
-// rebuild is held, RemoveDrawer returns, and searches on the same project and
+// TestEngineRebuildRunsOffLock: the engine's eviction (evictMemory) holds e.mu
+// while it deletes, and the delete that crosses the tombstone threshold starts
+// the rebuild. While that rebuild is held, the eviction returns, and searches on the same project and
 // on another project all return; only then is the rebuild released. A rebuild
 // run under e.mu or under the index's own lock fails at the liveness bound.
 func TestEngineRebuildRunsOffLock(t *testing.T) {
@@ -138,13 +138,10 @@ func TestEngineRebuildRunsOffLock(t *testing.T) {
 
 	removed := goDone(func() {
 		for i := 0; currentRebuild(held) == nil && i < len(ids); i++ {
-			if err := eng.RemoveDrawer("p1", ids[i]); err != nil {
-				t.Errorf("RemoveDrawer: %v", err)
-				return
-			}
+			eng.evictMemory("p1", ids[i])
 		}
 	})
-	waitOrDump(t, removed, "RemoveDrawer across the threshold")
+	waitOrDump(t, removed, "evictions across the threshold")
 	b := currentRebuild(held)
 	if b == nil {
 		t.Fatal("no rebuild started")
