@@ -167,3 +167,32 @@ func TestMarker_OnlyALocalDate(t *testing.T) {
 		}
 	}
 }
+
+// ParseVaultManifest is ReadVaultManifest's parser: the same bytes give the
+// same manifest, and the same malformed marker gives an error naming the key,
+// whether they came off disk or out of git.
+func TestParseVaultManifest_SameAsTheFileReader(t *testing.T) {
+	for _, text := range []string{
+		"format = 2\n",
+		"format = 2\nauthored_only = \"2026-10-04\"\n",
+		"format = 2\nauthored_only = 2026-10-04\n",
+	} {
+		root := t.TempDir()
+		writeManifestText(t, root, text)
+		fromFile, err := ReadVaultManifest(root)
+		if err != nil {
+			t.Fatalf("%q: ReadVaultManifest: %v", text, err)
+		}
+		fromBytes, err := ParseVaultManifest([]byte(text))
+		if err != nil {
+			t.Fatalf("%q: ParseVaultManifest: %v", text, err)
+		}
+		if fromFile != fromBytes {
+			t.Errorf("%q: file reader %+v, bytes parser %+v", text, fromFile, fromBytes)
+		}
+	}
+	_, err := ParseVaultManifest([]byte("format = 2\nauthored_only = 5\n"))
+	if err == nil || !strings.Contains(err.Error(), "authored_only") {
+		t.Fatalf("malformed marker: want an error naming authored_only, got %v", err)
+	}
+}

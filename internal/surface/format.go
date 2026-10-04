@@ -194,6 +194,14 @@ func ReadVaultManifest(root string) (VaultManifest, error) {
 		}
 		return VaultManifest{}, fmt.Errorf("read vault.toml: %w", err)
 	}
+	return ParseVaultManifest(data)
+}
+
+// ParseVaultManifest decodes vault.toml bytes, by the same rules as
+// ReadVaultManifest: it is that reader's parser, shared with the callers that
+// read the manifest out of git (a merged index, a commit) rather than off disk,
+// so every reader reports a malformed marker the same way.
+func ParseVaultManifest(data []byte) (VaultManifest, error) {
 	var m VaultManifest
 	if err := toml.Unmarshal(data, &m); err != nil {
 		return VaultManifest{}, fmt.Errorf("parse vault.toml: %w", err)
