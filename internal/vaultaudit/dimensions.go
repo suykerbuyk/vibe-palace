@@ -95,6 +95,22 @@ const (
 	// that one, not a duplicate: coherence audits presence, this audits contents.
 	DimPalaceStoreDrawers = "palace-store-drawers"
 
+	// DimKGTrackedExtracted — on a MIGRATED vault (the authored_only marker in
+	// .vibe-palace/vault.toml), no tracked KG record may be extracted: extracted
+	// triples and entity lines are per-host derived data after the migration
+	// (ADR-014 decisions 5 and 11). Earned by the migration's own design: tidy
+	// stops sweeping them, but a clean merge from a lagging host, or a hand
+	// commit, can still bring one in, and nothing else would notice. It
+	// classifies with storage.ClassifyTriple and ClassifyEntityLine, the
+	// predicates tidy uses, so the two cannot disagree. It is NOT
+	// DimKGPortability (the NTFS/exFAT filename check), which is unchanged.
+	//
+	// 🔴 MARKER-GATED: on a vault without the marker it reports nothing. Ungated
+	// it would report every tracked extracted record (59,902 triples on the live
+	// vault) from the day v9 is installed. A marker that cannot be read is
+	// reported here, as one finding naming the key.
+	DimKGTrackedExtracted = "kg-tracked-extracted"
+
 	// DimTaskPreamble — an ACTIVE task file may not carry text between its header
 	// block and its first H2. Earned by
 	// vaultaudit-does-not-flag-a-claim-bearing-preamble: the preamble is the region
@@ -351,6 +367,13 @@ const (
 	// presence rule (storage/projects.go).
 	EvidenceProjectTreeCoherence = `comm -3 <(for d in Projects/*; do s=${d#Projects/}; ` + evidenceSlugDir + `echo "$s"; done | sort) ` +
 		`<(for d in palace/*; do s=${d#palace/}; ` + evidenceSlugDir + evidencePalaceStore + ` && echo "$s"; done | sort)`
+	// Approximates the classifiers with the explicit origin field alone: a record
+	// with no origin is classified by its extracted_at (triples) or its type and
+	// created_at (entity lines), which a grep cannot do honestly. Only on a vault
+	// whose .vibe-palace/vault.toml carries authored_only.
+	EvidenceKGTrackedExtracted = `grep -q '^authored_only' .vibe-palace/vault.toml && ` +
+		`git ls-files -- palace | grep -E '^palace/[^/]+/kg/(triples/.+[.]json|entities[.]jsonl)$' | ` +
+		`xargs grep -l '"origin": *"extracted"'   # plus origin-less records: storage.ClassifyTriple / ClassifyEntityLine`
 	EvidenceKGPortability    = `find palace/*/kg/triples -name '*:*' -o -name '*' -newer /dev/null | grep ':'`
 	EvidenceResumeDiscipline = `wc -c Projects/*/resume.md; grep -c '{{[A-Z]*}}' Projects/*/resume.md`
 	// Two of the three conditions are expressible as a grep and are recorded as one.
@@ -681,7 +704,18 @@ func auditProjectTreeCoherence(vault *storage.Vault) ([]Finding, []string, error
 // (internal/storage/drawers.go:296-315), so without that stat the two findings could
 // not be told apart. A project the auditor could not look at lands in unknowns and is
 // neither reported nor passed — unknown is not a shade of pass (audit.go:21-25).
+//
+// 🔴 SKIPPED ON A MIGRATED VAULT. After the migration drawers are per-host
+// derived data, gitignored and rebuilt from archives, so an empty or absent
+// drawer store is the expected shape, and the only drawers left to count would
+// be one host's ignored residue — a finding on the migrating host alone. With
+// no marker it runs exactly as before. A marker that cannot be read runs it
+// (the more inclusive report); kg-tracked-extracted reports the bad key.
 func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) {
+	if migrated, err := storage.VaultMigrated(vault.Root); err == nil && migrated {
+		return nil, nil, &dimensionSkipped{reason: "the vault carries the migration marker (authored_only in " +
+			".vibe-palace/vault.toml): drawers are per-host derived data, rebuilt from archives, and no longer tracked"}
+	}
 	projects, err := vault.ListAllProjects()
 	if err != nil {
 		return nil, nil, fmt.Errorf("enumerate projects: %w", err)
@@ -734,6 +768,43 @@ func auditPalaceStoreDrawers(vault *storage.Vault) ([]Finding, []string, error) 
 		}
 	}
 	return findings, unknowns, nil
+}
+
+// auditKGTrackedExtracted: tracked KG records the classifiers call extracted, on a
+// migrated vault. See DimKGTrackedExtracted.
+func auditKGTrackedExtracted(vault *storage.Vault) ([]Finding, []string, error) {
+	migrated, err := storage.VaultMigrated(vault.Root)
+	if err != nil {
+		return []Finding{{
+			Dimension: DimKGTrackedExtracted,
+			Artifact:  ".vibe-palace/vault.toml",
+			Detail: fmt.Sprintf("the migration marker cannot be read, so whether this vault is migrated is "+
+				"unknown; tidy, sync and the merge heal refuse until it is fixed: %v", err),
+		}}, nil, nil
+	}
+	if !migrated {
+		return nil, nil, nil
+	}
+	files, unreadable, err := vault.TrackedExtractedKG()
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := make([]Finding, 0, len(files))
+	for _, f := range files {
+		detail := "a tracked triple the KG classifier calls extracted: on a migrated vault extracted " +
+			"records are per-host derived data and must not be tracked"
+		if f.Lines > 0 {
+			detail = fmt.Sprintf("%d tracked entity line(s) the KG classifier calls extracted: on a migrated "+
+				"vault extracted records are per-host derived data and must not be tracked", f.Lines)
+		}
+		findings = append(findings, Finding{
+			Dimension: DimKGTrackedExtracted,
+			Artifact:  f.Path,
+			Detail:    detail,
+			Measure:   int64(f.Lines),
+		})
+	}
+	return findings, unreadable, nil
 }
 
 // drawerSourcesNote names every writer of drawer records, as plain fact. The details

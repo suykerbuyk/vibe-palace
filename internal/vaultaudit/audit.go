@@ -4,6 +4,7 @@
 package vaultaudit
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -29,6 +30,9 @@ const (
 	StatusPass    Status = "pass"
 	StatusFail    Status = "fail"
 	StatusUnknown Status = "unknown"
+	// StatusSkipped is a dimension that does not apply to this vault, by a
+	// decided rule (Skipped says which), so it was not run. It is not a pass.
+	StatusSkipped Status = "skipped"
 )
 
 // DimensionResult is one dimension's outcome.
@@ -44,6 +48,7 @@ type DimensionResult struct {
 	Stale    []StaleEntry
 	Accepted int
 	Unknowns []string // why the auditor could not look; non-empty ⇒ Status is Unknown
+	Skipped  string   // why the dimension does not apply to this vault; non-empty ⇒ Status is Skipped
 
 	// acceptedFindings backs Report.Findings(). It is unexported because a caller
 	// has no business distinguishing accepted findings from new ones — that is the
@@ -153,7 +158,15 @@ var dimensions = []auditDimension{
 	{DimTaskPreamble, EvidenceTaskPreamble, auditTaskPreamble},
 	{DimTaskStatusDirectory, EvidenceTaskStatusDirectory, auditTaskStatusDirectory},
 	{DimTaskFileValidity, EvidenceTaskFileValidity, auditTaskFileValidity},
+	{DimKGTrackedExtracted, EvidenceKGTrackedExtracted, auditKGTrackedExtracted},
 }
+
+// dimensionSkipped is what a dimension's scan returns when the dimension does
+// not apply to this vault by a decided rule. Run reports it as StatusSkipped
+// with the reason, never as a pass and never as an unknown.
+type dimensionSkipped struct{ reason string }
+
+func (e *dimensionSkipped) Error() string { return "skipped: " + e.reason }
 
 // DimensionNames returns the registry's dimension names in report order.
 //
@@ -206,6 +219,16 @@ func Run(vault *storage.Vault) (Report, error) {
 	}
 	for _, d := range dimensions {
 		findings, unknowns, err := d.run(vault)
+		var skip *dimensionSkipped
+		if errors.As(err, &skip) {
+			report.Dimensions = append(report.Dimensions, DimensionResult{
+				Name:     d.name,
+				Status:   StatusSkipped,
+				Evidence: d.evidence,
+				Skipped:  skip.reason,
+			})
+			continue
+		}
 		if err != nil {
 			// A dimension that cannot run at all is UNKNOWN, not absent. Dropping it
 			// silently would shrink the audit's own scope without saying so — the

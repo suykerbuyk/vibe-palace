@@ -162,3 +162,82 @@ func censusGit(root string, args ...string) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// ExtractedKGFile is one tracked KG file holding records ClassifyTriple or
+// ClassifyEntityLine call extracted.
+type ExtractedKGFile struct {
+	// Path is vault-relative and slash-separated.
+	Path string
+	// Lines is, for a kg/entities.jsonl, how many of its lines are extracted;
+	// 0 for a triple file (the file is one record).
+	Lines int
+}
+
+// TrackedExtractedKG lists the TRACKED KG records of the vault that the KG
+// classifiers call extracted — the records a migrated vault must no longer
+// track. The list of tracked files is one `git ls-files -- palace`; each is read
+// from the working tree. A file that cannot be read or parsed is returned in
+// unreadable, never guessed at.
+//
+// It uses ClassifyTriple and ClassifyEntityLine, the predicates tidy uses, so
+// the kg-tracked-extracted audit and tidy cannot disagree about a record.
+func (v *Vault) TrackedExtractedKG() (files []ExtractedKGFile, unreadable []string, err error) {
+	out, _, err := gitCmdStdin(v.Root, 2*time.Minute, "", "ls-files", "-z", "--", "palace")
+	if err != nil {
+		return nil, nil, fmt.Errorf("list tracked palace files: %w", err)
+	}
+	for _, rel := range splitNUL([]byte(out)) {
+		parts := strings.Split(rel, "/")
+		if len(parts) < 4 || parts[0] != "palace" || parts[2] != "kg" || slug.Validate(parts[1]) != nil {
+			continue
+		}
+		abs := filepath.Join(v.Root, filepath.FromSlash(rel))
+		switch {
+		case len(parts) >= 5 && parts[3] == "triples" && strings.HasSuffix(rel, ".json"):
+			t, err := readTripleFile(abs)
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s: %v", rel, err))
+				continue
+			}
+			if ClassifyTriple(t) != OriginAuthored {
+				files = append(files, ExtractedKGFile{Path: rel})
+			}
+		case len(parts) == 4 && parts[3] == "entities.jsonl":
+			n, err := countExtractedEntityLines(abs)
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s: %v", rel, err))
+				continue
+			}
+			if n > 0 {
+				files = append(files, ExtractedKGFile{Path: rel, Lines: n})
+			}
+		}
+	}
+	return files, unreadable, nil
+}
+
+// countExtractedEntityLines counts the non-empty lines of an entities file
+// that ClassifyEntityLine calls extracted. A line that does not decode is an
+// error.
+func countExtractedEntityLines(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), maxEntityLine)
+	n := 0
+	for line := 1; sc.Scan(); line++ {
+		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
+			continue
+		}
+		var en Entity
+		if err := json.Unmarshal(sc.Bytes(), &en); err != nil {
+			return 0, fmt.Errorf("line %d: %w", line, err)
+		}
+		if ClassifyEntityLine(en) != OriginAuthored {
+			n++
+		}
+	}
+	return n, sc.Err()
+}

@@ -142,6 +142,9 @@ func summarize(r vaultaudit.Report) []map[string]any {
 		if len(d.Unknowns) > 0 {
 			row["unknown"] = d.Unknowns
 		}
+		if d.Skipped != "" {
+			row["skipped"] = d.Skipped
+		}
 		out = append(out, row)
 	}
 	return out

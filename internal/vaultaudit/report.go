@@ -125,6 +125,11 @@ func (r Report) Render(date, vaultRoot string) string {
 			b.WriteString("\n")
 		}
 
+		if d.Skipped != "" {
+			fmt.Fprintf(&b, "Not run on this vault: %s\n\n", d.Skipped)
+			continue
+		}
+
 		if len(d.New) == 0 && len(d.Stale) == 0 && len(d.Unknowns) == 0 {
 			if d.Accepted > 0 {
 				fmt.Fprintf(&b, "No new drift. **%d accepted finding(s) remain** — this dimension passes "+
@@ -235,6 +240,8 @@ func statusBadge(s Status) string {
 		return "🔴 **FAIL**"
 	case StatusUnknown:
 		return "⚠️ **UNKNOWN**"
+	case StatusSkipped:
+		return "⏭️ skipped"
 	}
 	return string(s)
 }
