@@ -92,6 +92,16 @@ func RefuseIfLifecyclePending(path string) error {
 	return refuseOnLifecyclePendingStrict(path)
 }
 
+// RemoteURL returns the URL git uses for the vault's remote named name
+// (`git remote get-url`, under SafeGitEnv). An unknown remote is an error.
+func RemoteURL(vaultPath, name string) (string, error) {
+	out, err := gitCmd(vaultPath, 5*time.Second, "remote", "get-url", "--", name)
+	if err != nil {
+		return "", fmt.Errorf("read the URL of remote %q: %w", name, err)
+	}
+	return out, nil
+}
+
 // ReadRecordedRemotes reads the vault's tracked .vibe-palace/remotes.toml, the
 // remotes `vp vault init` recorded. A vault without the file records none. A
 // remote whose URL carries a credential is refused, as clone refuses it.

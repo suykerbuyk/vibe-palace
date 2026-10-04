@@ -438,20 +438,31 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 					"a destination that cannot answer `git remote` is not a repository)", err)
 		}
 		// Split configures no remote. The destination's own are exactly the ones
-		// `vp vault init` recorded in .vibe-palace/remotes.toml; any other was
-		// added outside both tools.
+		// `vp vault init` recorded in .vibe-palace/remotes.toml, by name AND by
+		// URL: a recorded name repointed elsewhere (`git remote set-url`) would
+		// otherwise pass, and a published split could land in the wrong
+		// repository. Any other remote was added outside both tools.
 		recorded, rerr := storage.ReadRecordedRemotes(dest)
 		if rerr != nil {
 			return nil, fmt.Errorf("read the destination's recorded remotes: %w", rerr)
 		}
-		known := make(map[string]bool, len(recorded))
+		known := make(map[string]string, len(recorded))
 		for _, r := range recorded {
-			known[r.Name] = true
+			known[r.Name] = r.URL
 		}
-		var unrecorded []string
+		var unrecorded, repointed []string
 		for _, r := range remotes {
-			if !known[r] {
+			want, ok := known[r]
+			if !ok {
 				unrecorded = append(unrecorded, r)
+				continue
+			}
+			got, uerr := storage.RemoteURL(dest, r)
+			if uerr != nil {
+				return nil, fmt.Errorf("destination remote %s: %w", r, uerr)
+			}
+			if got != want {
+				repointed = append(repointed, fmt.Sprintf("%s (configured %s, recorded %s)", r, got, want))
 			}
 		}
 		if len(unrecorded) > 0 {
@@ -459,6 +470,11 @@ func splitVerifyDestination(vault *storage.Vault, p vaultSplitParams, m *splitMa
 				"destination has remote(s) %s that its .vibe-palace/remotes.toml does not record: "+
 					"split configures none and `vp vault init` records every one it adds, so "+
 					"these were added outside both", strings.Join(unrecorded, ", ")))
+		}
+		if len(repointed) > 0 {
+			problems = append(problems, fmt.Sprintf(
+				"destination remote(s) point somewhere other than .vibe-palace/remotes.toml records: %s",
+				strings.Join(repointed, "; ")))
 		}
 	}
 

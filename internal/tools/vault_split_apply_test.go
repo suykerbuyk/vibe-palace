@@ -263,9 +263,10 @@ func TestVaultSplitApply_IntoAVaultInitDestination(t *testing.T) {
 
 // TestVaultSplitApply_RefusesAnUnsafeExistingDestination: an otherwise valid
 // `vp vault init` destination that (a) already holds the travelling slug's
-// tree, (c) carries a pending lifecycle marker, or (d) has a remote its
-// remotes.toml does not record. (a) and (c) refuse at apply and copy nothing;
-// (d) fails verify, so purge refuses and the source survives. (b), a nested
+// tree, (c) carries a pending lifecycle marker, (d) has a remote its
+// remotes.toml does not record, or (e) has a recorded remote repointed to
+// another URL. (a) and (c) refuse at apply and copy nothing; (d) and (e) fail
+// verify, so purge refuses and the source survives. (b), a nested
 // destination, is in vault_split_nested_dest_test.go. Mutants: a destination
 // check that admits any existing vault; a remotes gate that accepts every
 // remote.
@@ -294,6 +295,29 @@ func TestVaultSplitApply_RefusesAnUnsafeExistingDestination(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dest, "Projects", "alpha")); !os.IsNotExist(err) {
 			t.Errorf("a refused apply copied Projects/alpha (stat err %v)", err)
+		}
+	})
+	t.Run("(e) a recorded remote repointed elsewhere", func(t *testing.T) {
+		root := splitFixtureVault(t, "alpha")
+		dest := splitInitDest(t)
+		p := splitPlannedParams(t, root, dest, "alpha")
+		p.Action = "apply"
+		if _, err := callSplit(t, root, p); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		// The name remotes.toml records, pointed at another repository.
+		splitGit(t, dest, "remote", "set-url", "origin", "file:///elsewhere.git")
+		p.Action = "verify"
+		if _, err := callSplit(t, root, p); err == nil || !strings.Contains(err.Error(), "file:///elsewhere.git") {
+			t.Fatalf("verify: err = %v, want a refusal naming the repointed URL", err)
+		}
+		p.Action = "purge"
+		p.DepartureTo = purgeLabel
+		if _, err := callSplit(t, root, p); err == nil {
+			t.Fatal("purge must refuse when verify fails")
+		}
+		if _, err := os.Stat(filepath.Join(root, "Projects", "alpha", "resume.md")); err != nil {
+			t.Errorf("the source must survive a refused purge: %v", err)
 		}
 	})
 	t.Run("(d) a remote remotes.toml does not record", func(t *testing.T) {
