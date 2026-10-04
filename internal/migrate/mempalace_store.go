@@ -68,24 +68,69 @@ func batchID(exportSHA string, n int) string {
 	return "mempalace:" + exportSHA + ":" + strconv.Itoa(n)
 }
 
-// startDay is one import's start day: the UTC day of the earliest parseable
-// drawer filed_at in the export, else the epoch. Every batch carries it; the
-// store's fold dates every batch-owned chunk and KG record from it.
-func (e *MemPalaceExport) startDay() string {
-	var earliest time.Time
+// The sources of a mempalace import's start day.
+const (
+	StartDayFromFiledAt   = "filed_at"
+	StartDayFromValidFrom = "valid_from"
+	StartDayFromEpoch     = "epoch"
+)
+
+// exportTimeLayouts are the timestamp forms an export carries. The export
+// script copies MemPalace's filed_at unchanged, and MemPalace writes Python's
+// datetime.isoformat(): often with no zone, often with microseconds. A
+// timestamp with no zone is read as UTC.
+var exportTimeLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02",
+}
+
+// parseExportTime parses one export timestamp or date, in UTC.
+func parseExportTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range exportTimeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// startDay is one import's start day and its source: the UTC day of the
+// earliest parseable drawer filed_at; else, for an export whose drawers carry
+// none (an export of entities and triples alone), the earliest parseable
+// triple valid_from; else the epoch. Every batch carries it; the store's fold
+// dates every batch-owned chunk and KG record from it.
+func (e *MemPalaceExport) startDay() (string, string) {
+	earliest := func(values []string) (time.Time, bool) {
+		var min time.Time
+		for _, v := range values {
+			if t, ok := parseExportTime(v); ok && (min.IsZero() || t.Before(min)) {
+				min = t
+			}
+		}
+		return min, !min.IsZero()
+	}
+	filed := make([]string, 0, len(e.data.Drawers))
 	for _, d := range e.data.Drawers {
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(d.FiledAt))
-		if err != nil {
-			continue
-		}
-		if earliest.IsZero() || t.Before(earliest) {
-			earliest = t
-		}
+		filed = append(filed, d.FiledAt)
 	}
-	if earliest.IsZero() {
-		return mempalaceEpochDay
+	if t, ok := earliest(filed); ok {
+		return t.Format("2006-01-02"), StartDayFromFiledAt
 	}
-	return earliest.UTC().Format("2006-01-02")
+	valid := make([]string, 0, len(e.data.Triples))
+	for _, tr := range e.data.Triples {
+		valid = append(valid, tr.ValidFrom)
+	}
+	if t, ok := earliest(valid); ok {
+		return t.Format("2006-01-02"), StartDayFromValidFrom
+	}
+	return mempalaceEpochDay, StartDayFromEpoch
 }
 
 // batches cuts the export into import batches: its non-blank drawers in
@@ -193,7 +238,8 @@ func ImportMemPalace(
 	}
 	batches, blank := mpExport.batches()
 	result.DrawersSkippedBlank = blank
-	day := mpExport.startDay()
+	day, daySource := mpExport.startDay()
+	result.StartDay, result.StartDaySource = day, daySource
 	if opts.DryRun {
 		for _, b := range batches {
 			result.BatchesCommitted++

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/index"
@@ -259,8 +260,8 @@ func TestMempalaceReportsTheLedgerItCreated(t *testing.T) {
 }
 
 // TestMempalaceBatchStartDay: the import's day is the UTC day of the earliest
-// drawer filed_at, in every zone; with none, the epoch; every chunk folds to
-// it, whatever its own filed_at.
+// drawer filed_at, in every zone; with no filed_at and no triple valid_from,
+// the epoch; every chunk folds to it, whatever its own filed_at.
 func TestMempalaceBatchStartDay(t *testing.T) {
 	e := testFixture()
 	e.Drawers[0].FiledAt = "2026-01-05T09:00:00Z"
@@ -285,10 +286,88 @@ func TestMempalaceBatchStartDay(t *testing.T) {
 	for i := range none.Drawers {
 		none.Drawers[i].FiledAt = ""
 	}
+	for i := range none.Triples {
+		none.Triples[i].ValidFrom = ""
+	}
 	v, eng, emb, ex := newStoreFixture(t, none)
 	importStore(t, v, eng, emb, ex)
 	if day, _ := readStore(t, v).Ledger().StartDay(batchID(ex.sha256, 0)); day != "2000-01-01" {
 		t.Fatalf("no filed_at: start day %q, want 2000-01-01", day)
+	}
+}
+
+// TestMempalaceStartDayReadsPythonIsoformat: the export script copies
+// MemPalace's filed_at unchanged, which is Python's isoformat(): no zone, and
+// microseconds. Such a timestamp is read as UTC, in every process zone, and
+// the result names the source.
+func TestMempalaceStartDayReadsPythonIsoformat(t *testing.T) {
+	e := testFixture()
+	e.Drawers[0].FiledAt = "2026-03-15T10:00:00.123456"
+	e.Drawers[1].FiledAt = "2026-03-20T23:59:59.5"
+	e.Drawers[2].FiledAt = "2026-04-01 08:00:00"
+	for _, zone := range []string{"America/Los_Angeles", "Asia/Tokyo"} {
+		withZone(t, zone, func() {
+			v, eng, emb, ex := newStoreFixture(t, e)
+			res := importStore(t, v, eng, emb, ex)
+			if res.StartDay != "2026-03-15" || res.StartDaySource != StartDayFromFiledAt {
+				t.Fatalf("%s: start day %q from %q, want 2026-03-15 from filed_at", zone, res.StartDay, res.StartDaySource)
+			}
+			if day, ok := readStore(t, v).Ledger().StartDay(batchID(ex.sha256, 0)); !ok || day != "2026-03-15" {
+				t.Fatalf("%s: ledgered start day %q, %v; want 2026-03-15", zone, day, ok)
+			}
+		})
+	}
+}
+
+// TestMempalaceStartDayFallsBackToValidFrom: an export whose drawers carry no
+// parseable filed_at (here all blank, a KG-only export) takes the earliest
+// triple valid_from; with neither, the epoch, and the result says so.
+func TestMempalaceStartDayFallsBackToValidFrom(t *testing.T) {
+	kgOnly := testFixture()
+	for i := range kgOnly.Drawers {
+		kgOnly.Drawers[i].Content = "  "
+		kgOnly.Drawers[i].FiledAt = ""
+	}
+	kgOnly.Triples[0].ValidFrom = "2026-02-01"
+	v, eng, emb, ex := newStoreFixture(t, kgOnly)
+	if res := importStore(t, v, eng, emb, ex); res.StartDay != "2026-02-01" || res.StartDaySource != StartDayFromValidFrom {
+		t.Fatalf("KG-only export: start day %q from %q, want 2026-02-01 from valid_from", res.StartDay, res.StartDaySource)
+	}
+
+	none := testFixture()
+	for i := range none.Drawers {
+		none.Drawers[i].FiledAt = "yesterday"
+	}
+	for i := range none.Triples {
+		none.Triples[i].ValidFrom = ""
+	}
+	v, eng, emb, ex = newStoreFixture(t, none)
+	if res := importStore(t, v, eng, emb, ex); res.StartDay != mempalaceEpochDay || res.StartDaySource != StartDayFromEpoch {
+		t.Fatalf("nothing parses: start day %q from %q, want the epoch", res.StartDay, res.StartDaySource)
+	}
+}
+
+func TestParseExportTime(t *testing.T) {
+	for in, want := range map[string]string{
+		"2026-03-15T10:00:00.123456":   "2026-03-15T10:00:00.123456Z",
+		"2026-03-15T10:00:00":          "2026-03-15T10:00:00Z",
+		"2026-03-15T10:00:00Z":         "2026-03-15T10:00:00Z",
+		"2026-03-15T23:30:00-05:00":    "2026-03-16T04:30:00Z",
+		"2026-03-15T23:30:00.25+09:00": "2026-03-15T14:30:00.25Z",
+		"2026-03-15 10:00:00.5":        "2026-03-15T10:00:00.5Z",
+		"2026-03-15 10:00:00+00:00":    "2026-03-15T10:00:00Z",
+		"2026-03-15":                   "2026-03-15T00:00:00Z",
+		" 2026-03-15T10:00:00 ":        "2026-03-15T10:00:00Z",
+	} {
+		got, ok := parseExportTime(in)
+		if !ok || got.Format(time.RFC3339Nano) != want {
+			t.Errorf("parseExportTime(%q) = %v, %v; want %s", in, got.Format(time.RFC3339Nano), ok, want)
+		}
+	}
+	for _, in := range []string{"", "yesterday", "15/03/2026", "2026-13-01"} {
+		if _, ok := parseExportTime(in); ok {
+			t.Errorf("parseExportTime(%q) parsed", in)
+		}
 	}
 }
 

@@ -608,6 +608,32 @@ func TestMigrateMemPalaceOutputStatesTheCaveats(t *testing.T) {
 	}
 }
 
+// TestMigrateMemPalaceSaysWhichDayTheBatchesCarry: the output names the day
+// every batch carries and its source, and when nothing in the export parsed
+// as a date it says the epoch was used rather than presenting it as real.
+func TestMigrateMemPalaceSaysWhichDayTheBatchesCarry(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t)
+	mkMigrateProject(t, vaultDir, "alpha")
+	run := func(drawers []map[string]any) string {
+		p := writeMemPalaceExportFile(t, t.TempDir(), drawers, testExportEntities, testExportTriples)
+		var code int
+		stderr := captureStderr(t, func() {
+			code = cmdMigrateMemPalace().Run([]string{"--export-path", p, "--project", "alpha", "--dry-run"})
+		})
+		if code != cli.ExitOK {
+			t.Fatalf("exit code = %d; stderr:\n%s", code, stderr)
+		}
+		return stderr
+	}
+	if out := run(testExportDrawers); !strings.Contains(out, "Every batch is dated 2026-09-01, the earliest drawer filed_at") {
+		t.Errorf("dated export: output lacks the day line:\n%s", out)
+	}
+	undated := []map[string]any{{"id": "d1", "wing": "technical", "room": "go", "content": "Wrote a worker pool.", "filed_at": "last tuesday"}}
+	if out := run(undated); !strings.Contains(out, "parsed as a date: every batch is dated 2000-01-01, a fixed epoch") {
+		t.Errorf("undated export: output does not say the epoch was used:\n%s", out)
+	}
+}
+
 // TestMigrateMemPalaceNoEmbeddableDrawersBuildsNoEmbedder: an export whose only
 // drawer is blank has nothing to embed, so a REAL run still loads no model —
 // entities and triples need no vectors.

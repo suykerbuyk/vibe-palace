@@ -351,11 +351,26 @@ func cmdMigrateMemPalace() *cli.Command {
 			}
 
 			printMigrateResult(result, dryRun)
+			fmt.Fprintln(os.Stderr, mempalaceDayLine(result))
 			if !dryRun {
 				fmt.Fprint(os.Stderr, mempalaceCaveat(result))
 			}
 			return cli.ExitOK
 		},
+	}
+}
+
+// mempalaceDayLine says which day every batch of the import carries, and
+// where it came from; when no timestamp in the export parsed, it says so
+// rather than leaving the epoch to look like a real date.
+func mempalaceDayLine(r migrate.ImportResult) string {
+	switch r.StartDaySource {
+	case migrate.StartDayFromFiledAt:
+		return fmt.Sprintf("Every batch is dated %s, the earliest drawer filed_at in the export.", r.StartDay)
+	case migrate.StartDayFromValidFrom:
+		return fmt.Sprintf("No drawer has a parseable filed_at: every batch is dated %s, the earliest triple valid_from in the export.", r.StartDay)
+	default:
+		return fmt.Sprintf("No drawer filed_at or triple valid_from in the export parsed as a date: every batch is dated %s, a fixed epoch.", r.StartDay)
 	}
 }
 

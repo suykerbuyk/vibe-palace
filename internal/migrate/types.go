@@ -49,7 +49,12 @@ type ImportResult struct {
 	BatchesSkipped      int
 	DrawersSkippedBlank int
 	LedgerCreated       bool
-	Errors              []ImportError
+	// StartDay is the day every batch of a mempalace import carries, and
+	// StartDaySource where it came from: StartDayFromFiledAt,
+	// StartDayFromValidFrom or StartDayFromEpoch (nothing parsed).
+	StartDay       string
+	StartDaySource string
+	Errors         []ImportError
 	// SlugRemap records collision-resolved renames (originalSlug → finalSlug).
 	// Empty when no collisions occurred.
 	SlugRemap map[string]string

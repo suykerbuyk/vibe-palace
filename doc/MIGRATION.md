@@ -170,7 +170,13 @@ and triples go **only to this host's local index store**, as ledgered
 - Every drawer is embedded again with this host's model, for consistent
   embeddings.
 - Every batch carries one start day: the UTC day of the export's earliest
-  drawer `filed_at`, or 2000-01-01 when no drawer has one.
+  drawer `filed_at`. An export with no parseable `filed_at`, such as one of
+  entities and triples alone, takes the earliest triple `valid_from`
+  instead. When neither parses, the import uses the fixed epoch
+  2000-01-01, and the output says so.
+- Timestamps may be RFC 3339 or Python's `isoformat()`, with or without
+  fractional seconds. MemPalace writes the latter, and the export script
+  copies it unchanged. A timestamp with no zone is read as UTC.
 
 Each batch is committed in its own step under the project's index commit
 lock. A re-run skips every batch the ledger already records, without
