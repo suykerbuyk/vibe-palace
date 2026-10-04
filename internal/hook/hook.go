@@ -233,6 +233,11 @@ type Result struct {
 	// checkout is stale, and the whole run is skipped rather than resurrecting
 	// the old tree. Like Failures, its loudness is vp.log (a Warn), not the exit.
 	SkippedRemovedSlug bool `json:"skipped_removed_slug,omitempty"`
+	// SkippedUninitialised is set when the marker names a project the vault
+	// has not initialised (storage.ClassifyProjectDir): every writer below
+	// would be refused, and a refused write must not be a hook failure per
+	// turn. Like SkippedRemovedSlug, its loudness is vp.log (a Warn).
+	SkippedUninitialised bool `json:"skipped_uninitialised,omitempty"`
 }
 
 // enrichDrainBudget bounds how many queued enrichment jobs a single SessionEnd
@@ -296,6 +301,25 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		slog.Warn("hook stale checkout: skipping capture — the marker names a project that departed the vault; update .vibe-palace.toml",
 			"project", opts.ProjectSlug, "cwd", payload.CWD, "redirect", d.Redirect(), "source", d.Source)
 		return res, nil
+	}
+
+	// 2c. Uninitialised-project gate. Every vault writer refuses a project the
+	// vault has not initialised (projectdir.RefuseUninitialisedAbs): a write
+	// there would create Projects/<slug>/ and its .surface stamp, and the hook
+	// commits neither. Skip the whole run BEFORE archive, harvest and capture
+	// rather than let each fail: the transcript stays in the host's own store
+	// and the native memory is neither read nor deleted, so nothing is lost and
+	// `vp archive create` recovers the transcript once the project exists.
+	// Warn: a checkout the operator has to initialise. The text before the
+	// first colon is the vplog.Summarize category, as for 2b.
+	if opts.VaultRoot != "" {
+		state, err := storage.ClassifyProjectDir(opts.VaultRoot, opts.ProjectSlug)
+		if err != nil || !state.Initialised() {
+			res.SkippedUninitialised = true
+			slog.Warn("hook uninitialised project: skipping capture — the vault has not initialised the marker's project; run `vp init <checkout>`, then recover the transcript with `vp archive create --session-id <id>`",
+				"project", opts.ProjectSlug, "state", state.String(), "err", err, "cwd", payload.CWD, "session_id", payload.SessionID)
+			return res, nil
+		}
 	}
 
 	// 3. Resolve claim directory.

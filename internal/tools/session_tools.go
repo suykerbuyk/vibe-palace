@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -452,6 +453,16 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		var p captureSessionParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		// Refuse a project the vault has not initialised (or that departed)
+		// BEFORE anything is minted or archived: the writers below would each
+		// refuse it anyway (projectdir), and a refusal halfway through leaves an
+		// archive with no note. The hook skips the same project (hook gate 2c),
+		// so nothing captures it until `vp init` has run.
+		if p.Project != "" {
+			if err := projectdir.RefuseUninitialisedDirAbs(vault.Root, filepath.Join(vault.Root, "Projects", p.Project)); err != nil {
+				return nil, err
+			}
 		}
 
 		sp := capture.SessionParams{
