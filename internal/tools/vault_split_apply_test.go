@@ -536,6 +536,10 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 	// Each slug's embed cache in the new layout, outside both of its trees.
 	writeSplitFile(t, root, "palace/.local/embed-cache/alpha/d1.vec", "cache")
 	writeSplitFile(t, root, "palace/.local/embed-cache/beta/d1.vec", "cache")
+	// And each slug's import marker, also outside both trees: left behind, it
+	// would be read by a slug later reused on this host.
+	writeSplitFile(t, root, "palace/.local/imports/alpha/imported-sessions.jsonl", "{}\n")
+	writeSplitFile(t, root, "palace/.local/imports/beta/imported-sessions.jsonl", "{}\n")
 	dest := splitDest(t)
 	p := splitPlannedParams(t, root, dest, "alpha")
 
@@ -559,7 +563,7 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 
 	// The allow-listed trees are gone, root and all — the slug's embed cache
 	// included, or a slug reused on this host would be served its old vectors.
-	for _, rel := range []string{"palace/alpha", "Projects/alpha", "palace/.local/embed-cache/alpha"} {
+	for _, rel := range []string{"palace/alpha", "Projects/alpha", "palace/.local/embed-cache/alpha", "palace/.local/imports/alpha"} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
 			t.Errorf("%s must be gone after purge (stat err: %v)", rel, err)
 		}
@@ -576,6 +580,9 @@ func TestVaultSplitPurge_RemovesSourceTreesAfterVerify(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "palace", ".local", "embed-cache", "beta", "d1.vec")); err != nil {
 		t.Errorf("purge must not touch another slug's embed cache: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "palace", ".local", "imports", "beta", "imported-sessions.jsonl")); err != nil {
+		t.Errorf("purge must not touch another slug's import marker: %v", err)
 	}
 
 	// The destination still holds everything.

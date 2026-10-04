@@ -70,6 +70,7 @@ func purgeVault(t *testing.T) string {
 	for i := 0; i < 2000; i++ {
 		writeSplitFile(t, root, fmt.Sprintf("palace/.local/embed-cache/alpha/v%04d.vec", i), "v")
 	}
+	writeSplitFile(t, root, "palace/.local/imports/alpha/imported-sessions.jsonl", "{}\n")
 	pgit(t, root, "init", "-q", "-b", "main")
 	pgit(t, root, "config", "user.name", "t")
 	pgit(t, root, "config", "user.email", "t@example.invalid")
@@ -211,7 +212,7 @@ func TestPurgeCommitsItsWholeResultInOneCommit(t *testing.T) {
 	if left, _ := res["cleanup_left"].([]any); len(left) != 0 {
 		t.Errorf("cleanup_left = %v, want nothing left", left)
 	}
-	for _, gone := range []string{"Projects/alpha", "palace/alpha", "Projects/orch", "palace/.local/embed-cache/alpha"} {
+	for _, gone := range []string{"Projects/alpha", "palace/alpha", "Projects/orch", "palace/.local/embed-cache/alpha", "palace/.local/imports/alpha"} {
 		if _, err := os.Lstat(filepath.Join(root, gone)); err == nil {
 			t.Errorf("%s survived the purge", gone)
 		}
