@@ -1,0 +1,239 @@
+{
+  "date": "2026-05-13T15:04:05Z",
+  "runs": [
+    {
+      "project": "alpha",
+      "source_ref": "sess-golden",
+      "chunks": [
+        {
+          "wing": "alpha",
+          "room": "devops",
+          "hall": "decisions",
+          "chunk_index": 0,
+          "content": "## Human\n\nWe need to decide how the PostgreSQL migration runner handles failures in\nproduction. Alice Chen said the deploy pipeline on Kubernetes keeps timing out\nwhen a migration holds a lock on the users table.\n## Assistant\n\nI recommend wrapping each migration in a transaction. Alice Chen decided to use pgx as\nthe driver, and the runner depends on pgx too. Bob Martinez joined the platform\nteam last week and works on the staging cluster. We decided to use pgx as\nthe driver because it has connection pooling built in, and Redis stays the\ncache for session tokens. The migrations table is updated only after a commit,\nso a failed migration has no effect. Bob Martinez maintains the Terraform\nmodules for the staging cluster and will review the rollout plan on Monday.",
+          "drawer_id": "d5d50277",
+          "source_ref": "sess-golden",
+          "filed_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "wing": "alpha",
+          "room": "devops",
+          "hall": "decisions",
+          "chunk_index": 1,
+          "content": "maintains the Terraform\nmodules for the staging cluster and will review the rollout plan on Monday.\n## Human\n\nWhat about tests? The integration tests run against Docker containers in CI,\nand GitHub Actions caches the Go module downloads between runs.\n## Assistant\n\nEach migration gets an up and a down file, and the CI job applies every up\nmigration, then every down migration, against a fresh PostgreSQL container.\nWe should also benchmark the runner with ten thousand migrations, because the\nversion table scan is linear today. Alice Chen agreed to own the benchmark and\nto report the numbers in the weekly architecture review.",
+          "drawer_id": "17fffbd5",
+          "source_ref": "sess-golden",
+          "filed_at": "2026-05-13T15:04:05Z"
+        }
+      ],
+      "entities": [
+        {
+          "id": "person-alice-chen",
+          "name": "Alice Chen",
+          "type": "person",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "person-bob-martinez",
+          "name": "Bob Martinez",
+          "type": "person",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-ci",
+          "name": "CI",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-postgresql",
+          "name": "PostgreSQL",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-the",
+          "name": "the",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        }
+      ],
+      "triples": [
+        {
+          "subject": "Alice Chen",
+          "predicate": "decided",
+          "object": "pgx",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.8
+        },
+        {
+          "subject": "Alice Chen",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 1
+        },
+        {
+          "subject": "Bob Martinez",
+          "predicate": "member_of",
+          "object": "platform",
+          "valid_from": "2026-05-13",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.7
+        },
+        {
+          "subject": "Bob Martinez",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.3
+        },
+        {
+          "subject": "CI",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.5
+        },
+        {
+          "subject": "PostgreSQL",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.8
+        },
+        {
+          "subject": "the",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "project": "beta",
+      "source_ref": "sess-golden",
+      "chunks": [
+        {
+          "wing": "beta",
+          "room": "devops",
+          "hall": "decisions",
+          "chunk_index": 0,
+          "content": "## Human\n\nWe need to decide how the PostgreSQL migration runner handles failures in\nproduction. Alice Chen said the deploy pipeline on Kubernetes keeps timing out\nwhen a migration holds a lock on the users table.\n## Assistant\n\nI recommend wrapping each migration in a transaction. Alice Chen decided to use pgx as\nthe driver, and the runner depends on pgx too. Bob Martinez joined the platform\nteam last week and works on the staging cluster. We decided to use pgx as\nthe driver because it has connection pooling built in, and Redis stays the\ncache for session tokens. The migrations table is updated only after a commit,\nso a failed migration has no effect. Bob Martinez maintains the Terraform\nmodules for the staging cluster and will review the rollout plan on Monday.",
+          "drawer_id": "adab7fcd",
+          "source_ref": "sess-golden",
+          "filed_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "wing": "beta",
+          "room": "devops",
+          "hall": "decisions",
+          "chunk_index": 1,
+          "content": "maintains the Terraform\nmodules for the staging cluster and will review the rollout plan on Monday.\n## Human\n\nWhat about tests? The integration tests run against Docker containers in CI,\nand GitHub Actions caches the Go module downloads between runs.\n## Assistant\n\nEach migration gets an up and a down file, and the CI job applies every up\nmigration, then every down migration, against a fresh PostgreSQL container.\nWe should also benchmark the runner with ten thousand migrations, because the\nversion table scan is linear today. Alice Chen agreed to own the benchmark and\nto report the numbers in the weekly architecture review.",
+          "drawer_id": "8d1b3aa0",
+          "source_ref": "sess-golden",
+          "filed_at": "2026-05-13T15:04:05Z"
+        }
+      ],
+      "entities": [
+        {
+          "id": "person-alice-chen",
+          "name": "Alice Chen",
+          "type": "person",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "person-bob-martinez",
+          "name": "Bob Martinez",
+          "type": "person",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-ci",
+          "name": "CI",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-postgresql",
+          "name": "PostgreSQL",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        },
+        {
+          "id": "tool-the",
+          "name": "the",
+          "type": "tool",
+          "created_at": "2026-05-13T15:04:05Z"
+        }
+      ],
+      "triples": [
+        {
+          "subject": "Alice Chen",
+          "predicate": "decided",
+          "object": "pgx",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.8
+        },
+        {
+          "subject": "Alice Chen",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 1
+        },
+        {
+          "subject": "Bob Martinez",
+          "predicate": "member_of",
+          "object": "platform",
+          "valid_from": "2026-05-13",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.7
+        },
+        {
+          "subject": "Bob Martinez",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.3
+        },
+        {
+          "subject": "CI",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.5
+        },
+        {
+          "subject": "PostgreSQL",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.8
+        },
+        {
+          "subject": "the",
+          "predicate": "mentioned_in",
+          "object": "sess-golden",
+          "extracted_at": "2026-05-13T15:04:05Z",
+          "source_session": "sess-golden",
+          "confidence": 0.5
+        }
+      ]
+    }
+  ]
+}

@@ -58,6 +58,11 @@ func NewIndexer(vault *storage.Vault, engine *search.Engine, emb embedder.Embedd
 	}
 }
 
+// indexerNow is IndexTranscript's one clock read, a seam so the golden
+// fixture of its output (internal/palace/testdata/prepare_golden.json) can be
+// captured with a pinned date.
+var indexerNow = time.Now
+
 // IndexTranscript chunks a raw transcript, classifies each chunk, embeds them
 // in batch, stores drawers, indexes vectors, and optionally extracts entities.
 // Returns IndexStats with per-call counts of newly-written artifacts; dedup
@@ -75,7 +80,7 @@ func (idx *Indexer) IndexTranscript(ctx context.Context, sessionID, project, tra
 	}
 
 	wing := palace.DetectWing(project, "")
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := indexerNow().UTC().Format(time.RFC3339)
 
 	// Build drawers and collect texts for batch embedding.
 	type drawerLoc struct {
