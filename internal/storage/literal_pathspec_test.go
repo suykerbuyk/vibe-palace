@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -71,8 +72,9 @@ func TestCommitAndPushPathsCommitsADeletionLiterally(t *testing.T) {
 			writeFile(t, dir, tc.named, "named\n")
 			gitRun(t, dir, "add", "-A")
 			gitRun(t, dir, "commit", "-q", "-m", "seed")
-			gitRun(t, dir, "--literal-pathspecs", "rm", "-q", "--", tc.named)
-			gitRun(t, dir, "reset", "-q")
+			if err := os.Remove(filepath.Join(dir, tc.named)); err != nil {
+				t.Fatal(err)
+			}
 			writeFile(t, dir, tc.decoy, "nobody named me\n")
 			if _, err := CommitAndPushPaths(dir, "probe", []string{tc.named}, false); err != nil {
 				t.Fatal(err)
