@@ -113,6 +113,12 @@ import "os"
 
 func mk() { _ = os.MkdirAll("x", 0o755) }
 `, []string{"raw-sink archive.mk"}},
+		{"a new os.Mkdir in a vault writer", "hook", `package hook
+
+import "os"
+
+func mk() { _ = os.Mkdir("x", 0o755) }
+`, []string{"raw-sink hook.mk"}},
 		{"EnsureDir inside storage", "storage", cpStorage + `
 func writeIt() { _ = EnsureDir("x") }
 `, []string{"storage-ensuredir storage.writeIt"}},

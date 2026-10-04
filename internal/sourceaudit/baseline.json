@@ -65,6 +65,10 @@
       "reason": "NO PROJECT CREATED: the KG filename migration renames files inside an existing palace/<p>/kg/ through vaultfs.RenameNoLock; a rename stamps nothing. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
     {
+      "id": "creating-project-owner raw-sink storage.mergeLegacyEmbedCache",
+      "reason": "NOT A PROJECT TREE: host-local palace/.local/embed-cache/<slug>, the target migrateLegacyEmbedCache made; os.Mkdir recreates it when a concurrent reap removed it. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+    },
+    {
       "id": "creating-project-owner raw-sink storage.migrateLegacyEmbedCache",
       "reason": "NOT A PROJECT TREE: host-local palace/.local/embed-cache. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },

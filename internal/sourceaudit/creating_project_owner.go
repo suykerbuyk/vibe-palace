@@ -32,8 +32,9 @@ import (
 //     unqualified inside it or under a dot import of it) outside
 //     creatingProjectOwners. This part has no
 //     baseline: a new owner is added here, in review.
-//  2. Every function that calls vaultfs.RenameNoLock, or os.MkdirAll inside a
-//     package that writes vault project trees (rawSinkPackages). Each allowed
+//  2. Every function that calls vaultfs.RenameNoLock, or os.MkdirAll or
+//     os.Mkdir inside a package that writes vault project trees
+//     (rawSinkPackages). Each allowed
 //     caller is a baseline entry naming why it may write past the gate (a
 //     creator, a rename inside a tree that already exists, or a path that is
 //     not a project tree at all). A new caller therefore fails until someone
@@ -55,7 +56,8 @@ var creatingProjectOwners = map[string]bool{
 	"vaultfs.Create":                                 true, // forwards vaultfs.CreatingProject to atomicfile
 }
 
-// rawSinkPackages are the packages whose os.MkdirAll calls part 2 pins.
+// rawSinkPackages are the packages whose os.MkdirAll and os.Mkdir calls part 2
+// pins.
 var rawSinkPackages = map[string]bool{
 	"storage": true, "vaultfs": true, "archive": true, "reconcile": true, "migrate": true,
 	"absorb": true, "tools": true, "memory": true, "hook": true, "commands": true, "palace": true,
@@ -118,8 +120,8 @@ func creatingProjectOwner(files []file) []Finding {
 						}
 					case owner == "vaultfs" && x.Sel.Name == "RenameNoLock":
 						sinkHits[scope] = hit{pos(), "vaultfs.RenameNoLock"}
-					case owner == "os" && x.Sel.Name == "MkdirAll" && rawSinkPackages[pkg]:
-						sinkHits[scope] = hit{pos(), "os.MkdirAll"}
+					case owner == "os" && (x.Sel.Name == "MkdirAll" || x.Sel.Name == "Mkdir") && rawSinkPackages[pkg]:
+						sinkHits[scope] = hit{pos(), "os." + x.Sel.Name}
 					}
 				case *ast.CallExpr:
 					id, ok := x.Fun.(*ast.Ident)
