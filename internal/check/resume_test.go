@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // historyTable renders a `## Project History` section with n data rows.
@@ -657,6 +658,7 @@ func TestCountSectionTableRowsRealFenceStillHidesRows(t *testing.T) {
 // comment rather than leave it stale a second time.
 func TestTypedResumeWriteIgnoresTheCap(t *testing.T) {
 	root := t.TempDir()
+	testutil.InitProject(t, root, "fat")
 	vault := &storage.Vault{Root: root}
 
 	over := "# Over cap\n\n" + strings.Repeat("x", ResumeMaxBytes+1)

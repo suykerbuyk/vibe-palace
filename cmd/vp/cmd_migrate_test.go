@@ -20,6 +20,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/migrate"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestMigrateVibeVaultBadFlags(t *testing.T) {
@@ -579,9 +580,9 @@ func TestMigrateMemPalaceDryRunBuildsNoEmbedder(t *testing.T) {
 // --project must.
 func mkMigrateProject(t *testing.T, vaultDir, project string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", project), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Initialised, not a bare directory: a bare Projects/<p> is a phantom,
+	// which the write primitives refuse.
+	testutil.InitProject(t, vaultDir, project)
 }
 
 // TestMigrateMemPalaceRefusesAnUnknownProject: --project naming a project the

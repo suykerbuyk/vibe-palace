@@ -122,7 +122,7 @@ func TestIntegration_HandshakeDoesNotConstructEmbedder(t *testing.T) {
 	// NON-VACUITY: the count is 0 above because nothing needed a vector, not
 	// because the counter is dead. The first search must force construction —
 	// exactly once — and it must actually work.
-	h.Seed(t, testinfra.WithDrawer("proj", "dev", "go", "goroutines are cheap", "facts", "2026-04-01T10:00:00Z"))
+	h.Seed(t, testinfra.WithProject("proj"), testinfra.WithDrawer("proj", "dev", "go", "goroutines are cheap", "facts", "2026-04-01T10:00:00Z"))
 
 	h.callTool(t, "vp_search", map[string]any{
 		"project": "proj",
@@ -182,6 +182,7 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 
 		// Drawers on disk, and NOTHING else. No Rebuild, no IndexDrawer(s).
 		h.Seed(t,
+			testinfra.WithProject("proj"),
 			testinfra.WithDrawer("proj", "dev", "go", goContent, "facts", "2026-04-01T10:00:00Z"),
 			testinfra.WithDrawer("proj", "cooking", "italian", pastaContent, "facts", "2026-04-01T10:00:00Z"),
 		)
@@ -239,6 +240,8 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		h.initMCP(t)
 
 		h.Seed(t,
+			testinfra.WithProject("alpha"),
+			testinfra.WithProject("beta"),
 			testinfra.WithDrawer("alpha", "dev", "go", goContent, "facts", "2026-04-01T10:00:00Z"),
 			testinfra.WithDrawer("beta", "cooking", "italian", pastaContent, "facts", "2026-04-01T10:00:00Z"),
 		)

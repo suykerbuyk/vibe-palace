@@ -59,6 +59,7 @@ const fakeTranscript = `{"type":"permission-mode","permissionMode":"default","se
 
 func TestRun_HappyPath(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 
@@ -125,6 +126,7 @@ func TestRun_HappyPath(t *testing.T) {
 // a refactor that drops it would strand every short session silently.
 func TestRun_SessionEndWithNoPriorStopLinksInline(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -190,6 +192,7 @@ func TestRun_SessionEndWithNoPriorStopLinksInline(t *testing.T) {
 
 func TestRun_ClaimedSkip(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -262,6 +265,7 @@ func TestRun_MissingCWD(t *testing.T) {
 
 func TestRun_ArchiveFailureNonFatal(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -314,6 +318,7 @@ func TestRun_EnrichmentEnabled(t *testing.T) {
 	t.Setenv("VP_TEST_HOOK_ENRICH_KEY", "sk-hook-test")
 
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -415,6 +420,7 @@ func TestRun_SessionEndDrainsQueuedEnrichmentFromBracketedProjectPath(t *testing
 	t.Setenv("VP_TEST_HOOK_BRACKET_ENRICH_KEY", "sk-hook-bracket-test")
 
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	// The bracketed segment is the whole point: the enrichment-queue
 	// directory this test seeds is nested under it, exercising Bug 3's fix
 	// through the full SessionEnd entrypoint rather than a direct package
@@ -556,6 +562,7 @@ func fakeClaudeProject(t *testing.T) (transcriptPath, nativeDir string) {
 
 func TestRun_SessionEndHarvests(t *testing.T) {
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "vibe-palace")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -616,6 +623,7 @@ func TestRun_PreCompactIsHarvestNoop(t *testing.T) {
 func testHarvestNoop(t *testing.T, event string) {
 	t.Helper()
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "vibe-palace")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -654,6 +662,7 @@ func testHarvestNoop(t *testing.T, event string) {
 // "preserve now" events (SessionEnd / PreCompact), never on Stop.
 func TestRun_StopDoesNotArchive(t *testing.T) {
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "vibe-palace")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -686,6 +695,7 @@ func TestRun_StopDoesNotArchive(t *testing.T) {
 // log of fix/revert subjects) and must not friction-score the transcript.
 func TestRun_StopAutoCaptureHonestAndUnscored(t *testing.T) {
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -763,6 +773,7 @@ func TestRun_StopAutoCaptureHonestAndUnscored(t *testing.T) {
 // pre-compaction snapshot), so the Stop exclusion did not over-narrow.
 func TestRun_PreCompactArchives(t *testing.T) {
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "vibe-palace")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -802,6 +813,7 @@ func countMD(t *testing.T, dir string) int {
 
 func TestRun_ClaimDecoupling_ArchiveAndHarvestRunWhenClaimed(t *testing.T) {
 	vaultRoot := newGitVault(t)
+	testutil.InitProject(t, vaultRoot, "vibe-palace")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -957,6 +969,7 @@ func initGitRepo(t *testing.T, dir, msg string) {
 // heart of it — a blocking posture here does not fail this test, it hangs it.
 func TestRun_ArchiveManifestLockContentionIsNonFatal(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")

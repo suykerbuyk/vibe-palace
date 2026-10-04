@@ -168,7 +168,7 @@ func TestMoveRetireCancelChainNeverReachesDoneCancelledPair(t *testing.T) {
 
 // Over-refusal control: the ordinary paths, with nothing in the way, still work.
 func TestOrdinaryRetireCancelMoveStillWork(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "dst")
 	seedTaskRaw(t, v, "p", "", "r", "R")
 	seedTaskRaw(t, v, "p", "", "c", "C")
 	seedTaskRaw(t, v, "src", "", "m", "M")
@@ -267,7 +267,7 @@ func TestUnreadableArchiveDirFailsClosed(t *testing.T) {
 // land an active x beside it, and retiring it there then created done/x
 // beside cancelled/x. The move back is now refused and changes nothing.
 func TestMoveBackOntoOwnTombstoneIsRefused(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "p", "q")
 	seedTaskRaw(t, v, "p", "", "x", "TASK")
 	if err := os.MkdirAll(filepath.Join(v.Root, "Projects/q/tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestConcurrentRetireAndCancelArchiveOnceWithoutMisdiagnosis(t *testing.T) {
 // as one, naming a project called "redis". Only a file carrying tombstoneMarker,
 // the sentence TombstoneSpec writes, gets the tombstone wording.
 func TestCancelledTaskTitledMovedToIsNotCalledATombstone(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "p")
 	if err := v.CreateTask("p", TaskSpec{Slug: "cache-layer", Title: "Moved to redis", Priority: "low",
 		Content: "Plan: move the cache layer to redis, measure, then retire memcached."}); err != nil {
 		t.Fatal(err)

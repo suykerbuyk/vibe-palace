@@ -59,6 +59,7 @@ func TestIntegrationSearchSemanticRanking(t *testing.T) {
 			SourceType: "manual",
 			FiledAt:    "2026-04-07T10:00:00Z",
 		}
+		testutil.InitProject(t, vault.Root, "proj")
 		if err := vault.AppendDrawer("proj", d.wing, d.room, dr); err != nil {
 			t.Fatal(err)
 		}
@@ -128,6 +129,7 @@ func TestIntegrationRebuildAndCache(t *testing.T) {
 		SourceType: "manual",
 		FiledAt:    "2026-04-07T10:00:00Z",
 	}
+	testutil.InitProject(t, vault.Root, "proj")
 	if err := vault.AppendDrawer("proj", "wing-a", "room-1", dr); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +188,7 @@ func TestIntegrationIndexDrawerAndSearch(t *testing.T) {
 		SourceType: "session",
 		FiledAt:    "2026-04-07T10:00:00Z",
 	}
+	testutil.InitProject(t, vault.Root, "proj")
 	if err := vault.AppendDrawer("proj", "infra", "k8s", dr); err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +241,7 @@ func TestIntegrationStructuralBoostsWithRealEmbeddings(t *testing.T) {
 			SourceType: "manual",
 			FiledAt:    "2026-04-07T10:00:00Z",
 		}
+		testutil.InitProject(t, vault.Root, "proj")
 		if err := vault.AppendDrawer("proj", wing, "room-1", dr); err != nil {
 			t.Fatal(err)
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // fakeTranscript returns minimal Claude Code JSONL with the given session ID.
@@ -72,10 +73,12 @@ func initGitRepo(t *testing.T, dir string) {
 	}
 }
 
-// prepareVaultProject creates the project directory structure needed by
+// prepareVaultProject initialises the project (the vault refuses writes into
+// an uninitialised one) and creates the directory structure needed by
 // archive.Create and storage.WriteSession.
 func prepareVaultProject(t *testing.T, vaultRoot, slug string) {
 	t.Helper()
+	testutil.InitProject(t, vaultRoot, slug)
 	for _, sub := range []string{"sessions", "transcripts"} {
 		dir := filepath.Join(vaultRoot, "Projects", slug, sub)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // Archiving is rewrite-then-rename in storage.moveTask (adopted 2026-09-01).
@@ -33,6 +34,7 @@ func TestManageTaskArchiveEndToEndPlacementAndStamp(t *testing.T) {
 	} {
 		t.Run(tc.action, func(t *testing.T) {
 			vault := storage.NewVault(t.TempDir())
+			testutil.InitProject(t, vault.Root, "test-proj")
 			// The body carries NO heading of its own: create emits the
 			// conventional first H2 itself, and a body repeating it is refused
 			// (validateTaskBody's conventional-heading arm). This fixture used

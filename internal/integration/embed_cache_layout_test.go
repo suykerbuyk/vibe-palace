@@ -22,6 +22,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
@@ -57,6 +58,18 @@ func ecLegacyVector(t *testing.T, h *testHarness, project, id, text string) []by
 	}
 	ecWrite(t, h.Vault.Root, "palace/"+project+"/.local/embed-cache/"+id+".vec", string(data))
 	return data
+}
+
+// ecPalaceOnlyDrawer seeds one drawer for project and leaves palace/<project>/
+// with no Projects/<project>/ tree: the project is initialised for the write,
+// then its Projects/ tree is removed raw.
+func ecPalaceOnlyDrawer(t *testing.T, h *testHarness, project, content, filedAt string, out *storage.Drawer) {
+	t.Helper()
+	testutil.InitProject(t, h.Vault.Root, project)
+	h.Seed(t, testinfra.WithDrawerOut(project, "general", "general", content, "facts", filedAt, out))
+	if err := os.RemoveAll(filepath.Join(h.Vault.Root, "Projects", project)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // ecNote writes a session note in the shape the note corpus indexes.
@@ -108,6 +121,7 @@ func TestIntegrationEmbedCacheLivesOutsideProjectTrees(t *testing.T) {
 	// notes-only project: that is the case it used to miss. It enumerates every
 	// project now, so it covers the notes-only one on every host — not only
 	// where someone searched it directly first.
+	h.seedProject(t, "withstore")
 	h.Seed(t, testinfra.WithDrawer("withstore", "general", "general", "unrelated widget inventory", "facts", "2026-09-10T10:00:00Z"))
 	if h.Engine.HasIndex("notesonly") {
 		t.Fatal("precondition: the engine must not have indexed notesonly yet")
@@ -206,8 +220,12 @@ func TestIntegrationPulledDeletionLeavesNoHusk(t *testing.T) {
 	// Host B: the harness root, with the operator's ignore shape.
 	vsGit(t, root, "init", "-q", "-b", "main")
 	ecWrite(t, root, ".gitignore", "palace/.local/\npalace/*/.local/\n.vibe-palace/\n")
+	// The incident's stub was a palace store with no Projects/ tree. No writer
+	// makes that shape any more (projectdir gate), so the drawer is seeded into
+	// an initialised project and Projects/stub is then removed raw, leaving the
+	// shape an older vault holds.
 	var stub storage.Drawer
-	h.Seed(t, testinfra.WithDrawerOut("stub", "general", "general", "stub drawer about pumps", "facts", "2026-09-09T10:00:00Z", &stub))
+	ecPalaceOnlyDrawer(t, h, "stub", "stub drawer about pumps", "2026-09-09T10:00:00Z", &stub)
 	// A keeper, so the orphan reaper's zero-projects guard does not decline.
 	ecWrite(t, root, "Projects/keep/resume.md", "# keep\n")
 	ecGit(t, root, "add", "-A")
@@ -273,7 +291,7 @@ func TestIntegrationPulledDeletionLeavesNoHusk(t *testing.T) {
 
 	// --- New-layout leg -----------------------------------------------------
 	var stub2 storage.Drawer
-	h.Seed(t, testinfra.WithDrawerOut("stub2", "general", "general", "stub2 drawer about valves", "facts", "2026-09-10T10:00:00Z", &stub2))
+	ecPalaceOnlyDrawer(t, h, "stub2", "stub2 drawer about valves", "2026-09-10T10:00:00Z", &stub2)
 	ecGit(t, root, "add", "-A")
 	ecGit(t, root, "commit", "-q", "-m", "add stub2")
 	ecGit(t, root, "push", "-q")
@@ -310,8 +328,8 @@ func TestIntegrationConcurrentSweepsConverge(t *testing.T) {
 	want := map[string][]byte{}
 	for _, p := range []string{"real1", "real2"} {
 		var d storage.Drawer
-		h.Seed(t, testinfra.WithDrawerOut(p, "general", "general", p+" drawer about compressors", "facts", "2026-09-10T10:00:00Z", &d))
 		h.seedProject(t, p)
+		h.Seed(t, testinfra.WithDrawerOut(p, "general", "general", p+" drawer about compressors", "facts", "2026-09-10T10:00:00Z", &d))
 		want["palace/.local/embed-cache/"+p+"/"+d.ID+".vec"] = ecLegacyVector(t, h, p, d.ID, d.Content)
 	}
 	// husk1 is mechanism 2's phantom: a notes-only project whose vectors an old

@@ -25,6 +25,7 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 
 	// Two identical drawers in different wings.
 	content := "Machine learning model training with gradient descent optimization"
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "target-wing", "room", content, "facts", "2026-04-01T10:00:00Z"),
 		testinfra.WithDrawer("proj", "other-wing", "room", content, "facts", "2026-04-01T10:00:00Z"),
@@ -61,6 +62,7 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 		c.BoostRoom = 0.0
 	})
 
+	h2.seedProject(t, "proj")
 	h2.Seed(t,
 		testinfra.WithDrawer("proj", "wing-a", "room", content, "facts", "2026-04-01T10:00:00Z"),
 		testinfra.WithDrawer("proj", "wing-b", "room", content, "facts", "2026-04-01T10:00:00Z"),
@@ -98,6 +100,7 @@ func TestIntegrationConfigChunkSize(t *testing.T) {
 	// Small chunks: 200 chars → expect many chunks.
 	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 200\n", "")
 	h1 := newHarness(t, false)
+	h1.seedProject(t, "proj")
 	if _, err := h1.Indexer.IndexTranscript(context.Background(), "s1", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +109,7 @@ func TestIntegrationConfigChunkSize(t *testing.T) {
 	// Large chunks: 1000 chars → expect fewer chunks.
 	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 1000\n", "")
 	h2 := newHarness(t, false)
+	h2.seedProject(t, "proj")
 	if _, err := h2.Indexer.IndexTranscript(context.Background(), "s2", "proj", transcript); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +135,7 @@ func TestIntegrationConfigSearchLimit(t *testing.T) {
 		opts = append(opts, testinfra.WithDrawer("proj", "wing", "room",
 			"unique content item number "+string(rune('A'+i)), "facts", "2026-04-01T10:00:00Z"))
 	}
+	h.seedProject(t, "proj")
 	h.Seed(t, opts...)
 
 	if _, err := h.Engine.Rebuild(ctx, "proj"); err != nil {

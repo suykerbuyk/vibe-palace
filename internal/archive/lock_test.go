@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -53,6 +54,7 @@ func seedForLock(t *testing.T, sessionID string, body []byte) (vaultRoot, srcPat
 	t.Helper()
 	tmp := t.TempDir()
 	vaultRoot = filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vaultRoot, "demo")
 	srcPath = filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(srcPath, body, 0o644); err != nil {
 		t.Fatal(err)

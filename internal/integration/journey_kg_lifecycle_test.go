@@ -23,6 +23,7 @@ func TestJourney_KG_Lifecycle(t *testing.T) {
 	h.registerAllTools(t)
 
 	const project = "journey-kg"
+	h.seedProject(t, project)
 
 	// Deterministic triples.
 	triples := []struct {

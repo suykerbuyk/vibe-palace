@@ -18,9 +18,9 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-func testEngine(t *testing.T) (*search.Engine, *storage.Vault) {
+func testEngine(t *testing.T, slugs ...string) (*search.Engine, *storage.Vault) {
 	t.Helper()
-	v := testVault(t)
+	v := testVault(t, slugs...)
 	cfg := storage.Config{
 		SearchDefaultLimit: 10,
 		BoostWing:          0.12,
@@ -70,7 +70,7 @@ func TestRunSearchUnknownProjectExitCode(t *testing.T) {
 }
 
 func TestRunSearchWithResults(t *testing.T) {
-	eng, v := testEngine(t)
+	eng, v := testEngine(t, "test-proj")
 
 	// Add content to the vault.
 	v.AppendDrawer("test-proj", "code", "auth", storage.Drawer{
@@ -102,7 +102,7 @@ func TestRunSearchWithResults(t *testing.T) {
 }
 
 func TestRunSearchJSON(t *testing.T) {
-	eng, v := testEngine(t)
+	eng, v := testEngine(t, "test-proj")
 
 	v.AppendDrawer("test-proj", "code", "api", storage.Drawer{
 		Content:    "REST API endpoint for user management",
@@ -128,7 +128,7 @@ func TestRunSearchJSON(t *testing.T) {
 }
 
 func TestRunSearchLimit(t *testing.T) {
-	eng, v := testEngine(t)
+	eng, v := testEngine(t, "test-proj")
 
 	// Add several drawers.
 	for range 5 {
@@ -154,7 +154,7 @@ func TestRunSearchLimit(t *testing.T) {
 }
 
 func TestRunSearchWingFilter(t *testing.T) {
-	eng, v := testEngine(t)
+	eng, v := testEngine(t, "test-proj")
 
 	v.AppendDrawer("test-proj", "code", "api", storage.Drawer{
 		Content: "Code API content", Hall: "facts", SourceType: "session",

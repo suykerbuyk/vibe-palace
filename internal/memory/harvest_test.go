@@ -33,6 +33,7 @@ func newGitVault(t *testing.T) string {
 	gitRun(t, dir, "init", "-b", "main")
 	gitRun(t, dir, "config", "user.email", "test@example.com")
 	gitRun(t, dir, "config", "user.name", "Test User")
+	testutil.InitProject(t, dir, testProject)
 	return dir
 }
 
@@ -450,6 +451,7 @@ func TestHarvest_CommitLocalDowngrade(t *testing.T) {
 	gitRun(t, vaultRoot, "init", "-b", "main")
 	gitRun(t, vaultRoot, "config", "user.email", "test@example.com")
 	gitRun(t, vaultRoot, "config", "user.name", "Test User")
+	testutil.InitProject(t, vaultRoot, testProject)
 
 	nativeDir := filepath.Join(t.TempDir(), "memory")
 	if err := memorytestutil.WriteNativeMemoryFixture(nativeDir); err != nil {

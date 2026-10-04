@@ -92,6 +92,7 @@ max_tokens = 2048
 	// in the "mostly absent" state: only [meta], every overridable key never
 	// written.
 	v := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, v.Root, "proj")
 	cfgPath, err := storage.HostProjectConfigPath("proj")
 	if err != nil {
 		t.Fatal(err)

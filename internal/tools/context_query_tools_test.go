@@ -17,6 +17,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestGetWorkflow(t *testing.T) {
@@ -135,6 +136,7 @@ func TestGetResume(t *testing.T) {
 
 func TestUpdateResumeThenGet(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resolver := vpctx.NewResolver(vault.Root)
 
 	// Write a resume.
@@ -182,6 +184,7 @@ func onDiskSha(t *testing.T, path string) string {
 // a Phase-1 compare-and-set write keyed on it can never match.
 func TestGetResumeSha256MatchesDisk(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resolver := vpctx.NewResolver(vault.Root)
 
 	const body = "# Resume\n\nProject state for test-proj.\n"
@@ -268,6 +271,7 @@ func TestGetWorkflowSha256MatchesDisk(t *testing.T) {
 // yield a sha matching nothing on disk and would break every CAS write.
 func TestGetResumeSha256IsOfRawBytes(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resolver := vpctx.NewResolver(vault.Root)
 
 	const raw = "# Resume for {{PROJECT}}\n\nUnexpanded placeholder.\n"
@@ -324,6 +328,7 @@ func TestUpdateResumeValidation(t *testing.T) {
 // keyed on that sha, and the write lands.
 func TestUpdateResumeCASRoundTrip(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resolver := vpctx.NewResolver(vault.Root)
 
 	if err := vault.WriteResume("test-proj", "# Resume\nv1\n", ""); err != nil {
@@ -368,6 +373,7 @@ func TestUpdateResumeCASRoundTrip(t *testing.T) {
 // retry is mechanical.
 func TestUpdateResumeStaleShaIsMachineParseableError(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	if err := vault.WriteResume("test-proj", "# Resume\ncurrent\n", ""); err != nil {
 		t.Fatal(err)
@@ -500,6 +506,7 @@ func TestGetKnowledgeEmpty(t *testing.T) {
 
 func TestGetKnowledgePopulated(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	if err := vault.AddTriple("test-proj", storage.Triple{
 		Subject: "Go", Predicate: "uses", Object: "modules",
@@ -525,6 +532,7 @@ func TestGetKnowledgePopulated(t *testing.T) {
 
 func TestGetKnowledgeLimit(t *testing.T) {
 	vault := bornCurrentTestVault(t, t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	for i := range 5 {
 		if err := vault.AddTriple("test-proj", storage.Triple{

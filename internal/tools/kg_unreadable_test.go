@@ -13,6 +13,7 @@ import (
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // 🔴 THIS IS THE HALF THAT REACHES A USER.
@@ -39,6 +40,7 @@ func unreadableKGVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	v := bornCurrentTestVault(t, t.TempDir())
 	const project = "test-proj"
+	testutil.InitProject(t, v.Root, project)
 	if err := v.AddEntity(project, storage.Entity{
 		ID: "e0", Name: "n0", Type: "concept", CreatedAt: "2026-06-06T00:00:00Z",
 	}); err != nil {

@@ -11,11 +11,13 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func testVaultWithPalace(t *testing.T) *storage.Vault {
 	t.Helper()
 	v := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, v.Root, "proj")
 
 	// Seed: alpha has api, testing; beta has testing, data
 	drawers := []struct {
@@ -403,6 +405,7 @@ func TestFindTunnelsBasic(t *testing.T) {
 
 func TestFindTunnelsNoTunnels(t *testing.T) {
 	v := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, v.Root, "proj")
 	// Single wing — no tunnels possible.
 	d := storage.Drawer{Content: "c", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
 	if err := v.AppendDrawer("proj", "only-wing", "room-1", d); err != nil {

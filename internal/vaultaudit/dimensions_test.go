@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -1246,6 +1247,7 @@ func preambleArtifacts(findings []Finding) []string {
 func TestTaskPreamble_CreateTaskShapeIsNotFlagged(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
 	mkdirs(t, vault.Root, "Projects", "p")
+	testutil.InitProject(t, vault.Root, "p")
 	if err := vault.CreateTask("p", storage.TaskSpec{
 		Slug:     "born-clean",
 		Title:    "Born clean",

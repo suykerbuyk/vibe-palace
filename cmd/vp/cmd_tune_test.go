@@ -32,7 +32,7 @@ func TestRunTuneRooms_NoSamples(t *testing.T) {
 }
 
 func TestRunTuneRooms_Estimate(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{}
 
 	// Add some drawers so we have samples.
@@ -61,7 +61,7 @@ func TestRunTuneRooms_Estimate(t *testing.T) {
 }
 
 func TestRunTuneRooms_NoLLMConfig(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{}
 
 	d := storage.Drawer{
@@ -83,7 +83,7 @@ func TestRunTuneRooms_NoLLMConfig(t *testing.T) {
 }
 
 func TestRunTuneRooms_MissingAPIKey(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{
 		PalaceLLM: storage.LLMConfig{
 			Endpoint:  "http://localhost:1234",
@@ -111,7 +111,7 @@ func TestRunTuneRooms_MissingAPIKey(t *testing.T) {
 }
 
 func TestRunTuneRooms_Export(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Set up a mock LLM server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +166,7 @@ func TestRunTuneRooms_Export(t *testing.T) {
 }
 
 func TestRunTuneRooms_Verbose(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{
@@ -200,7 +200,7 @@ func TestRunTuneRooms_Verbose(t *testing.T) {
 }
 
 func TestRunTuneRooms_ApplyNoProposals(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Mock LLM agrees with everything.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +240,7 @@ func TestRunTuneRooms_Apply(t *testing.T) {
 	// lives beside the host's real global config. Without this the test writes
 	// into the developer's own ~/.config/vibe-palace/projects/.
 	initTestEnv(t, false)
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Create 4 general drawers with "test" keyword content.
 	for i := range 4 {
@@ -326,7 +326,7 @@ func TestRunTuneRooms_Apply(t *testing.T) {
 }
 
 func TestRunTuneRooms_WithUnmatchedFlags(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Add drawers with content that has no keywords for any room.
 	for i := range 4 {

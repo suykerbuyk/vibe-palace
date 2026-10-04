@@ -16,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
@@ -150,6 +151,7 @@ func TestMemoryHarvestCLIWritesTheBoundVault(t *testing.T) {
 // goes RED.
 func TestHookSessionEndHarvestsIntoTheBoundVault(t *testing.T) {
 	e := newBindingHostEnv(t)
+	testutil.InitProject(t, e.bound, "qa")
 	writeTestFile(t, filepath.Join(e.proj, ".vibe-palace.toml"), "[project]\nname = \"qa\"\n")
 	sessDir := filepath.Join(e.tmp, "claude", "projects", "qa")
 	transcript := filepath.Join(sessDir, "sess.jsonl")

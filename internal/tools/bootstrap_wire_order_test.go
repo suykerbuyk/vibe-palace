@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // hostInlineCutSpecimen is a MEASURED specimen, not a constant of the system:
@@ -52,6 +53,7 @@ const firstBulkKey = `"head_of_queue":`
 func cutBootstrapAtBulk(t *testing.T) (whole string, prefix string) {
 	t.Helper()
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug: "the-next-thing", Title: "The next thing", Content: "body", Priority: "high",
 	}); err != nil {
@@ -203,6 +205,7 @@ func TestBootstrapCompleteSentinelAlwaysEmitted(t *testing.T) {
 	}{
 		{"empty project, optional lists omitted", func(*testing.T, *storage.Vault) {}},
 		{"populated project, index lists present", func(t *testing.T, v *storage.Vault) {
+			testutil.InitProject(t, v.Root, "test-proj")
 			if err := v.CreateTask("test-proj", storage.TaskSpec{
 				Slug: "a-task", Title: "A task", Content: "body", Priority: "high",
 			}); err != nil {

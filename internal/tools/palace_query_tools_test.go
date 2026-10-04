@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // 🔴 vp_palace_query does NOT bump internal/surface.MCPSurfaceVersion, and the
@@ -64,6 +65,7 @@ const (
 func palaceQueryVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, pqProject)
 
 	seed := func(room string, ds ...storage.Drawer) {
 		t.Helper()
@@ -233,6 +235,7 @@ func TestPalaceQueryLimitApplied(t *testing.T) {
 // second come back in a stable order.
 func TestPalaceQuerySortsNewestFirstThenID(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "pq-proj")
 	tied := []storage.Drawer{
 		{Content: "tie one", SourceType: "decision", FiledAt: "2026-09-02T00:00:00Z"},
 		{Content: "tie two", SourceType: "decision", FiledAt: "2026-09-02T00:00:00Z"},
@@ -260,6 +263,7 @@ func TestPalaceQuerySortsNewestFirstThenID(t *testing.T) {
 // "2026-09-08T14:23:00Z" > "2026-09-08" lexically.
 func TestPalaceQueryDateToIncludesSameDay(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "pq-proj")
 	if _, err := vault.AppendDrawers(pqProject, pqProject, "decisions", []storage.Drawer{
 		{Content: "filed in the afternoon", SourceType: "decision", FiledAt: "2026-09-08T14:23:00Z"},
 	}); err != nil {

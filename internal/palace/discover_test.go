@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/llm"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestCollectDiscoveryCandidates(t *testing.T) {
@@ -547,6 +548,7 @@ func appendDrawer(t *testing.T, vault *storage.Vault, project, wing, room, conte
 		SourceType: "manual",
 		FiledAt:    "2026-04-10T10:00:00Z",
 	}
+	testutil.InitProject(t, vault.Root, project)
 	if err := vault.AppendDrawer(project, wing, room, d); err != nil {
 		t.Fatalf("AppendDrawer: %v", err)
 	}

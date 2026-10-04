@@ -13,6 +13,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestRuneSafeExcerpt exercises runeSafeExcerpt directly across its three
@@ -62,6 +63,7 @@ func readResourceCall(t *testing.T, resolver *vpctx.Resolver, vault *storage.Vau
 
 func TestReadResourceBasic(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "hello world body", Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +97,7 @@ func TestReadResourceBasic(t *testing.T) {
 
 func TestReadResourceOffsetPastEnd(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "T", Content: "short", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +121,7 @@ func TestReadResourceOffsetPastEnd(t *testing.T) {
 
 func TestReadResourceLimitLargerThanContent(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "T", Content: "body content here", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +174,7 @@ func TestReadResourceContentNotFound(t *testing.T) {
 // the requested limit — must be byte-identical to the source.
 func TestReadResourceMultibyteBoundary(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	// Build a body where em-dashes (— = 3 bytes, U+2014) straddle page edges.
 	var sb strings.Builder
 	for range 200 {
@@ -219,6 +224,7 @@ func TestReadResourceMultibyteBoundary(t *testing.T) {
 // must instead advance forward to emit the whole rune so the pager never stalls.
 func TestReadResourceSingleRuneLargerThanLimit(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	body := "—tail"
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "lead", Title: "L", Content: body, Priority: "low"}); err != nil {
 		t.Fatal(err)

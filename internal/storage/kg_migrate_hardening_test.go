@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -252,6 +253,7 @@ func TestApplyMigration_BothSideQueryableAndCountPreserved(t *testing.T) {
 func TestApplyMigration_AlreadyFlatRenamesZero(t *testing.T) {
 	root := t.TempDir()
 	v := NewVault(root)
+	testutil.InitProject(t, root, "proj")
 
 	// Seed already-current flat triples by using the real writer (AddTriple does
 	// not gate on the data format, so it works on a format-0 vault).

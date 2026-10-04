@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // transcriptsDirEntries lists the project's transcripts directory, tolerating
@@ -46,6 +47,7 @@ func transcriptsDirEntries(t *testing.T, vault *storage.Vault, project string) [
 // claim sentinel is written: a minted id is one no hook will ever query.
 func TestCaptureSessionInlineArchiveHookless(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "") // hook-less: nothing derivable
 
 	cwd := t.TempDir()
@@ -129,6 +131,7 @@ func TestCaptureSessionInlineArchiveHookless(t *testing.T) {
 // pair, no .bak) and update the note in place rather than duplicating it.
 func TestCaptureSessionInlineArchiveRetryConverges(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 
 	tool := CaptureSessionTool(vault, nil)
@@ -182,6 +185,7 @@ func TestCaptureSessionInlineArchiveRetryConverges(t *testing.T) {
 // is untouched, including the claim sentinel.
 func TestCaptureSessionInlineArchiveNoopOnDerivableHost(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "live-session-uuid")
 
 	cwd := t.TempDir()
@@ -228,6 +232,7 @@ func TestCaptureSessionInlineArchiveNoopOnDerivableHost(t *testing.T) {
 // transcript archives inline even when archive_transcript is omitted.
 func TestCaptureSessionInlineArchiveAutoOnDerivedGrok(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 	stubClientInfoHost(t, "grok")
 
@@ -277,6 +282,7 @@ func TestCaptureSessionInlineArchiveAutoOnDerivedGrok(t *testing.T) {
 // auto-on for derived hook-less hosts.
 func TestCaptureSessionInlineArchiveAutoOffUnknownHost(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 	// clientInfoHost defaults to "" → HostUnknown / HostSourceUnknown.
 
@@ -328,6 +334,7 @@ func TestCaptureSessionInlineArchiveAutoOffUnknownHost(t *testing.T) {
 // shape) when the flag is omitted — SessionEnd remains the authority.
 func TestCaptureSessionInlineArchiveAutoOffDerivedClaude(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 	stubClientInfoHost(t, "claude-code")
 
@@ -362,6 +369,7 @@ func TestCaptureSessionInlineArchiveAutoOffDerivedClaude(t *testing.T) {
 // signal (template pin / intentional path).
 func TestCaptureSessionInlineArchiveExplicitTrueAnyHost(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 	// Unknown host — no auto signal; explicit true must still force.
 	stubClientInfoHost(t, "")
@@ -391,6 +399,7 @@ func TestCaptureSessionInlineArchiveExplicitTrueAnyHost(t *testing.T) {
 // frontmatter does not pretend to link.
 func TestCaptureSessionInlineArchiveFailureStillWritesNote(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 
 	// Force archive.Create to fail: plant a regular FILE where the transcripts

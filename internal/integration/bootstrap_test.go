@@ -133,6 +133,7 @@ A vault-level custom command for testing.
 // vault are discoverable through the bootstrap tool's context.
 func TestIntegrationBootstrapWithSessions(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "test-proj")
 	root := h.Vault.Root
 
 	// Write a session using the storage API.

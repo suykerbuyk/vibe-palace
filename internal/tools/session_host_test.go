@@ -12,6 +12,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // stubClientInfoHost pins the handshake-derived host for the duration of a
@@ -113,6 +114,7 @@ func TestResolveCaptureHost(t *testing.T) {
 func captureAndReadMeta(t *testing.T, params string) storage.SessionMeta {
 	t.Helper()
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 	result, err := tool.Handler(context.Background(), json.RawMessage(params))
 	if err != nil {
@@ -181,6 +183,7 @@ func TestCaptureSessionHostUnknownRecorded(t *testing.T) {
 	stubHostSessionID(t, "")
 
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{
 		"project": "test-proj",

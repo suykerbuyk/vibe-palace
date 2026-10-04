@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -193,6 +194,7 @@ func TestEveryVaultWriterStamps(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			vault := t.TempDir()
 			v := NewVault(vault)
+			testutil.InitProject(t, vault, proj)
 			stampDir := tc.run(t, v, vault)
 			assertStamped(t, stampDir)
 		})

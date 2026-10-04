@@ -14,6 +14,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // harvestCLIFixture binds a vault that is its own repository with one commit,
@@ -29,6 +30,7 @@ func harvestCLIFixture(t *testing.T, gitLine string) (vault, cfgPath string) {
 	gitInVault(t, vault, "config", "user.name", "Test")
 	putVaultFile(t, vault, ".gitignore", strings.Join(storage.CanonicalGitignorePatterns, "\n")+"\n")
 	putVaultFile(t, vault, "Projects/harvp/README.md", "seed\n")
+	testutil.InitProject(t, vault, "harvp")
 	gitInVault(t, vault, "add", "-A")
 	gitInVault(t, vault, "commit", "-qm", "seed")
 

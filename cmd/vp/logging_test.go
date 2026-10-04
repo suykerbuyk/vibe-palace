@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
@@ -93,6 +94,9 @@ func TestHookLogsWarnToPayloadVault(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Initialised, or the hook skips the project (gate 2c) before the archive
+	// step whose failure this test logs.
+	testutil.InitProject(t, projectVault, "proj")
 	if err := os.WriteFile(
 		filepath.Join(projectDir, ".vibe-palace.toml"),
 		[]byte("vault_path = \""+projectVault+"\"\n"), 0o644,

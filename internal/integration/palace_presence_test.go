@@ -47,8 +47,8 @@ func TestIntegrationLocalOnlyPalaceDirIsNotAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A real store in both trees.
-	h.Seed(t, testinfra.WithDrawer("real", "general", "general", "a real drawer about widgets", "facts", "2026-09-10T10:00:00Z"))
 	h.seedProject(t, "real")
+	h.Seed(t, testinfra.WithDrawer("real", "general", "general", "a real drawer about widgets", "facts", "2026-09-10T10:00:00Z"))
 	// A notes-only project: history, no palace/ store.
 	write("Projects/notesonly/sessions/2026-09-10-aaaa0000-01.md",
 		"---\nproject: notesonly\n---\n\n# Session\n\nNotes about the gearbox rebuild.\n")

@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // seedMismatchedArchive writes a REAL claude-code archive and returns its session
@@ -35,6 +36,7 @@ import (
 func seedMismatchedArchive(t *testing.T, vault *storage.Vault) string {
 	t.Helper()
 	const sessionID = "adapter-mismatch-session"
+	testutil.InitProject(t, vault.Root, "test-proj")
 	srcPath := filepath.Join(t.TempDir(), "src.jsonl")
 	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)
@@ -230,6 +232,7 @@ func TestCaptureSessionClaimSurvivesTheErrorPath(t *testing.T) {
 // Claude Code, the majority host, must stay quiet.
 func TestCaptureSessionFailsHardWhenNoArchiveIsPossible(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")     // no derivable host session id
 	stubClientInfoHost(t, "Zed") // handshake-derived hook-less host
 
@@ -299,6 +302,7 @@ func TestCaptureSessionFailsHardWhenNoArchiveIsPossible(t *testing.T) {
 // unactionable and agents learn to skim it, which is precisely how 210 happened.
 func TestCaptureSessionQuietWhenTranscriptIsArchivedInline(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "")
 	stubClientInfoHost(t, "Zed")
 

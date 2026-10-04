@@ -50,6 +50,7 @@ func TestRefreshIndexRefusesProjectWithNothingToRefresh(t *testing.T) {
 func TestRefreshIndexReportsCountsForARealRebuild(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
+	h.seedProject(t, "counted")
 	h.Seed(t, testinfra.WithDrawer("counted", "facts", "general", "the drawer body", "facts", "2026-08-18T10:00:00Z"))
 
 	text, isErr := h.callToolRaw(t, "vp_refresh_index", map[string]any{

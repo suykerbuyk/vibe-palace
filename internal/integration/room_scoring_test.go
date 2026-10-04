@@ -87,6 +87,7 @@ credential validation and add permission checks.`,
 			h2.registerAllTools(t)
 
 			var result string
+			h2.seedProject(t, "score-test")
 			h2.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project":    "score-test",
 				"summary":    "Testing room scoring: " + tt.name,
@@ -182,6 +183,7 @@ Testing the output now.`,
 			h2.registerAllTools(t)
 
 			var result string
+			h2.seedProject(t, "override-test")
 			h2.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project":    "override-test",
 				"summary":    "Testing scoring overrides: " + tt.name,
@@ -228,6 +230,7 @@ func TestIntegrationDrawerIDStableAcrossRooms(t *testing.T) {
 
 	// Add the same content to two different rooms.
 	var d1, d2 storage.Drawer
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawerOut("proj", "wing-a", "testing", "shared content here", "facts", "2026-01-01T10:00:00Z", &d1),
 		testinfra.WithDrawerOut("proj", "wing-a", "debugging", "shared content here", "facts", "2026-01-01T10:00:00Z", &d2),

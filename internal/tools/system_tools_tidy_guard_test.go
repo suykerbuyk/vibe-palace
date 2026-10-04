@@ -22,6 +22,7 @@ import (
 func TestVaultTidy_DryRunReportsWouldRefuse(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	vault := storage.NewVault(root)
 	tool := VaultTidyTool(vault)
 	mustWrite(t, vault, "Projects/vibe-palace/sessions/2026-09-27.md", "session\n")

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestRun_ClaimWrittenDespitePeripheralLoss pins the claim sentinel to the
@@ -21,6 +23,7 @@ import (
 // silent `_ =` this work is replacing, which is why it gets its own test.
 func TestRun_ClaimWrittenDespitePeripheralLoss(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")
@@ -75,6 +78,7 @@ func TestRun_ClaimWrittenDespitePeripheralLoss(t *testing.T) {
 // one genuinely fatal error in the capture pipeline.
 func TestRun_CaptureFailureDoesNotError(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 	claimDir := filepath.Join(cwd, ".vibe-palace")

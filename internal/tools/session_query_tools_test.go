@@ -14,6 +14,7 @@ import (
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // seedSession writes a session file directly so tests don't depend on
@@ -77,6 +78,7 @@ func TestSearchSessionsSchema(t *testing.T) {
 
 func TestSearchSessionsAll(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -93,6 +95,7 @@ func TestSearchSessionsAll(t *testing.T) {
 
 func TestSearchSessionsQuery(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -112,6 +115,7 @@ func TestSearchSessionsQuery(t *testing.T) {
 
 func TestSearchSessionsDateRange(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -128,6 +132,7 @@ func TestSearchSessionsDateRange(t *testing.T) {
 
 func TestSearchSessionsFrictionFilter(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -147,6 +152,7 @@ func TestSearchSessionsFrictionFilter(t *testing.T) {
 
 func TestSearchSessionsTagFilter(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -166,6 +172,7 @@ func TestSearchSessionsTagFilter(t *testing.T) {
 
 func TestSearchSessionsLimit(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -182,6 +189,7 @@ func TestSearchSessionsLimit(t *testing.T) {
 
 func TestSearchSessionsNoResults(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -207,6 +215,7 @@ func TestSearchSessionsMissingProject(t *testing.T) {
 
 func TestSearchSessionsLimitClamping(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := SearchSessionsTool(vault)
 
@@ -236,6 +245,7 @@ func TestGetSessionDetailSchema(t *testing.T) {
 
 func TestGetSessionDetailBasic(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	id := seedSession(t, vault, "test-proj", storage.SessionMeta{
 		Date:          "2026-04-01",
 		Title:         "Implement chunking engine",
@@ -325,6 +335,7 @@ func TestGetProjectContextSchema(t *testing.T) {
 
 func TestGetProjectContextAllSections(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	resolver := vpctx.NewResolver(vault.Root)
 	tool := GetProjectContextTool(vault, resolver)
@@ -351,6 +362,7 @@ func TestGetProjectContextAllSections(t *testing.T) {
 
 func TestGetProjectContextSelectiveSections(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	resolver := vpctx.NewResolver(vault.Root)
 	tool := GetProjectContextTool(vault, resolver)
@@ -374,6 +386,7 @@ func TestGetProjectContextSelectiveSections(t *testing.T) {
 
 func TestGetProjectContextMaxSessions(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	resolver := vpctx.NewResolver(vault.Root)
 	tool := GetProjectContextTool(vault, resolver)
@@ -422,6 +435,7 @@ func TestGetProjectContextMissingProject(t *testing.T) {
 
 func TestGetProjectContextDeduplicatesThreads(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	// Two sessions with overlapping open threads.
 	seedSession(t, vault, "test-proj", storage.SessionMeta{
 		Date:        "2026-04-01",
@@ -464,6 +478,7 @@ func TestGetProjectContextDeduplicatesThreads(t *testing.T) {
 // history down with it.
 func TestGetProjectContextSkipsAMalformedSessionNote(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 
 	dir, err := vault.SessionDir("test-proj")
@@ -512,6 +527,7 @@ func TestGetProjectContextSkipsAMalformedSessionNote(t *testing.T) {
 // GetFrictionTrends ever grows a result struct, move the report into it.
 func TestGetProjectContextFrictionSkipsAMalformedSessionNote(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 
 	dir, err := vault.SessionDir("test-proj")
@@ -553,6 +569,7 @@ func TestGetEffectivenessSchema(t *testing.T) {
 
 func TestGetEffectivenessBasic(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := GetEffectivenessTool(vault)
 
@@ -604,6 +621,7 @@ func TestGetEffectivenessMissingProject(t *testing.T) {
 
 func TestGetEffectivenessWeeksClamping(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := GetEffectivenessTool(vault)
 
@@ -621,6 +639,7 @@ func TestGetEffectivenessWeeksClamping(t *testing.T) {
 
 func TestGetEffectivenessOutcomeScores(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 	tool := GetEffectivenessTool(vault)
 
@@ -663,6 +682,7 @@ func effectivenessRaw(t *testing.T, vault *storage.Vault, params map[string]any)
 
 func TestGetEffectivenessSections(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	seedTestSessions(t, vault)
 
 	t.Run("default_carries_both_keys", func(t *testing.T) {

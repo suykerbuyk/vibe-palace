@@ -14,10 +14,12 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/memorytestutil"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestMemoryWriteReadRoundTrip(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	wt := MemoryWriteTool(vault)
 	wp, _ := json.Marshal(memoryWriteParams{
@@ -60,6 +62,7 @@ func TestMemoryWriteReadRoundTrip(t *testing.T) {
 func TestMemoryWriteRoutesToMemoryDir(t *testing.T) {
 	root := t.TempDir()
 	vault := storage.NewVault(root)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	wt := MemoryWriteTool(vault)
 	wp, _ := json.Marshal(memoryWriteParams{
@@ -81,6 +84,7 @@ func TestMemoryWriteRoutesToMemoryDir(t *testing.T) {
 
 func TestMemoryListMetaOnly(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	wt := MemoryWriteTool(vault)
 	for _, rel := range []string{"a.md", "b.md"} {
 		wp, _ := json.Marshal(memoryWriteParams{
@@ -115,6 +119,7 @@ func TestMemoryListMetaOnly(t *testing.T) {
 
 func TestMemoryListLimit(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	wt := MemoryWriteTool(vault)
 	for _, rel := range []string{"a.md", "b.md", "c.md"} {
 		wp, _ := json.Marshal(memoryWriteParams{Project: "p", Rel: rel, Name: "n", Type: "project", Body: "x"})
@@ -149,6 +154,7 @@ func TestMemoryListEmpty(t *testing.T) {
 func TestMemoryDeleteIdempotent(t *testing.T) {
 	root := t.TempDir()
 	vault := storage.NewVault(root)
+	testutil.InitProject(t, vault.Root, "p")
 	wt := MemoryWriteTool(vault)
 	wp, _ := json.Marshal(memoryWriteParams{Project: "p", Rel: "x.md", Name: "n", Type: "user", Body: "b"})
 	if _, err := wt.Handler(context.Background(), wp); err != nil {
@@ -276,6 +282,7 @@ func TestMemoryScopeGlobalDeferred(t *testing.T) {
 
 func TestMemoryScopeProjectHonored(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	wt := MemoryWriteTool(vault)
 	wp, _ := json.Marshal(memoryWriteParams{Project: "p", Rel: "x.md", Name: "n", Type: "user", Body: "b", Scope: "project"})
 	if _, err := wt.Handler(context.Background(), wp); err != nil {

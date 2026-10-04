@@ -10,7 +10,7 @@ import (
 )
 
 func TestWriteResume(t *testing.T) {
-	vault := bornCurrentVault(t, t.TempDir())
+	vault := testVault(t, "myproj")
 
 	// No resume.md yet: the empty guard is the assert-absent (first-write) case.
 	if err := vault.WriteResume("myproj", "# Resume\nSome content", ""); err != nil {
@@ -28,7 +28,7 @@ func TestWriteResume(t *testing.T) {
 }
 
 func TestWriteResumeOverwrite(t *testing.T) {
-	vault := bornCurrentVault(t, t.TempDir())
+	vault := testVault(t, "myproj")
 
 	if err := vault.WriteResume("myproj", "v1", ""); err != nil {
 		t.Fatalf("WriteResume v1: %v", err)
@@ -57,7 +57,7 @@ func TestWriteResumeInvalidSlug(t *testing.T) {
 }
 
 func TestAppendIterationOwned(t *testing.T) {
-	vault := bornCurrentVault(t, t.TempDir())
+	vault := testVault(t, "myproj")
 
 	// Fresh vault: the server mints iteration 1 and composes the header itself.
 	n, derived, err := vault.AppendIterationOwned("myproj", "first work", "body", nil)
@@ -79,7 +79,7 @@ func TestAppendIterationOwned(t *testing.T) {
 }
 
 func TestAppendIterationMultiple(t *testing.T) {
-	vault := bornCurrentVault(t, t.TempDir())
+	vault := testVault(t, "myproj")
 
 	if n, _, err := vault.AppendIterationOwned("myproj", "First", "body", nil); err != nil {
 		t.Fatalf("AppendIterationOwned 1: %v", err)
@@ -125,7 +125,7 @@ func TestListTriplesEmpty(t *testing.T) {
 }
 
 func TestListTriplesPopulated(t *testing.T) {
-	vault := bornCurrentVault(t, t.TempDir())
+	vault := testVault(t, "myproj")
 
 	t1 := Triple{Subject: "Go", Predicate: "uses", Object: "modules", Confidence: 1.0}
 	t2 := Triple{Subject: "Rust", Predicate: "uses", Object: "crates", Confidence: 0.9}

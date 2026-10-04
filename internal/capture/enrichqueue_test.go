@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // queuePath builds the enrichment-queue filename for the standard 2026-06-21
@@ -100,6 +101,7 @@ func TestEnqueueEnrichmentRoundTrip(t *testing.T) {
 
 func TestDrainEnrichmentQueueHappyPath(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	// Write a plain note directly, then enqueue an enrichment job for it.
@@ -161,6 +163,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 
 	// Session A: inline enrichment via a working Enricher.
 	vaultA := testVault(t)
+	testutil.InitProject(t, vaultA.Root, "proj")
 	resA, err := WriteSession(context.Background(), vaultA, nil, SessionParams{
 		Project:      "proj",
 		Summary:      "plain heuristic summary",
@@ -178,6 +181,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 	// Session B: failing Enricher + CWD → plain note + enqueue, then drain
 	// with a working Enricher returning the same canned Result.
 	vaultB := testVault(t)
+	testutil.InitProject(t, vaultB.Root, "proj")
 	cwd := t.TempDir()
 	resB, err := WriteSession(context.Background(), vaultB, nil, SessionParams{
 		Project:      "proj",
@@ -210,6 +214,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 // produces byte-identical file bytes (EnrichedAt is preserved).
 func TestDrainIdempotentFileBytes(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -249,6 +254,7 @@ func TestDrainIdempotentFileBytes(t *testing.T) {
 
 func TestDrainTransientFailureRetries(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -283,6 +289,7 @@ func TestDrainTransientFailureRetries(t *testing.T) {
 // it and drain leaves it untouched.
 func TestDrainClaimSkip(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -349,6 +356,7 @@ func TestDrainCorruptItemDiscarded(t *testing.T) {
 
 func TestDrainNilResultRetains(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 	fp := surface.WriterFingerprint(vault.Root)
 	if _, err := vault.WriteSession("proj", testPlainMeta(), "## Summary\n\nplain\n"); err != nil {
@@ -394,6 +402,7 @@ func TestDrainMissingNoteRetains(t *testing.T) {
 
 func TestDrainMaxBound(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 	// Two plain notes + two queued jobs.
 	fp := surface.WriterFingerprint(vault.Root)
@@ -452,6 +461,7 @@ func (c conditionalFailCompleter) Name() string { return "conditional-fail-mock"
 // succeeds within this SAME DrainEnrichmentQueue call.
 func TestDrainSecondItemStillProcessedWhenFirstFails(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 	fp := surface.WriterFingerprint(vault.Root)
 
@@ -539,6 +549,7 @@ func (longSummaryCompleter) Name() string { return "long-summary-mock" }
 // file this test asserts on would simply never exist.
 func TestDrainAsyncEnrichmentCrossingLengthGateEnqueuesSessionSummary(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 	fp := surface.WriterFingerprint(vault.Root)
 
@@ -598,6 +609,7 @@ func TestDrainNilEnricherAndMissingDir(t *testing.T) {
 
 func TestWriteSessionEnqueueOnMiss(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
@@ -630,6 +642,7 @@ func TestWriteSessionEnqueueOnMiss(t *testing.T) {
 
 func TestWriteSessionNoEnqueueWithoutCWD(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 
 	// Failing enricher but no CWD: no queue, no panic.
 	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
@@ -653,6 +666,7 @@ func TestWriteSessionNoEnqueueWithoutCWD(t *testing.T) {
 // and drained stays 0 throughout.
 func TestDrainDeadLettersAfterMaxAttempts(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -696,6 +710,7 @@ func TestDrainDeadLettersAfterMaxAttempts(t *testing.T) {
 // at drain start and then processed normally.
 func TestDrainReclaimsStaleProcessing(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -748,6 +763,7 @@ func TestDrainReclaimsStaleProcessing(t *testing.T) {
 // sweep leaves it untouched.
 func TestDrainDoesNotReclaimFreshProcessing(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	fp := surface.WriterFingerprint(vault.Root)
@@ -800,6 +816,7 @@ func testPlainMeta() storage.SessionMeta {
 // drains because fp="" resolves the legacy filename end-to-end.
 func TestDrainLegacyQueueItem(t *testing.T) {
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
 	// Seed a legacy host-agnostic note (fp="") and a legacy queue item.

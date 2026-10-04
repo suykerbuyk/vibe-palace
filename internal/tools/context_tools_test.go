@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func testSetup(t *testing.T) (*storage.Vault, *vpctx.Resolver) {
@@ -73,6 +74,7 @@ func TestBootstrapEmptyVault(t *testing.T) {
 
 func TestBootstrapWithTasks(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Create two tasks.
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "fix-bug", Title: "Fix the bug", Content: "", Priority: "high"}); err != nil {
@@ -107,6 +109,7 @@ func TestBootstrapWithTasks(t *testing.T) {
 
 func TestBootstrapWithSessions(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Create 7 sessions across two dates.
 	for range 4 {
@@ -151,6 +154,7 @@ func TestBootstrapWithSessions(t *testing.T) {
 
 func TestBootstrapFrictionTrendWarn(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	now := time.Now()
 	// Five older (within 30d, beyond 7d) low-friction sessions, then three
@@ -356,6 +360,7 @@ func TestBootstrapPostInstructionsPopulated(t *testing.T) {
 
 func TestBootstrapSurfacesMemory(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	mems := []struct {
 		rel  string
@@ -466,6 +471,7 @@ func TestBootstrapCarriesNoDocumentBodyAtAnySize(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vault, resolver := testSetup(t)
+			testutil.InitProject(t, vault.Root, "test-proj")
 			if err := vault.WriteResume("test-proj", tc.resume, ""); err != nil {
 				t.Fatal(err)
 			}
@@ -518,6 +524,7 @@ func TestBootstrapRejectsInvalidProject(t *testing.T) {
 // never default (see TestBootstrapRefusesBasenameDefault).
 func TestBootstrapDefaultsProjectFromHighConfidenceCwd(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "hc-boot")
 	// Seed the vault project tree the existence gate requires.
 	if err := vault.WriteResume("hc-boot", "# Resume\n", ""); err != nil {
 		t.Fatal(err)
@@ -549,6 +556,7 @@ func TestBootstrapDefaultsProjectFromHighConfidenceCwd(t *testing.T) {
 // silent default returns a successful empty-ish payload and poisons the session.
 func TestBootstrapRefusesBasenameDefault(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "basename-only-proj")
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "basename-only-proj")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -594,6 +602,7 @@ func TestBootstrapDefaultRequiresVaultProject(t *testing.T) {
 // serve tool refuses empty project even when cwd would high-confidence detect.
 func TestBootstrapExplicitProjectRequiredOnHTTPPath(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "hc-boot")
 	if err := vault.WriteResume("hc-boot", "# Resume\n", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -680,6 +689,7 @@ func TestBootstrapSchemaExplicitRequiresProject(t *testing.T) {
 // broken — which is precisely how it stayed broken.
 func TestBootstrapAlertsSurviveALiveSizedResume(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resume := "# Resume\n\n## Behavioral Notes\n\n- never do the bad thing\n\n" +
 		"## Current State\n\n" + strings.Repeat("- narrative line that belongs in iterations.md\n", 1100)
 	if len(resume) < 50_000 {
@@ -721,6 +731,7 @@ func TestBootstrapAlertsSurviveALiveSizedResume(t *testing.T) {
 // broken — and that a FRESH audit says nothing at all.
 func TestBootstrapAuditStalenessNagReachesTheDirective(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	resume := "# Resume\n\n## Notes\n\n- terse\n\n## Current State\n\n" +
 		strings.Repeat("- narrative that belongs in iterations.md\n", 1200)
 	if err := vault.WriteResume("test-proj", resume, ""); err != nil {
@@ -805,6 +816,7 @@ func TestBootstrapToolSchema(t *testing.T) {
 // write is keyed on.
 func TestBootstrapResumeSha256MatchesDisk(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	const body = "# Resume\n\nThe body stays on disk; only its digest travels.\n"
 	if err := vault.WriteResume("test-proj", body, ""); err != nil {
 		t.Fatal(err)

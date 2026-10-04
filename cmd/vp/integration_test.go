@@ -19,7 +19,7 @@ import (
 // TestIntegrationStatusSessionsTasks proves that status, sessions, and tasks
 // commands all see the same vault data and produce consistent output.
 func TestIntegrationStatusSessionsTasks(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "integration-test")
 	proj := "integration-test"
 
 	// Seed the vault with realistic data.
@@ -102,7 +102,7 @@ func TestIntegrationStatusSessionsTasks(t *testing.T) {
 // TestIntegrationInjectBootstrap proves inject produces the same data
 // that the MCP bootstrap tool would return.
 func TestIntegrationInjectBootstrap(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "inject-test")
 	proj := "inject-test"
 
 	v.CreateTask(proj, storage.TaskSpec{Slug: "my-task", Title: "Test Task", Content: "content", Priority: "high"})
@@ -143,7 +143,7 @@ func TestIntegrationInjectBootstrap(t *testing.T) {
 // performs semantic search via mock embedder, and returns results with
 // correct metadata from the storage layer.
 func TestIntegrationSearchPipeline(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "search-test")
 	proj := "search-test"
 	cfg := storage.Config{
 		SearchDefaultLimit: 10,
@@ -228,7 +228,7 @@ func TestIntegrationSearchPipeline(t *testing.T) {
 // TestIntegrationSessionsTableFormat proves the text table output is
 // well-formed with correct alignment and data from vault.
 func TestIntegrationSessionsTableFormat(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "table-test")
 	proj := "table-test"
 
 	v.WriteSession(proj, storage.SessionMeta{
@@ -267,7 +267,7 @@ func TestIntegrationSessionsTableFormat(t *testing.T) {
 // TestIntegrationTasksTableFormat proves the tasks table output shows
 // correct priority, slug, status, and title columns.
 func TestIntegrationTasksTableFormat(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "tasktable-test")
 	proj := "tasktable-test"
 
 	v.CreateTask(proj, storage.TaskSpec{Slug: "high-pri", Title: "High Priority Task", Content: "urgent", Priority: "high"})

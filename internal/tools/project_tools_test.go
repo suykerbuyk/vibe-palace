@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestListProjectsEmpty(t *testing.T) {
@@ -152,6 +153,7 @@ func TestListProjectsDriftSilentWhenTreesAgree(t *testing.T) {
 
 func TestAppendIterationTool(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := AppendIterationTool(vault)
 
 	params, _ := json.Marshal(appendIterationParams{
@@ -188,6 +190,7 @@ func TestAppendIterationTool(t *testing.T) {
 
 func TestAppendIterationOverride(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	tool := AppendIterationTool(vault)
 
 	override := 189

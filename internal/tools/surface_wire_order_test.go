@@ -12,6 +12,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -403,6 +404,7 @@ func TestSurfaceCompleteSentinelIsStructurallyLast(t *testing.T) {
 // exactly the shape of bug this asserts against.
 func TestSurfaceHandlersEmitHandleAndSentinel(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	ctx := context.Background()
 
 	if err := vault.WriteResume("test-proj", "# Resume\nbody\n", ""); err != nil {

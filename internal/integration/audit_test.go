@@ -15,6 +15,7 @@ func TestIntegrationAuditDetectsMismatches(t *testing.T) {
 	h := newHarness(t, false)
 
 	// kubernetes content in wrong room (api instead of devops).
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "api",
 			"Set up the kubernetes cluster for deployment.",
@@ -54,6 +55,7 @@ func TestIntegrationAuditApplyFixes(t *testing.T) {
 	h := newHarness(t, false)
 
 	// Misclassified: kubernetes content in api room.
+	h.seedProject(t, "proj")
 	h.Seed(t, testinfra.WithDrawer("proj", "proj", "api",
 		"Set up the kubernetes cluster for deployment.",
 		"facts", "2026-04-10T10:00:00Z"))
@@ -107,6 +109,7 @@ func TestIntegrationAuditWithScoringOverrides(t *testing.T) {
 	})
 
 	// Content that matches the new "ml" room, placed in "general".
+	h.seedProject(t, "proj")
 	h.Seed(t, testinfra.WithDrawer("proj", "proj", "general",
 		"train the neural network transformer model",
 		"facts", "2026-04-10T10:00:00Z"))
@@ -128,6 +131,7 @@ func TestIntegrationAuditWithScoringOverrides(t *testing.T) {
 func TestIntegrationAuditKeywordCoverage(t *testing.T) {
 	h := newHarness(t, false)
 
+	h.seedProject(t, "proj")
 	h.Seed(t, testinfra.WithDrawer("proj", "proj", "devops",
 		"deploy the kubernetes cluster using terraform and ansible",
 		"facts", "2026-04-10T10:00:00Z"))

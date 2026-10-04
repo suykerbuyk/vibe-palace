@@ -82,7 +82,7 @@ func TestRetireRacingMoveNeverDuplicates(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for i := 0; i < iterations; i++ {
-				v := testVault(t)
+				v := testVault(t, "q")
 				seedTaskRaw(t, v, "p", "", "x", "TASK")
 				start := make(chan struct{})
 				archived, moved := make(chan error, 1), make(chan error, 1)
@@ -123,7 +123,7 @@ func TestSourceWriterRacingMoveNeverDuplicates(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for i := 0; i < iterations; i++ {
-				v := testVault(t)
+				v := testVault(t, "q")
 				seedTaskRaw(t, v, "p", "", "x", "TASK")
 				start := make(chan struct{})
 				wrote, moved := make(chan error, 1), make(chan error, 1)

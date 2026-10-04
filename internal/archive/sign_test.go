@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // requireCmd skips the test if the named binary is not on PATH.
@@ -52,6 +54,7 @@ func TestSign_SSH_RoundTrip(t *testing.T) {
 	keyPath, allowedSigners := genSSHKey(t, tmp, identity)
 
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcPath := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)
@@ -112,6 +115,7 @@ func TestVerifyWithOptions_PresentSigNoKeys_Tolerated(t *testing.T) {
 	tmp := t.TempDir()
 	keyPath, _ := genSSHKey(t, tmp, "nokey@example.com")
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcPath := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)
@@ -144,6 +148,7 @@ func TestVerifyWithOptions_TamperedManifestAfterSigning(t *testing.T) {
 	identity := "tamper@example.com"
 	keyPath, allowedSigners := genSSHKey(t, tmp, identity)
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcPath := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)
@@ -183,6 +188,7 @@ func TestVerifyWithOptions_TamperedManifestAfterSigning(t *testing.T) {
 func TestSign_DisabledByDefault(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcPath := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(srcPath, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // No fingerprint gates a vault write (ADR-014 decision 3, shared properties): a
@@ -20,6 +21,7 @@ import (
 // must never stop an authored write.
 func TestFingerprintNeverGatesAVaultWrite(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	dir, err := vault.IndexDir("test")
 	if err != nil {
 		t.Fatal(err)

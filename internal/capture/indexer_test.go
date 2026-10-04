@@ -16,12 +16,16 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func testVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	dir := t.TempDir()
 	v := storage.NewVault(dir)
+	// test-proj is the slug most tests here write; the vault's write
+	// primitives refuse a project the vault has not initialised.
+	testutil.InitProject(t, dir, "test-proj")
 	// Ensure palace structure exists.
 	if err := storage.EnsureDir(dir + "/palace/test-proj/drawers/test-proj/general"); err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 // transcript indexing are written to the KG and queryable via the storage layer.
 func TestIntegrationKGEntityRoundTrip(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — KG doesn't need real embeddings
+	h.seedProject(t, "proj")
 
 	// Each entity is mentioned twice to clear the default
 	// kg.DefaultMinMentions (=2) frequency filter.
@@ -91,6 +92,7 @@ Follow-up edits to internal/search/engine.go landed shortly after.`
 // transcript does not create duplicate entities.
 func TestIntegrationKGEntityDeduplication(t *testing.T) {
 	h := newHarness(t, false)
+	h.seedProject(t, "proj")
 
 	transcript := "We modified internal/capture/chunker.go and visited https://example.com for docs."
 	sessionID := "session-dedup-01"

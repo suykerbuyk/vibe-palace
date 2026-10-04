@@ -18,6 +18,8 @@ import (
 func TestIntegrationSessionCaptureToSearch(t *testing.T) {
 	h := newHarness(t, true) // real ONNX
 	h.registerAllTools(t)
+	h.seedProject(t, "decoy-proj")
+	h.seedProject(t, "test-proj")
 
 	transcript := `## Human
 
@@ -158,6 +160,7 @@ fully applies or it has no effect.`
 func TestIntegrationSessionCaptureWithoutTranscript(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — no ONNX needed
 	h.registerAllTools(t)
+	h.seedProject(t, "test-proj")
 
 	var result string
 	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
@@ -188,6 +191,7 @@ func TestIntegrationSessionCaptureWithoutTranscript(t *testing.T) {
 func TestIntegrationSessionIterationAcrossSessions(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
+	h.seedProject(t, "test-proj")
 
 	var iterations []int
 	for i := range 3 {

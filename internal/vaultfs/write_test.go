@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func sha256Hex(data []byte) string {
@@ -131,6 +133,7 @@ func TestWrite_RefusesGitDir_CaseInsensitive(t *testing.T) {
 
 func TestWrite_AllowsGitSubstring(t *testing.T) {
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "x")
 	_, err := Write(vault, "Projects/x/foo.git/bar", "ok", "")
 	if err != nil {
 		t.Fatalf("substring .git should be allowed: %v", err)

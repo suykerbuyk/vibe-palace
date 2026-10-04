@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // The census classifies every tracked triple and entity line of a copy, keeps
@@ -17,6 +19,7 @@ import (
 func TestKGCensus(t *testing.T) {
 	dir := initTestRepo(t)
 	v := NewVault(dir)
+	testutil.InitProject(t, dir, "proj-a")
 	for _, tr := range []Triple{
 		{Subject: "a", Predicate: "likes", Object: "b", Confidence: 1},                                               // authored (rule 2)
 		{Subject: "a", Predicate: "uses", Object: "c", SourceSession: "s1", ExtractedAt: "2026-01-01T00:00:00Z"},     // extracted

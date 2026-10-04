@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // The CLI half of the per-project config refuse-gate.
@@ -94,6 +95,7 @@ func TestVaultCLIStillAllowsTheSanctionedOperations(t *testing.T) {
 
 	t.Run("vault move out of it", func(t *testing.T) {
 		vaultDir := setupTestVaultEnv(t)
+		testutil.InitProject(t, vaultDir, "p")
 		seedVaultFile(t, vaultDir, cliProjCfg, "[palace.scoring]\n")
 
 		code := cmdVaultMove().Run([]string{cliProjCfg, "Projects/p/config.toml.retired"})
@@ -103,7 +105,8 @@ func TestVaultCLIStillAllowsTheSanctionedOperations(t *testing.T) {
 	})
 
 	t.Run("vault write to a near miss", func(t *testing.T) {
-		setupTestVaultEnv(t)
+		vaultDir := setupTestVaultEnv(t)
+		testutil.InitProject(t, vaultDir, "p")
 		code := cmdVaultWrite().Run([]string{"Projects/p/doc/config.toml", "--content", "x"})
 		if code != cli.ExitOK {
 			t.Errorf("Projects/p/doc/config.toml must still be writable: exit code = %d", code)

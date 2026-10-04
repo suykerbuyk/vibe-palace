@@ -33,6 +33,7 @@ tool_use: read_file
 User: Try again with a different strategy. Scratch that.
 `
 	var result string
+	h.seedProject(t, "friction-test")
 	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project":    "friction-test",
 		"summary":    "High friction session",
@@ -97,6 +98,7 @@ func TestIntegrationFrictionScoringNoTranscript(t *testing.T) {
 	h.registerAllTools(t)
 
 	var result string
+	h.seedProject(t, "no-transcript")
 	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 		"project": "no-transcript",
 		"summary": "Session without transcript",
@@ -118,6 +120,7 @@ func TestIntegrationFrictionScoringNoTranscript(t *testing.T) {
 func TestIntegrationFrictionTrendsEndToEnd(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
+	h.seedProject(t, "trend-proj")
 
 	// Write sessions with controlled dates and friction scores directly.
 	sessions := []struct {
@@ -233,6 +236,7 @@ func TestIntegrationFrictionTrendsEmpty(t *testing.T) {
 func TestIntegrationFrictionSearchByMinScore(t *testing.T) {
 	h := newHarness(t, false)
 	h.registerAllTools(t)
+	h.seedProject(t, "search-proj")
 
 	// Write sessions with different friction scores.
 	for _, s := range []struct {

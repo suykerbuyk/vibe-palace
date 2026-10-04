@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestListTasksEmpty(t *testing.T) {
@@ -34,6 +35,7 @@ func TestListTasksEmpty(t *testing.T) {
 
 func TestListTasksPopulated(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -56,6 +58,7 @@ func TestListTasksPopulated(t *testing.T) {
 
 func TestListTasksIncludeDone(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "active-task", Title: "Active", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask active: %v", err)
 	}
@@ -93,6 +96,7 @@ func TestListTasksIncludeDone(t *testing.T) {
 
 func TestGetTaskFound(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "body", Priority: "high"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -136,6 +140,7 @@ func seedProject(t *testing.T, vault *storage.Vault, slug string) {
 	if err := os.MkdirAll(filepath.Join(vault.Root, "Projects", slug), 0o755); err != nil {
 		t.Fatalf("seed project %s: %v", slug, err)
 	}
+	testutil.InitProject(t, vault.Root, slug)
 }
 
 func unitTaskBody() string {
@@ -176,6 +181,7 @@ func TestManageTaskCreate(t *testing.T) {
 
 func TestManageTaskUpdateStatus(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -199,6 +205,7 @@ func TestManageTaskUpdateStatus(t *testing.T) {
 
 func TestManageTaskRetire(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -226,6 +233,7 @@ func TestManageTaskRetire(t *testing.T) {
 
 func TestManageTaskCancel(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -254,6 +262,7 @@ func TestManageTaskCancel(t *testing.T) {
 // the link, and the result surfaces it.
 func TestManageTaskCancelWithSupersededBy(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "task-a", Title: "A", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -294,6 +303,7 @@ func TestManageTaskCancelWithSupersededBy(t *testing.T) {
 // silently accepted or panicked on.
 func TestManageTaskCancelSelfSupersessionRejected(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "task-a", Title: "A", Content: "", Priority: "medium"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -392,6 +402,7 @@ func makeBigTask(t *testing.T, vault *storage.Vault, project, slug string) (uri,
 // canonical task URI and the full body length.
 func TestGetTaskURIAndSizeAlwaysSet(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	uri, body := makeBigTask(t, vault, "test-proj", "big-task")
 
 	cases := []struct {
@@ -420,6 +431,7 @@ func TestGetTaskURIAndSizeAlwaysSet(t *testing.T) {
 // byte-for-byte and Excerpt is empty.
 func TestGetTaskDefaultIncludesFullBody(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	_, body := makeBigTask(t, vault, "test-proj", "big-task")
 
 	for _, params := range []string{
@@ -442,6 +454,7 @@ func TestGetTaskDefaultIncludesFullBody(t *testing.T) {
 // leading slice of the body and never exceeds the excerpt cap.
 func TestGetTaskExcludeContentReturnsExcerpt(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	_, body := makeBigTask(t, vault, "test-proj", "big-task")
 
 	gr := getTaskCall(t, vault, `{"project":"test-proj","task":"big-task","include_content":false}`)
@@ -476,6 +489,7 @@ func TestGetTaskExcludeContentReturnsExcerpt(t *testing.T) {
 // Excerpt), sparing the agent a vp_read_resource round-trip.
 func TestGetTaskExcludeContentSmallBodyStaysInline(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{Slug: "small-task", Title: "Small", Content: "a tiny body", Priority: "low"}); err != nil {
 		t.Fatal(err)
 	}
@@ -579,6 +593,7 @@ const epicFixtureProject = "epic-proj"
 func epicFixtureVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, epicFixtureProject)
 	mk := func(slug, parent string) {
 		spec := storage.TaskSpec{Slug: slug, Title: slug, Content: "body", Priority: "medium"}
 		if parent != "" {

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -209,6 +210,7 @@ func TestVaultMove(t *testing.T) {
 // through the same vaultfs.Move, not rename the tree.
 func TestVaultMoveRefusesADirectory(t *testing.T) {
 	vault := newVaultRoot(t)
+	testutil.InitProject(t, vault.Root, "a")
 	mustWrite(t, vault, "Projects/a/sessions/s.md", "s")
 
 	p, _ := json.Marshal(map[string]any{"from_path": "Projects/a", "to_path": "Projects/b"})

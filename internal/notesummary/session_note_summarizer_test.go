@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // mockCompleter is a tiny in-test llm.Completer, mirroring
@@ -54,6 +55,7 @@ func longBody(narrative string) string {
 // populates a summarize.SummaryItem.
 func writeSession(t *testing.T, v *storage.Vault, project string, meta storage.SessionMeta, body string) summarize.SummaryItem {
 	t.Helper()
+	testutil.InitProject(t, v.Root, project)
 	ref, err := v.WriteSessionRef(project, meta, body)
 	if err != nil {
 		t.Fatalf("WriteSessionRef: %v", err)

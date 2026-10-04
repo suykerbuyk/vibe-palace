@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -49,6 +50,7 @@ func TestFullStatusCommand(t *testing.T) {
 func TestFullStatusJSON(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "jsonproj")
 	v.CreateTask("jsonproj", storage.TaskSpec{Slug: "t1", Title: "T1", Content: "c", Priority: "high"})
 
 	old := os.Stdout
@@ -80,6 +82,7 @@ func TestFullStatusJSON(t *testing.T) {
 func TestFullSessionsCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "Test", Tag: "impl", FrictionScore: 25,
 	}, "body")
@@ -109,6 +112,7 @@ func TestFullSessionsCommand(t *testing.T) {
 func TestFullTasksCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "high"})
 
 	old := os.Stdout
@@ -136,6 +140,7 @@ func TestFullTasksCommand(t *testing.T) {
 func TestFullInjectCommand(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "inject-task", Title: "Inject Task", Content: "content", Priority: "high"})
 
 	old := os.Stdout
@@ -173,6 +178,7 @@ func TestFullInjectCommand(t *testing.T) {
 func TestFullSessionsWithLimit(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	for range 5 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
@@ -229,6 +235,7 @@ func TestFullBadFlags(t *testing.T) {
 func TestFullSessionsDefaultLimit(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	for range 15 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
@@ -262,6 +269,7 @@ func TestFullSessionsDefaultLimit(t *testing.T) {
 func TestFullTasksDone(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "active-one", Title: "Active", Content: "c", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "done-one", Title: "Done", Content: "c", Priority: "low"})
 	v.RetireTask("test-proj", "done-one")

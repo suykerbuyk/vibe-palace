@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // newProjectDir creates a project repo root with a .vibe-palace.toml naming it.
@@ -29,6 +30,7 @@ func newProjectDir(t *testing.T, name string) string {
 
 func TestIngestCommitMsg_Success(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "my-proj")
 	tool := IngestCommitMsgTool(vault)
 
 	projDir := newProjectDir(t, "my-proj")
@@ -64,6 +66,7 @@ func TestIngestCommitMsg_Success(t *testing.T) {
 func TestIngestCommitMsg_ExplicitProject(t *testing.T) {
 	vaultRoot := t.TempDir()
 	vault := storage.NewVault(vaultRoot)
+	testutil.InitProject(t, vault.Root, "explicit-proj")
 	tool := IngestCommitMsgTool(vault)
 
 	projDir := t.TempDir() // no .vibe-palace.toml; rely on explicit project
@@ -251,6 +254,7 @@ func TestIngestCommitMsg_RefusesOnCleanRepo(t *testing.T) {
 // what the message describes.
 func TestIngestCommitMsg_PermitsOnDirtyRepo(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "dirty-proj")
 	tool := IngestCommitMsgTool(vault)
 
 	projDir := newGitProjectRepo(t, "dirty-proj", true)
@@ -271,6 +275,7 @@ func TestIngestCommitMsg_PermitsOnDirtyRepo(t *testing.T) {
 // clean repo, which is why ProjectGitState exists.
 func TestIngestCommitMsg_PermitsOnNonRepo(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "norepo-proj")
 	tool := IngestCommitMsgTool(vault)
 
 	projDir := newProjectDir(t, "norepo-proj") // t.TempDir(), no git
@@ -310,6 +315,7 @@ func TestIngestCommitMsg_CleanRepoSubdir(t *testing.T) {
 // root permits.
 func TestIngestCommitMsg_DirtyRepoSubdir(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "subdir-dirty")
 	tool := IngestCommitMsgTool(vault)
 
 	root := newGitProjectRepo(t, "subdir-dirty", true)

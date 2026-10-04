@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -106,6 +107,9 @@ func TestDepartedWrite_CopyIntoAVaultWithNoRecordPasses(t *testing.T) {
 	writeFile(t, dir, departure.RelPath("q"), `{"format":"1","slug":"q","kind":"deleted","to":"","date":"2026-09-27"}`+"\n")
 	gitRun(t, dir, "add", "-A")
 	gitRun(t, dir, "commit", "-q", "-m", "q was deleted")
+	// p is initialised the way the copy itself initialises it; what is under
+	// test is that q's record does not refuse p.
+	testutil.InitProject(t, dir, "p")
 	if _, err := vaultfs.Write(dir, "Projects/p/resume.md", "copied\n", ""); err != nil {
 		t.Fatalf("a copy's write into a vault without p's record was refused: %v", err)
 	}

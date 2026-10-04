@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 const sampleInlineJSONL = `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
@@ -58,6 +60,7 @@ func TestInlineAdapter_EmptyContentFailsClear(t *testing.T) {
 func TestInlineAdapter_CreateProducesArchivePair(t *testing.T) {
 	content := []byte(sampleInlineJSONL)
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "test")
 
 	res, err := Create(CreateOptions{
 		Adapter:       InlineAdapterName,
@@ -103,6 +106,7 @@ func TestInlineAdapter_CreateProducesArchivePair(t *testing.T) {
 
 func TestInlineAdapter_Idempotent(t *testing.T) {
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 	opts := CreateOptions{
 		Adapter:       InlineAdapterName,
 		SessionID:     "idem-inline",
@@ -132,6 +136,7 @@ func TestInlineAdapter_Idempotent(t *testing.T) {
 
 func TestInlineAdapter_ChangedContentPreservesPriorManifest(t *testing.T) {
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 	opts := CreateOptions{
 		Adapter:       InlineAdapterName,
 		SessionID:     "changed-inline",
@@ -175,11 +180,13 @@ func TestInlineAdapter_TempFileCleanedUp(t *testing.T) {
 	tmpdir := os.TempDir()
 	before := listInlineTmpFiles(t, tmpdir)
 
+	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 	_, err := Create(CreateOptions{
 		Adapter:       InlineAdapterName,
 		SessionID:     "clean-inline",
 		SourceContent: []byte(sampleInlineJSONL),
-		VaultRoot:     t.TempDir(),
+		VaultRoot:     vault,
 		ProjectSlug:   "p",
 	})
 	if err != nil {

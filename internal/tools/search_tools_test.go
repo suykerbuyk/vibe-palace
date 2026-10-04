@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func testSearchEngine(t *testing.T) (*search.Engine, *storage.Vault) {
@@ -51,6 +52,7 @@ func seedDrawer(t *testing.T, v *storage.Vault, eng *search.Engine, project, win
 
 func TestSearchToolBasic(t *testing.T) {
 	eng, vault := testSearchEngine(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	seedDrawer(t, vault, eng, "proj", "wing-a", "room-1", "Go concurrency patterns", "facts")
 
 	tool := SearchTool(eng)
@@ -93,6 +95,7 @@ func TestSearchToolValidation(t *testing.T) {
 
 func TestSearchToolLimitClamping(t *testing.T) {
 	eng, vault := testSearchEngine(t)
+	testutil.InitProject(t, vault.Root, "proj")
 	for i := range 60 {
 		d := storage.Drawer{
 			Content:    string(rune('A'+i%26)) + " unique content",
@@ -119,6 +122,7 @@ func TestSearchToolLimitClamping(t *testing.T) {
 
 func TestCrossProjectToolBasic(t *testing.T) {
 	eng, vault := testSearchEngine(t)
+	testutil.InitProject(t, vault.Root, "proj-a", "proj-b")
 	seedDrawer(t, vault, eng, "proj-a", "wing-1", "room-1", "alpha content", "facts")
 	seedDrawer(t, vault, eng, "proj-b", "wing-1", "room-1", "beta content", "facts")
 

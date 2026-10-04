@@ -33,7 +33,7 @@ func TestRunAuditRooms_Empty(t *testing.T) {
 }
 
 func TestRunAuditRooms_Report(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	v.AppendDrawer("proj", "wing", "devops", storage.Drawer{
 		Content: "Set up the kubernetes cluster for deployment.", Hall: "facts",
 		SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z",
@@ -59,7 +59,7 @@ func TestRunAuditRooms_Report(t *testing.T) {
 }
 
 func TestRunAuditRooms_JSON(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	v.AppendDrawer("proj", "wing", "devops", storage.Drawer{
 		Content: "deploy the kubernetes cluster", Hall: "facts",
 		SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z",
@@ -88,7 +88,7 @@ func TestRunAuditRooms_JSON(t *testing.T) {
 }
 
 func TestRunAuditRooms_DryRun(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	// kubernetes content in wrong room.
 	v.AppendDrawer("proj", "wing", "api", storage.Drawer{
 		Content: "Set up the kubernetes cluster for deployment.", Hall: "facts",
@@ -114,7 +114,7 @@ func TestRunAuditRooms_DryRun(t *testing.T) {
 }
 
 func TestRunAuditRooms_Apply(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	// kubernetes content in wrong room.
 	v.AppendDrawer("proj", "wing", "api", storage.Drawer{
 		Content: "Set up the kubernetes cluster for deployment.", Hall: "facts",
@@ -158,7 +158,7 @@ func TestRunAuditRooms_MutualExclusive(t *testing.T) {
 }
 
 func TestRunAuditRooms_Verbose(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	v.AppendDrawer("proj", "wing", "devops", storage.Drawer{
 		Content: "deploy the kubernetes cluster using terraform", Hall: "facts",
 		SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z",

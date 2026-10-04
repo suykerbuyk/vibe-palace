@@ -35,6 +35,7 @@ func TestIntegrationTuneDetectsAndProposes(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 4 "general" drawers with kubernetes/docker content (should be devops).
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "general",
 			"Set up the kubernetes cluster for deployment using docker compose",
@@ -120,6 +121,7 @@ func TestIntegrationTuneApplyImproves(t *testing.T) {
 
 	// 4 "general" drawers with devops content that has existing keywords
 	// (docker is 0.6 in devops, deploy is 0.6).
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "general",
 			"The docker deploy pipeline handles kubernetes orchestration",
@@ -217,6 +219,7 @@ func TestIntegrationTuneEstimate(t *testing.T) {
 			"Some unclassified content "+string(rune('A'+i)),
 			"facts", "2026-04-10T10:00:00Z"))
 	}
+	h.seedProject(t, "proj")
 	h.Seed(t, opts...)
 
 	rc := buildClassifier(h.Config)

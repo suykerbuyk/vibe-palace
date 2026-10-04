@@ -16,6 +16,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // sampleClaudeJSONL is a minimal fixture resembling a Claude Code
@@ -41,6 +42,7 @@ func writeSource(t *testing.T, dir string) (path, sum string, size int64) {
 func TestCreate_WritesPairAndHashesPreCompression(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcDir := filepath.Join(tmp, "src")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -123,6 +125,7 @@ func TestCreate_WritesPairAndHashesPreCompression(t *testing.T) {
 func TestCreate_IdempotentOnSameSource(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcPath, _, _ := writeSource(t, tmp)
 
 	opts := CreateOptions{
@@ -171,6 +174,7 @@ func TestCreate_StemUsesProcessLocalCalendarDay(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	if err := os.MkdirAll(vault, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +208,7 @@ func TestCreate_StemUsesProcessLocalCalendarDay(t *testing.T) {
 func TestCreate_SourceChangePreservesPriorManifest(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
 	srcDir := filepath.Join(tmp, "src")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)

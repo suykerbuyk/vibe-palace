@@ -8,11 +8,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
-func testVault(t *testing.T) *Vault {
+// testVault returns a born-current vault in which "proj" (the slug most tests
+// write) and any extra slugs named are initialised projects: the vault's write
+// primitives refuse a project the vault has not initialised. A test about an
+// uninitialised slug simply does not name it.
+func testVault(t *testing.T, slugs ...string) *Vault {
 	t.Helper()
-	return bornCurrentVault(t, t.TempDir())
+	root := t.TempDir()
+	v := bornCurrentVault(t, root)
+	testutil.InitProject(t, root, append([]string{"proj"}, slugs...)...)
+	return v
 }
 
 func TestDrawerID(t *testing.T) {
@@ -394,7 +403,7 @@ func palaceStores(t *testing.T, v *Vault) []string {
 }
 
 func TestListAllProjects_DrawerStoresArePalaceStores(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a", "proj-b")
 	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
 
 	if err := v.AppendDrawer("proj-a", "wing-1", "room-1", d); err != nil {
@@ -412,7 +421,7 @@ func TestListAllProjects_DrawerStoresArePalaceStores(t *testing.T) {
 }
 
 func TestListAllProjects_SkipsPalaceLocal(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "real-proj")
 	// palace/.local is vault-wide machine-local state — never a project.
 	if err := os.MkdirAll(filepath.Join(v.Root, "palace", ".local", "embed-cache", "x"), 0755); err != nil {
 		t.Fatal(err)
@@ -556,8 +565,19 @@ func TestProjectExistsIsListAllProjectsMembership(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "notes-only"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	d := Drawer{Content: "c1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}
-	if err := v.AppendDrawer("palace-only", "wing-1", "room-1", d); err != nil {
+	// No writer creates a palace store without its Projects/ directory any more
+	// (projectdir gate); an older vault can still hold one, so it is laid down
+	// raw.
+	drawers := filepath.Join(v.Root, "palace", "palace-only", "drawers", "wing-1", "room-1", "drawers.jsonl")
+	if err := os.MkdirAll(filepath.Dir(drawers), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(drawers, []byte(`{"content":"c1"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The stamp a writer leaves, which is what counts toward presence (drawers
+	// are derived and do not).
+	if err := os.WriteFile(filepath.Join(v.Root, "palace", "palace-only", ".surface"), []byte("surface = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(v.IndexRootDir(), "ghost"), 0o755); err != nil {

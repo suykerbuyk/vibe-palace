@@ -143,6 +143,8 @@ func TestProjectDiscovery(t *testing.T) {
 
 	// Create some drawers to establish project palace dirs.
 	h.Seed(t,
+		testinfra.WithProject("alpha"),
+		testinfra.WithProject("beta"),
 		testinfra.WithDrawer("alpha", "memory", "notes", "alpha content", "long-term", "2026-01-01T10:00:00Z"),
 		testinfra.WithDrawer("beta", "memory", "notes", "beta content", "long-term", "2026-01-01T10:00:00Z"),
 	)

@@ -162,7 +162,10 @@ func flushDrawers(st *seedState, t *testing.T) {
 	}
 }
 
-// WithProject materializes Projects/<slug>/ in the harness vault. Thin
+// WithProject makes Projects/<slug>/ an initialised project in the harness
+// vault (see TestHarness.SeedProject). It must precede any option that writes
+// into that project, since the vault refuses writes into an uninitialised one;
+// the batched drawer options flush last, so their order does not matter. Thin
 // wrapper over TestHarness.SeedProject, replacing bare
 // h.seedProject(t, ...)/h.SeedProject(t, ...) calls inside a New/Seed call.
 func WithProject(slug string) SeedOption {

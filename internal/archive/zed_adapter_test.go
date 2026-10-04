@@ -19,6 +19,8 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	_ "modernc.org/sqlite"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func zstdEncode(t *testing.T, b []byte) []byte {
@@ -90,6 +92,7 @@ func TestZedAdapter_SynthesizesClaudeShapeJSONL(t *testing.T) {
 	db := makeZedDB(t, "thread-A", sampleZedPayload)
 
 	tmpVault := t.TempDir()
+	testutil.InitProject(t, tmpVault, "test")
 	res, err := Create(CreateOptions{
 		Adapter:     ZedAdapterName,
 		SessionID:   "thread-A",
@@ -158,6 +161,7 @@ func TestZedAdapter_SynthesisDeterministic(t *testing.T) {
 	var hashes []string
 	for i := range 3 {
 		vault := t.TempDir()
+		testutil.InitProject(t, vault, "p")
 		res, err := Create(CreateOptions{
 			Adapter:     ZedAdapterName,
 			SessionID:   "det",
@@ -182,6 +186,7 @@ func TestZedAdapter_SynthesisDeterministic(t *testing.T) {
 func TestZedAdapter_Idempotent(t *testing.T) {
 	db := makeZedDB(t, "idem", sampleZedPayload)
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 
 	opts := CreateOptions{
 		Adapter:     ZedAdapterName,
@@ -213,6 +218,7 @@ func TestZedAdapter_Idempotent(t *testing.T) {
 func TestZedAdapter_TempFileCleanedUp(t *testing.T) {
 	db := makeZedDB(t, "clean", sampleZedPayload)
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 
 	// Snapshot tempdir before + after.
 	tmpdir := os.TempDir()
@@ -278,11 +284,13 @@ func TestZedAdapter_ToolInputPreservedVerbatim(t *testing.T) {
     }`
 	db := makeZedDB(t, "t1", payload)
 
+	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 	res, err := Create(CreateOptions{
 		Adapter:     ZedAdapterName,
 		SessionID:   "t1",
 		SourcePath:  db,
-		VaultRoot:   t.TempDir(),
+		VaultRoot:   vault,
 		ProjectSlug: "p",
 	})
 	if err != nil {
@@ -306,6 +314,7 @@ func TestZedAdapter_ToolInputPreservedVerbatim(t *testing.T) {
 func TestZedAdapter_VerifyAndExtractRoundTrip(t *testing.T) {
 	db := makeZedDB(t, "rt", sampleZedPayload)
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "p")
 
 	res, err := Create(CreateOptions{
 		Adapter:     ZedAdapterName,

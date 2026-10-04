@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // testVaultSource is a stand-in resolution source in the same cwd:<file>
@@ -22,9 +23,14 @@ import (
 // TestStatusCommandWiresTheResolvedVaultPath.
 const testVaultSource = "cwd:/fixture/.vibe-palace.toml"
 
-func testVault(t *testing.T) *storage.Vault {
+// testVault returns a fresh vault; each slug named is made an initialised
+// project (testutil.InitProject), which the vault's write gate requires before
+// a test writes that project's content.
+func testVault(t *testing.T, slugs ...string) *storage.Vault {
 	t.Helper()
-	return storage.NewVault(t.TempDir())
+	v := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, v.Root, slugs...)
+	return v
 }
 
 func TestRunStatusEmpty(t *testing.T) {
@@ -47,7 +53,7 @@ func TestRunStatusEmpty(t *testing.T) {
 }
 
 func TestRunStatusWithData(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-two", Title: "Task Two", Content: "content", Priority: "low"})
 	v.WriteSession("test-proj", storage.SessionMeta{
@@ -69,7 +75,7 @@ func TestRunStatusWithData(t *testing.T) {
 }
 
 func TestRunStatusJSON(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "task-one", Title: "Task One", Content: "content", Priority: "high"})
 
 	var buf bytes.Buffer

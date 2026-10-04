@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // assertStamped fails unless stampDir/.surface records the current surface.
@@ -37,6 +38,7 @@ func TestArchiveCreateStamps(t *testing.T) {
 // per-process cache can't mask a missing stamp.
 func TestLinkSessionNoteStamps(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "demo")
 	transcripts := filepath.Join(vaultRoot, "Projects", "demo", "transcripts")
 	if err := os.MkdirAll(transcripts, 0o755); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestSemanticRankerOrdersBySessionHits pins Phase 3 slice 2: with a warm
@@ -18,6 +19,7 @@ import (
 // recent_sessions leads with that session and ranking.ranker is semantic.
 func TestSemanticRankerOrdersBySessionHits(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug:     "commit-log-archives-orphaned-commits",
 		Title:    "The commit log archives orphaned commits",
@@ -89,6 +91,7 @@ func TestSemanticRankerOrdersBySessionHits(t *testing.T) {
 
 func TestSemanticRankerFallsBackWhenIndexCold(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug: "some-task", Title: "Some task", Content: "body", Priority: "high",
 	}); err != nil {
@@ -113,6 +116,7 @@ func TestSemanticRankerFallsBackWhenIndexCold(t *testing.T) {
 
 func TestSemanticRankerFallsBackWhenEmbedderCold(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug: "some-task", Title: "Some task", Content: "body", Priority: "high",
 	}); err != nil {
@@ -148,6 +152,7 @@ func TestSemanticRankerFallsBackWhenEmbedderCold(t *testing.T) {
 
 func TestSemanticRankerFallsBackWhenEngineNil(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-08-01", Title: "a session", Summary: "x", Tag: "chore",
 	}, "body"); err != nil {
@@ -168,6 +173,7 @@ func TestSemanticRankerFallsBackWhenEngineNil(t *testing.T) {
 // filter were dropped (mutation target below).
 func TestSemanticRankerIgnoresIterationOnlyHits(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug:     "commit-log-archives-orphaned-commits",
 		Title:    "The commit log archives orphaned commits",

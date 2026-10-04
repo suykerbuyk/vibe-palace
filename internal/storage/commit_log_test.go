@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -153,7 +154,9 @@ func TestArchivedSHAs_IgnoresHeadingsQuotedInABody(t *testing.T) {
 // TestArchiveCommitBodies_SkipsDuplicateWithinOneBatch — the walk itself can
 // hand the same SHA twice; one entry must be written, not two.
 func TestArchiveCommitBodies_SkipsDuplicateWithinOneBatch(t *testing.T) {
-	v := NewVault(t.TempDir())
+	root := t.TempDir()
+	testutil.InitProject(t, root, "proj")
+	v := NewVault(root)
 	dup := wrapstate.CommitInfo{SHA: "cafe1234", Body: "fix: once"}
 
 	appended, skipped, err := v.ArchiveCommitBodies("proj", []wrapstate.CommitInfo{dup, dup}, "bbb")

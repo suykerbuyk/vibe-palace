@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // tempSiblings counts the primitive's own temp files left in dir. Every one of
@@ -107,6 +108,7 @@ func TestWriteStream_FillErrorLeavesTargetIntact(t *testing.T) {
 // stamp cannot be masked by an earlier test's.
 func TestWriteStream_StampsVaultDestination(t *testing.T) {
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "demo")
 	p := filepath.Join(vaultRoot, "Projects", "demo", "transcripts", "x.jsonl.zst")
 
 	if err := WriteStream(vaultRoot, p, func(w io.Writer) error {

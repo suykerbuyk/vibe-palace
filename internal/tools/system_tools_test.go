@@ -106,6 +106,18 @@ func initVaultRepo(t *testing.T) string {
 	return dir
 }
 
+// initCommittedProject initialises each slug in the git-backed vault at root
+// (testutil.InitProject) and commits the scaffold markers, so the fixture's
+// working tree stays clean and the markers never read as dirt.
+func initCommittedProject(t *testing.T, root string, slugs ...string) {
+	t.Helper()
+	testutil.InitProject(t, root, slugs...)
+	for _, slug := range slugs {
+		gitT(t, root, "add", "--", "Projects/"+slug)
+	}
+	gitT(t, root, "commit", "-q", "-m", "init fixture projects")
+}
+
 func gitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
@@ -200,6 +212,7 @@ func TestVaultSync_BarePushRefusesDirty(t *testing.T) {
 func TestVaultTidy_DryRunClassifiesNoCommit(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	headBefore := gitT(t, root, "rev-parse", "HEAD")
 	vault := storage.NewVault(root)
 	tool := VaultTidyTool(vault)
@@ -238,6 +251,7 @@ func TestVaultTidy_DryRunClassifiesNoCommit(t *testing.T) {
 func TestVaultTidy_SweepCommitsLocal(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	vault := storage.NewVault(root)
 	tool := VaultTidyTool(vault)
 
@@ -326,6 +340,7 @@ func TestVaultSync_BareTidiesAndPushes(t *testing.T) {
 func TestVaultSync_BareRefusesGenuineDirt(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	bare := t.TempDir()
 	gitT(t, bare, "init", "--bare", "-b", "main")
 	gitT(t, root, "remote", "add", "origin", bare)
@@ -360,6 +375,7 @@ func TestVaultSync_BareRefusesGenuineDirt(t *testing.T) {
 func TestVaultSync_NoTidyIsRawRefusal(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	bare := t.TempDir()
 	gitT(t, bare, "init", "--bare", "-b", "main")
 	gitT(t, root, "remote", "add", "origin", bare)
@@ -899,6 +915,7 @@ func containsStr(s, sub string) bool {
 func TestVaultTidy_StrandedIsAnError(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	// A configured remote pointing at a path that does not exist: push + fetch
 	// both fail, so the commit lands locally but reaches no remote.
 	gitT(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "nonexistent.git"))
@@ -942,6 +959,7 @@ func TestVaultTidy_StrandedIsAnError(t *testing.T) {
 func TestVaultTidy_PartialPushIsAnError(t *testing.T) {
 	sandboxHostEnv(t)
 	root := initVaultRepo(t)
+	initCommittedProject(t, root, "vibe-palace")
 	good := t.TempDir()
 	gitT(t, good, "init", "--bare", "-b", "main")
 	gitT(t, root, "remote", "add", "good", good)

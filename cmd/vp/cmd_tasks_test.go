@@ -18,6 +18,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestRunTasksEmpty(t *testing.T) {
@@ -33,7 +34,7 @@ func TestRunTasksEmpty(t *testing.T) {
 }
 
 func TestRunTasksWithData(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "fix-bug", Title: "Fix the login bug", Content: "Details here.", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "add-feature", Title: "Add search feature", Content: "More details.", Priority: "low"})
 
@@ -58,7 +59,7 @@ func TestRunTasksWithData(t *testing.T) {
 }
 
 func TestRunTasksJSON(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "my-task", Title: "My Task", Content: "content", Priority: "P1"})
 
 	var buf bytes.Buffer
@@ -80,7 +81,7 @@ func TestRunTasksJSON(t *testing.T) {
 }
 
 func TestRunTasksIncludeDone(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "active-task", Title: "Active", Content: "content", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "done-task", Title: "Done", Content: "content", Priority: "low"})
 	v.RetireTask("test-proj", "done-task")
@@ -108,7 +109,7 @@ func TestRunTasksIncludeDone(t *testing.T) {
 // copy-pasteable useless, and the old byte-based cut could split a rune in half
 // besides. Both views measure and pad instead.
 func TestRunTasksNeverTruncatesSlugs(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	longSlug := "a-very-long-task-slug-that-exceeds-the-column-width-limit"
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: longSlug, Title: "Long Slug Task", Content: "content", Priority: ""})
 
@@ -134,7 +135,7 @@ func TestRunTasksNeverTruncatesSlugs(t *testing.T) {
 }
 
 func TestRunTasksTreeGroupsByEpicAndShowsBlockers(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mk := func(slug, pri string) {
 		v.CreateTask("test-proj", storage.TaskSpec{
 			Slug: slug, Title: slug, Content: "body", Priority: pri,
@@ -176,7 +177,7 @@ func TestRunTasksTreeGroupsByEpicAndShowsBlockers(t *testing.T) {
 }
 
 func TestRunTasksTreeHidesIceboxButSaysHowMany(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "hot", Title: "Hot", Content: "body", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "cold", Title: "Cold", Content: "body", Priority: "low"})
 	if err := v.UpdateTaskStatus("test-proj", "cold", storage.StatusIcebox); err != nil {
@@ -201,9 +202,10 @@ func TestRunTasksTreeHidesIceboxButSaysHowMany(t *testing.T) {
 	}
 }
 
-// mkTask creates a task and, when parent != "", points it at that parent.
+// mkTask initialises proj (testutil.InitProject), creates a task and, when parent != "", points it at that parent.
 func mkTask(t *testing.T, v *storage.Vault, proj, slug, parent string) {
 	t.Helper()
+	testutil.InitProject(t, v.Root, proj)
 	if err := v.CreateTask(proj, storage.TaskSpec{Slug: slug, Title: slug, Content: "body", Priority: "high"}); err != nil {
 		t.Fatalf("create %s: %v", slug, err)
 	}
@@ -682,7 +684,7 @@ func TestRunTasksEditStillWritesABodyOnlyChange(t *testing.T) {
 // One task's free-text **Priority:** disfigured two commands. A fix only vp
 // board honored would have left this one standing.
 func TestRunTasksFlatOutlierPriorityDoesNotWidenEveryRow(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "flat-short", Title: "Short", Content: "body", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "flat-long", Title: "Long", Content: "body", Priority: livePriority})
 

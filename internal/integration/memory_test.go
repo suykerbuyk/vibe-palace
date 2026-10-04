@@ -30,6 +30,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 		h.registerAllTools(t)
 
 		const project = "mem-write-proj"
+		h.seedProject(t, project)
 		const rel = "pref-tabs.md"
 		body := "The user prefers tabs over spaces in all source files."
 
@@ -127,6 +128,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 		}
 
 		const project = "harvest-proj"
+		h.seedProject(t, project)
 
 		hres := h.callTool(t, "vp_memory_harvest", map[string]any{
 			"project": project,
@@ -221,6 +223,7 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 		run(t, root, "git", "config", "user.name", "Test")
 
 		const project = "grok-proj"
+		h.seedProject(t, project)
 		const rel = "note.md"
 		body := "Grok session note: prefers terse commit messages."
 		h.callTool(t, "vp_memory_write", map[string]any{

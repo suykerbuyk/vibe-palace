@@ -32,7 +32,7 @@ func TestRunDiscoverRooms_NoCandidates(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_Estimate(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{}
 
 	for i := range 4 {
@@ -60,7 +60,7 @@ func TestRunDiscoverRooms_Estimate(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_NoLLMConfig(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{}
 
 	d := storage.Drawer{
@@ -82,7 +82,7 @@ func TestRunDiscoverRooms_NoLLMConfig(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_MissingAPIKey(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 	cfg := storage.Config{
 		PalaceLLM: storage.LLMConfig{
 			Endpoint:  "http://localhost:1234",
@@ -110,7 +110,7 @@ func TestRunDiscoverRooms_MissingAPIKey(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_Export(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Mock LLM returns empty array (no keywords found).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +164,7 @@ func TestRunDiscoverRooms_Export(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_WithProposals(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// 3 general drawers with "neural network" content.
 	for i := range 3 {
@@ -220,7 +220,7 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 	// lives beside the host's real global config. Without this the test writes
 	// into the developer's own ~/.config/vibe-palace/projects/.
 	initTestEnv(t, false)
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// 3 general drawers with matching content.
 	for i := range 3 {
@@ -295,7 +295,7 @@ func TestRunDiscoverRooms_Apply(t *testing.T) {
 }
 
 func TestRunDiscoverRooms_NoProposals(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj")
 
 	// Mock LLM returns empty responses (no keywords).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

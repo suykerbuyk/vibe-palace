@@ -9,6 +9,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func seedVault(t *testing.T, v *storage.Vault, project string, layout map[string][]string) {
@@ -23,6 +24,7 @@ func seedVault(t *testing.T, v *storage.Vault, project string, layout map[string
 				SourceType: "manual",
 				FiledAt:    "2026-01-01T00:00:00Z",
 			}
+			testutil.InitProject(t, v.Root, project)
 			if err := v.AppendDrawer(project, wing, room, d); err != nil {
 				t.Fatalf("AppendDrawer(%s/%s): %v", wing, room, err)
 			}
@@ -202,6 +204,7 @@ func TestBuildGraphMultipleDrawersPerRoom(t *testing.T) {
 			SourceType: "manual",
 			FiledAt:    "2026-01-01T00:00:00Z",
 		}
+		testutil.InitProject(t, v.Root, "proj")
 		if err := v.AppendDrawer("proj", "alpha", "api", d); err != nil {
 			t.Fatal(err)
 		}

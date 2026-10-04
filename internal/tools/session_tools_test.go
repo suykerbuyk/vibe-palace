@@ -56,6 +56,7 @@ func TestCaptureSessionSchema(t *testing.T) {
 
 func TestCaptureSessionBasic(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{
@@ -88,6 +89,7 @@ func TestCaptureSessionBasic(t *testing.T) {
 
 func TestCaptureSessionWithAllFields(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{
@@ -114,6 +116,7 @@ func TestCaptureSessionWithAllFields(t *testing.T) {
 
 func TestCaptureSessionWithTranscript(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	indexer := capture.NewIndexer(vault, nil, nil, storage.Config{}) // no engine = no embedding
 	tool := CaptureSessionTool(vault, indexer)
 
@@ -136,6 +139,7 @@ func TestCaptureSessionWithTranscript(t *testing.T) {
 
 func TestCaptureSessionArchiveLink(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Seed a real archive under the project's transcripts dir.
 	ctx := context.Background()
@@ -210,6 +214,7 @@ const sampleClaudeJSONL = `{"type":"permission-mode","permissionMode":"bypassPer
 // id or none — never the caller's.
 func TestCaptureSessionCallerSuppliedIDIgnored(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "") // nothing derivable
 
 	tool := CaptureSessionTool(vault, nil)
@@ -244,6 +249,7 @@ func TestCaptureSessionCallerSuppliedIDIgnored(t *testing.T) {
 // its provenance, so the archiving hook run can find it and close the loop.
 func TestCaptureSessionDerivedIDRecordedBeforeArchiveExists(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "live-session-uuid")
 
 	tool := CaptureSessionTool(vault, nil)
@@ -279,6 +285,7 @@ func TestCaptureSessionDerivedIDRecordedBeforeArchiveExists(t *testing.T) {
 // and duplicated the note.
 func TestCaptureSessionClaimUsesDerivedID(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	stubHostSessionID(t, "live-session-uuid")
 
 	cwd := t.TempDir()
@@ -412,6 +419,7 @@ func writeEnrichmentEnabledHostConfig(t *testing.T, baseURL, keyEnv string) {
 // false) the handler writes a plain, unenriched note exactly as before.
 func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{
@@ -457,6 +465,7 @@ func TestCaptureSessionEnrichDefaultPlain(t *testing.T) {
 // surfaces no error to the caller.
 func TestCaptureSessionEnrichDisabledConfig(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Write a host global config that explicitly disables enrichment, under
 	// a per-test XDG_CONFIG_HOME. The host global config is the only tier
@@ -505,6 +514,7 @@ func TestCaptureSessionEnrichLive(t *testing.T) {
 	t.Setenv("VP_TEST_ENRICH_KEY", "sk-test-live")
 
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	writeEnrichmentEnabledHostConfig(t, srv.URL, "VP_TEST_ENRICH_KEY")
 	tool := CaptureSessionTool(vault, nil)
 
@@ -559,6 +569,7 @@ func TestCaptureSessionEnrichLive(t *testing.T) {
 
 func TestCaptureSessionIterationAutoIncrements(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{

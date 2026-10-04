@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // countingEmbedder wraps the mock embedder to count calls, and can be made to
@@ -110,6 +111,7 @@ func addDrawer(t *testing.T, v *storage.Vault, project, wing, room, content, hal
 		SourceRef:  "",
 		FiledAt:    "2026-04-07T10:00:00Z",
 	}
+	testutil.InitProject(t, v.Root, project)
 	if err := v.AppendDrawer(project, wing, room, d); err != nil {
 		t.Fatalf("AppendDrawer: %v", err)
 	}
@@ -204,6 +206,7 @@ func TestSearchDateFilter(t *testing.T) {
 	ctx := context.Background()
 
 	d1 := storage.Drawer{Content: "old stuff", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-15T00:00:00Z"}
+	testutil.InitProject(t, v.Root, "proj")
 	_ = v.AppendDrawer("proj", "wing-a", "room-1", d1)
 	stored1, _ := v.ListDrawers("proj", "wing-a", "room-1")
 	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: stored1[0]}})
@@ -443,6 +446,7 @@ func TestCollisionDetectorInRebuild(t *testing.T) {
 func TestReapOrphanVectors(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
+	testutil.InitProject(t, v.Root, "proj")
 	if err := v.AppendDrawer("proj", "wing", "room", storage.Drawer{Content: "a drawer", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -656,6 +660,7 @@ func TestSearchDefaultLimit(t *testing.T) {
 			SourceType: "manual",
 			FiledAt:    "2026-04-07T00:00:00Z",
 		}
+		testutil.InitProject(t, v.Root, "proj")
 		_ = v.AppendDrawer("proj", "wing-a", "room-1", d)
 	}
 

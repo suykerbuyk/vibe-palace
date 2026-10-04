@@ -21,6 +21,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // Tests for the tier table, the completeness record and the stale flag (task
@@ -773,6 +774,7 @@ func TestRebuildPrefersTheStoreAndDedupIgnoresTheWing(t *testing.T) {
 			if changed {
 				dc = content + "!"
 			}
+			testutil.InitProject(t, v.Root, "proj")
 			if err := v.AppendDrawer("proj", "beta", "beta-room", storage.Drawer{Content: dc, Hall: "facts", SourceType: "session", FiledAt: "2026-07-01T00:00:00Z"}); err != nil {
 				t.Fatal(err)
 			}
@@ -813,6 +815,7 @@ func TestGlideDedupIgnores32BitCollisions(t *testing.T) {
 	a, b := collidingContents(t, "wing")
 	eng, v := testEngine(t)
 	commitArchive(t, eng.cache, v, "proj", "sess-a", "sha-a", []string{a}, true)
+	testutil.InitProject(t, v.Root, "proj")
 	if err := v.AppendDrawer("proj", "wing", "room", storage.Drawer{Content: b, Hall: "facts", SourceType: "session", FiledAt: "2026-07-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}

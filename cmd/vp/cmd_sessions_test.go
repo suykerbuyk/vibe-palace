@@ -26,7 +26,7 @@ func TestRunSessionsEmpty(t *testing.T) {
 }
 
 func TestRunSessionsWithData(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "First", Tag: "impl", FrictionScore: 25,
 	}, "body1")
@@ -58,7 +58,7 @@ func TestRunSessionsWithData(t *testing.T) {
 }
 
 func TestRunSessionsLimit(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	for range 5 {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: "2026-04-01", Title: "Session",
@@ -79,7 +79,7 @@ func TestRunSessionsLimit(t *testing.T) {
 }
 
 func TestRunSessionsJSON(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "Test", Tag: "impl",
 	}, "body")
@@ -100,7 +100,7 @@ func TestRunSessionsJSON(t *testing.T) {
 }
 
 func TestRunSessionsTitleTruncation(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	longTitle := strings.Repeat("A", 60)
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: longTitle,
@@ -126,7 +126,7 @@ func TestRunSessionsTitleTruncation(t *testing.T) {
 // notes carrying no claim at all.
 func hostSessionsVault(t *testing.T) *storage.Vault {
 	t.Helper()
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	write := func(date, title, host, source, entrypoint string) {
 		v.WriteSession("test-proj", storage.SessionMeta{
 			Date: date, Title: title,
@@ -303,7 +303,7 @@ func TestRunSessionsHostFilter(t *testing.T) {
 // silently means "whichever of the last 2 sessions were Grok" — which is zero
 // here, and the empty answer looks identical to "Grok never ran".
 func TestRunSessionsHostFilterPrecedesTheLimit(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "grok early",
 		Host: storage.HostGrok, HostSource: storage.HostSourceDerived,
@@ -386,7 +386,7 @@ func sameOrder(a, b []hostCount) bool {
 // vocabulary is closed and short, so fixtures alone would never have shown it.
 func TestHostMixColumnFitsTheWidestHost(t *testing.T) {
 	const wide = "grok-shell-vibe-palace"
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-04-01", Title: "wide", Host: wide, HostSource: storage.HostSourceDeclared,
 	}, "body")

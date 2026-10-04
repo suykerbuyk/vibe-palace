@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
 )
 
@@ -25,6 +26,7 @@ func TestCaptureAndAuditStampTheSameCalendarDay(t *testing.T) {
 		t.Skipf("no tzdata for America/Denver on this host: %v", err)
 	}
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := os.WriteFile(filepath.Join(vault.Root, "clock.toml"),
 		[]byte("timezone = \"America/Denver\"\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -23,6 +23,7 @@ func TestIntegrationMCPSearchEndToEnd(t *testing.T) {
 
 	// Seed content.
 	h.Seed(t,
+		testinfra.WithProject("proj"),
 		testinfra.WithDrawer("proj", "dev", "go", "Go goroutines and channels enable lightweight concurrency", "facts", "2026-04-01T10:00:00Z"),
 		testinfra.WithDrawer("proj", "dev", "python", "Python asyncio uses async/await for cooperative multitasking", "facts", "2026-04-01T10:00:00Z"),
 		testinfra.WithDrawer("proj", "cooking", "italian", "Fresh pasta is made from eggs and tipo 00 flour", "facts", "2026-04-01T10:00:00Z"),

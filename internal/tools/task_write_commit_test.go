@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // --- git-backed vault harness ----------------------------------------------
@@ -57,6 +58,7 @@ func newGitBackedTestVault(t *testing.T) *storage.Vault {
 	}
 
 	vault := bornCurrentTestVault(t, root)
+	testutil.InitProject(t, root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug: "seed-task", Title: "Seed", Content: seedTaskBody(), Priority: "medium",
 	}); err != nil {

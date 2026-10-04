@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -65,6 +66,7 @@ func overrideTreeAt(t *testing.T) string {
 func TestVaultWriteNamesTheGlobalVaultItWroteTo(t *testing.T) {
 	globalVault := setupTestVaultEnv(t)
 	scratchVault := overrideTreeAt(t)
+	testutil.InitProject(t, globalVault, "scratchproj")
 
 	// Control: the fixture must actually create the divergence, or this test
 	// would pass against a machine where both families agree — measuring

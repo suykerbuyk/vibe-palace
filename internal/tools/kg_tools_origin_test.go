@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func readTrackedTriple(t *testing.T, vault *storage.Vault, project, s, p, o string) storage.Triple {
@@ -34,6 +35,7 @@ func readTrackedTriple(t *testing.T, vault *storage.Vault, project, s, p, o stri
 // extracted_at dropped. At 0eff86f the handler failed with "already exists".
 func TestKGAddOverTrackedExtractedTriple(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	if err := vault.AddTriple("test", storage.Triple{Subject: "Alice", Predicate: "works_on", Object: "atlas",
 		Confidence: 0.6, ValidFrom: "2026-01-01", SourceSession: "s1", ExtractedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -54,6 +56,7 @@ func TestKGAddOverTrackedExtractedTriple(t *testing.T) {
 // extracted_at. At 0eff86f the handler kept extracted_at.
 func TestKGInvalidateTrackedTripleDropsExtractedAt(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	if err := vault.AddTriple("test", storage.Triple{Subject: "Alice", Predicate: "works_on", Object: "atlas",
 		SourceSession: "s1", ExtractedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -71,6 +74,7 @@ func TestKGInvalidateTrackedTripleDropsExtractedAt(t *testing.T) {
 // vp_kg_add's entity lines are written as authored.
 func TestKGAddWritesAuthoredEntityLines(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	params, _ := json.Marshal(kgAddParams{Project: "test", Subject: "Alice", Predicate: "works_on", Object: "atlas"})
 	if _, err := KGAddTool(vault).Handler(context.Background(), params); err != nil {
 		t.Fatal(err)

@@ -64,7 +64,7 @@ A real line of prose.
 func TestIntegration_VaultWriteRefusesTokenBake(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	var read struct {
 		Content string `json:"content"`
@@ -123,7 +123,7 @@ func TestIntegration_VaultWriteRefusesTokenBake(t *testing.T) {
 func TestIntegration_VaultWriteRefusesBakeWithoutCAS(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	text, isErr := h.callToolRaw(t, "vp_vault_write", map[string]any{
 		"path":    path,
@@ -147,7 +147,7 @@ func TestIntegration_VaultWriteRefusesBakeWithoutCAS(t *testing.T) {
 func TestIntegration_UpdateResumeRefusesTokenBake(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	var read struct {
 		Sha256 string `json:"sha256"`
@@ -196,7 +196,7 @@ func TestIntegration_UpdateResumeRefusesTokenBake(t *testing.T) {
 func TestIntegration_TokenBakeRefusalIsCallerFault(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	logs := captureLogs(t)
 	if _, isErr := h.callToolRaw(t, "vp_vault_write", map[string]any{
@@ -229,7 +229,7 @@ func TestIntegration_TokenBakeRefusalIsCallerFault(t *testing.T) {
 func TestIntegration_EditStillRemovesTokenDeliberately(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	text, isErr := h.callToolRaw(t, "vp_vault_edit", map[string]any{
 		"path":       path,
@@ -259,7 +259,7 @@ func TestIntegration_EditStillRemovesTokenDeliberately(t *testing.T) {
 func TestIntegration_EditRejectsAnExpandedAnchor(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	text, isErr := h.callToolRaw(t, "vp_vault_edit", map[string]any{
 		"path":       path,
@@ -280,7 +280,7 @@ func TestIntegration_EditRejectsAnExpandedAnchor(t *testing.T) {
 func TestIntegration_WholeFileWriteKeepingTokensAccepted(t *testing.T) {
 	const path = "Projects/demo/resume.md"
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume("demo", writeBackFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject("demo"), testinfra.WithResume("demo", writeBackFixture))}
 
 	edited := strings.Replace(writeBackFixture, "A real line of prose.", "An edited line of prose.", 1)
 	if edited == writeBackFixture {
@@ -314,6 +314,7 @@ func TestIntegration_NonScopeTokensStayWritable(t *testing.T) {
 	const path = "Projects/demo/notes/skill-template.md"
 
 	h := newHarness(t, false)
+	h.seedProject(t, "demo")
 	h.registerAllTools(t)
 	h.initMCP(t)
 

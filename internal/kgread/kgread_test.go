@@ -24,6 +24,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestMain doubles as the helper process for the multi-process row: with
@@ -47,6 +48,7 @@ func newVault(t *testing.T) *storage.Vault {
 			t.Fatal(err)
 		}
 	}
+	testutil.InitProject(t, root, "alpha", "beta")
 	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
 		t.Fatal(err)
 	}

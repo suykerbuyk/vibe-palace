@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // seedArchive creates a vault+transcripts layout and returns the
@@ -18,6 +20,7 @@ func seedArchive(t *testing.T, sessionID string) (vaultRoot string, res *CreateR
 	t.Helper()
 	tmp := t.TempDir()
 	vaultRoot = filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vaultRoot, "demo")
 	src := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(src, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)
@@ -39,6 +42,7 @@ func seedArchive(t *testing.T, sessionID string) (vaultRoot string, res *CreateR
 func TestListEntries_SortedByCapturedAt(t *testing.T) {
 	tmp := t.TempDir()
 	vaultRoot := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vaultRoot, "demo")
 	src := filepath.Join(tmp, "src.jsonl")
 	if err := os.WriteFile(src, []byte(sampleClaudeJSONL), 0o644); err != nil {
 		t.Fatal(err)

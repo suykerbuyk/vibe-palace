@@ -10,6 +10,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // bornCurrentTestVault returns an ephemeral vault stamped at the current data
@@ -30,6 +31,7 @@ func newTestVault(t *testing.T) *storage.Vault {
 
 func TestKGAddAndQuery(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	ctx := context.Background()
 
 	// Add a fact.
@@ -70,6 +72,7 @@ func TestKGAddAndQuery(t *testing.T) {
 
 func TestKGAddDuplicateEntity(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	ctx := context.Background()
 	addTool := KGAddTool(vault)
 
@@ -99,6 +102,7 @@ func TestKGAddDuplicateEntity(t *testing.T) {
 
 func TestKGInvalidate(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	ctx := context.Background()
 
 	// Add a fact first.
@@ -151,6 +155,7 @@ func TestKGInvalidate(t *testing.T) {
 
 func TestKGTimeline(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	ctx := context.Background()
 	addTool := KGAddTool(vault)
 
@@ -184,6 +189,7 @@ func TestKGTimeline(t *testing.T) {
 
 func TestKGStats(t *testing.T) {
 	vault := newTestVault(t)
+	testutil.InitProject(t, vault.Root, "test")
 	ctx := context.Background()
 
 	addTool := KGAddTool(vault)

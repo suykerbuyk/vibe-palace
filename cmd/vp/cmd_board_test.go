@@ -16,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // stripDates removes the CreateTime/ModTime header lines from an ACTIVE
@@ -65,7 +66,7 @@ func TestRunBoardEmpty(t *testing.T) {
 }
 
 func TestRunBoardActiveEpicMixedChildren(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "big-epic", "")
 	if err := v.UpdateTaskStatus("test-proj", "big-epic", "in_progress"); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
@@ -109,7 +110,7 @@ func TestRunBoardActiveEpicMixedChildren(t *testing.T) {
 }
 
 func TestRunBoardIceboxAlwaysRenders(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "icebox-epic", "")
 	if err := v.UpdateTaskStatus("test-proj", "icebox-epic", storage.StatusIcebox); err != nil {
 		t.Fatalf("icebox epic: %v", err)
@@ -137,7 +138,7 @@ func TestRunBoardIceboxAlwaysRenders(t *testing.T) {
 }
 
 func TestRunBoardHistorySupersessionUnconditional(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "successor", "")
 	mkTask(t, v, "test-proj", "abandoned", "")
 	if err := v.CancelTask("test-proj", "abandoned", "successor"); err != nil {
@@ -186,7 +187,7 @@ func TestRunBoardHistorySupersessionUnconditional(t *testing.T) {
 }
 
 func TestRunBoardHistorySortsMostRecentFirst(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	day := func(d int) func() time.Time {
 		return func() time.Time { return time.Date(2026, time.January, d, 12, 0, 0, 0, time.UTC) }
 	}
@@ -231,7 +232,7 @@ func TestRunBoardHistorySortsMostRecentFirst(t *testing.T) {
 }
 
 func TestRunBoardPriorityConsistentAcrossBuckets(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "active-pri", Title: "Active Pri", Content: "body", Priority: "critical"})
 
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "icebox-pri", Title: "Icebox Pri", Content: "body", Priority: "medium"})
@@ -275,7 +276,7 @@ func TestRunBoardPriorityConsistentAcrossBuckets(t *testing.T) {
 }
 
 func TestRunBoardMissingDatesUnknown(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "no-dates", "")
 	stripDates(t, v, "test-proj", "no-dates")
 
@@ -299,7 +300,7 @@ func TestRunBoardMissingDatesUnknown(t *testing.T) {
 }
 
 func TestRunBoardStaleParentsFlagged(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "retired-parent", "")
 	mkTask(t, v, "test-proj", "still-active-child", "retired-parent")
 	if err := v.RetireTask("test-proj", "retired-parent"); err != nil {
@@ -398,7 +399,7 @@ func assertStatusWord(t *testing.T, out, slug, want string) {
 // the assertion. This paragraph explains why the convention exists; the guard is
 // what holds it.
 func TestRunBoardHistoryNonDoneMemberIsNotLabeledCompleted(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "finished-epic", "")
 
 	// Non-done members, reached through the normal lifecycle actions.
@@ -470,7 +471,7 @@ func TestRunBoardHistoryNonDoneMemberIsNotLabeledCompleted(t *testing.T) {
 // "(completed …)" because Meta.Done is true for it, and this task does not
 // change done/cancelled rendering.
 func TestRunBoardHistoryMemberUnderCancelledEpicIsNotLabeledCompleted(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "cancelled-epic", "")
 	mkTask(t, v, "test-proj", "in-progress-child", "cancelled-epic")
 	if err := v.UpdateTaskStatus("test-proj", "in-progress-child", storage.StatusInProgress); err != nil {
@@ -502,7 +503,7 @@ func TestRunBoardHistoryMemberUnderCancelledEpicIsNotLabeledCompleted(t *testing
 }
 
 func TestRunBoardProjectFlag(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a", "proj-b")
 	mkTask(t, v, "proj-a", "task-a", "")
 	mkTask(t, v, "proj-b", "task-b", "")
 
@@ -535,6 +536,7 @@ func TestBoardCommandProjectFlagOverridesAutoDetect(t *testing.T) {
 	t.Chdir(projDir)
 
 	v := storage.NewVault(vaultDir)
+	testutil.InitProject(t, vaultDir, "auto-detected", "explicit-proj")
 	mkTask(t, v, "auto-detected", "auto-task", "")
 	mkTask(t, v, "explicit-proj", "explicit-task", "")
 
@@ -558,7 +560,7 @@ func TestBoardCommandProjectFlagOverridesAutoDetect(t *testing.T) {
 }
 
 func TestRunBoardJSONRoundTrips(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "epic-a", "")
 	mkTask(t, v, "test-proj", "child-a", "epic-a")
 	mkTask(t, v, "test-proj", "lonely", "")
@@ -657,7 +659,7 @@ func dateColumn(t *testing.T, row, label string) int {
 // the label is the only thing that can move the date column, so a disagreement
 // can only mean the label column is unpadded.
 func TestRunBoardHistoryStatusColumnIsPadded(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	// row-alpha / row-bravo: equal length, and neither contains a status word
 	// that an assertion here could match vacuously.
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "row-alpha", Title: "A", Content: "body", Priority: "high"})
@@ -703,7 +705,7 @@ func TestRunBoardHistoryStatusColumnIsPadded(t *testing.T) {
 // padding the label column UNCAPPED would have recreated the priority defect on
 // a brand-new column the first time one appeared.
 func TestRunBoardSupersededLabelDoesNotWidenEveryRow(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	const longSuccessor = "create-silently-duplicates-retired-slug-and-clobbers-done-record"
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: longSuccessor, Title: "S", Content: "body", Priority: "high"})
 	v.CreateTask("test-proj", storage.TaskSpec{Slug: "sup-gone", Title: "G", Content: "body", Priority: "high"})
@@ -744,7 +746,7 @@ func TestRunBoardSupersededLabelDoesNotWidenEveryRow(t *testing.T) {
 // assertion fails if the cap is removed; the full-text assertion fails if the
 // cap is swapped for truncation. Neither alone pins WHICH remedy shipped.
 func TestRunBoardOutlierPriorityDoesNotWidenEveryRow(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	for _, tc := range []struct{ slug, pri string }{
 		{"pri-row-aaa", "high"},
 		{"pri-row-bbb", "medium"},
@@ -789,7 +791,7 @@ func TestRunBoardOutlierPriorityDoesNotWidenEveryRow(t *testing.T) {
 // reports only retired — so ACTIVE is clean by accident, not by construction.
 // Nothing stops an open task carrying one.
 func TestRunBoardActiveOutlierPriorityClampsToo(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "test-proj")
 	mkTask(t, v, "test-proj", "act-epic", "")
 	if err := v.UpdateTaskStatus("test-proj", "act-epic", "in_progress"); err != nil {
 		t.Fatalf("status: %v", err)

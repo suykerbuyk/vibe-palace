@@ -66,7 +66,7 @@ func TestNewSeedsProjectDrawersResume(t *testing.T) {
 // targeting the same room.
 func TestWithDrawerOutMatchesReadBack(t *testing.T) {
 	var out storage.Drawer
-	h := New(t, WithDrawerOut("proj", "wing-a", "testing", "captured content", "facts", "2026-01-01T10:00:00Z", &out))
+	h := New(t, WithProject("proj"), WithDrawerOut("proj", "wing-a", "testing", "captured content", "facts", "2026-01-01T10:00:00Z", &out))
 
 	drawers, err := h.Vault.ListDrawers("proj", "wing-a", "testing")
 	if err != nil {
@@ -92,6 +92,7 @@ func TestWithDrawerOutMatchesReadBack(t *testing.T) {
 func TestDrawerIDStableAcrossRoomsViaWithDrawerOut(t *testing.T) {
 	var d1, d2 storage.Drawer
 	New(t,
+		WithProject("proj"),
 		WithDrawerOut("proj", "wing-a", "testing", "shared content here", "facts", "2026-01-01T10:00:00Z", &d1),
 		WithDrawerOut("proj", "wing-a", "debugging", "shared content here", "facts", "2026-01-01T10:00:00Z", &d2),
 	)
@@ -140,7 +141,7 @@ func TestSeedBatchesManyDrawerOptionsIntoOneRoom(t *testing.T) {
 		})
 	}
 
-	opts := []SeedOption{WithDrawers("bulk", "general", "general", specs...)}
+	opts := []SeedOption{WithProject("bulk"), WithDrawers("bulk", "general", "general", specs...)}
 	var captured storage.Drawer
 	for i := range 19 {
 		opts = append(opts, WithDrawer("bulk", "general", "general", "single drawer "+string(rune('a'+i)), "facts", "2026-01-01T10:00:00Z"))
@@ -176,6 +177,7 @@ func TestSeedBatchesManyDrawerOptionsIntoOneRoom(t *testing.T) {
 // counter tracks flushed groups specifically.
 func TestSeedAppendDrawersCallCountMatchesGroupCount(t *testing.T) {
 	h := New(t,
+		WithProject("proj-a"), WithProject("proj-b"), WithProject("proj-c"),
 		WithDrawers("proj-a", "general", "general",
 			DrawerSpec{Content: "a1", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T10:00:00Z"},
 			DrawerSpec{Content: "a2", Hall: "facts", SourceType: "manual", FiledAt: "2026-01-01T10:00:00Z"},
@@ -251,7 +253,7 @@ Custom body content.
 // via ListDrawers on the room the transcript's content should classify into,
 // consistent with a real capture.WriteSession call.
 func TestWithSessionWritesViaStorageDirectLane(t *testing.T) {
-	h := New(t, WithSession(capture.SessionParams{
+	h := New(t, WithProject("session-proj"), WithSession(capture.SessionParams{
 		Project: "session-proj",
 		Summary: "Seeded directly via the storage lane.",
 	}))
@@ -270,7 +272,7 @@ func TestWithSessionWritesViaStorageDirectLane(t *testing.T) {
 // carries the same raw result text h.CallTool itself returns.
 func TestWithCapturedSessionUsesMCPLaneAndReturnsResult(t *testing.T) {
 	var raw string
-	h := New(t, WithCapturedSession(map[string]any{
+	h := New(t, WithProject("captured-proj"), WithCapturedSession(map[string]any{
 		"project": "captured-proj",
 		"summary": "Seeded via the MCP lane.",
 	}, &raw))
@@ -302,7 +304,7 @@ func TestWithCapturedSessionUsesMCPLaneAndReturnsResult(t *testing.T) {
 // call.
 func TestNewReproducesResumeLostUpdateBug(t *testing.T) {
 	const project = "demo"
-	h := New(t, WithResume(project, "# Resume: demo\n\n## Project History\n\nhistory\n"))
+	h := New(t, WithProject(project), WithResume(project, "# Resume: demo\n\n## Project History\n\nhistory\n"))
 
 	var readA struct {
 		Content string `json:"content"`

@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/notesummary"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // mockCompleter is a tiny in-test llm.Completer. When err is non-nil,
@@ -719,6 +720,7 @@ func TestWriteSessionSessionSummaryEnqueueForLongBody(t *testing.T) {
 func bodyOverheadForSummary(t *testing.T, summary string) int {
 	t.Helper()
 	vault := testVault(t)
+	testutil.InitProject(t, vault.Root, "overhead-probe")
 	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
 		Project: "overhead-probe",
 		Summary: summary,

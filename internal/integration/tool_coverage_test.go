@@ -80,8 +80,14 @@ import (
 // call through h to confirm a side effect actually landed). It must check
 // something real about the response, never merely that the call succeeded.
 type toolFixture struct {
-	build  func(t *testing.T, h *testHarness) any
-	assert func(t *testing.T, h *testHarness, payload string)
+	// projects are the slugs the fixture writes into. The driver initialises
+	// each one (h.seedProject) before build runs, because every vault write
+	// under Projects/<slug>/ is refused for a project that is absent or
+	// phantom in the vault. A slug a fixture deliberately leaves
+	// uninitialised is simply not listed here.
+	projects []string
+	build    func(t *testing.T, h *testHarness) any
+	assert   func(t *testing.T, h *testHarness, payload string)
 }
 
 // covUnmarshal decodes a tool's JSON text payload, failing the test with the
@@ -351,6 +357,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_get_knowledge": {
+		projects: []string{"cov-knowledge"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_kg_add", map[string]any{
 				"project": "cov-knowledge", "subject": "vp", "predicate": "uses", "object": "sqlite",
@@ -434,6 +441,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_list_projects": {
+		projects: []string{"cov-listproj"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-listproj", "memory", "notes", "content", "long-term", "2026-01-01T10:00:00Z"))
 			return map[string]any{}
@@ -578,6 +586,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_palace_status": {
+		projects: []string{"cov-palacestatus"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-palacestatus", "w1", "r1", "content", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-palacestatus"}
@@ -594,6 +603,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_list_wings": {
+		projects: []string{"cov-listwings"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-listwings", "wing-a", "r", "content a", "facts", "2026-01-01T10:00:00Z"))
 			h.Seed(t, testinfra.WithDrawer("cov-listwings", "wing-b", "r", "content b", "facts", "2026-01-01T10:00:00Z"))
@@ -617,6 +627,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_list_rooms": {
+		projects: []string{"cov-listrooms"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-listrooms", "w", "room-a", "content a", "facts", "2026-01-01T10:00:00Z"))
 			h.Seed(t, testinfra.WithDrawer("cov-listrooms", "w", "room-b", "content b", "facts", "2026-01-01T10:00:00Z"))
@@ -642,6 +653,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_find_tunnels": {
+		projects: []string{"cov-tunnels"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-tunnels", "wing-a", "shared", "content a", "facts", "2026-01-01T10:00:00Z"))
 			h.Seed(t, testinfra.WithDrawer("cov-tunnels", "wing-b", "shared", "content b", "facts", "2026-01-01T10:00:00Z"))
@@ -669,6 +681,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_traverse": {
+		projects: []string{"cov-traverse"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-traverse", "wing-a", "shared", "content a", "facts", "2026-01-01T10:00:00Z"))
 			h.Seed(t, testinfra.WithDrawer("cov-traverse", "wing-b", "shared", "content b", "facts", "2026-01-01T10:00:00Z"))
@@ -804,6 +817,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_kg_add": {
+		projects: []string{"cov-kgadd"},
 		build: func(t *testing.T, h *testHarness) any {
 			return map[string]any{
 				"project": "cov-kgadd", "subject": "vp", "predicate": "uses", "object": "go",
@@ -821,6 +835,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_kg_query": {
+		projects: []string{"cov-kgquery"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_kg_add", map[string]any{
 				"project": "cov-kgquery", "subject": "vp", "predicate": "uses", "object": "go",
@@ -843,6 +858,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_kg_invalidate": {
+		projects: []string{"cov-kginvalidate"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_kg_add", map[string]any{
 				"project": "cov-kginvalidate", "subject": "vp", "predicate": "uses", "object": "go",
@@ -879,6 +895,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_kg_timeline": {
+		projects: []string{"cov-kgtimeline"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_kg_add", map[string]any{
 				"project": "cov-kgtimeline", "subject": "vp", "predicate": "uses", "object": "go",
@@ -901,6 +918,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_kg_stats": {
+		projects: []string{"cov-kgstats"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_kg_add", map[string]any{
 				"project": "cov-kgstats", "subject": "vp", "predicate": "uses", "object": "go",
@@ -921,6 +939,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_search": {
+		projects: []string{"cov-search"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-search", "w", "r", "alpha bravo charlie unique-marker", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-search", "query": "alpha bravo charlie unique-marker"}
@@ -943,6 +962,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_search_cross_project": {
+		projects: []string{"cov-crosssearch"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-crosssearch", "w", "r", "gearbox bearing drivetrain unique-marker", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"query": "gearbox bearing drivetrain unique-marker"}
@@ -964,6 +984,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_search_sessions": {
+		projects: []string{"cov-searchsessions"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-searchsessions", "summary": "a distinctive coverage summary",
@@ -988,6 +1009,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_get_friction_trends": {
+		projects: []string{"cov-friction"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-friction", "summary": "session for friction trend coverage", "enrich": false,
@@ -1014,6 +1036,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_capture_session": {
+		projects: []string{"cov-capture"},
 		build: func(t *testing.T, h *testHarness) any {
 			return map[string]any{
 				"project": "cov-capture", "summary": "a coverage capture session",
@@ -1041,6 +1064,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_get_session_detail": {
+		projects: []string{"cov-sessiondetail"},
 		build: func(t *testing.T, h *testHarness) any {
 			var raw string
 			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
@@ -1078,6 +1102,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_get_effectiveness": {
+		projects: []string{"cov-effectiveness"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-effectiveness", "summary": "effectiveness coverage session", "enrich": false,
@@ -1096,6 +1121,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_get_project_context": {
+		projects: []string{"cov-projectcontext"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithCapturedSession(map[string]any{
 				"project": "cov-projectcontext", "summary": "project context coverage session", "enrich": false,
@@ -1544,6 +1570,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_memory_write": {
+		projects: []string{"cov-memwrite"},
 		build: func(t *testing.T, h *testHarness) any {
 			return map[string]any{
 				"project": "cov-memwrite", "rel": "pref-cov.md", "name": "Coverage Pref",
@@ -1562,6 +1589,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_memory_read": {
+		projects: []string{"cov-memread"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_memory_write", map[string]any{
 				"project": "cov-memread", "rel": "pref-cov.md", "name": "Coverage Pref",
@@ -1587,6 +1615,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_memory_list": {
+		projects: []string{"cov-memlist"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_memory_write", map[string]any{
 				"project": "cov-memlist", "rel": "pref-a.md", "name": "A",
@@ -1610,6 +1639,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_memory_delete": {
+		projects: []string{"cov-memdelete"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_memory_write", map[string]any{
 				"project": "cov-memdelete", "rel": "pref-cov.md", "name": "Coverage Pref",
@@ -1685,6 +1715,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_vault_write": {
+		projects: []string{"cov-vaultwrite"},
 		build: func(t *testing.T, h *testHarness) any {
 			return map[string]any{"path": "Projects/cov-vaultwrite/note.md", "content": "hello vault"}
 		},
@@ -1701,6 +1732,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_edit": {
+		projects: []string{"cov-vaultedit"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultedit/note.md", "content": "hello vault",
@@ -1725,6 +1757,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_read": {
+		projects: []string{"cov-vaultread"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultread/note.md", "content": "read me",
@@ -1741,6 +1774,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_list": {
+		projects: []string{"cov-vaultlist"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultlist/note.md", "content": "x",
@@ -1769,6 +1803,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_exists": {
+		projects: []string{"cov-vaultexists"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultexists/note.md", "content": "x",
@@ -1785,6 +1820,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_sha256": {
+		projects: []string{"cov-vaultsha"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultsha/note.md", "content": "shasum me",
@@ -1804,6 +1840,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_move": {
+		projects: []string{"cov-vaultmove"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultmove/from.md", "content": "x",
@@ -1828,6 +1865,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_delete": {
+		projects: []string{"cov-vaultdelete"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.callTool(t, "vp_vault_write", map[string]any{
 				"path": "Projects/cov-vaultdelete/note.md", "content": "x",
@@ -1850,6 +1888,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_update_resume": {
+		projects: []string{"cov-updateresume"},
 		build: func(t *testing.T, h *testHarness) any {
 			return map[string]any{
 				"project": "cov-updateresume", "content": "resume body", "expected_sha256": "",
@@ -1871,6 +1910,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// -----------------------------------------------------------------
 
 	"vp_vault_split": {
+		projects: []string{"cov-vaultsplit"},
 		build: func(t *testing.T, h *testHarness) any {
 			const project = "cov-vaultsplit"
 			h.callTool(t, "vp_vault_write", map[string]any{
@@ -2091,6 +2131,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_vault_sync": {
+		projects: []string{"cov-vaultsync"},
 		build: func(t *testing.T, h *testHarness) any {
 			covGitVault(t, h)
 			h.callTool(t, "vp_vault_write", map[string]any{
@@ -2155,6 +2196,7 @@ var toolCoverageFixtures = map[string]toolFixture{
 	},
 
 	"vp_refresh_index": {
+		projects: []string{"cov-refreshindex"},
 		build: func(t *testing.T, h *testHarness) any {
 			h.Seed(t, testinfra.WithDrawer("cov-refreshindex", "w", "r", "content to reindex", "facts", "2026-01-01T10:00:00Z"))
 			return map[string]any{"project": "cov-refreshindex"}
@@ -2408,6 +2450,9 @@ func TestToolCoverageExecution(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, false)
 			h.registerAllTools(t)
+			for _, slug := range fx.projects {
+				h.seedProject(t, slug)
+			}
 
 			args := fx.build(t, h)
 			payload, isErr := h.callToolRaw(t, name, args)

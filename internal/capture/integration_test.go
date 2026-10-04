@@ -23,6 +23,9 @@ func bornCurrentVault(t *testing.T, root string) *storage.Vault {
 	if err := surface.WriteFormat(root, surface.RequiredDataFormat); err != nil {
 		t.Fatalf("stamp born-current vault: %v", err)
 	}
+	// Every integration test here writes test-proj; the vault's write
+	// primitives refuse a project the vault has not initialised.
+	testutil.InitProject(t, root, "test-proj")
 	return storage.NewVault(root)
 }
 

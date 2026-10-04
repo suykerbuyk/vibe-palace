@@ -133,6 +133,7 @@ func TestIntegrationHostParityFootprint(t *testing.T) {
 
 	t.Run("grok_mcp_post_defaults", func(t *testing.T) {
 		h := newHarness(t, false) // mock embedder — no ONNX; short-mode safe
+		h.seedProject(t, "parity-grok")
 		h.registerAllTools(t)
 
 		logs := captureLogs(t)
@@ -438,6 +439,8 @@ func TestIntegrationHostParityNoAutoArchiveUnknownHost(t *testing.T) {
 	testinfra.IsolateEnv(t, testinfra.WithClaudeHome())
 
 	h := newHarness(t, false)
+	// "unknown" names the host, not the project: the project is initialised.
+	h.seedProject(t, "parity-unknown")
 	h.registerAllTools(t)
 	// Default initMCP client is "integration-test" — not in the hook-less set.
 	// No withClientInfo → HostUnknown / no auto archive.

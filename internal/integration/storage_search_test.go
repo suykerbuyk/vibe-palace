@@ -16,6 +16,7 @@ import (
 // layer become searchable after a rebuild, with correct semantic ranking.
 func TestIntegrationStorageToSearch(t *testing.T) {
 	h := newHarness(t, true) // real ONNX
+	h.seedProject(t, "proj")
 	ctx := context.Background()
 
 	// Seed drawers with distinct topics across wings and rooms.
@@ -97,6 +98,7 @@ func TestIntegrationStorageToSearch(t *testing.T) {
 // metadata fields survive the storage → index → search round-trip.
 func TestIntegrationStorageSearchMetadataPreservation(t *testing.T) {
 	h := newHarness(t, true) // real ONNX
+	h.seedProject(t, "proj")
 	ctx := context.Background()
 
 	d := storage.Drawer{

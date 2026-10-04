@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // The refuse-gate on task paths. Task files have a typed writer for every field
@@ -26,6 +28,8 @@ func taskGateVault(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("eval tempdir: %v", err)
 	}
+	// Every write these tests expect to succeed lands in project p.
+	testutil.InitProject(t, root, "p")
 	return root
 }
 

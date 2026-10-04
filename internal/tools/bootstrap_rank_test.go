@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestHeadOfQueueIsGraphOrderNotListOrder is mutation 2's target: the queue must
@@ -22,6 +23,7 @@ import (
 // must come first.
 func TestHeadOfQueueIsGraphOrderNotListOrder(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	mustCreate := func(slug, title, priority string) {
 		t.Helper()
@@ -86,6 +88,7 @@ func TestHeadOfQueueIsGraphOrderNotListOrder(t *testing.T) {
 // agent cannot open is a name, not an index entry.
 func TestHeadOfQueueRowsCarryTheirHandle(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug: "only-task", Title: "The only task", Content: "body", Priority: "high",
 	}); err != nil {
@@ -115,6 +118,7 @@ func TestHeadOfQueueRowsCarryTheirHandle(t *testing.T) {
 // written FIRST, making it the OLDEST, and it must still come back at the top.
 func TestSessionIndexRanksByRelevanceNotRecency(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	if err := vault.CreateTask("test-proj", storage.TaskSpec{
 		Slug:     "commit-log-archives-orphaned-commits",
 		Title:    "The commit log archives orphaned commits",
@@ -180,6 +184,7 @@ func TestSessionIndexRanksByRelevanceNotRecency(t *testing.T) {
 // change: the row is an index entry, and the narrative stays behind the URI.
 func TestSessionIndexCarriesNoSummaryBody(t *testing.T) {
 	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	const narrative = "A long narrative that belongs in the session note and not in every bootstrap payload."
 	if _, err := vault.WriteSession("test-proj", storage.SessionMeta{
 		Date: "2026-08-18", Title: "a session", Summary: narrative, Tag: "implementation",

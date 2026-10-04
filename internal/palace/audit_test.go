@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func auditVault(t *testing.T) *storage.Vault {
@@ -22,6 +23,7 @@ func addDrawer(t *testing.T, v *storage.Vault, project, wing, room, content stri
 		SourceType: "manual",
 		FiledAt:    "2026-04-10T10:00:00Z",
 	}
+	testutil.InitProject(t, v.Root, project)
 	if err := v.AppendDrawer(project, wing, room, d); err != nil {
 		t.Fatalf("AppendDrawer(%s/%s/%s): %v", project, wing, room, err)
 	}
@@ -259,6 +261,7 @@ func addDecisionDrawer(t *testing.T, v *storage.Vault, project, wing, content st
 		SourceType: storage.SourceTypeDecision,
 		FiledAt:    "2026-04-10T10:00:00Z",
 	}
+	testutil.InitProject(t, v.Root, project)
 	if err := v.AppendDrawer(project, wing, "decisions", d); err != nil {
 		t.Fatalf("AppendDrawer(decision): %v", err)
 	}

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 const departedLabel = "git@gitlab.example.com:q/vibe-palace-vault.git"
@@ -123,6 +125,8 @@ func TestDepartedProject_EveryEntryPointRefuses(t *testing.T) {
 // case-variant top directory are in it.
 func TestDepartedProject_Scope(t *testing.T) {
 	root := departedVault(t, movedRecord())
+	// q and pq are live projects beside the departed p; p stays uninitialised.
+	testutil.InitProject(t, root, "q", "pq")
 	for _, ok := range []string{"Projects/q/x.md", "palace/q/x.md", "notes.md", "Projects/pq/x.md", "palace/.local/p/x"} {
 		if _, err := Write(root, ok, "x\n", ""); err != nil {
 			t.Fatalf("%s refused: %v", ok, err)

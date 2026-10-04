@@ -38,6 +38,7 @@ func TestIntegrationDiscoverDetectsAndProposes(t *testing.T) {
 
 	// 3 "general" drawers with ML/neural network content.
 	// No "ml" room exists in defaults, so these stay in general.
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "general",
 			"Train the neural network transformer model with gradient descent fine-tuning",
@@ -129,6 +130,7 @@ func TestIntegrationDiscoverApplyReducesGeneral(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 4 "general" drawers that contain "orchestration" — a keyword not in defaults.
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "general",
 			"Container orchestration with kubernetes cluster management",
@@ -242,6 +244,7 @@ func TestIntegrationDiscoverEstimate(t *testing.T) {
 			"Some unclassified content "+string(rune('A'+i)),
 			"facts", "2026-04-10T10:00:00Z"))
 	}
+	h.seedProject(t, "proj")
 	h.Seed(t, opts...)
 
 	rc := buildClassifier(h.Config)
@@ -272,6 +275,7 @@ func TestIntegrationDiscoverRejectsRegressions(t *testing.T) {
 	h := newHarness(t, false)
 
 	// 1 general drawer with "frobulate" keyword.
+	h.seedProject(t, "proj")
 	h.Seed(t,
 		testinfra.WithDrawer("proj", "proj", "general",
 			"Frobulate the data ingestion pipeline for faster processing",

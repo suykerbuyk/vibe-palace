@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"runtime"
 	"strings"
 )
@@ -121,6 +122,7 @@ func TestWrite_ErrorWhenDirNotWritable(t *testing.T) {
 
 func TestWrite_StampsVaultWrite(t *testing.T) {
 	vault := t.TempDir()
+	testutil.InitProject(t, vault, "proj")
 	p := filepath.Join(vault, "Projects", "proj", "resume.md")
 	if err := Write(vault, p, []byte("body")); err != nil {
 		t.Fatal(err)

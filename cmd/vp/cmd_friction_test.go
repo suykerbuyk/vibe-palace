@@ -13,6 +13,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // seedFrictionVault writes a handful of sessions with varied friction scores,
@@ -20,6 +21,7 @@ import (
 // trends, and effectiveness CLI tests.
 func seedFrictionVault(t *testing.T, v *storage.Vault, proj string) {
 	t.Helper()
+	testutil.InitProject(t, v.Root, proj)
 	recent := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
 	older := time.Now().AddDate(0, 0, -45).Format("2006-01-02")
 

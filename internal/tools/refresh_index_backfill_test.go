@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // archivedProjectFixture builds a vault holding one project that has a
@@ -30,6 +31,7 @@ import (
 func archivedProjectFixture(t *testing.T, project, transcript string) (*storage.Vault, *search.Engine) {
 	t.Helper()
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, project)
 
 	if _, err := archive.Create(archive.CreateOptions{
 		Adapter:       archive.InlineAdapterName,

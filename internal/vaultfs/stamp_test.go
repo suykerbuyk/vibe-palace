@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // assertStamped fails unless stampDir/.surface records the current surface.
@@ -63,6 +64,7 @@ func TestVaultfsWritersStamp(t *testing.T) {
 
 	t.Run("Write stamps under Projects root", func(t *testing.T) {
 		vault := t.TempDir()
+		testutil.InitProject(t, vault, slug)
 		// Recognized stamp root: Projects/<slug>/… → <vault>/Projects/<slug>.
 		if _, err := Write(vault, "Projects/"+slug+"/notes/x.md", "hello", ""); err != nil {
 			t.Fatalf("Write: %v", err)
@@ -72,6 +74,7 @@ func TestVaultfsWritersStamp(t *testing.T) {
 
 	t.Run("Edit stamps under Projects root", func(t *testing.T) {
 		vault := t.TempDir()
+		testutil.InitProject(t, vault, slug)
 		rel := "Projects/" + slug + "/notes/x.md"
 		// Seed the target directly (no stamp, no cache warm) so the stamp that
 		// appears must be produced by the Edit-under-test, not by setup.
@@ -106,6 +109,7 @@ func TestVaultfsWritersStamp(t *testing.T) {
 
 	t.Run("Move does not stamp", func(t *testing.T) {
 		vault := t.TempDir()
+		testutil.InitProject(t, vault, slug)
 		from := "Projects/" + slug + "/notes/from.md"
 		to := "Projects/" + slug + "/notes/to.md"
 		seedFileDirect(t, filepath.Join(vault, filepath.FromSlash(from)), []byte("data"))
@@ -124,6 +128,7 @@ func TestVaultfsWritersStamp(t *testing.T) {
 	// sibling and confirm Delete did not recreate the stamp.
 	t.Run("Delete does not refresh an existing stamp", func(t *testing.T) {
 		vault := t.TempDir()
+		testutil.InitProject(t, vault, slug)
 		// First write creates the stamp at the project root.
 		if _, err := Write(vault, "Projects/"+slug+"/notes/a.md", "a", ""); err != nil {
 			t.Fatalf("Write: %v", err)

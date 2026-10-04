@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 func TestAnalyzeFrictionBreakdown_EmptyTranscript(t *testing.T) {
@@ -365,6 +366,7 @@ func TestGetFrictionTrends_Empty(t *testing.T) {
 func TestGetFrictionTrends_SingleWeek(t *testing.T) {
 	root := t.TempDir()
 	vault := storage.NewVault(root)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Write 3 sessions on the same day (today) with known friction scores.
 	today := nowDate()
@@ -404,6 +406,7 @@ func TestGetFrictionTrends_SingleWeek(t *testing.T) {
 func TestGetFrictionTrends_MultipleWeeks(t *testing.T) {
 	root := t.TempDir()
 	vault := storage.NewVault(root)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	// Write sessions across 3 different weeks.
 	// Use specific dates that are in different ISO weeks.
@@ -489,6 +492,7 @@ func nowDate() string {
 
 func TestScoreUnscoredNotesFromTranscript_WrapNotStub(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	const sid = "sess-friction"
 	today := nowDate()
 
@@ -551,6 +555,7 @@ func TestScoreUnscoredNotesFromTranscript_WrapNotStub(t *testing.T) {
 
 func TestScoreUnscoredNotesFromTranscript_HookIdentitySkipSurvivesRetag(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	const sid = "sess-hook-id"
 	today := nowDate()
 	if _, err := vault.WriteSession("p", storage.SessionMeta{
@@ -574,6 +579,7 @@ func TestScoreUnscoredNotesFromTranscript_HookIdentitySkipSurvivesRetag(t *testi
 
 func TestScoreUnscoredNotesFromTranscript_EmptyIsNoop(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "p")
 	const sid = "sess-empty"
 	if _, err := vault.WriteSession("p", storage.SessionMeta{
 		Date: nowDate(), Tag: "implementation", ArchiveSessionID: sid,
@@ -603,6 +609,7 @@ func TestScoreUnscoredNotesFromTranscript_EmptyIsNoop(t *testing.T) {
 func TestGetFrictionTrends_ExcludesAutoCapture(t *testing.T) {
 	root := t.TempDir()
 	vault := storage.NewVault(root)
+	testutil.InitProject(t, vault.Root, "test-proj")
 
 	today := nowDate()
 	for _, score := range []int{20, 40} {

@@ -22,6 +22,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/summarize"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
@@ -95,6 +96,7 @@ func TestCaptureThenDrain_SessionSummaryEndToEnd(t *testing.T) {
 	}
 
 	vault := storage.NewVault(vaultRoot)
+	testutil.InitProject(t, vaultRoot, slug)
 	// [summarization] lives in the host global config (per-test XDG): it is
 	// the only tier that carries it.
 	summCfg := "[summarization]\n" +

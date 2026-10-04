@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/suykerbuyk/vibe-palace/internal/llm"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // --- helpers ---
@@ -30,6 +31,7 @@ func addTuneDrawer(t *testing.T, v *storage.Vault, project, wing, room, content 
 		SourceType: "manual",
 		FiledAt:    "2026-04-10T10:00:00Z",
 	}
+	testutil.InitProject(t, v.Root, project)
 	if err := v.AppendDrawer(project, wing, room, d); err != nil {
 		t.Fatalf("AppendDrawer(%s/%s/%s): %v", project, wing, room, err)
 	}

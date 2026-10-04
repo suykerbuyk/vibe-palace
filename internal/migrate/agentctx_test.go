@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // writeSourceAgentctx materializes a representative vibe-vault project tree
@@ -71,6 +72,9 @@ func TestCopyAgentctx_LayoutAndBytes(t *testing.T) {
 	root := t.TempDir()
 	projDir := writeSourceAgentctx(t, root, "src-proj")
 	dest := storage.NewVault(t.TempDir())
+	// ImportVibeVault scaffolds the destination project before copyAgentctx;
+	// these tests call copyAgentctx directly, so the fixture does it.
+	testutil.InitProject(t, dest.Root, "src-proj")
 	slug := "src-proj"
 
 	res, err := copyAgentctx(dest, projDir, slug, ImportOptions{WithAgentctx: true})
@@ -135,6 +139,9 @@ func TestCopyAgentctx_Idempotent(t *testing.T) {
 	root := t.TempDir()
 	projDir := writeSourceAgentctx(t, root, "src-proj")
 	dest := storage.NewVault(t.TempDir())
+	// ImportVibeVault scaffolds the destination project before copyAgentctx;
+	// these tests call copyAgentctx directly, so the fixture does it.
+	testutil.InitProject(t, dest.Root, "src-proj")
 
 	first, err := copyAgentctx(dest, projDir, "src-proj", ImportOptions{WithAgentctx: true})
 	if err != nil {

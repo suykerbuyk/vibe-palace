@@ -28,7 +28,7 @@ import (
 // counterpart tasks the caller wants standing in `to`.
 func moveTestVault(t *testing.T, from, to string, spec TaskSpec, inDest ...TaskSpec) *Vault {
 	t.Helper()
-	v := testVault(t)
+	v := testVault(t, from, to)
 	if err := v.CreateTask(from, spec); err != nil {
 		t.Fatalf("CreateTask %s/%s: %v", from, spec.Slug, err)
 	}
@@ -212,7 +212,7 @@ func TestMoveTaskToProjectRefusesDanglingEdges(t *testing.T) {
 			spec.Depends = tc.depends
 			// The counterparts exist in the SOURCE project too, so the only
 			// thing under test is whether they resolve in the DESTINATION.
-			v := testVault(t)
+			v := testVault(t, "src-proj", "dst-proj")
 			for _, s := range []string{tc.parent} {
 				if s != "" {
 					if err := v.CreateTask("src-proj", plainTask(s)); err != nil {
@@ -282,7 +282,7 @@ func TestMoveTaskToProjectRefusesDanglingEdges(t *testing.T) {
 // schema states that a dependency on a retired or cancelled task is SATISFIED.
 // An active-only rule here would be a second, stricter definition of "resolves".
 func TestMoveTaskToProjectEdgeResolvesAgainstTheARCHIVEToo(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "src-proj", "dst-proj")
 	if err := v.CreateTask("dst-proj", plainTask("an-epic")); err != nil {
 		t.Fatalf("CreateTask dest epic: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestMoveTaskToProjectEdgeResolvesAgainstTheARCHIVEToo(t *testing.T) {
 // would pass on an implementation that renamed first and complained after, so
 // the destination bytes are compared.
 func TestMoveTaskToProjectRefusesOccupiedDestination(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "src-proj", "dst-proj")
 	if err := v.CreateTask("src-proj", plainTask("collide")); err != nil {
 		t.Fatalf("CreateTask source: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestMoveTaskToProjectRefusesOccupiedDestination(t *testing.T) {
 // TestMoveTaskToProjectRefusesSameProject: a move to where the task already is
 // is not a no-op worth performing, it is a caller who meant something else.
 func TestMoveTaskToProjectRefusesSameProject(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "src-proj")
 	if err := v.CreateTask("src-proj", plainTask("stay")); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestMoveTaskToProjectRefusesSameProject(t *testing.T) {
 // from the archived one: an unknown slug is not an archived slug, and telling a
 // caller the wrong one sends them looking in the wrong place.
 func TestMoveTaskToProjectRefusesMissingSource(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "dst-proj")
 	if err := v.CreateTask("dst-proj", plainTask("anchor")); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -570,7 +570,7 @@ func parkThenAct(t *testing.T, v *Vault, lockPath string, call func() error, act
 // destination while the move waits for its locks is refused, never silently
 // replaced by the rename.
 func TestMoveTakenSlugCheckIsInsideTheLock(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "q")
 	seedTaskRaw(t, v, "p", "", "x", "SOURCE")
 	destPath, _ := v.TaskFile("q", "x")
 	srcPath, _ := v.TaskFile("p", "x")
@@ -593,7 +593,7 @@ func TestMoveTakenSlugCheckIsInsideTheLock(t *testing.T) {
 // pair is told the truth, as the caller's friction, and moves nothing.
 func TestMoveLoserSaysConcurrent(t *testing.T) {
 	for attempt := 0; attempt < 5; attempt++ {
-		v := testVault(t)
+		v := testVault(t, "q")
 		src := seedTaskRaw(t, v, "p", "", "x", "TASK")
 		done := filepath.Join(v.Root, "Projects/p/tasks/done/x.md")
 		var archived string
@@ -723,7 +723,7 @@ func TestRetireTakenSlugCheckIsInsideTheSourceLock(t *testing.T) {
 func TestMoveTaskConcurrentSameSlugFromTwoProjects(t *testing.T) {
 	const slug = "contested"
 
-	v := testVault(t)
+	v := testVault(t, "project-a", "project-b", "project-c")
 	sources := [2]string{"project-a", "project-b"}
 	var srcPaths [2]string
 	var srcBytes [2][]byte

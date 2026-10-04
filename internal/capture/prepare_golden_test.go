@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // updateGolden regenerates internal/palace/testdata/prepare_golden.json from
@@ -96,6 +97,7 @@ func TestIndexTranscriptMatchesThePrepareGolden(t *testing.T) {
 	got := golden{Date: goldenDate.Format(time.RFC3339)}
 	for _, project := range []string{"alpha", "beta"} {
 		v := testVault(t)
+		testutil.InitProject(t, v.Root, project)
 		// A current vault (data format 2), so the KG reads below pass the
 		// format gate.
 		if err := os.MkdirAll(filepath.Join(v.Root, ".vibe-palace"), 0o755); err != nil {

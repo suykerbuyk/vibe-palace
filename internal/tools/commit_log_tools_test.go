@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -71,6 +72,7 @@ func runArchive(t *testing.T, handler func(context.Context, json.RawMessage) (an
 // multi-line body integrity.
 func TestArchiveCommitLog_FeatureBranchFlow(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "feat-proj")
 	tool := ArchiveCommitLogTool(vault)
 
 	multi := "feat: land it\n\nThis body spans\nseveral lines.\n\n- one\n- two\n\nCloses #7"
@@ -111,6 +113,7 @@ func TestArchiveCommitLog_FeatureBranchFlow(t *testing.T) {
 // nothing and leaves commit-log.md byte-identical, and the anchor unmoved.
 func TestArchiveCommitLog_Idempotent(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "idem-proj")
 	tool := ArchiveCommitLogTool(vault)
 	projDir := archiveRepo(t, "idem-proj", "feat: only one\n")
 
@@ -140,6 +143,7 @@ func TestArchiveCommitLog_Idempotent(t *testing.T) {
 // archived on the next run and only that one, proving the anchor is the cursor.
 func TestArchiveCommitLog_AnchorAdvances(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "adv-proj")
 	tool := ArchiveCommitLogTool(vault)
 	projDir := archiveRepo(t, "adv-proj", "feat: first landed\n")
 
@@ -264,6 +268,7 @@ func setAnchor(t *testing.T, vault *storage.Vault, slug, sha string) {
 // duplicate entries; TestArchiveCommitLog_Idempotent stays green.
 func TestArchiveCommitLog_SkipsSHAsTheLogAlreadyHolds(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "dup-proj")
 	tool := ArchiveCommitLogTool(vault)
 	projDir := archiveRepo(t, "dup-proj", "feat: one\n", "feat: two\n", "feat: three\n")
 

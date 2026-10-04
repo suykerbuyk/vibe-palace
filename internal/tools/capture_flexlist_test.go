@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // TestFlexStringListUnmarshal covers the coercion in isolation: an array stays an
@@ -116,6 +117,7 @@ func TestCaptureSessionSchemaAcceptsStringListFields(t *testing.T) {
 // than being lost.
 func TestCaptureSessionHandlerAcceptsStringListFields(t *testing.T) {
 	vault := testSessionVault(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
 	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{

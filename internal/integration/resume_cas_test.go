@@ -81,7 +81,7 @@ func TestIntegration_UpdateResumeStaleWriteRefused(t *testing.T) {
 		resumePath = "Projects/demo/resume.md"
 	)
 
-	h := &testHarness{testinfra.New(t, testinfra.WithResume(project, resumeCASFixture))}
+	h := &testHarness{testinfra.New(t, testinfra.WithProject(project), testinfra.WithResume(project, resumeCASFixture))}
 
 	resumeFile, err := h.Vault.ResumeFile(project)
 	if err != nil {

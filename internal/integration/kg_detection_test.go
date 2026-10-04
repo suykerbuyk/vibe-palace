@@ -13,6 +13,7 @@ import (
 // and relationship triples from a realistic transcript.
 func TestIntegrationKGDetection(t *testing.T) {
 	h := newHarness(t, false) // mock embedder — KG doesn't need real embeddings
+	h.seedProject(t, "proj")
 
 	// Each entity under test is mentioned twice so it clears the default
 	// kg.DefaultMinMentions (=2) frequency threshold enforced by the

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // Tests for vp_manage_task action=overwrite — the typed whole-file writer, and
@@ -25,6 +26,7 @@ import (
 func overwriteFixture(t *testing.T, project, slug string) (*storage.Vault, string) {
 	t.Helper()
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, project)
 	if err := vault.CreateTask(project, storage.TaskSpec{
 		Slug:     slug,
 		Title:    "Original Title",
@@ -272,6 +274,7 @@ func TestCreatedTaskHasTheConventionalFirstHeading(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vault := storage.NewVault(t.TempDir())
+			testutil.InitProject(t, vault.Root, "proj")
 			slug := "t"
 			if err := vault.CreateTask(project, storage.TaskSpec{
 				Slug: slug, Title: "T", Content: tc.content, Priority: "medium",

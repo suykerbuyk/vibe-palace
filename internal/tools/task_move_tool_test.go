@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/taskgraph"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // vp_manage_task action=move — the whole arm: the refuse-only core, the
@@ -41,6 +42,7 @@ import (
 func moveTaskVault(t *testing.T) *storage.Vault {
 	t.Helper()
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "src-proj", "dst-proj")
 	if err := vault.CreateTask("src-proj", storage.TaskSpec{
 		Slug: "moving", Title: "Moving", Content: "Body.\n", Priority: "medium",
 	}); err != nil {
@@ -172,6 +174,7 @@ func TestManageTaskMoveRequiresToProject(t *testing.T) {
 // and no next move.
 func TestManageTaskMoveSurfacesTheDanglingEdgeRefusal(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "src-proj", "dst-proj")
 	if err := vault.CreateTask("src-proj", storage.TaskSpec{
 		Slug: "child", Title: "Child", Content: "Body.\n", Priority: "medium", Parent: "an-epic",
 	}); err != nil {
@@ -212,6 +215,7 @@ func TestManageTaskMoveSurfacesTheDanglingEdgeRefusal(t *testing.T) {
 // receipt alone would pass on a commit that recorded half a rename.
 func TestManageTaskMoveCommitsBothHalvesOfTheRename(t *testing.T) {
 	vault := newGitBackedTestVault(t)
+	testutil.InitProject(t, vault.Root, "other-proj")
 	if err := vault.CreateTask("other-proj", storage.TaskSpec{
 		Slug: "anchor", Title: "Anchor", Content: seedTaskBody(), Priority: "medium",
 	}); err != nil {
@@ -344,6 +348,7 @@ func TestManageTaskMoveStampsDestinationModTimeViaProvenanceAmend(t *testing.T) 
 // recording nothing on a real vault.
 func TestManageTaskMoveProvenanceRecordsTheCommitItWasMadeAgainst(t *testing.T) {
 	vault := newGitBackedTestVault(t)
+	testutil.InitProject(t, vault.Root, "other-proj")
 	if err := vault.CreateTask("other-proj", storage.TaskSpec{
 		Slug: "anchor", Title: "Anchor", Content: seedTaskBody(), Priority: "medium",
 	}); err != nil {

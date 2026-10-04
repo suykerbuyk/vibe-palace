@@ -14,6 +14,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/wrapstate"
 )
 
@@ -294,6 +295,7 @@ func TestIterationResource_LastMatch(t *testing.T) {
 
 func TestAppendGetRoundTrip(t *testing.T) {
 	vault := storage.NewVault(t.TempDir())
+	testutil.InitProject(t, vault.Root, "demo")
 	// Use the real writer
 	_, _, err := vault.AppendIterationOwned("demo", "rt", "round-trip body\nline2", nil)
 	if err != nil {

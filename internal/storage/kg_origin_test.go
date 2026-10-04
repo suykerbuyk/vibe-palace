@@ -107,7 +107,7 @@ func readTriple(t *testing.T, v *Vault, project, s, p, o string) Triple {
 }
 
 func TestAddAuthoredTripleOverTrackedExtracted(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a")
 	ext := Triple{Subject: "a", Predicate: "uses", Object: "b", Confidence: 0.6, ValidFrom: "2026-01-01",
 		SourceSession: "s1", ExtractedAt: "2026-01-01T00:00:00Z"}
 	if err := v.AddTriple("proj-a", ext); err != nil {
@@ -123,7 +123,7 @@ func TestAddAuthoredTripleOverTrackedExtracted(t *testing.T) {
 }
 
 func TestAddAuthoredTripleOverTrackedAuthored(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a")
 	if err := v.AddAuthoredTriple("proj-a", Triple{Subject: "a", Predicate: "uses", Object: "b", Confidence: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestAddAuthoredTripleOverTrackedAuthored(t *testing.T) {
 }
 
 func TestExtractorAddTripleDedupUnchanged(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a")
 	if err := v.AddAuthoredTriple("proj-a", Triple{Subject: "a", Predicate: "uses", Object: "b"}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestExtractorAddTripleDedupUnchanged(t *testing.T) {
 }
 
 func TestInvalidateAuthoredTriple(t *testing.T) {
-	v := testVault(t)
+	v := testVault(t, "proj-a")
 	if err := v.AddTriple("proj-a", Triple{Subject: "a", Predicate: "uses", Object: "b", SourceSession: "s1", ExtractedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}

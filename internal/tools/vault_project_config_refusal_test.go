@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -117,6 +118,7 @@ func TestVaultToolsStillAllowTheSanctionedOperations(t *testing.T) {
 
 	t.Run("vp_vault_move out of it", func(t *testing.T) {
 		vault := newVaultRoot(t)
+		testutil.InitProject(t, vault.Root, "p")
 		seedRaw(t, vault, toolProjCfg, "[palace.scoring]\n")
 
 		p, _ := json.Marshal(map[string]any{
@@ -129,6 +131,7 @@ func TestVaultToolsStillAllowTheSanctionedOperations(t *testing.T) {
 
 	t.Run("vp_vault_write to a near miss", func(t *testing.T) {
 		vault := newVaultRoot(t)
+		testutil.InitProject(t, vault.Root, "p")
 		p, _ := json.Marshal(map[string]any{"path": "Projects/p/doc/config.toml", "content": "x"})
 		if _, err := VaultWriteTool(vault).Handler(context.Background(), p); err != nil {
 			t.Errorf("Projects/p/doc/config.toml must still be writable: %v", err)

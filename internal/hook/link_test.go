@@ -12,6 +12,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // linkFixture stands up a project + transcript and returns the pieces the link
@@ -33,6 +34,7 @@ type linkFixture struct {
 func newLinkFixture(t *testing.T) linkFixture {
 	t.Helper()
 	vaultRoot := t.TempDir()
+	testutil.InitProject(t, vaultRoot, "test-project")
 	cwd := t.TempDir()
 	writeVibeMarker(t, cwd)
 
