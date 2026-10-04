@@ -379,12 +379,6 @@ func (v *Vault) TrackedDrawerFiles(project string) (n int, known bool, err error
 	return n, true, nil
 }
 
-// trackedPalaceLocalPathspec lists files under any palace/<slug>/.local/. The
-// :(glob) magic keeps "*" from crossing a "/", so it names exactly the
-// top-level .local of each slug; a plain 'palace/*/.local' pathspec matches no
-// file at all, because a wildcard pathspec is not a directory prefix.
-const trackedPalaceLocalPathspec = ":(glob)palace/*/.local/**"
-
 // TrackedPalaceLocalFiles returns, per slug, how many files git tracks under
 // palace/<slug>/.local/ in this vault. It is read-only: one `git ls-files`
 // against the index.
@@ -411,7 +405,10 @@ func (v *Vault) TrackedPalaceLocalFiles() (map[string]int, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z", "--", trackedPalaceLocalPathspec)
+	// Every tracked file under palace/, filtered to palace/<slug>/.local/ below.
+	// Not a ':(glob)palace/*/.local/**' pathspec: SafeGitEnv makes pathspecs
+	// literal, under which that magic silently matches nothing.
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z", "--", "palace/")
 	cmd.Dir = v.Root
 	// LC_ALL=C so the "not a git repository" test below reads git's own words.
 	cmd.Env = SafeGitEnv("GIT_TERMINAL_PROMPT=0", "LC_ALL=C")

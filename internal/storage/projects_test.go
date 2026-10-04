@@ -576,3 +576,26 @@ func TestTrackedPalaceLocalFiles_IgnoresInheritedRepoEnv(t *testing.T) {
 		t.Fatalf("tracked = %v; the inherited GIT_DIR answered for another repository", got)
 	}
 }
+
+// The vault's one former glob pathspec, now a literal listing filtered in Go:
+// TrackedPalaceLocalFiles must still find each slug's top-level .local files
+// (a broken filter fails silently, reporting nothing tracked) and nothing
+// deeper.
+func TestTrackedPalaceLocalFilesSurvivesLiteralPathspecs(t *testing.T) {
+	dir := initTestRepo(t)
+	writeFile(t, dir, "palace/s/.local/f", "x\n")
+	writeFile(t, dir, "palace/s/.local/sub/g", "x\n")
+	writeFile(t, dir, "palace/t/.local/h", "x\n")
+	writeFile(t, dir, "palace/s/deeper/.local/g", "not top-level\n")
+	writeFile(t, dir, "palace/.local/top", "not a slug's\n")
+	writeFile(t, dir, "palace/s/.localish/x", "not .local\n")
+	gitRun(t, dir, "add", "-f", "palace")
+	gitRun(t, dir, "commit", "-q", "-m", "local")
+	got, err := NewVault(dir).TrackedPalaceLocalFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["s"] != 2 || got["t"] != 1 || len(got) != 2 {
+		t.Fatalf("TrackedPalaceLocalFiles = %v, want map[s:2 t:1]", got)
+	}
+}
