@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,41 @@ var CanonicalGitignorePatterns = []string{
 	".vp-fs-probe-*",
 }
 
+// MigratedVaultGitignorePatterns are the derived-index lines a MIGRATED vault
+// carries on top of CanonicalGitignorePatterns: drawers and the ingest ledger
+// are per-host derived data, rebuilt from archives (ADR-014 decision 11).
+//
+// 🔴 THEY ARE MARKER-GATED, NEVER CANONICAL. On a vault without the migration
+// marker the drawers are still tracked, and with these lines present every
+// `git add` of a dirty tracked drawer stages it AND exits 1 (its parent
+// directory is ignored), so tidy and sync fail on every v8 enrichment write.
+// They therefore reach a vault only through VaultGitignorePatterns, which adds
+// them only when storage.VaultMigrated is true — so a reverted vault, which has
+// no marker, never gets them back.
+var MigratedVaultGitignorePatterns = []string{
+	"palace/*/drawers/",
+	"palace/*/ingested-archives.jsonl",
+}
+
+// VaultGitignorePatterns is the vault's effective .gitignore line set: the
+// canonical lines, plus MigratedVaultGitignorePatterns when the vault carries
+// the migration marker. Every vault .gitignore writer and checker uses it, so
+// the writer that appends lines and the check that recognises its own write
+// cannot disagree.
+//
+// A marker that cannot be read is an error, never "unmigrated": every caller
+// is a writer, and a writer fails closed.
+func VaultGitignorePatterns(vaultRoot string) ([]string, error) {
+	migrated, err := VaultMigrated(vaultRoot)
+	if err != nil {
+		return nil, fmt.Errorf("vault .gitignore lines: %w", err)
+	}
+	if !migrated {
+		return CanonicalGitignorePatterns, nil
+	}
+	return append(slices.Clone(CanonicalGitignorePatterns), MigratedVaultGitignorePatterns...), nil
+}
+
 // NOTE: the vault deliberately does NOT ignore Projects/<slug>/commit.msg.
 // The /wrap two-copy workflow keeps two copies: the project-root copy is
 // host-local scratch (ignored by CanonicalProjectGitignorePatterns) that
@@ -77,9 +113,12 @@ var CanonicalProjectGitignorePatterns = []string{
 	"/.vibe-palace/",
 }
 
-// ReconcileVaultGitignore ensures every pattern in
-// CanonicalGitignorePatterns is present in <vaultRoot>/.gitignore as an
-// exact line, creating the file if it is absent. Existing content —
+// ReconcileVaultGitignore ensures every pattern in VaultGitignorePatterns
+// (the canonical lines, plus the derived-index lines on a migrated vault) is
+// present in <vaultRoot>/.gitignore as an exact line, creating the file if it
+// is absent. It is the one emitter of the derived-index lines: the migration
+// and a v9 `vp vault init` call it right after writing the marker. A marker
+// that cannot be read fails it before any write. Existing content —
 // comments, blank lines, custom patterns, ordering — is preserved
 // verbatim. Missing canonical lines append at EOF in declaration order.
 // Calling twice on the same vault produces byte-identical files.
@@ -101,6 +140,10 @@ var CanonicalProjectGitignorePatterns = []string{
 // writer) left behind, never assume the file is still absent.
 func ReconcileVaultGitignore(vaultRoot string) error {
 	path := filepath.Join(vaultRoot, ".gitignore")
+	patterns, err := VaultGitignorePatterns(vaultRoot)
+	if err != nil {
+		return err
+	}
 
 	release, err := vaultlock.Acquire(vaultRoot, path)
 	if err != nil {
@@ -115,7 +158,7 @@ func ReconcileVaultGitignore(vaultRoot string) error {
 		return fmt.Errorf("read gitignore %s: %w", path, err)
 	}
 
-	out, _ := appendMissingGitignoreLines(existing, CanonicalGitignorePatterns)
+	out, _ := appendMissingGitignoreLines(existing, patterns)
 	return atomicfile.Write(vaultRoot, path, out)
 }
 
@@ -134,7 +177,7 @@ func ReconcileProjectGitignore(projectRoot string) error {
 		CanonicalProjectGitignorePatterns, true)
 }
 
-// TopUpVaultGitignore appends every CanonicalGitignorePatterns line missing
+// TopUpVaultGitignore appends every VaultGitignorePatterns line missing
 // from an EXISTING <vaultRoot>/.gitignore, preserving the file's content and
 // order verbatim, and returns how many lines it added. When nothing is missing
 // the file is not touched at all.
@@ -153,9 +196,13 @@ func ReconcileProjectGitignore(projectRoot string) error {
 // exactly one of Create or Update for a given target, never both.
 func TopUpVaultGitignore(vaultRoot string) (int, error) {
 	path := filepath.Join(vaultRoot, ".gitignore")
+	patterns, err := VaultGitignorePatterns(vaultRoot)
+	if err != nil {
+		return 0, err
+	}
 	added := 0
-	err := LockedUpdate(vaultRoot, path, func(current []byte) ([]byte, error) {
-		out, n := appendMissingGitignoreLines(current, CanonicalGitignorePatterns)
+	err = LockedUpdate(vaultRoot, path, func(current []byte) ([]byte, error) {
+		out, n := appendMissingGitignoreLines(current, patterns)
 		if n == 0 {
 			return nil, nil
 		}
@@ -168,12 +215,16 @@ func TopUpVaultGitignore(vaultRoot string) (int, error) {
 	return added, nil
 }
 
-// MissingVaultGitignorePatterns returns the canonical vault patterns that are
-// absent from <vaultRoot>/.gitignore, in declaration order. A missing file
-// yields the full canonical set. It is read-only and underpins the Vault
-// reconciler's top-up plan.
+// MissingVaultGitignorePatterns returns the VaultGitignorePatterns lines that
+// are absent from <vaultRoot>/.gitignore, in declaration order. A missing file
+// yields the full set. It is read-only and underpins the Vault reconciler's
+// top-up plan; a marker that cannot be read is its error.
 func MissingVaultGitignorePatterns(vaultRoot string) ([]string, error) {
-	return missingGitignorePatterns(filepath.Join(vaultRoot, ".gitignore"), CanonicalGitignorePatterns)
+	patterns, err := VaultGitignorePatterns(vaultRoot)
+	if err != nil {
+		return nil, err
+	}
+	return missingGitignorePatterns(filepath.Join(vaultRoot, ".gitignore"), patterns)
 }
 
 // MissingProjectGitignorePatterns returns the canonical project-root

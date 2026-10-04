@@ -242,7 +242,7 @@ type VaultInitCommitOptions struct {
 //
 // .gitignore is committed only when it is dirty AND its bytes equal
 // appendMissingGitignoreLines(<HEAD's .gitignore, or empty when HEAD has
-// none>, CanonicalGitignorePatterns) — the function that produced them, so one
+// none>, VaultGitignorePatterns) — the function that produced them, so one
 // rule covers both the create and the top-up. Any other edit (an operator's
 // uncommitted change made before init ran) puts it in Kept, untouched.
 //
@@ -351,7 +351,9 @@ func vaultInitCommitMessage(vaultRoot string, paths []string) string {
 
 // isVaultGitignoreTopUp reports whether the vault .gitignore on disk is a
 // regular file holding exactly HEAD's .gitignore (empty when HEAD has none,
-// including an unborn HEAD) with vp's missing canonical lines appended.
+// including an unborn HEAD) with vp's missing lines appended — the SAME line
+// set the top-up wrote (VaultGitignorePatterns), so a migrated vault's derived
+// lines are recognised as vp's own write rather than kept as an operator edit.
 func isVaultGitignoreTopUp(vaultRoot string) (bool, error) {
 	got, ok, err := readRegularVaultFile(vaultRoot, vaultGitignoreRel)
 	if err != nil || !ok {
@@ -361,7 +363,11 @@ func isVaultGitignoreTopUp(vaultRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	want, _ := appendMissingGitignoreLines(base, CanonicalGitignorePatterns)
+	patterns, err := VaultGitignorePatterns(vaultRoot)
+	if err != nil {
+		return false, err
+	}
+	want, _ := appendMissingGitignoreLines(base, patterns)
 	return bytes.Equal(got, want), nil
 }
 
