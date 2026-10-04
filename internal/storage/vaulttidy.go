@@ -263,8 +263,9 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry, migrated bool) (s
 		}
 
 		if rule.Category == surfaceCategory {
-			// H2 status gate: untracked .surface is reported, tracked is swept.
-			if e.Status == "??" {
+			// H2 status gate: untracked .surface is reported, tracked is swept,
+			// except the palace stamp of a committed project (sweepableUntrackedPalaceStamp).
+			if e.Status == "??" && !sweepableUntrackedPalaceStamp(vaultPath, e.Path) {
 				reported = append(reported, e.Path)
 			} else {
 				swept = append(swept, e.Path)
@@ -290,6 +291,63 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry, migrated bool) (s
 		swept = append(swept, e.Path)
 	}
 	return swept, reported, deferred
+}
+
+// sweepableUntrackedPalaceStamp is the one untracked .surface tidy sweeps: an
+// untracked palace/<p>/.surface of a project the vault has committed. The first
+// write into palace/<p>/ of an initialised project (a KG add, a drawer) stamps
+// palace/<p>/ and nothing commits that stamp; reporting it would make every
+// such vault refuse to sync on a file no human needs to look at. It sweeps only
+// when ALL of these hold, and is reported otherwise:
+//   - the path is palace/<p>/.surface;
+//   - Projects/<p> is initialised (projectdir) AND Projects/<p>/.surface is
+//     tracked: the project itself is committed, so this is not a stray;
+//   - <p> has no departure record (the record wins);
+//   - the stamp is a regular file (Lstat: no symlink) whose bytes are exactly
+//     what surface.WriteStamp writes, "surface = N\n" with N >= 1.
+//
+// Task untracked-project-stamps-from-writers-that-never-commit, F1.
+func sweepableUntrackedPalaceStamp(vaultPath, rel string) bool {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 3 || parts[0] != "palace" || parts[2] != ".surface" {
+		return false
+	}
+	p := parts[1]
+	if state, err := ClassifyProjectDir(vaultPath, p); err != nil || !state.Initialised() {
+		return false
+	}
+	if departedpath.RecordExists(vaultPath, p) {
+		return false
+	}
+	abs := filepath.Join(vaultPath, "palace", p, ".surface")
+	if fi, err := os.Lstat(abs); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil || !isWrittenStamp(data) {
+		return false
+	}
+	tracked, err := GitPathIsTracked(vaultPath, "Projects/"+p+"/.surface")
+	return err == nil && tracked
+}
+
+// isWrittenStamp reports whether data is exactly the bytes surface.WriteStamp
+// writes: "surface = N\n", N a decimal integer >= 1 with no leading zero.
+func isWrittenStamp(data []byte) bool {
+	n, ok := strings.CutPrefix(string(data), "surface = ")
+	if !ok {
+		return false
+	}
+	n, ok = strings.CutSuffix(n, "\n")
+	if !ok || n == "" || n[0] == '0' {
+		return false
+	}
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Category names of the palace store rules, which a migrated vault gates.
