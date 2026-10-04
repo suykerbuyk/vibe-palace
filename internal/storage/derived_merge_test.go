@@ -635,6 +635,10 @@ func TestIsDerivedPath(t *testing.T) {
 		"palace/p-2/drawers/w/r/drawers.jsonl":   true,
 		"palace/-bad/drawers/w/r/drawers.jsonl":  false,
 		"palace/p/ingested-archives.jsonl.extra": false,
+		"palace/p/drawers/../kg/triples/x.json":  false,
+		"palace/p/drawers/./x":                   false,
+		"palace/p/drawers/":                      false,
+		"palace/p/drawers//x":                    false,
 	} {
 		if got := isDerivedPath(rel); got != want {
 			t.Errorf("isDerivedPath(%q) = %v, want %v", rel, got, want)
@@ -667,5 +671,80 @@ func TestPull_IsTheWayOutOfAMalformedMarker(t *testing.T) {
 	}
 	if _, err := SyncVault(broken, []string{"origin"}); err != nil {
 		t.Fatalf("SyncVault after the repair: %v", err)
+	}
+}
+
+// R3: the heal leaves an UNMIGRATED vault alone. Before the migration drawers
+// are tracked records, so a pulled drawer modify/delete conflict stays the
+// operator's: pullCore leaves the merge with the drawer on disk and unmerged,
+// and mergeFetchedTip aborts with the drawer kept. Mutant: the heal run
+// without the migrated check.
+func TestHeal_UnmigratedDrawerConflictIsLeftAlone(t *testing.T) {
+	setup := func(t *testing.T) string {
+		w := newMergeWorld(t)
+		lag := w.host(t)
+		editDrawer(t, lag)
+		other := w.host(t)
+		gitRun(t, other, "rm", "-q", "--", fixtureDrawer)
+		gitRun(t, other, "commit", "-q", "-m", "an unmigrated host removes the drawer")
+		gitRun(t, other, "push", "-q", "origin", "main")
+		gitRun(t, lag, "fetch", "-q", "origin")
+		return lag
+	}
+	t.Run("pullCore", func(t *testing.T) {
+		lag := setup(t)
+		res, err := Pull(lag, []string{"origin"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.RemoteResults["origin"] == nil || len(res.Derived.Healed) > 0 {
+			t.Errorf("want the conflict left alone: %v, healed %q", res.RemoteResults["origin"], res.Derived.Healed)
+		}
+		if !mergeInProgress(lag) || !onDisk(lag, fixtureDrawer) {
+			t.Errorf("in progress %v, drawer on disk %v; want both", mergeInProgress(lag), onDisk(lag, fixtureDrawer))
+		}
+		if u := gitRun(t, lag, "ls-files", "-u", "--", fixtureDrawer); u == "" {
+			t.Error("the drawer is no longer in the conflict")
+		}
+	})
+	t.Run("mergeFetchedTip", func(t *testing.T) {
+		lag := setup(t)
+		var rep DerivedMergeReport
+		if err := mergeFetchedTip(lag, "origin", "main", &rep); err == nil {
+			t.Fatal("want the conflict to fail the merge")
+		}
+		if mergeInProgress(lag) || len(rep.Healed) > 0 || !onDisk(lag, fixtureDrawer) || !tracked(t, lag, fixtureDrawer) {
+			t.Errorf("in progress %v, healed %q, on disk %v, tracked %v", mergeInProgress(lag), rep.Healed, onDisk(lag, fixtureDrawer), tracked(t, lag, fixtureDrawer))
+		}
+	})
+}
+
+// N2: the untrack refuses to commit when the index holds anything but the
+// dropped derived paths, and restores the index. Mutant: the staged-set check
+// removed (the unrelated staged file would be committed with the untrack).
+func TestUntrack_RefusesWhenTheIndexHoldsMoreThanTheDrop(t *testing.T) {
+	_, lag, added := laggingAddWorld(t)
+	prev := untrackBeforeCommit
+	untrackBeforeCommit = func() error {
+		writeFile(t, lag, "stray.md", "not the untrack's\n")
+		gitRun(t, lag, "add", "--", "stray.md")
+		return nil
+	}
+	t.Cleanup(func() { untrackBeforeCommit = prev })
+	head := ""
+	res, err := Pull(lag, []string{"origin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ue *derivedUntrackError
+	if rerr := res.RemoteResults["origin"]; !errors.As(rerr, &ue) || !strings.Contains(rerr.Error(), "refusing to commit the untrack") {
+		t.Fatalf("RemoteResults[origin] = %v, want the staged-set refusal", rerr)
+	}
+	head = gitRun(t, lag, "show", "--name-only", "--format=", "HEAD")
+	if strings.Contains(head, "stray.md") {
+		t.Errorf("the stray staged file was committed: %q", head)
+	}
+	if !tracked(t, lag, added) {
+		t.Error("the drawer's index entry was not restored")
 	}
 }

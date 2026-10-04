@@ -85,6 +85,13 @@ func isDerivedPath(rel string) bool {
 	if len(parts) < 3 || parts[0] != "palace" || slug.Validate(parts[1]) != nil {
 		return false
 	}
+	// No empty, "." or ".." segment: git never stores one, and a path that
+	// carried one could name a file outside drawers/ (drawers/../kg/...).
+	for _, seg := range parts {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
 	switch {
 	case parts[2] == "drawers" && len(parts) >= 4:
 		return true
