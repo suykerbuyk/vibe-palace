@@ -412,7 +412,23 @@ func buildMergeManifest(vault *storage.Vault, p vaultMergeParams, beforeCopy boo
 		}
 	}
 
+	// 🔴 MIGRATED INTO MIGRATED ONLY (ADR-014 decision 11; Chair ruling C7),
+	// beside the format gate and before any inventory, so plan, apply and
+	// verify — which all build the manifest here — refuse every other pairing.
+	// The destination is the operator's live vault: merge never changes its
+	// marker.
+	if err := mergeRefuseUnmigratedPair(p.Source, dest); err != nil {
+		return nil, err
+	}
+
 	slugs, err := normalizeSplitSlugs(p.Slugs)
+	if err != nil {
+		return nil, err
+	}
+
+	// The source's derived residue, once, for every slug (split's rule:
+	// untracked, ignored, derived index paths), left out of what travels.
+	residue, err := storage.DerivedResidue(p.Source, slugs)
 	if err != nil {
 		return nil, err
 	}
@@ -490,7 +506,7 @@ func buildMergeManifest(vault *storage.Vault, p vaultMergeParams, beforeCopy boo
 			}
 			report.Tree = tree.label
 			m.Trees = append(m.Trees, report)
-			m.Entries = append(m.Entries, entries...)
+			m.Entries = append(m.Entries, withoutResidue(entries, residue)...)
 		}
 	}
 
@@ -855,6 +871,28 @@ func mergeRemoteList(r []string) string {
 		return "(none)"
 	}
 	return strings.Join(r, ", ")
+}
+
+// mergeRefuseUnmigratedPair is merge's two-marker rule: the source and the
+// destination must both carry the migration marker. A marker that cannot be
+// read refuses, naming the key: merge is a writer, and a writer fails closed.
+func mergeRefuseUnmigratedPair(source, dest string) error {
+	for _, v := range []struct{ label, root, fix string }{
+		{"source", source, "migrate the source first"},
+		{"destination", dest, "merge never writes a marker; run the migration on the destination"},
+	} {
+		migrated, err := storage.VaultMigrated(v.root)
+		if err != nil {
+			return fmt.Errorf("refusing to merge: the %s vault's migration marker cannot be read: %w", v.label, err)
+		}
+		if !migrated {
+			return apperr.Caller(fmt.Errorf(
+				"refusing to merge: the %s vault at %s carries no migration marker (authored_only in "+
+					".vibe-palace/vault.toml). Merge moves projects only from a migrated vault into a "+
+					"migrated vault; %s", v.label, v.root, v.fix))
+		}
+	}
+	return nil
 }
 
 // vaultMergeApply copies the manifest from the source into the bound vault. It
