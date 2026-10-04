@@ -193,9 +193,22 @@ func cmdMigrateVibeVault() *cli.Command {
 			}
 
 			printMigrateResult(result, dryRun)
-			return cli.ExitOK
+			return importExit(result)
 		},
 	}
+}
+
+// importExit is an import's exit code: a failure recorded per item (a session
+// that could not be read, parsed or dated, a failed baseline addition, archive
+// write or marker write) does not stop the import, but it does not leave the
+// exit code at 0 either, or a script cannot tell an incomplete import from a
+// complete one.
+func importExit(result migrate.ImportResult) int {
+	if n := len(result.Errors); n > 0 {
+		fmt.Fprintf(os.Stderr, "\nThe import is incomplete: %s (see the ERROR lines above).\n", countOf(n, "error", "errors"))
+		return cli.ExitSystem
+	}
+	return cli.ExitOK
 }
 
 // buildSlugResolver constructs a SlugResolver from CLI flags.
@@ -355,7 +368,7 @@ func cmdMigrateMemPalace() *cli.Command {
 			if !dryRun {
 				fmt.Fprint(os.Stderr, mempalaceCaveat(result))
 			}
-			return cli.ExitOK
+			return importExit(result)
 		},
 	}
 }

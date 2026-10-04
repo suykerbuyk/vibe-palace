@@ -237,7 +237,12 @@ vp migrate mempalace --export-path PATH --project SLUG [--dry-run]
     holds the export, the dry run over-reports what a real run would commit.
     A vibevault dry run does honour the import markers, so its session counts
     are exact.
-- Individual item failures are reported but don't abort the import
+- A failure on one item is reported and does not abort the import. The
+  failing item could be a session that cannot be read, parsed or dated, or
+  a failed baseline addition, archive write or marker write. The command
+  then ends with "The import is incomplete" and exits **2**, so a script
+  can tell an incomplete import from a complete one. A re-run picks up
+  what failed.
 - Safe to re-run: vibevault is idempotent by session and source hash, and
   MemPalace by batch id
 

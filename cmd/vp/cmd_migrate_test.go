@@ -414,6 +414,50 @@ func seedVibeVaultSource(t *testing.T, root string) {
 	}
 }
 
+// TestMigrateVibeVaultExitsNonZeroWhenAnItemFailed: a per-item failure does
+// not stop the import, but the command must not exit 0 over it. An undated
+// session is skipped and reported; an archive write that fails (the
+// project's transcripts/ is read-only) is reported. Either way the exit is
+// ExitSystem.
+func TestMigrateVibeVaultExitsNonZeroWhenAnItemFailed(t *testing.T) {
+	cases := map[string]func(t *testing.T, root string){
+		"undated session": func(t *testing.T, root string) {
+			undated := "---\nsession_id: \"s2\"\nproject: p\ntitle: \"Two\"\n---\n## Transcript\n\nNo date on this one.\n"
+			if err := os.WriteFile(filepath.Join(root, "Projects", "p", "sessions", "s2.md"), []byte(undated), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"archive write fails": func(t *testing.T, root string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root writes through a read-only directory")
+			}
+			dir := filepath.Join(root, "Projects", "p", "transcripts")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		},
+	}
+	for name, breakIt := range cases {
+		t.Run(name, func(t *testing.T) {
+			vaultDir := setupTestVaultEnv(t)
+			seedVibeVaultSource(t, vaultDir)
+			breakIt(t, vaultDir)
+			var code int
+			stderr := captureStderr(t, func() { code = cmdMigrateVibeVault().Run([]string{"--yes"}) })
+			if code != cli.ExitSystem {
+				t.Fatalf("exit code = %d, want ExitSystem; stderr:\n%s", code, stderr)
+			}
+			if !strings.Contains(stderr, "The import is incomplete: ") || !strings.Contains(stderr, "    ERROR (p)") {
+				t.Errorf("output does not report the failed item and the incomplete import:\n%s", stderr)
+			}
+		})
+	}
+}
+
 // withPipeStdin swaps os.Stdin for the read end of a closed pipe for the rest
 // of the test: non-TTY, and EOF on read, so a prompt can never block.
 func withPipeStdin(t *testing.T) {
