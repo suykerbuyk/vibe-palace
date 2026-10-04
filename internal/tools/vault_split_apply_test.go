@@ -203,6 +203,14 @@ func TestVaultSplit_RefusesEveryPairingButMigratedIntoMigrated(t *testing.T) {
 			},
 			splitUnmarkedDest,
 			"carries no migration marker"},
+		{"a source marker that cannot be read",
+			func(t *testing.T) string {
+				root := splitFixtureVault(t, "alpha")
+				writeSplitFile(t, root, ".vibe-palace/vault.toml", "format = 2\nauthored_only = 5\n")
+				return root
+			},
+			splitInitDest,
+			"authored_only"},
 		{"a destination marker that cannot be read",
 			func(t *testing.T) string { return splitFixtureVault(t, "alpha") },
 			func(t *testing.T) string {

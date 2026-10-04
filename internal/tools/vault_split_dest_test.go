@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
@@ -69,4 +70,36 @@ func splitInitDest(t *testing.T) string {
 		t.Fatalf("vp vault init the destination: %v", err)
 	}
 	return dest
+}
+
+// The root half of leak gate 1 admits Audits/ without include_audits only
+// when it holds nothing but the destination's own .surface stamp: anything
+// else there is refused by the ROOT check itself, not only by leak gate 2.
+// Mutant: the root check admitting any Audits/.
+func TestSplitLeakGateMembership_AuditsOnlyItsStamp(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  bool // a root problem naming Audits
+	}{
+		{"only .surface", []string{"Audits/.surface"}, false},
+		{".surface and a report", []string{"Audits/.surface", "Audits/2026-10-04-vault.md"}, true},
+		{"a report alone", []string{"Audits/2026-10-04-vault.md"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dest := t.TempDir()
+			for _, f := range tc.files {
+				writeSplitFile(t, dest, f, "x\n")
+			}
+			var rootProblem bool
+			for _, p := range splitLeakGateMembership(dest, nil, vaultSplitParams{}) {
+				if strings.Contains(p, `destination root holds "Audits"`) {
+					rootProblem = true
+				}
+			}
+			if rootProblem != tc.want {
+				t.Errorf("root check reports Audits = %v, want %v", rootProblem, tc.want)
+			}
+		})
+	}
 }

@@ -48,6 +48,13 @@ func TestCopy_RefusesEveryPairingButMigratedIntoMigrated(t *testing.T) {
 		{"(c) unmarked into unmarked",
 			func(t *testing.T, f *copyFix) { f.unmarkSource(t); f.unmarkDest(t) },
 			[]string{"migrate the source first", "vp vault init"}},
+		{"a destination marker that cannot be read",
+			func(t *testing.T, f *copyFix) {
+				writeFile(t, f.V, ".vibe-palace/vault.toml", "format = 2\nauthored_only = 5\n")
+				gitRun(t, f.V, "commit", "-q", "-am", "a bad hand edit")
+				gitRun(t, f.V, "push", "-q", "origin", "main")
+			},
+			[]string{"migration marker cannot be read", "authored_only"}},
 		{"a source marker that cannot be read",
 			func(t *testing.T, f *copyFix) {
 				f.srcPush(t, ".vibe-palace/vault.toml", "format = 2\nauthored_only = 5\n")

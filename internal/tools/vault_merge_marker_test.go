@@ -60,6 +60,14 @@ func TestVaultMerge_RefusesEveryPairingButMigratedIntoMigrated(t *testing.T) {
 			func(t *testing.T) string { s := mergeSourceVault(t, "alpha"); unmarkVault(t, s); return s },
 			func(t *testing.T) string { d := mergeDestVault(t, "gamma"); unmarkVault(t, d); return d },
 			"carries no migration marker"},
+		{"a source marker that cannot be read",
+			func(t *testing.T) string {
+				s := mergeSourceVault(t, "alpha")
+				writeSplitFile(t, s, ".vibe-palace/vault.toml", "format = 2\nauthored_only = 5\n")
+				return s
+			},
+			func(t *testing.T) string { return mergeDestVault(t, "gamma") },
+			"authored_only"},
 		{"a destination marker that cannot be read",
 			func(t *testing.T) string { return mergeSourceVault(t, "alpha") },
 			func(t *testing.T) string {
