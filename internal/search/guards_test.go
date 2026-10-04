@@ -136,10 +136,12 @@ func TestABusyWarmProjectServesTheIndexItHolds(t *testing.T) {
 
 // TestSemaphoreHandOffNeverLeaks (F4): the semaphore is handed over only once
 // every acquirer is waiting in acquireSem's second select (the semWaitHook),
-// so each round's winner takes it there, deterministically. Acquirers have
-// millisecond timeouts, half with a context cancelled mid-wait. An acquirer
-// that took the semaphore and still returned an error would leak it: after
-// every round a zero-timeout acquire must succeed.
+// so each round's winner takes it there. Acquirer 0 waits far longer than any
+// hand-off and is never cancelled, so a winner in the second select is certain; the others
+// have millisecond timeouts, and half of them have their context cancelled
+// mid-wait (after they are known to be waiting). An acquirer that took the
+// semaphore and still returned an error would leak it: after every round a
+// zero-timeout acquire must succeed.
 func TestSemaphoreHandOffNeverLeaks(t *testing.T) {
 	const acquirers = 8
 	for round := range 50 {
@@ -149,23 +151,32 @@ func TestSemaphoreHandOffNeverLeaks(t *testing.T) {
 		semWaitHook = func() { waiting <- struct{}{} }
 		var wg sync.WaitGroup
 		var won atomic.Int64
+		cancels := make([]context.CancelFunc, acquirers)
 		for i := range acquirers {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancels[i] = cancel
+			timeout := time.Duration(5+i) * time.Millisecond
+			if i == 0 {
+				// Far longer than any hand-off: certain to be waiting when the
+				// holder releases, yet finite, so a leaked semaphore fails the
+				// final check instead of hanging the test.
+				timeout = 10 * time.Second
+			}
 			wg.Go(func() {
-				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				if i%2 == 0 {
-					go func() { time.Sleep(time.Duration(i) * time.Millisecond); cancel() }()
-				}
-				if err := acquireSem(ctx, sem, time.Duration(5+i)*time.Millisecond); err == nil {
+				if err := acquireSem(ctx, sem, timeout); err == nil {
 					won.Add(1)
 					<-sem
 				}
 			})
 		}
 		for range acquirers {
-			<-waiting
+			<-waiting // every acquirer is past its first try and about to wait
 		}
-		<-sem // hand over: every acquirer is in (or entering) the second select
+		for i := 2; i < acquirers; i += 2 {
+			go func() { time.Sleep(time.Duration(i/2) * time.Millisecond); cancels[i]() }()
+		}
+		<-sem // hand over
 		wg.Wait()
 		semWaitHook = nil
 		if won.Load() == 0 {
