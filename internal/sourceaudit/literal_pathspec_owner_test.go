@@ -102,6 +102,16 @@ import "example.com/gitenv"
 
 func listAll() []string { return gitenv.SafeGitEnv("GIT_LITERAL_PATHSPECS=0") }
 `, "tools.listAll -> GIT_LITERAL_PATHSPECS"},
+		{"part b: a variable name in another case", `package tools
+
+func env() []string { return []string{"git_glob_pathspecs=1"} }
+`, "tools.env -> GIT_GLOB_PATHSPECS"},
+		{"part b: a variable name in prose, flagged by design", `package tools
+
+import "errors"
+
+var errMode = errors.New("unset GIT_ICASE_PATHSPECS and retry")
+`, "tools.errMode -> GIT_ICASE_PATHSPECS"},
 		{"part b: an inherited mode set by hand", `package tools
 
 func env() []string { return []string{"GIT_GLOB_PATHSPECS=1"} }
@@ -136,6 +146,22 @@ func args() []string { return []string{"--icase-pathspecs", "ls-files", "--", "P
 				t.Fatalf("findings = %q, want [%q]", got, tc.want)
 			}
 		})
+	}
+}
+
+// The owner may reach the constant under a dot import of gitenv too.
+func TestLiteralPathspecOwnerAllowsTheOwnerUnderADotImport(t *testing.T) {
+	storage := `package storage
+
+import . "example.com/gitenv"
+
+func GitPathIgnored(vaultPath, rel string) (bool, error) {
+	_ = SafeGitEnv(GlobPathspecs)
+	return false, nil
+}
+`
+	if got := literalFindings(t, map[string]string{"gitenv": literalGitenv, "storage": storage}); len(got) != 0 {
+		t.Fatalf("findings on the owner under a dot import: %q", got)
 	}
 }
 

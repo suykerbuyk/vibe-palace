@@ -35,7 +35,12 @@ import (
 //     command-line flag that turns literal mode off or conflicts with it
 //     (literalPathspecBypasses), outside package gitenv. That is the
 //     hand-rolled bypass that never touches the constant: an extra
-//     "GIT_LITERAL_PATHSPECS=0", or `git --no-literal-pathspecs`.
+//     "GIT_LITERAL_PATHSPECS=0", or `git --no-literal-pathspecs`. Variable
+//     names match case-insensitively (Windows reads the environment that
+//     way); flags match exactly. Prose that merely MENTIONS a variable name —
+//     an error message telling the user to unset one, say — is flagged too,
+//     by design: the rule cannot tell a mention from a setting, and a false
+//     positive here costs a rewording, while a miss reopens the bug.
 //  3. Any string literal that BEGINS with pathspec magic (pathspecMagicPrefixes).
 //     Under literal mode a pathspec like ':(glob)palace/*/.local/**' is the name
 //     of a file nobody has, so it matches nothing and git exits 0: a silent
@@ -68,6 +73,16 @@ var literalPathspecBypasses = []string{
 // 0). A literal beginning "://" is not reported: that is a URL's scheme
 // separator (the tree builds and parses remote URLs), not a pathspec.
 var pathspecMagicPrefixes = []string{":(", ":!", ":^", ":/"}
+
+// bypassIn reports whether val spells bypass b. A variable name is matched
+// case-insensitively, as the Windows environment reads it; a flag exactly, as
+// git parses it.
+func bypassIn(val, b string) bool {
+	if strings.HasPrefix(b, "GIT_") {
+		return strings.Contains(strings.ToUpper(val), b)
+	}
+	return strings.Contains(val, b)
+}
 
 // hasPathspecMagicPrefix reports whether val begins with magic prefix m.
 func hasPathspecMagicPrefix(val, m string) bool {
@@ -111,7 +126,9 @@ func literalPathspecOwner(files []file) []Finding {
 					}
 				case *ast.Ident:
 					if (pkg == "gitenv" || dotGitenv) && v.Name == "GlobPathspecs" {
-						add(globPathspecsFinding(f, v.Pos(), scope))
+						if _, ok := globPathspecsOwners[scope]; !ok {
+							add(globPathspecsFinding(f, v.Pos(), scope))
+						}
 					}
 				case *ast.BasicLit:
 					if v.Kind != token.STRING || pkg == "sourceaudit" {
@@ -123,7 +140,7 @@ func literalPathspecOwner(files []file) []Finding {
 					}
 					if pkg != "gitenv" {
 						for _, b := range literalPathspecBypasses {
-							if strings.Contains(val, b) {
+							if bypassIn(val, b) {
 								add(Finding{
 									Kind:   KindLiteralPathspecOptOut,
 									Symbol: scope + " -> " + b,
