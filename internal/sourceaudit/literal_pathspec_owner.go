@@ -63,8 +63,16 @@ var literalPathspecBypasses = []string{
 }
 
 // pathspecMagicPrefixes are the leading strings part 3 reports: long-form
-// magic, and the two short forms of exclude.
-var pathspecMagicPrefixes = []string{":(", ":!", ":^"}
+// magic, the two short forms of exclude, and the short form of top (':/', which
+// under literal mode names nothing: `git ls-files -- ':/'` prints nothing, exit
+// 0). A literal beginning "://" is not reported: that is a URL's scheme
+// separator (the tree builds and parses remote URLs), not a pathspec.
+var pathspecMagicPrefixes = []string{":(", ":!", ":^", ":/"}
+
+// hasPathspecMagicPrefix reports whether val begins with magic prefix m.
+func hasPathspecMagicPrefix(val, m string) bool {
+	return strings.HasPrefix(val, m) && (m != ":/" || !strings.HasPrefix(val, "://"))
+}
 
 func literalPathspecOwner(files []file) []Finding {
 	var out []Finding
@@ -133,7 +141,7 @@ func literalPathspecOwner(files []file) []Finding {
 						}
 					}
 					for _, m := range pathspecMagicPrefixes {
-						if strings.HasPrefix(val, m) {
+						if hasPathspecMagicPrefix(val, m) {
 							add(Finding{
 								Kind:   KindLiteralPathspecOptOut,
 								Symbol: scope + " -> magic " + m,

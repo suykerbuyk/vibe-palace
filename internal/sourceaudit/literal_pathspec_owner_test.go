@@ -40,6 +40,9 @@ func GitPathIgnored(vaultPath, rel string) (bool, error) {
 func show(rel string) []string {
 	return []string{"--literal-pathspecs", "show", "HEAD:" + rel, "--", "palace/"}
 }
+
+// CLEAN: a URL's scheme separator is not ':/' magic.
+const schemeSep = "://"
 `
 
 func literalFindings(t *testing.T, pkgs map[string]string) []string {
@@ -115,6 +118,18 @@ const localPathspec = ":(glob)palace/*/.local/**"
 
 func args() []string { return []string{"status", "--", ".", ":!.vp-locks"} }
 `, "tools.args -> magic :!"},
+		{"part c: short-form top", `package tools
+
+func args() []string { return []string{"ls-files", "--", ":/"} }
+`, "tools.args -> magic :/"},
+		{"part b: --glob-pathspecs", `package tools
+
+func args() []string { return []string{"--glob-pathspecs", "ls-files", "--", "palace/*"} }
+`, "tools.args -> --glob-pathspecs"},
+		{"part b: --icase-pathspecs", `package tools
+
+func args() []string { return []string{"--icase-pathspecs", "ls-files", "--", "Palace/"} }
+`, "tools.args -> --icase-pathspecs"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := literalFindings(t, literalTree(tc.src)); !slices.Equal(got, []string{tc.want}) {
