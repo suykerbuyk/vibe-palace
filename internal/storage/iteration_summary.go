@@ -47,7 +47,7 @@ func (v *Vault) WriteIterationSummary(project string, s IterationSummary) error 
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure iteration-summaries dir: %w", err)
 	}
 

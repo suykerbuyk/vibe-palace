@@ -183,7 +183,7 @@ func copyOne(destRoot, srcAbs, destAbs string, crownJewel bool, opts ImportOptio
 		if rerr != nil {
 			return fmt.Errorf("read %s: %w", srcAbs, rerr)
 		}
-		if derr := storage.EnsureDir(filepath.Dir(destAbs)); derr != nil {
+		if derr := storage.NewVault(destRoot).EnsureVaultDir(filepath.Dir(destAbs)); derr != nil {
 			return fmt.Errorf("ensure dir for %s: %w", rel, derr)
 		}
 		if werr := atomicfile.Write(destRoot, destAbs, data); werr != nil {

@@ -94,7 +94,7 @@ func (v *Vault) ArchiveCommitBodies(project string, commits []wrapstate.CommitIn
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := EnsureDir(filepath.Dir(logPath)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(logPath)); err != nil {
 		return 0, 0, fmt.Errorf("ensure project dir: %w", err)
 	}
 

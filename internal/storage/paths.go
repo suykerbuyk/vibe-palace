@@ -265,6 +265,13 @@ func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
+// EnsureVaultDir creates a directory in this vault: one under a project tree
+// (Projects/<p>/ or palace/<p>/). Storage makes every such directory here, so
+// one place decides whether a vault directory may be created.
+func (v *Vault) EnsureVaultDir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
 // KGTriplesDir returns the path to the knowledge graph triples directory:
 // {vault}/palace/{project}/kg/triples
 func (v *Vault) KGTriplesDir(project string) (string, error) {

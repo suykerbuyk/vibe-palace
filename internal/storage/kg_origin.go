@@ -79,7 +79,7 @@ func (v *Vault) AddAuthoredTriple(project string, t Triple) error {
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure triples dir: %w", err)
 	}
 	release, err := vaultlock.Acquire(v.Root, path)
@@ -128,7 +128,7 @@ func (v *Vault) InvalidateAuthoredTriple(project, subject, predicate, object, en
 		return fmt.Errorf("invalidate triple: local record %s/%s/%s does not match %s/%s/%s",
 			local.Subject, local.Predicate, local.Object, subject, predicate, object)
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure triples dir: %w", err)
 	}
 	release, err := vaultlock.Acquire(v.Root, path)

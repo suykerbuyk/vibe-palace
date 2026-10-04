@@ -136,7 +136,8 @@ func Apply(plan *Plan, opts WriteOptions) (*WriteReport, error) {
 			}
 
 			body := renderDatedAppend(toWrite, dateStr, k.section, created)
-			if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			// Gated: a refused write must not leave an empty project directory.
+			if err := opts.Vault.EnsureVaultDir(filepath.Dir(absPath)); err != nil {
 				return fmt.Errorf("mkdir %s: %w", filepath.Dir(absPath), err)
 			}
 			// appendOrCreate routes through atomicfile.Write, which stamps
@@ -377,7 +378,7 @@ func appendScratch(v *storage.Vault, project, rel, body string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return err
 	}
 	// Lock the read-then-append so a concurrent scratch append cannot clobber it.

@@ -127,7 +127,7 @@ func (v *Vault) AppendDrawers(project, wing, room string, ds []Drawer) (int, err
 	// appendUnderLock opens with O_CREATE but does not create parent
 	// directories the way atomicfile.Write does, so the room directory is
 	// still this caller's job.
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return 0, fmt.Errorf("ensure drawer dir: %w", err)
 	}
 

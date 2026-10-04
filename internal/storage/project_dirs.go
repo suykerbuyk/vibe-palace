@@ -69,7 +69,7 @@ func (v *Vault) WriteResume(project, content, expectedSha256 string) error {
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
 
@@ -130,7 +130,7 @@ func (v *Vault) AppendIterationOwned(project, title, body string, override *int)
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return 0, 0, fmt.Errorf("ensure project dir: %w", err)
 	}
 

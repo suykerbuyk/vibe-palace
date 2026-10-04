@@ -1224,7 +1224,7 @@ func (v *Vault) CreateTask(project string, spec TaskSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(tasksDir); err != nil {
+	if err := v.EnsureVaultDir(tasksDir); err != nil {
 		return fmt.Errorf("ensure tasks dir: %w", err)
 	}
 
@@ -1760,7 +1760,7 @@ func (v *Vault) moveTask(project, slug string, destFn func(string) (string, erro
 	// "Nothing was changed", and must leave the project's tree as it found it.
 	// EnsureDir under the held lock is safe — the lock sidecar lives under
 	// <root>/.vp-locks/, independent of destDir.
-	if err := EnsureDir(destDir); err != nil {
+	if err := v.EnsureVaultDir(destDir); err != nil {
 		return fmt.Errorf("ensure dest dir: %w", err)
 	}
 
@@ -1967,7 +1967,7 @@ func (v *Vault) MoveTaskToProject(fromProject, slug, toProject string) error {
 
 	// Only now may a directory be created: a refusal above must leave the
 	// destination project's tree exactly as it found it.
-	if err := EnsureDir(destDir); err != nil {
+	if err := v.EnsureVaultDir(destDir); err != nil {
 		return fmt.Errorf("ensure dest dir: %w", err)
 	}
 

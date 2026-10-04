@@ -113,7 +113,7 @@ func (v *Vault) RecordIngestedArchive(project string, rec IngestedArchive) error
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure palace dir: %w", err)
 	}
 

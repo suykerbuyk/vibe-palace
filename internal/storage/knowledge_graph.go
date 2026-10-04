@@ -138,7 +138,7 @@ func (v *Vault) AddEntities(project string, es []Entity) (int, error) {
 	// appendUnderLock opens with O_CREATE but does not create parent
 	// directories the way atomicfile.Write does, so the kg directory is still
 	// this caller's job.
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return 0, fmt.Errorf("ensure kg dir: %w", err)
 	}
 
@@ -298,7 +298,7 @@ func (v *Vault) AddTriple(project string, t Triple) error {
 	if err != nil {
 		return err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("ensure triples dir: %w", err)
 	}
 

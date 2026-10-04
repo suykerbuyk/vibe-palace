@@ -411,7 +411,7 @@ func (v *Vault) UpsertSessionByKey(project, sessionKey string, meta SessionMeta,
 	if err != nil {
 		return SessionRef{}, false, err
 	}
-	if err := EnsureDir(dir); err != nil {
+	if err := v.EnsureVaultDir(dir); err != nil {
 		return SessionRef{}, false, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
@@ -1115,7 +1115,7 @@ func (v *Vault) WriteSessionRef(project string, meta SessionMeta, body string) (
 	if err != nil {
 		return SessionRef{}, err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return SessionRef{}, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
@@ -1222,7 +1222,7 @@ func (v *Vault) RewriteSession(project, date, fp string, iteration int, meta Ses
 	if err != nil {
 		return nil, err
 	}
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("ensure sessions dir: %w", err)
 	}
 
