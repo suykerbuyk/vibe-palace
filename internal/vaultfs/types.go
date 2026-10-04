@@ -6,6 +6,8 @@ package vaultfs
 import (
 	"errors"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/portable"
 )
 
 // Sentinel errors returned by vaultfs operations. Callers should compare with
@@ -36,7 +38,7 @@ var (
 	// or an over-length segment. Windows and darwin are shipped release targets,
 	// so a name that is fine on the Linux host but illegal on those filesystems
 	// makes the synced vault un-checkout-able there.
-	ErrUnportableName = errors.New("vaultfs: unportable filename rejected")
+	ErrUnportableName = portable.ErrUnportableName
 
 	// ErrFileNotFound is returned when a target file does not exist. It
 	// wraps fs.ErrNotExist via errors.Join in the constructing call site.
