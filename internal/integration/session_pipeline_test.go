@@ -93,14 +93,23 @@ fully applies or it has no effect.`
 			truncate(results[0].Content, 100))
 	}
 
-	// All results should reference the session.
+	// Every result comes from the captured session: its transcript chunks
+	// (source_ref = the session id), its session note ("sessions/<id>.md") or
+	// its decision ("session/<id>#decision/..."). The first search builds the
+	// whole project, notes and decisions included: capture's IndexDrawers on a
+	// cold engine no longer makes the project look built with the transcript
+	// alone (task search-index-completeness-and-build-serialization, defect 1).
+	sawTranscript := false
 	for i, r := range results {
-		if r.SourceType != "session" {
-			t.Errorf("result[%d] source_type = %q, want %q", i, r.SourceType, "session")
+		if !strings.Contains(r.SourceRef, captureResult.SessionID) {
+			t.Errorf("result[%d] source_ref = %q, want one of session %s", i, r.SourceRef, captureResult.SessionID)
 		}
-		if r.SourceRef != captureResult.SessionID {
-			t.Errorf("result[%d] source_ref = %q, want %q", i, r.SourceRef, captureResult.SessionID)
+		if r.SourceType == "session" && r.SourceRef == captureResult.SessionID {
+			sawTranscript = true
 		}
+	}
+	if !sawTranscript {
+		t.Errorf("no transcript chunk of session %s among the results: %+v", captureResult.SessionID, results)
 	}
 
 	// Search for unrelated content — should score lower.
