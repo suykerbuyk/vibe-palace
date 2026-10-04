@@ -48,6 +48,11 @@ type lockEvent struct {
 // lock acquisition and release made through lockProject, in order.
 var lockRecorder func(lockEvent)
 
+// semWaitHook, when a test sets it, runs when an acquirer has missed the
+// semaphore once and is about to wait for it, so a test can hand the
+// semaphore over only once every acquirer is waiting.
+var semWaitHook func()
+
 // beforeCommitLockHook, when a test sets it, runs while a projectLock holds
 // its mutex and is about to wait for the commit lock, so a test can act at the
 // moment a writer is known to hold the mutex and be blocked on the commit lock.
@@ -120,6 +125,9 @@ func acquireSem(ctx context.Context, sem chan struct{}, timeout time.Duration) e
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if semWaitHook != nil {
+		semWaitHook()
 	}
 	var expired <-chan time.Time
 	if timeout > 0 {

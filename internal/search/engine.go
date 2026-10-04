@@ -1124,8 +1124,14 @@ func storedChunkMeta(project string, c indexstore.StoredChunk) drawerMeta {
 
 // commitVectors commits one embed batch in its own short Tx. A busy commit
 // lock, a gone project or another embedding regime skips the write; the batch
-// still serves this process from memory.
+// still serves this process from memory. Once one batch of a timed build has
+// been skipped, the rest try the lock once each.
 func (e *Engine) commitVectors(ctx context.Context, pl *projectLock, timeout time.Duration, batch map[string][]float32, chain *genChain) {
+	if chain.skipped && timeout != indexstore.NoTimeout {
+		// An earlier batch of this build already found the lock busy: try
+		// once, instead of waiting the full timeout again for every batch.
+		timeout = 0
+	}
 	tx, err := pl.Tx(ctx, timeout)
 	if err != nil {
 		if isLockTimeout(err) {

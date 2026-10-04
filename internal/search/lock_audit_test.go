@@ -71,6 +71,18 @@ func productionFuncs(t *testing.T, dir string, recurse bool) []parsedFunc {
 	return out
 }
 
+// sendsOn reports whether fn's body contains a channel send.
+func sendsOn(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.SendStmt); ok {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
 // calls lists "pkg.Name" for a package-qualified call and ".Name" for a
 // method or field call, plus "Name" for a plain call, in fn's body.
 func calls(fn *ast.FuncDecl) []string {
@@ -99,8 +111,9 @@ func calls(fn *ast.FuncDecl) []string {
 // for every path:
 //
 //   - indexstore.Lock is called only by (*projectLock).Tx, and the project
-//     semaphore is taken only by lockProject: one acquisition path, so one
-//     lock order;
+//     semaphore is taken only by lockProject, through acquireSem, the one
+//     production function that sends on a channel: one acquisition path, so
+//     one lock order;
 //   - reapLocked and evictLocked, which run under a held commit lock, never
 //     take a project mutex or a commit lock (a second commit lock in one
 //     process deadlocks);
@@ -109,6 +122,9 @@ func calls(fn *ast.FuncDecl) []string {
 //   - internal/search never touches the index run lock.
 func TestLockDiscipline(t *testing.T) {
 	for _, fn := range productionFuncs(t, ".", false) {
+		if sendsOn(fn.decl) && fn.name != "acquireSem" {
+			t.Errorf("%s (%s) sends on a channel; only acquireSem may (the project semaphore)", fn.name, fn.file)
+		}
 		for _, c := range calls(fn.decl) {
 			switch {
 			case c == "indexstore.Lock" && fn.name != "projectLock.Tx":
