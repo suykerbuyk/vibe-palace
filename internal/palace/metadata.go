@@ -4,8 +4,10 @@
 package palace
 
 import (
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -272,8 +274,14 @@ type RoomClassifier struct {
 
 // NewRoomClassifier creates a classifier by deep-copying the built-in keyword
 // table and merging overrides. For existing rooms, override keywords are
-// appended. New rooms are added at the end (preserving tie-break order for
-// existing rooms). If minScore <= 0, the compiled default (0.6) is used.
+// appended. New rooms are added at the end, in ascending room name (preserving
+// tie-break order for existing rooms). If minScore <= 0, the compiled default
+// (0.6) is used.
+//
+// The overrides are merged in SORTED key order, never in map order: scoreRooms
+// breaks ties by entry order, and Digest hashes the table in order, so a
+// map-ordered merge would classify a tie, and fingerprint the table, differently
+// from one process to the next.
 func NewRoomClassifier(overrides map[string]WeightedOverride, minScore float64) *RoomClassifier {
 	if minScore <= 0 {
 		minScore = minRoomScore
@@ -287,9 +295,9 @@ func NewRoomClassifier(overrides map[string]WeightedOverride, minScore float64) 
 		entries[i] = roomEntry{room: e.room, keywords: kws}
 	}
 
-	// Merge overrides.
-	for room, ov := range overrides {
-		extra := buildOverrideKeywords(ov)
+	// Merge overrides, in sorted key order (see above).
+	for _, room := range slices.Sorted(maps.Keys(overrides)) {
+		extra := buildOverrideKeywords(overrides[room])
 		if len(extra) == 0 {
 			continue
 		}

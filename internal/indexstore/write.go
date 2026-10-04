@@ -27,8 +27,7 @@ import (
 // Known limit: a directory atomicfile creates on the way (palace/.local/locks/,
 // index/.generation/) is not itself fsynced into its parent, and a temp file a
 // crash leaves behind (.vp-atomic-*) is never swept. Neither loses a committed
-// record; the sweep of index/ belongs to
-// index-fingerprints-project-lifecycle-and-migration-marker.
+// record.
 func writeFile(path string, data []byte) error {
 	return writeFileFn(path, data)
 }
@@ -89,6 +88,48 @@ func appendFile(path string, data []byte) error {
 	if created {
 		if err := atomicfile.SyncDir(dir); err != nil {
 			return fmt.Errorf("indexstore: fsync %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// renameDir renames a whole directory in one rename(2), retrying the transient
+// Windows sharing failures, then fsyncs the parent so the rename survives a
+// crash. A lifecycle removal moves index/<p>/ to a tombstone this way, so a
+// crash leaves the whole live store or the whole tombstone, never part of each.
+func renameDir(from, to string) error {
+	if err := atomicfile.RenameWithRetry(from, to); err != nil {
+		return fmt.Errorf("indexstore: rename %s: %w", from, err)
+	}
+	if err := atomicfile.SyncDir(filepath.Dir(to)); err != nil {
+		return fmt.Errorf("indexstore: fsync %s: %w", filepath.Dir(to), err)
+	}
+	return nil
+}
+
+// removeTree removes a tombstoned directory and everything under it, deepest
+// first, one entry at a time through removeFile. It never follows a symlink: a
+// link is removed, not what it points to. Only tombstones are removed this way;
+// no project maps to one, so no lock guards it, and a removal a crash cut short
+// is finished by the next pass.
+func removeTree(dir string) error {
+	var paths []string
+	err := filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("indexstore: walk %s: %w", dir, err)
+	}
+	for i := len(paths) - 1; i >= 0; i-- {
+		if err := removeIfExists(paths[i]); err != nil {
+			return fmt.Errorf("indexstore: remove %s: %w", paths[i], err)
 		}
 	}
 	return nil

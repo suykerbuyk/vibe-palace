@@ -83,6 +83,7 @@ var plannerWriteCalls = map[string]string{
 	"OverwriteTaskFile":                "storage.Vault.OverwriteTaskFile",
 	"OverwriteTaskFileRewritingHeader": "storage.Vault.OverwriteTaskFileRewritingHeader",
 	"WriteFormat":                      "surface.WriteFormat",
+	"WriteVaultManifest":               "surface.WriteVaultManifest",
 	"Rename":                           "os.Rename",
 	"Remove":                           "os.Remove",
 	"RemoveAll":                        "os.RemoveAll",

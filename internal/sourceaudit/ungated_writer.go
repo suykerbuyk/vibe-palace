@@ -45,6 +45,9 @@ var vaultMutationSinks = []string{
 	// migrated vault must still read as format 0" — so the one write that
 	// records a data-format migration is invisible to the stamp anchor.
 	"surface.WriteFormat",
+	// The whole-manifest writer WriteFormat now goes through, which also writes
+	// the migration marker: the same file, the same invisibility to the stamp.
+	"surface.WriteVaultManifest",
 
 	// The palace drawer store does not reach the whole-file replace primitive:
 	// DeleteDrawer rewrites the JSONL with os.OpenFile(O_RDWR), and AppendDrawer

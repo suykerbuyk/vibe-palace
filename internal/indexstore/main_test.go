@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -127,6 +128,10 @@ func recordLocks(t *testing.T, f func(lockEvent)) {
 }
 
 // ---- fixtures --------------------------------------------------------------
+
+// testRecipe is the chunk recipe every test Tx records, so a test that writes
+// chunks meets chunks.fingerprint's precondition (Tx.UseRecipe).
+var testRecipe = index.ChunkRecipe{IndexerVersion: index.IndexerVersion}
 
 // newVault returns a vault in a temp dir with projects alpha and beta.
 func newVault(t *testing.T) *storage.Vault {
@@ -293,6 +298,7 @@ func runHelper(mode string) int {
 		if err != nil {
 			return fail("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		if err := sig("ready"); err != nil {
 			return fail("%v", err)
 		}
@@ -330,6 +336,7 @@ func runHelper(mode string) int {
 			if err != nil {
 				return fail("Lock: %v", err)
 			}
+			tx.UseRecipe(testRecipe)
 			var recs []OwnedChunk
 			for i := 0; i < 10; i++ {
 				recs = append(recs, ownedChunk(fmt.Sprintf("%schunk %d", prefix, b*10+i), "w", "r"))
@@ -350,6 +357,7 @@ func runHelper(mode string) int {
 		if err != nil {
 			return fail("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		recs := withDay([]OwnedChunk{ownedChunk(os.Getenv("VP_INDEXSTORE_CONTENT"), "alpha", "d")}, "2026-05-13")
 		if err := tx.Append(NoteOwner("n"), recs); err != nil {
 			_ = tx.Release()
@@ -373,6 +381,7 @@ func runHelper(mode string) int {
 		if err != nil {
 			return fail("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		result := "ok"
 		err = tx.CommitArchive(commitOf("S", "A", "2026-05-13", "X", "Y", "W"), noVectors{})
 		switch {
@@ -401,6 +410,7 @@ func runHelper(mode string) int {
 		if err != nil {
 			return fail("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		commitStep = func(step string) error {
 			if step == "discard-chunks" {
 				os.Exit(0)
@@ -424,6 +434,7 @@ func runHelper(mode string) int {
 			if err != nil {
 				return fail("Lock: %v", err)
 			}
+			tx.UseRecipe(testRecipe)
 			if _, err := tx.EnsureLedger(nil); err != nil {
 				return fail("EnsureLedger: %v", err)
 			}
@@ -448,6 +459,7 @@ func runHelper(mode string) int {
 		if err != nil {
 			return fail("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		tx.noteWrite(false)
 		if err := tx.Commit(); err != nil {
 			return fail("Commit: %v", err)

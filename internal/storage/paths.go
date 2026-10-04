@@ -175,6 +175,43 @@ func (v *Vault) IndexGenerationPath(project string) (string, error) {
 	return filepath.Join(v.IndexRootDir(), ".generation", project), nil
 }
 
+// IndexRenamePendingDir returns the directory of rename-pending records:
+// {vault}/palace/.local/index/.rename-pending
+//
+// A record, written by vp vault rename on the host that runs it, keeps that
+// host's index sweep from reaping the renamed project's store until the rename's
+// host-local step has moved it.
+func (v *Vault) IndexRenamePendingDir() string {
+	return filepath.Join(v.IndexRootDir(), ".rename-pending")
+}
+
+// IndexRenamePendingPath returns a project's rename-pending record:
+// {vault}/palace/.local/index/.rename-pending/{project}
+func (v *Vault) IndexRenamePendingPath(project string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	return filepath.Join(v.IndexRenamePendingDir(), project), nil
+}
+
+// IndexTombstonePrefix starts the name of a removed project's index directory,
+// palace/.local/index/.tomb-<project>-<epoch>, which the index sweep deletes.
+// The leading dot keeps it out of every project listing.
+const IndexTombstonePrefix = ".tomb-"
+
+// IndexTombstonePath returns where a project's index directory is renamed to
+// when it is removed: {vault}/palace/.local/index/.tomb-{project}-{epoch}. The
+// epoch tells two removals of a re-created slug apart.
+func (v *Vault) IndexTombstonePath(project, epoch string) (string, error) {
+	if err := slug.Validate(project); err != nil {
+		return "", fmt.Errorf("project: %w", err)
+	}
+	if epoch == "" || strings.ContainsAny(epoch, `/\.`) {
+		return "", fmt.Errorf("index tombstone: invalid epoch %q", epoch)
+	}
+	return filepath.Join(v.IndexRootDir(), IndexTombstonePrefix+project+"-"+epoch), nil
+}
+
 // IndexLocksDir returns the directory holding the index run lock, its holder
 // record and the per-project index commit locks:
 // {vault}/palace/.local/locks

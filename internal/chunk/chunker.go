@@ -19,18 +19,27 @@ func DefaultChunkConfig() ChunkConfig {
 	return ChunkConfig{MaxChars: 800, Overlap: 100}
 }
 
+// Normalized returns the config Chunk actually uses: a MaxChars of zero or less
+// becomes 800, a negative Overlap becomes 0, and an Overlap at or above MaxChars
+// becomes MaxChars/4. The host-local index's chunk fingerprint hashes these
+// values, so two configs that chunk identically fingerprint identically.
+func (c ChunkConfig) Normalized() ChunkConfig {
+	if c.MaxChars <= 0 {
+		c.MaxChars = 800
+	}
+	if c.Overlap < 0 {
+		c.Overlap = 0
+	}
+	if c.Overlap >= c.MaxChars {
+		c.Overlap = c.MaxChars / 4
+	}
+	return c
+}
+
 // Chunk splits text into semantic units suitable for embedding.
 // It respects sentence boundaries and exchange-pair boundaries when possible.
 func Chunk(text string, cfg ChunkConfig) []string {
-	if cfg.MaxChars <= 0 {
-		cfg.MaxChars = 800
-	}
-	if cfg.Overlap < 0 {
-		cfg.Overlap = 0
-	}
-	if cfg.Overlap >= cfg.MaxChars {
-		cfg.Overlap = cfg.MaxChars / 4
-	}
+	cfg = cfg.Normalized()
 
 	text = normalizeLineEndings(text)
 	text = strings.TrimSpace(text)

@@ -52,7 +52,20 @@ func (tx *Tx) Discard(kind DiscardKind) error {
 // live owner, so nothing loads. Removed in any other order, a kill could leave
 // a ledger that says an archive is ingested over a store that no longer holds
 // its chunks, and search would answer from nothing without a word.
+//
+// The new chunks.fingerprint, from the Tx's recipe (UseRecipe; ErrNoRecipe,
+// checked before anything is removed, when there is none), is written LAST,
+// after the removals and the fresh baseline, durably. A discard killed anywhere
+// before that write leaves the old fingerprint (or none), so the store reads
+// FingerprintMismatch (or FingerprintMissing), never FingerprintMatch over a
+// store that was not discarded.
 func (tx *Tx) discardChunks() error {
+	tx.mu.Lock()
+	r := tx.recipe
+	tx.mu.Unlock()
+	if r == nil {
+		return ErrNoRecipe
+	}
 	if err := tx.beginDestructive(); err != nil {
 		return err
 	}
@@ -78,7 +91,19 @@ func (tx *Tx) discardChunks() error {
 	if err != nil {
 		return err
 	}
-	return tx.appendLedger(s, rec)
+	if err := tx.appendLedger(s, rec); err != nil {
+		return err
+	}
+	if err := commitStep("discard-baseline"); err != nil {
+		return err
+	}
+	if err := writeFile(tx.files.fingerprint, []byte(r.Sum())); err != nil {
+		return err
+	}
+	tx.mu.Lock()
+	tx.fingerprintChecked = true
+	tx.mu.Unlock()
+	return nil
 }
 
 func (tx *Tx) discardVectors() error {

@@ -118,7 +118,14 @@ type DeletePlan struct {
 	Remotes   []string         `json:"push_targets"`
 	Head      string           `json:"head"`
 	Warnings  []string         `json:"warnings,omitempty"`
-	Digest    string           `json:"digest"`
+	// IndexStores lists each project's host-local index store,
+	// palace/.local/index/<p>/, when one exists. It is listed, never hashed and
+	// never part of Digest, and ApplyDelete does not remove it: a running
+	// ingester may append to it until the delete commit. The CLI and MCP callers
+	// remove it under its index commit lock after ApplyDelete has released the
+	// vault lock (indexstore.RemoveGoneProject).
+	IndexStores []string `json:"index_stores,omitempty"`
+	Digest      string   `json:"digest"`
 	// Command is the exact real-run command line, --expect filled in.
 	Command string `json:"command"`
 
@@ -408,9 +415,28 @@ func planDeleteLocked(held *vaultlock.Held, req DeleteRequest, dest *destination
 	if err != nil {
 		return nil, err
 	}
+	plan.IndexStores = deleteIndexStores(root, plan.Projects)
 	plan.Digest = deleteDigest(root, req, plan)
 	plan.Command = req.commandLine(root, plan.Digest)
 	return plan, nil
+}
+
+// deleteIndexStores lists the projects' host-local index stores that exist, as
+// vault-relative paths. It reads only directory existence: the files are
+// neither hashed nor bound into the digest.
+func deleteIndexStores(root string, projects []DeleteProjectPlan) []string {
+	v := NewVault(root)
+	var out []string
+	for _, pp := range projects {
+		dir, err := v.IndexDir(pp.Project)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Lstat(dir); err == nil && fi.IsDir() {
+			out = append(out, "palace/.local/index/"+pp.Project+"/")
+		}
+	}
+	return out
 }
 
 // refuseSelfDestination refuses a --moved-to that is one of V's own remotes.

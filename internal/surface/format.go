@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -82,9 +83,61 @@ const (
 	vaultManifestFile = "vault.toml"
 )
 
-// VaultManifest models the on-disk .vibe-palace/vault.toml. It carries a single
-// vault-wide data-format number today; more vault-scoped fields may join it.
+// VaultManifest models the on-disk .vibe-palace/vault.toml: the vault-wide
+// data-format number and the migration marker (ADR-014, "the migration marker").
+// Every writer goes through ManifestBytes, so a write of one field keeps the
+// others.
 type VaultManifest struct {
+	Format int `toml:"format"`
+	// AuthoredOnly is the migration marker, `authored_only = "YYYY-MM-DD"`: the
+	// date the vault became authored-only. Empty means unmigrated, and the key is
+	// then not written at all, so a manifest without it encodes to exactly the
+	// bytes FormatManifestBytes always wrote.
+	AuthoredOnly MarkerDate `toml:"authored_only,omitempty"`
+}
+
+// MarkerDate is the migration marker's value. It is always written as a quoted
+// TOML string, but a hand-edited unquoted TOML local date decodes too: the
+// decoder hands that over as a time.Time, which a plain string field refuses.
+type MarkerDate string
+
+// markerDateLayout is the only form the marker takes.
+const markerDateLayout = "2006-01-02"
+
+// tomlLocalDate is the name of the time.Location BurntSushi/toml gives a TOML
+// local date (internal.LocalDate, "date-local"). The package does not export
+// the location itself, so the marker matches it by name.
+const tomlLocalDate = "date-local"
+
+// UnmarshalTOML accepts a "YYYY-MM-DD" string or a TOML local date and
+// normalises either to "YYYY-MM-DD". Any other value is an error naming the key.
+func (d *MarkerDate) UnmarshalTOML(v any) error {
+	switch x := v.(type) {
+	case string:
+		t, err := time.Parse(markerDateLayout, x)
+		if err != nil {
+			return fmt.Errorf("authored_only = %q: want a date in YYYY-MM-DD form", x)
+		}
+		*d = MarkerDate(t.Format(markerDateLayout))
+		return nil
+	case time.Time:
+		// Only a TOML local DATE: the decoder gives it the location
+		// "date-local". A local time, a local datetime or an offset datetime
+		// is not a date.
+		if x.Location() == nil || x.Location().String() != tomlLocalDate {
+			return fmt.Errorf("authored_only = %s: want a date in YYYY-MM-DD form, not a time or a datetime", x.Format(time.RFC3339))
+		}
+		*d = MarkerDate(x.Format(markerDateLayout))
+		return nil
+	default:
+		return fmt.Errorf("authored_only: want a date in YYYY-MM-DD form, got a TOML %T", v)
+	}
+}
+
+// formatOnly is the struct ReadFormat decodes: the format key alone, so a
+// malformed migration marker never blocks a data-format-gated command. Only
+// ReadVaultManifest, the marker's reader, reports it.
+type formatOnly struct {
 	Format int `toml:"format"`
 }
 
@@ -119,11 +172,56 @@ func ReadFormat(root string) (int, error) {
 		}
 		return 0, fmt.Errorf("read vault.toml: %w", err)
 	}
-	var m VaultManifest
+	var m formatOnly
 	if err := toml.Unmarshal(data, &m); err != nil {
 		return 0, fmt.Errorf("parse vault.toml: %w", err)
 	}
 	return m.Format, nil
+}
+
+// ReadVaultManifest reads every field of <root>/.vibe-palace/vault.toml. An
+// absent file (or an empty root) is the zero manifest: format 0, no marker. A
+// malformed file, including a wrong-typed authored_only, is an error naming
+// what is wrong.
+func ReadVaultManifest(root string) (VaultManifest, error) {
+	if root == "" {
+		return VaultManifest{}, nil
+	}
+	data, err := os.ReadFile(vaultManifestPath(root))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return VaultManifest{}, nil
+		}
+		return VaultManifest{}, fmt.Errorf("read vault.toml: %w", err)
+	}
+	var m VaultManifest
+	if err := toml.Unmarshal(data, &m); err != nil {
+		return VaultManifest{}, fmt.Errorf("parse vault.toml: %w", err)
+	}
+	return m, nil
+}
+
+// manifestWriteFile is the one write of vault.toml; a test seam counts it.
+var manifestWriteFile = writeStampFileAtomic
+
+// WriteVaultManifest writes every field of m to <root>/.vibe-palace/vault.toml
+// in ONE atomic write (temp file and rename), so a crash leaves the old file or
+// the new one, never a manifest carrying some fields and not others.
+func WriteVaultManifest(root string, m VaultManifest) error {
+	if root == "" {
+		return ErrNoVault
+	}
+	data, err := ManifestBytes(m)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(root, vaultManifestDir), 0o755); err != nil {
+		return fmt.Errorf("create vault manifest dir: %w", err)
+	}
+	if err := manifestWriteFile(vaultManifestPath(root), data); err != nil {
+		return fmt.Errorf("write vault.toml: %w", err)
+	}
+	return nil
 }
 
 // WriteFormat atomically writes <root>/.vibe-palace/vault.toml with format = n.
@@ -146,45 +244,38 @@ func WriteFormat(root string, n int) error {
 	if n < 0 {
 		return fmt.Errorf("write vault.toml: format %d must not be negative", n)
 	}
-	current, err := ReadFormat(root)
+	// A read-modify-write over the whole manifest, so a format bump keeps the
+	// migration marker. A malformed marker refuses the bump rather than drop it.
+	m, err := ReadVaultManifest(root)
 	if err != nil {
 		return err
 	}
+	current := m.Format
 	if n < current {
 		return fmt.Errorf("write vault.toml: refusing to lower data format from %d to %d (monotone)", current, n)
 	}
 	if n == current {
 		return nil
 	}
-
-	dir := filepath.Join(root, vaultManifestDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create vault manifest dir: %w", err)
-	}
-
-	data, err := FormatManifestBytes(n)
-	if err != nil {
-		return err
-	}
-
-	// Reuse the surface stamp's private temp-file + rename primitive (same
-	// package) so the manifest is written atomically, mirroring how the stamp
-	// is written.
-	if err := writeStampFileAtomic(vaultManifestPath(root), data); err != nil {
-		return fmt.Errorf("write vault.toml: %w", err)
-	}
-	return nil
+	m.Format = n
+	return WriteVaultManifest(root, m)
 }
 
-// FormatManifestBytes is the exact .vibe-palace/vault.toml WriteFormat writes
-// for data format n. It is the one encoder, so a caller that must recognise a
-// stamp vp wrote (storage.CommitVaultInit) compares against the same bytes.
-func FormatManifestBytes(n int) ([]byte, error) {
+// ManifestBytes is the one encoder of .vibe-palace/vault.toml. With no marker it
+// emits exactly `format = <n>` and a newline, the bytes vp has always written.
+func ManifestBytes(m VaultManifest) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(VaultManifest{Format: n}); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
 		return nil, fmt.Errorf("encode vault.toml: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// FormatManifestBytes is the exact .vibe-palace/vault.toml WriteFormat writes
+// for data format n on a vault with no marker. A caller that must recognise a
+// stamp vp wrote (storage.CommitVaultInit) compares against these bytes.
+func FormatManifestBytes(n int) ([]byte, error) {
+	return ManifestBytes(VaultManifest{Format: n})
 }
 
 // FormatIncompatibleError is returned by the data-format read gate when a vault's

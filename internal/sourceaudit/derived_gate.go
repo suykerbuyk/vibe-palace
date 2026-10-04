@@ -36,9 +36,10 @@ import (
 //     is exempt from the write funnel BY VERB (a merge is N files in one
 //     operation, which no per-path primitive models), so a tool whose only
 //     vault writes are git-mediated reaches no sink and derives non-mutating —
-//     correctly, by the funnel's own definition. `vp_vault_sync`,
-//     `vp_vault_tidy` and `vault commit` are exactly that shape. Adopting the
-//     derived answer would SILENTLY UNGATE them. Separately, `vp config sync`
+//     correctly, by the funnel's own definition. `vp_vault_tidy` and `vault
+//     commit` are exactly that shape (`vp_vault_sync` was too, until its pull
+//     began running the host-local index sweep, whose writes this analysis
+//     does see). Adopting the derived answer would SILENTLY UNGATE them. Separately, `vp config sync`
 //     and `vp_init` write with bare os.WriteFile/os.Remove/os.Rename outside
 //     the funnel entirely, and would be ungated for a different reason.
 //   - It OVER-derives, through two known imprecisions of this analysis — a

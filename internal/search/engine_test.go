@@ -448,6 +448,7 @@ func TestReapOrphanVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx.UseRecipe(index.ChunkRecipe{IndexerVersion: index.IndexerVersion})
 	if err := tx.Append(indexstore.NoteOwner("notes/n.md"), []indexstore.OwnedChunk{chunk}); err != nil {
 		t.Fatal(err)
 	}
@@ -566,6 +567,7 @@ func TestReapRunsTheEmbedCacheCheckFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx.UseRecipe(index.ChunkRecipe{IndexerVersion: index.IndexerVersion})
 	if err := tx.Append(indexstore.NoteOwner("notes/n.md"), []indexstore.OwnedChunk{chunk}); err != nil {
 		t.Fatal(err)
 	}

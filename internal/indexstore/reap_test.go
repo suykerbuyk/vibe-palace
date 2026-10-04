@@ -230,6 +230,7 @@ func TestReapWaitsForAnInFlightCommit(t *testing.T) {
 					done <- nil
 					return
 				}
+				tx.UseRecipe(testRecipe)
 				got, err := tx.Reap(noOtherLive)
 				if err != nil {
 					t.Error(err)

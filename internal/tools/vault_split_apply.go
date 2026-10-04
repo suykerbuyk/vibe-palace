@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
@@ -934,6 +936,14 @@ func splitPurgeCommitted(vault *storage.Vault, p vaultSplitParams, m *splitManif
 		splitPurgeBeforeCleanup()
 	}
 	files, dirs, left := splitPurgeCleanup(vault.Root, trees, hashes)
+	// The purged projects' host-local index stores, each under its own index
+	// commit lock, now that the purge commit has released the vault lock. A
+	// store kept here (a busy lock) is logged and left to the next index sweep.
+	for _, r := range indexstore.RemoveGoneProjects(context.Background(), vault, m.Slugs, indexstore.LifecycleRemovalTimeout) {
+		if r.Error == "" && r.Outcome != indexstore.RemovalRemoved && r.Outcome != indexstore.RemovalAbsent {
+			slog.Warn("split purge: host-local index store kept; the next index sweep retries it", "project", r.Slug, "outcome", r.Outcome)
+		}
+	}
 	result := &vaultSplitPurgeResult{
 		Action:           "purge",
 		Destination:      p.Destination,

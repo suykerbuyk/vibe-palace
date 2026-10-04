@@ -335,6 +335,9 @@ func (tx *Tx) CommitArchive(c ArchiveCommit, vw VectorWriter) error {
 		}
 		gen = prev.Generation
 	}
+	if err := tx.ensureChunkFingerprint(); err != nil {
+		return err
+	}
 	owner := ArchiveOwner(c.SHA)
 	if err := tx.fail(tx.putVectors(vw, c.Vectors)); err != nil {
 		return err
@@ -406,6 +409,9 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	prev, ok := s.ledger.Session(c.SessionID)
 	if !ok {
 		return fmt.Errorf("indexstore: session %s is not in the ledger; nothing to supersede", c.SessionID)
+	}
+	if err := tx.ensureChunkFingerprint(); err != nil {
+		return err
 	}
 	var old string
 	var prevGen int
@@ -515,6 +521,9 @@ func (tx *Tx) CommitBatch(c BatchCommit, vw VectorWriter) error {
 	if _, isSession := s.ledger.Session(c.BatchID); isSession {
 		return fmt.Errorf("%w: %s", ErrBatchIsSession, c.BatchID)
 	}
+	if err := tx.ensureChunkFingerprint(); err != nil {
+		return err
+	}
 	owner := BatchOwner(c.BatchID)
 	if err := tx.fail(tx.putVectors(vw, c.Vectors)); err != nil {
 		return err
@@ -563,6 +572,9 @@ func (tx *Tx) Append(owner Owner, recs []OwnedChunk) error {
 	if err != nil {
 		return err
 	}
+	if err := tx.ensureChunkFingerprint(); err != nil {
+		return err
+	}
 	return tx.fail(tx.appendChunks(s, owner, recs))
 }
 
@@ -589,6 +601,9 @@ func (tx *Tx) ReplaceOwned(owner Owner, recs []OwnedChunk) error {
 	}
 	s, err := tx.state()
 	if err != nil {
+		return err
+	}
+	if err := tx.ensureChunkFingerprint(); err != nil {
 		return err
 	}
 	f, err := tx.readChunkFold()

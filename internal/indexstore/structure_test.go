@@ -40,6 +40,9 @@ var writersOutsideTx = map[string]string{
 	"RunLock.Release":               "removes the holder record",
 	"RunLock.ReleaseAndRecheck":     "removes and rewrites the holder record",
 	"DeleteLegacyLedgerIfUntracked": "deletes palace/<p>/ingested-archives.jsonl, outside the host-local index, through vaultfs.Delete",
+	"RemoveGoneProject":             "removes a gone project's index/<p>/ only through LifecycleTx.RemoveProject, under the commit lock it has just taken (LockLifecycle)",
+	"RemoveGoneProjects":            "removes each named gone project's index/<p>/ through RemoveGoneProject, one commit lock at a time",
+	"ReapGoneProjects":              "removes each candidate's index/<p>/ through RemoveGoneProject, under its commit lock, and deletes .tomb-* tombstones, which no project maps to",
 }
 
 type funcInfo struct {

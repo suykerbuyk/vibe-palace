@@ -50,7 +50,7 @@
     },
     {
       "id": "derived-gate-divergence cli.cmdMCPServe",
-      "reason": "DELIBERATE, same ruling and same artifact as cli.cmdMCP: no startup gate, per-tool gating at the dispatch seam, and a witness path that is tool REGISTRATION rather than invocation. Note the second, independent predicate that governs this command — tools.ReadOnlyServeToolNames, the fail-closed allow-list that decides which tools a read-only `vp mcp serve` may expose — is deliberately NOT derived and must stay hand-declared: a derived predicate computes FALSE for the git-channel tools, so deriving that list would publish vp_vault_sync and vp_vault_tidy on a bearer-authed read-only HTTP surface. Accepted."
+      "reason": "DELIBERATE, same ruling and same artifact as cli.cmdMCP: no startup gate, per-tool gating at the dispatch seam, and a witness path that is tool REGISTRATION rather than invocation. Note the second, independent predicate that governs this command — tools.ReadOnlyServeToolNames, the fail-closed allow-list that decides which tools a read-only `vp mcp serve` may expose — is deliberately NOT derived and must stay hand-declared: a derived predicate computes FALSE for the git-channel tools, so deriving that list would publish vp_vault_tidy on a bearer-authed read-only HTTP surface (and would have published vp_vault_sync, until its pull began running the host-local index sweep). Accepted."
     },
     {
       "id": "derived-gate-divergence cli.cmdMigrate",
@@ -66,11 +66,19 @@
     },
     {
       "id": "derived-gate-divergence cli.cmdVaultCommit",
-      "reason": "🔴 GIT-MEDIATED — derived FALSE correctly, and gated anyway. `vp vault commit` mutates vault HISTORY exclusively through git, and the git channel is exempt from the write funnel BY VERB (a merge is N files in one operation, which no per-path primitive models; recorded on internal/sourceaudit/vault_write_funnel.go and re-ruled 2026-08-20). So it reaches no sink by the funnel's own definition, and a derivation that GENERATED the flag would silently ungate it. DECLARED WINS: git-mediated authorship is still authorship — `git merge` can leave conflict markers in resume.md — and a stale binary must refuse it. This entry, with its two siblings mcp.vp_vault_sync and mcp.vp_vault_tidy, is the reason the derivation pins rather than generates. Accepted, permanently: this one has no fix direction, because nothing here is broken."
+      "reason": "🔴 GIT-MEDIATED — derived FALSE correctly, and gated anyway. `vp vault commit` mutates vault HISTORY exclusively through git, and the git channel is exempt from the write funnel BY VERB (a merge is N files in one operation, which no per-path primitive models; recorded on internal/sourceaudit/vault_write_funnel.go and re-ruled 2026-08-20). So it reaches no sink by the funnel's own definition, and a derivation that GENERATED the flag would silently ungate it. DECLARED WINS: git-mediated authorship is still authorship — `git merge` can leave conflict markers in resume.md — and a stale binary must refuse it. This entry, with its sibling mcp.vp_vault_tidy, is the reason (mcp.vp_vault_sync was the third, until 2026-10-03: its pull now runs the host-local index sweep, whose host-local writes the derivation sees, so it derives mutating and agrees with its declared gate, and its entry was removed as stale; it stays declared gated) the derivation pins rather than generates. Accepted, permanently: this one has no fix direction, because nothing here is broken."
     },
     {
       "id": "derived-gate-divergence cli.cmdVaultInit",
       "reason": "NEW-VAULT CREATOR, DECLARED UNGATED ON PURPOSE. Derived TRUE because the witness cmdVaultInit -> InitVault -> initFresh -> atomicfile.Write reaches a funnel sink. Every write lands inside the brand-new vault at <path> that vp vault init creates and stamps at the binary's own data format (the scaffold, .vibe-palace/vault.toml, .vibe-palace/remotes.toml). It never writes the vault this process serves. The surface fail-stop compares THIS binary against the SERVED vault's stamps, which is not the vault being written, so gating init on it would let an unrelated newer served vault block creating a new one (U4 code review, non-blocking item, which removed mutates()). DECLARED WINS: the new vault is born at this binary's surface by construction, which is the invariant the gate exists to protect. Task lc-u4-vp-vault-init-with-remotes; ruled by the vibe-palace Chair, 2026-09-28."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdVaultPull",
+      "reason": "DECLARED UNGATED ON PURPOSE, ruled by the vibe-palace Chair, 2026-10-03 (task index-fingerprints-project-lifecycle-and-migration-marker, \"Implementation notes\" 11), the shape of derived-gate-divergence cli.cmdSearch. Derived TRUE only because, after the pull returns and the vault lock is released, the command runs the host-local index sweep (indexstore.ReapGoneProjects -> RemoveGoneProject -> LifecycleTx.RemoveProject): it bumps a gone project's change counter under palace/.local/index/.generation and renames its palace/.local/index/<p>/ to a tombstone, all host-local derived state under the git-ignored palace/.local (ADR-014), written through atomicfile.Write with vault root \"\", so no surface stamp is written; the static rules cannot see the \"\" argument. Its vault writes proper are git's (the git channel is exempt from the funnel by verb), as before. DECLARED WINS: a pull is the recovery path, and gating it on the host-local sweep would make a binary older than the vault refuse to PULL, a behaviour change ADR-014 does not ask for."
+    },
+    {
+      "id": "derived-gate-divergence cli.cmdVaultSync",
+      "reason": "DECLARED UNGATED ON PURPOSE, ruled by the vibe-palace Chair, 2026-10-03 (task index-fingerprints-project-lifecycle-and-migration-marker, \"Implementation notes\" 11), the shape of derived-gate-divergence cli.cmdSearch. Derived TRUE only because, after the pull returns and the vault lock is released, the command runs the host-local index sweep (indexstore.ReapGoneProjects -> RemoveGoneProject -> LifecycleTx.RemoveProject): it bumps a gone project's change counter under palace/.local/index/.generation and renames its palace/.local/index/<p>/ to a tombstone, all host-local derived state under the git-ignored palace/.local (ADR-014), written through atomicfile.Write with vault root \"\", so no surface stamp is written; the static rules cannot see the \"\" argument. Its vault writes proper are git's (the git channel is exempt from the funnel by verb), as before. DECLARED WINS: a pull is the recovery path, and gating it on the host-local sweep would make a binary older than the vault refuse to PULL, a behaviour change ADR-014 does not ask for."
     },
     {
       "id": "derived-gate-divergence cli.cmdVaultTidy",
@@ -98,15 +106,11 @@
     },
     {
       "id": "derived-gate-divergence mcp.vp_trigger_summarization_drain",
-      "reason": "SPAWNED-PROCESS-MEDIATED — derived FALSE, and structurally unable to be otherwise: the handler itself performs only a read-only filepath.Glob and, when the queue is non-empty, calls detachlaunch.LaunchFunc to exec a DETACHED `vp drain summaries` child process. That child is a separate OS process, not a Go call, so no static call-graph analysis of this binary can see what it does — including that a future real summarize.Summarizer implementation will write to the vault from inside it. This is the same shape as the git-mediated divergences (mcp.vp_vault_sync, mcp.vp_vault_tidy, cli.cmdVaultCommit): the real mutation happens through a channel invisible to per-function reachability. DECLARED WINS: launching a background writer against this project's vault is exactly the kind of side-effecting action a stale binary must be prevented from doing, so it stays gated even though the parent process itself writes nothing. Fix direction: none expected — a spawned subprocess is structurally opaque to this analysis, permanently, the same way git is."
-    },
-    {
-      "id": "derived-gate-divergence mcp.vp_vault_sync",
-      "reason": "🔴 GIT-MEDIATED — the sharpest instance of the ruling recorded on cli.cmdVaultCommit, because this tool sits on the recovery path. Derived FALSE: there is no funnel sink anywhere in internal/storage's vaultpull.go, vaultsync.go, vaultsyncflow.go or vaulttidy.go (verified by inspection and by this graph), so its vault writes are git's. DECLARED WINS — it commits and pushes vault history and a stale binary must refuse that. Adopting the derived answer would have LOOKED like a bonus, because the MCP-pull lockout ADR-010 records would dissolve on its own; it would have dissolved as a SIDE EFFECT while push and sync quietly lost their gate. The lockout was instead fixed deliberately in 6254549, by making the gate param-aware so action:'pull' passes while push and sync are still refused. Two ways to reach the same symptom, one of which also removes a gate: that is the whole argument for pinning rather than generating. Accepted, permanently."
+      "reason": "SPAWNED-PROCESS-MEDIATED — derived FALSE, and structurally unable to be otherwise: the handler itself performs only a read-only filepath.Glob and, when the queue is non-empty, calls detachlaunch.LaunchFunc to exec a DETACHED `vp drain summaries` child process. That child is a separate OS process, not a Go call, so no static call-graph analysis of this binary can see what it does — including that a future real summarize.Summarizer implementation will write to the vault from inside it. This is the same shape as the git-mediated divergences (mcp.vp_vault_tidy, cli.cmdVaultCommit): the real mutation happens through a channel invisible to per-function reachability. DECLARED WINS: launching a background writer against this project's vault is exactly the kind of side-effecting action a stale binary must be prevented from doing, so it stays gated even though the parent process itself writes nothing. Fix direction: none expected — a spawned subprocess is structurally opaque to this analysis, permanently, the same way git is."
     },
     {
       "id": "derived-gate-divergence mcp.vp_vault_tidy",
-      "reason": "🔴 GIT-MEDIATED — see mcp.vp_vault_sync. Derived FALSE (storage.TidyScan classifies, storage.TidyVault stages and commits, both through git); DECLARED gated, and it stays gated. Its read-only invocation — dry_run:true, which returns after TidyScan having committed nothing — is admitted by the param-aware gate landed in 6254549 rather than by ungating the tool. Accepted, permanently."
+      "reason": "🔴 GIT-MEDIATED — see cli.cmdVaultCommit for the full ruling. Derived FALSE (storage.TidyScan classifies, storage.TidyVault stages and commits, both through git); DECLARED gated, and it stays gated. Its read-only invocation — dry_run:true, which returns after TidyScan having committed nothing — is admitted by the param-aware gate landed in 6254549 rather than by ungating the tool. Accepted, permanently."
     },
     {
       "id": "ungated-vault-writer main.cmdCheck",
@@ -169,12 +173,20 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The pending fold. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (what to ingest) and index-coverage-instrument (the pending report). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
+      "id": "uninvoked indexstore.LifecycleTx.ChangeEpoch",
+      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task index-fingerprints-project-lifecycle-and-migration-marker Scope 3. The epoch change alone, on a gone project's commit lock, with no removal. Non-test caller: vp vault rename's drain of the rename source (rename-core-fresh-target-with-digest-bind, \"Host-local index rename\", step 2), so an engine that remembers the source's Gen reloads. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
       "id": "uninvoked indexstore.NoteOwner",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The note owner of a decision chunk. Non-test caller: decision-chunks-in-the-host-local-store. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.ReadHolder",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 1 (locks and counter). The lock-free read of the run lock's holder record. Non-test callers: explicit-resumable-index-rebuild-with-disk-watchdog (vp index rebuild names the holder; vp_refresh_index checks it before spawning) and index-coverage-instrument (the status probe). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+      "id": "uninvoked indexstore.ObserveCommitLocks",
+      "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because a test in another package needs it: internal/search pins that the engine's index sweep (indexstore.ReapGoneProjects) never runs while the engine holds an index commit lock (the sweep would then hold two). A lock taken and released leaves no other trace, so without it the sweep could move after indexstore.Lock in Engine.reap and every test would pass. Production never sets it. Task index-fingerprints-project-lifecycle-and-migration-marker (code review S1)."
+    },
+    {
+      "id": "uninvoked indexstore.ReadFingerprint",
+      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The lock-free three-state compare of a project's chunks.fingerprint with a recipe (missing = unbuilt, never stale). Non-test caller: the opener of search-index-completeness-and-build-serialization, which sets the stale flag on a mismatch. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.RunLock.CompletedRebuild",
@@ -249,6 +261,10 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: pending-archive-ingester-and-per-archive-commit-step and explicit-resumable-index-rebuild-with-disk-watchdog, for a re-archived session. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
+      "id": "uninvoked indexstore.Tx.UseRecipe",
+      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The recipe a writer records in chunks.fingerprint, set before any chunk-writing step (the EnsureLedger idiom; ErrNoRecipe without it). Non-test callers: pending-archive-ingester-and-per-archive-commit-step, explicit-resumable-index-rebuild-with-disk-watchdog (before Discard(DiscardChunks)) and decision-chunks-in-the-host-local-store, the writers of chunk lines, none of which has landed. This entry goes stale the moment the first of them does."
+    },
+    {
       "id": "uninvoked indexstore.Tx.WriteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (saving the graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -263,6 +279,10 @@
     {
       "id": "uninvoked palace.CompressBatch",
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
+    },
+    {
+      "id": "uninvoked palace.ProjectIndexing",
+      "reason": "STAGED API, ADR-014 decision 3, task index-fingerprints-project-lifecycle-and-migration-marker Scope 1. The one assembler of a project's chunk recipe, classifier and chunk settings, from v.LoadConfig(project), so a writer and the recipe it records cannot diverge. Non-test callers: search-index-completeness-and-build-serialization (the opener's ReadFingerprint) and pending-archive-ingester-and-per-archive-commit-step (UseRecipe and every transcript chunk it writes). This entry goes stale the moment the first of them lands."
     },
     {
       "id": "uninvoked sourceaudit.Baseline.Diff",
@@ -307,6 +327,10 @@
     {
       "id": "uninvoked storage.Vault.SetTaskSupersededBy",
       "reason": "REAL FINDING, same class and same shape as its sibling SetTaskDataFormat immediately above. SetTaskSupersededBy is the exported, correct write path for CORRECTING an already-set SupersededBy link (board-reporting-supersession-link) — the sole corrective writer once CancelTask has archived a task, since cancel is one-shot and cannot be re-invoked on an already-cancelled slug. Bucket 2 (ownerless) in ADR-011's three-bucket write policy means there is deliberately NO vp_manage_task action named after it (see fieldSupersededBy and refuseUnknownHeaderFieldChange), so nothing in production calls it today: the only sanctioned production write path for a FIRST link is CancelTask's own superseded_by parameter, and a CORRECTION to an existing link is the rare, human-directed, out-of-band case the task's plan (Plan Review Round 2, finding 3) decided to leave manual for v1 rather than build an unused interactive repair command speculatively. Exercised directly by internal/storage/tasks_test.go (TestSetTaskSupersededByCorrectsArchivedTask, TestSetTaskSupersededByWritesOnActiveTaskToo, TestSetTaskSupersededBySelfReferenceRefused, TestSetTaskSupersededByRequiresNonEmptySuccessor). ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — deadness is real and expected, by design, to resolve only if a real supersession cycle or bad link is ever actually found in practice and a maintenance path is filed for it then; declared here rather than deleting a correct, tested API this task's own plan calls for."
+    },
+    {
+      "id": "uninvoked surface.MarkerDate.UnmarshalTOML",
+      "reason": "DELIBERATE, NOT DEAD: BurntSushi/toml calls it through its toml.Unmarshaler interface whenever a vault.toml carrying authored_only is decoded (surface.ReadVaultManifest, so storage.VaultMigrated and WriteFormat's read-modify-write), which no static call graph sees. It accepts the quoted date and the unquoted TOML local date a hand edit leaves, and rejects anything else naming the key. task index-fingerprints-project-lifecycle-and-migration-marker Scope 2."
     },
     {
       "id": "uninvoked testinfra.CLIResult.Must",

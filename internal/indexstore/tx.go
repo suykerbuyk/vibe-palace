@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -47,6 +48,9 @@ type Tx struct {
 	preBumped   bool   // the counter was bumped before a destructive step
 	st          *state // loaded on the first write or read that needs it
 	broken      bool   // a write failed part-way: the cached state is not trusted
+
+	recipe             *index.ChunkRecipe // set by UseRecipe
+	fingerprintChecked bool               // chunks.fingerprint is known to exist
 }
 
 // Lock takes the index commit lock for project and returns the Tx that every
@@ -63,10 +67,10 @@ type Tx struct {
 // replacing a malformed one (ensureGenFile).
 //
 // Known limit: Lock on a project that is gone, or was never there, still
-// creates that project's lock file in palace/.local/locks/. Lock files are
-// never deleted while a process may hold one open; their cleanup belongs with
-// the departed-project sweep of
-// index-fingerprints-project-lifecycle-and-migration-marker.
+// creates that project's lock file in palace/.local/locks/.
+// Lock files are never deleted while a process may hold one open, so a gone
+// project's lock file is left in place: a known, unowned residual of one empty
+// file per slug per host.
 func Lock(ctx context.Context, vault *storage.Vault, project string, timeout time.Duration) (*Tx, error) {
 	lockPath, err := vault.IndexCommitLockPath(project)
 	if err != nil {

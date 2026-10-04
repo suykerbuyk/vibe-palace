@@ -1525,6 +1525,42 @@ live-set read, and nothing is reaped; `internal/integration`'s
 (`TestRefreshIndexKeepsTheLegacyLedgerWhileDrawersAreTracked`,
 `TestRefreshIndexDeletesTheLegacyLedgerOnceDrawersAreUntracked`).
 
+### Index fingerprints, the migration marker and the lifecycle removal
+
+Task `index-fingerprints-project-lifecycle-and-migration-marker` (ADR-014
+decision 3, "the migration marker", and the host-local counterparts). Every
+test below was broken once on purpose and failed; the mutants are recorded in
+that task.
+
+| Test | What it pins |
+|---|---|
+| `internal/surface`: `TestWriteFormat_KeepsTheMarker` | A format bump is a read-modify-write that keeps `authored_only` |
+| `TestMarker_UnquotedDateAndWrongType` | An unquoted TOML date decodes; a wrong-typed marker is an error from `ReadVaultManifest` only, `ReadFormat` still answers, and `WriteFormat` refuses rather than drop it |
+| `TestMarker_V8DecodeIgnoresIt` | A v8 `struct{Format int}` still decodes a file carrying the marker (regression guard) |
+| `TestManifestBytes_UnchangedWithoutMarker` | With no marker the one encoder writes exactly `format = <n>`, so `isBornCurrentStamp` and a clean `vp init` are unchanged |
+| `TestWriteVaultManifest_IsOneWrite` | Every field reaches disk in one write; a failed write leaves the old file |
+| `internal/storage`: `TestVaultMigratedReadsTheKeyOnly` | The marker is the key, never the ignore lines; a malformed marker is an error |
+| `TestIndexReapableIsProjectExistsAndThePendingKeep` | Reapable is `!ProjectExists` plus the rename-pending keep, never the embed cache's `Lstat` rule; a departed slug with palace residue is kept |
+| `TestIndexReapCandidates` | Only valid, non-dot, reapable directories; nothing under the embed-cache sweep's guards (empty listing, symlinked root) |
+| `TestRenamePendingRecords` | The record path is slug-validated; a damaged record is an error |
+| `internal/palace`: `TestRoomClassifierIsDeterministic` | Overrides merge in sorted key order: a tie between override-only rooms and the digest are the same over 200 builds |
+| `TestRoomClassifierDigest`, `TestRecipePartsCoverTheirInputs`, `TestNormalizedIsWhatChunkUses`, `TestProjectIndexingReadsThePerProjectLayer` | The digest covers overrides and minimum score; each recipe part covers what its chunker reads and nothing else; `Normalized` is `Chunk`'s clamp; the recipe and classifier come from `LoadConfig(project)` |
+| `internal/indexstore`: `TestMissingFingerprintIsUnbuilt`, `TestFirstChunkWriteWritesTheSidecar`, `TestNoRecipeNoFirstWrite`, `TestACommitNeverRewritesAMismatch`, `TestMismatchNeverDiscardsOutsideARebuild` | Missing is unbuilt; every chunk-writing step can write the first sidecar, none without a recipe; a commit never rewrites one; reading a mismatch changes nothing |
+| `TestDiscardWritesTheFingerprintLast`, `TestDiscardWithoutARecipeRemovesNothing` | A discard killed at any step reads mismatch, never match; no recipe, no removal |
+| `TestDeleteLegacyLedgerOnTheMarker` | The marker deletes the legacy ledger with drawers still tracked; a malformed marker keeps it |
+| `TestLifecycleLockForm` | `LockLifecycle` takes a gone project's lock; `LifecycleTx` has exactly three methods (reflection); a held lock times out |
+| `TestRemoveProjectReChecksUnderTheLock`, `TestRemoveProjectCrashPoints` | The removal re-checks under the lock; a crash leaves the whole store or the whole tombstone, the next sweep finishes, a re-created slug is unbuilt |
+| `TestReapGoneProjectsRemovesUnderTheLock`, `TestReapGoneProjectsSkipsABusySlug`, `TestRenamePendingKeepOnTheRenamingHostOnly`, `TestRemoveGoneProjectOutcomes` | The sweep removes under the commit lock and keeps the counter and lock files, skips a busy lock, keeps a store only while this host's rename-pending record exists and reports a stale one; the delete/split entry point runs with the vault root lock free |
+| `internal/search`: `TestIndexSweepIsNotInsideTheEmbedCacheSweep`, `TestEngineReapSweepsGoneProjectsIndexStores` | A cache's first `Put` under a commit lock does not run the index pass; the engine path reaps gone stores before its own `Lock` |
+| `internal/tools`: `TestVaultSyncToolPullRemovesGoneProjectsIndexStore`, `TestSplitPurgeRemovesPurgedProjectsIndexStores`, `TestVaultProjectDeleteToolRemovesIndexStore`, `TestFingerprintNeverGatesAVaultWrite` | Pull and sync, the split purge and `vp_vault_project_delete` remove the gone stores (the delete lists them unhashed and reports `index_removal`); a mismatched fingerprint never blocks `vp_kg_add` |
+| `cmd/vp`: `TestVaultPullAndSyncCLIRemoveGoneProjectsIndexStore`, `TestVaultProjectDeleteCLIRemovesIndexStore` | The same for `vp vault pull`, `vp vault sync` and `vp vault project delete` |
+| Code review, 2026-10-03: `internal/search` `TestEngineSweepRunsBeforeTheCommitLock` | Through the `indexstore.ObserveCommitLocks` test seam: the engine's sweep never takes a gone project's commit lock while the engine holds one |
+| `internal/index` `TestRecipeSumIsCanonicalOverCustomRooms`; `internal/palace` `TestRoomClassifierDigestCoversWeights` | Several custom rooms give one `Sum` over 200 builds; moving an override keyword from High to Low changes the digest |
+| `internal/indexstore` `TestCommitArchiveWritesTheSidecarBeforeItsChunks`, `TestReplaceOwnedAndSupersedeWriteTheFirstSidecar` | The sidecar is down before any chunk line; ReplaceOwned and Supersede write a missing one |
+| `TestDamagedRenamePendingRecordKeepsTheStore`, `TestTombstoneNameCarriesTheEpoch`, `TestCrashedRenameHolderDoesNotHideTheWarning`, `TestRemoveProjectWithNoStoreChangesNothing`, `TestMalformedMarkerKeepsTheLegacyLedger` | A damaged record keeps the store; the tombstone name is the new epoch; a crashed run's holder record does not hide the stale warning (the run lock is try-locked); no store, no epoch change and no counter; a malformed marker keeps the legacy ledger whatever git tracks |
+| `internal/storage` `TestListRenamePendingSkipsDotFiles`; `internal/surface` `TestMarker_OnlyALocalDate` | A temp file in the records directory is skipped; a local time, local datetime or offset datetime is not a marker date |
+| `internal/tools` `TestVaultProjectDeletePlanListsOnlyExistingStores`, `TestVaultProjectDeleteToolWaitsForABusyLock`; `cmd/vp` `TestVaultProjectDeleteCLIPrintsIndexRemoval` | The dry run lists only stores that exist; the MCP delete waits for a busy commit lock rather than trying once; the CLI text output prints the index_removal lines |
+
 ---
 
 ## Write/Wrap Surface Unit Tests

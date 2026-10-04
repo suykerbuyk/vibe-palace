@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -203,6 +205,9 @@ func cmdVaultSync() *cli.Command {
 
 			// Default: tidy-then-sync via the shared orchestration.
 			res, err := storage.SyncVault(root, remotes)
+			// A pull is how this host learns a project left the vault: the index sweep
+			// removes its host-local index store now that no vault lock is held.
+			indexstore.ReapGoneProjects(context.Background(), storage.NewVault(root))
 			if res.Committed {
 				fmt.Fprintf(os.Stderr, "swept %d capture artifact%s before sync\n", len(res.Swept), plural(len(res.Swept)))
 			}
@@ -684,6 +689,9 @@ func pullAll(root string, remotes []string, dryRun bool) int {
 	// captured git output; it never streams to stderr (so live streaming is lost)
 	// and self-heals phantom Templates/commands/*.md dirt before the merge.
 	res, err := storage.Pull(root, remotes)
+	// A pull is how this host learns a project left the vault: the index sweep
+	// removes its host-local index store now that no vault lock is held.
+	indexstore.ReapGoneProjects(context.Background(), storage.NewVault(root))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vp vault pull: %v\n", err)
 		return cli.ExitSystem

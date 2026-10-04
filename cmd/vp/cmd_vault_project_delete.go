@@ -4,12 +4,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -97,8 +99,12 @@ func runVaultProjectDelete(c *cli.Command, args []string, out, errOut io.Writer)
 		fmt.Fprintf(errOut, "%s: %v\n", name, err)
 		return cli.ExitUser
 	}
+	// The host-local index stores go after ApplyDelete has released the vault
+	// lock, each under its own index commit lock (ADR-014; task
+	// index-fingerprints-project-lifecycle-and-migration-marker).
+	removal := indexstore.RemoveGoneProjects(context.Background(), storage.NewVault(root), req.Projects, indexstore.LifecycleRemovalTimeout)
 	if fv.Bool("--json") {
-		return emit(res)
+		return emit(deleteOutput{DeleteResult: res, IndexRemoval: removal})
 	}
 	if res.Redo != "" && res.Redo != storage.RedoNone {
 		fmt.Fprintf(out, "finished an unfinished run first: %s\n", res.Redo)
@@ -112,6 +118,13 @@ func runVaultProjectDelete(c *cli.Command, args []string, out, errOut io.Writer)
 	fmt.Fprintf(out, "leftovers removed: %d file(s), %d dir(s)\n", res.FilesRemoved, res.DirsRemoved)
 	for _, k := range res.Kept {
 		fmt.Fprintf(out, "kept: %s (%s) %s\n", k.Path, k.Class, k.Reason)
+	}
+	for _, r := range removal {
+		if r.Error != "" {
+			fmt.Fprintf(out, "index store %s: kept (%s); the next index sweep retries it\n", r.Path, r.Error)
+			continue
+		}
+		fmt.Fprintf(out, "index store %s: %s\n", r.Path, r.Outcome)
 	}
 	if len(res.Undo) > 0 {
 		fmt.Fprintln(out, "\nUndo (restores everything but the leftovers):")
@@ -144,9 +157,19 @@ func printDeletePlan(out io.Writer, p *storage.DeletePlan) {
 	for _, l := range p.Leftovers {
 		fmt.Fprintf(out, "  %s (%s, %d bytes)\n", l.Path, l.Class, l.Size)
 	}
+	for _, s := range p.IndexStores {
+		fmt.Fprintf(out, "host-local index store, removed after the delete is published: %s\n", s)
+	}
 	fmt.Fprintf(out, "push targets: %v (branch %s)\n", p.Remotes, p.Branch)
 	for _, w := range p.Warnings {
 		fmt.Fprintf(out, "warning: %s\n", w)
 	}
 	fmt.Fprintf(out, "digest: %s\n", p.Digest)
+}
+
+// deleteOutput is a delete's result plus the host-local index stores it removed
+// after the vault lock was released (index_removal).
+type deleteOutput struct {
+	*storage.DeleteResult
+	IndexRemoval []indexstore.IndexRemoval `json:"index_removal"`
 }

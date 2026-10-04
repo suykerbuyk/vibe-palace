@@ -69,6 +69,10 @@ type Engine struct {
 	// beforeIndexClose, when set, runs just before a replaced index is
 	// closed. Tests use it to prove e.mu is not held there.
 	beforeIndexClose func()
+
+	// indexSweep runs the host-local index sweep (indexstore.ReapGoneProjects)
+	// once per engine, from reap, before reap takes any commit lock.
+	indexSweep sync.Once
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -726,6 +730,10 @@ func (e *Engine) reap(ctx context.Context, project string) (int, error) {
 	if _, err := e.cache.dir(project); err != nil {
 		return 0, fmt.Errorf("embed cache dir: %w", err)
 	}
+	// The index sweep: gone projects' index stores, once per engine. It runs
+	// here, holding no commit lock, and never inside the embed cache's own sweep,
+	// whose first run can come from a Put made under a commit lock.
+	e.indexSweep.Do(func() { indexstore.ReapGoneProjects(ctx, e.vault) })
 	tx, err := indexstore.Lock(ctx, e.vault, project, reapLockTimeout)
 	if errors.Is(err, vaultlock.ErrLockWaitTimeout) {
 		slog.Info("reap skipped: the index commit lock is busy", "project", project)

@@ -27,6 +27,7 @@ func mustLock(t *testing.T) func(*Tx, error) *Tx {
 		if err != nil {
 			t.Fatalf("Lock: %v", err)
 		}
+		tx.UseRecipe(testRecipe)
 		return tx
 	}
 }

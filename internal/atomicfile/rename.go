@@ -59,6 +59,15 @@ func renameWithRetry(oldpath, newpath string) error {
 	return retryTransient(func() error { return renameFn(oldpath, newpath) })
 }
 
+// RenameWithRetry renames oldpath to newpath (a file or a directory), retrying
+// on the same transient Windows sharing failures, with the same schedule, as the
+// rename inside Write. Like RemoveWithRetry it is for host-local paths only (the
+// derived index under palace/.local/, ADR-014): it is not a vault writer, stamps
+// no surface version and does not consult the departure record.
+func RenameWithRetry(oldpath, newpath string) error {
+	return renameWithRetry(oldpath, newpath)
+}
+
 // RemoveWithRetry removes path, retrying on the same transient Windows sharing
 // failures, with the same schedule, as the rename inside Write: a reader that
 // holds the file open without FILE_SHARE_DELETE (another process's lock-free

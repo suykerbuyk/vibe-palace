@@ -102,7 +102,9 @@ import "sort"
 // palace/.local/ too: the orphan reaper's rewrites of
 // palace/.local/index/<slug>/chunks.jsonl and its KG records and its unlinks of
 // orphan vectors, the store change counter palace/.local/index/.generation/<slug>,
-// and the index lock files under palace/.local/locks/. The exemption is that narrow. Before the cache moved it did not
+// and the index lock files under palace/.local/locks/, and the index sweep's
+// removal of a gone slug's whole palace/.local/index/<slug>/ (renamed to a
+// .tomb-* tombstone there, then deleted). The exemption is that narrow. Before the cache moved it did not
 // hold: a search could create palace/<slug>/ for a notes-only project, and
 // every project enumerator counted that directory as a store. Any other write
 // from a tool in this list is still a misclassification.

@@ -1492,19 +1492,29 @@ that owns it.
   - **Owner:** `decision-chunks-in-the-host-local-store`. It runs only without `-short`.
 - **Host-local counterparts** (`index-fingerprints-project-lifecycle-and-migration-marker`). The
   index directory needs the same treatment the embed cache gets:
-  - the sweep (`internal/storage/embedcache_sweep.go:166`);
-  - departed-project cleanup (`embedcache_departed.go:130`);
+  - the sweep and departed-project cleanup, as one pass of their own and never inside
+    `SweepEmbedCaches` (`internal/storage/embedcache_sweep.go:141`), whose first run can come
+    from a `Put` made under a commit lock. The pass runs where neither an index commit lock nor
+    the vault lock is held: on the engine path before `Lock`, and in the callers of `storage.Pull`
+    and `storage.SyncVault` once they return. It tries each project's lock once, skips a busy
+    one, and re-checks under the lock that the project is still gone;
   - the split purge (`internal/tools/vault_split_apply.go:779`);
   - the read-only exemption (`internal/tools/readonly_serve.go:95-103`);
-  - `vp vault project delete`, which purges `palace/.local/index/<p>/` with the project's trees,
-    beside the embed cache it purges today (`collectDeleteTrees`,
-    `internal/storage/lifecycle_delete.go:436`) (*Rulings on children review round 3*);
-  - the lifecycle rename. It requires that it holds the index run lock, with kind `lifecycle`,
-    and that `palace/.local/index/<to>/` does not exist. It then renames `palace/.local/index/<p>/`
-    beside the embed cache
-    (`slugCacheRel`, `internal/storage/project_slug_migration.go:2301`) and rewrites each chunk's
-    `wing` under the index commit lock. Host-local chunk ids exclude the wing (decision 7), so no
-    id changes;
+  - `vp vault project delete`, which lists `palace/.local/index/<p>/` with the project's trees,
+    unhashed, and removes it under that project's index commit lock once the delete has
+    committed and released the vault lock, beside the embed cache it purges today
+    (`collectDeleteTrees`, `internal/storage/lifecycle_delete.go:436`) (*Rulings on children
+    review round 3*);
+  - the lifecycle rename, done by `vp vault rename` (`rename-core-fresh-target-with-digest-bind`),
+    never by the one-shot `vp migrate project-slug`, which is not touched. It holds the index run
+    lock, with kind `lifecycle`, for the whole host-local step. It drains `<p>`'s index commit
+    lock and changes `.generation/<p>`'s `epoch`. Then, holding only `<to>`'s index commit lock, it
+    refuses if `palace/.local/index/<to>/` exists, renames `palace/.local/index/<p>/` to it,
+    rewrites each chunk's `wing`, and only then renames the embed cache. Host-local chunk ids
+    exclude the wing (decision 7), so no id changes. Only the host that runs the rename keeps
+    `palace/.local/index/<p>/` until that step has run, and only while its own rename-pending
+    record names `<p>`. Every other host reaps it like a departed project's store and re-ingests
+    `<to>` from its archives;
   - in both, the change counter `.generation/<p>` is never deleted; its `epoch` changes, as for a
     reap.
 - **The marker-gated ignore lines** (decision 11).

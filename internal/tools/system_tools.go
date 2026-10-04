@@ -414,6 +414,9 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 		// restores the raw pull+push path below.
 		if p.Action == "sync" && !p.NoTidy {
 			res, err := storage.SyncVault(root, remotes)
+			// A pull is how this host learns a project left the vault: the index sweep
+			// removes its host-local index store now that no vault lock is held.
+			indexstore.ReapGoneProjects(context.Background(), storage.NewVault(root))
 			var output strings.Builder
 			if res.Committed {
 				fmt.Fprintf(&output, "swept %d capture artifact%s before sync\n", len(res.Swept), plural(len(res.Swept)))
@@ -495,6 +498,9 @@ func gitPull(root string, remotes []string) (string, error) {
 	// was no single answer to "did the sync succeed?" Now both report EVERY remote
 	// and both take the same verdict from storage.RemoteVerdict.
 	res, err := storage.Pull(root, remotes)
+	// A pull is how this host learns a project left the vault: the index sweep
+	// removes its host-local index store now that no vault lock is held.
+	indexstore.ReapGoneProjects(context.Background(), storage.NewVault(root))
 	if err != nil {
 		return "", err
 	}

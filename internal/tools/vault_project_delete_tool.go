@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -60,7 +61,7 @@ func VaultProjectDeleteTool(vault *storage.Vault) mcp.Tool {
 }
 
 func vaultProjectDeleteHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p vaultProjectDeleteParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, apperr.Caller(fmt.Errorf("parse params: %w", err))
@@ -78,9 +79,19 @@ func vaultProjectDeleteHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if err != nil {
 				return nil, apperr.Caller(err)
 			}
-			return res, nil
+			// The host-local index stores go after ApplyDelete has released the
+			// vault lock, each under its own index commit lock.
+			removal := indexstore.RemoveGoneProjects(ctx, vault, req.Projects, indexstore.LifecycleRemovalTimeout)
+			return vaultProjectDeleteOutput{DeleteResult: res, IndexRemoval: removal}, nil
 		default:
 			return nil, apperr.Caller(fmt.Errorf("action %q: want plan or apply", p.Action))
 		}
 	}
+}
+
+// vaultProjectDeleteOutput is an apply's result plus the host-local index
+// stores it removed after the vault lock was released (index_removal).
+type vaultProjectDeleteOutput struct {
+	*storage.DeleteResult
+	IndexRemoval []indexstore.IndexRemoval `json:"index_removal"`
 }

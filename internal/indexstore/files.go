@@ -28,7 +28,7 @@ const (
 
 // projectFiles are the paths of one project's index files.
 type projectFiles struct {
-	dir, chunks, ledger, kg, graph string
+	dir, chunks, ledger, kg, graph, fingerprint string
 }
 
 func filesFor(vault *storage.Vault, project string) (projectFiles, error) {
@@ -42,6 +42,8 @@ func filesFor(vault *storage.Vault, project string) (projectFiles, error) {
 		ledger: filepath.Join(dir, ledgerFile),
 		kg:     filepath.Join(dir, kgDir, kgFile),
 		graph:  filepath.Join(dir, graphFile),
+
+		fingerprint: filepath.Join(dir, fingerprintFile),
 	}, nil
 }
 

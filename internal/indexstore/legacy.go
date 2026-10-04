@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -26,8 +27,10 @@ import (
 //     host-local store being absent, which is true on every host until capture
 //     is redirected;
 //   - a vault that is not a git repository keeps its ledger;
-//   - index-fingerprints-project-lifecycle-and-migration-marker adds the
-//     second condition, the migration marker.
+//   - a vault carrying the migration marker (storage.VaultMigrated) deletes it
+//     whatever git tracks: a migrated vault has no legacy ledger to honour. A
+//     malformed marker keeps the ledger, whatever git tracks, and logs a
+//     warning naming vault.toml.
 //
 // The one caller is the top of the refresh backfill, before it reads the
 // ledger (Chair ruling C4). capture-and-backfill-write-host-local-index-only
@@ -42,12 +45,22 @@ func DeleteLegacyLedgerIfUntracked(vault *storage.Vault, project string) (bool, 
 	} else if err != nil {
 		return false, fmt.Errorf("indexstore: stat legacy ledger: %w", err)
 	}
-	n, known, err := vault.TrackedDrawerFiles(project)
+	migrated, err := storage.VaultMigrated(vault.Root)
 	if err != nil {
-		return false, fmt.Errorf("indexstore: list tracked drawers of %s: %w", project, err)
-	}
-	if !known || n > 0 {
+		// Kept, whatever the drawers say: a vault.toml nobody can read must not
+		// decide a deletion either way.
+		slog.Warn("legacy ledger kept: .vibe-palace/vault.toml has a malformed migration marker",
+			"project", project, "err", err)
 		return false, nil
+	}
+	if !migrated {
+		n, known, err := vault.TrackedDrawerFiles(project)
+		if err != nil {
+			return false, fmt.Errorf("indexstore: list tracked drawers of %s: %w", project, err)
+		}
+		if !known || n > 0 {
+			return false, nil
+		}
 	}
 	rel, err := filepath.Rel(vault.Root, path)
 	if err != nil {

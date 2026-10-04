@@ -8,6 +8,16 @@ import (
 	"strings"
 )
 
+// ExtractorVersion is the version of what extraction outputs. The host-local
+// index's chunk fingerprint hashes it (ADR-014 decision 3), so a bump makes every
+// host's store stale and the next vp index rebuild re-extracts.
+//
+// 🔴 Bump it in the SAME change as anything that changes extraction output: the
+// triple patterns, entity detection, ExtractAll's options or its defaults. A
+// change that alters what is extracted without a bump leaves every host serving
+// records the current code would not produce, and nothing reports it.
+const ExtractorVersion = 1
+
 // ExtractedTriple represents a relationship extracted from text.
 type ExtractedTriple struct {
 	Subject    string
