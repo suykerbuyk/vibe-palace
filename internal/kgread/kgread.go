@@ -63,8 +63,10 @@ var (
 	cacheMu sync.Mutex
 	cache   = map[string]*localKG{}
 
-	// readStoreFn is the one store read, a seam so a test can count reloads.
-	readStoreFn = indexstore.ReadStore
+	// readKGFn is the one store read, a seam so a test can count reloads. It
+	// is the KG-only snapshot: the ledger and the KG records, never the
+	// chunks, which the KG view does not depend on.
+	readKGFn = indexstore.ReadKG
 )
 
 // loadLocal returns the project's decoded local KG. It reads the store
@@ -82,7 +84,7 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 	if c, ok := cache[key]; ok && c.gen == g {
 		return c, nil
 	}
-	st, err := readStoreFn(v, project)
+	st, err := readKGFn(v, project)
 	if err != nil {
 		return nil, fmt.Errorf("read index store: %w", err)
 	}
@@ -97,7 +99,7 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 
 // decodeStore decodes every local KG record that has a live owner, dating
 // each from its earliest live owner.
-func decodeStore(st *indexstore.Store, project string) (*localKG, error) {
+func decodeStore(st *indexstore.KGSnapshot, project string) (*localKG, error) {
 	led := st.Ledger()
 	kg := &localKG{}
 	for _, rec := range st.KG(true) {

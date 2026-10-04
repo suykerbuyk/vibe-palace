@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -699,12 +700,12 @@ func TestOnlyLedgeredLocalRecordsAreRead(t *testing.T) {
 func TestLocalKGReloadIsFull(t *testing.T) {
 	v := newVault(t)
 	var reads atomic.Int64
-	old := readStoreFn
-	readStoreFn = func(v *storage.Vault, p string) (*indexstore.Store, error) {
+	old := readKGFn
+	readKGFn = func(v *storage.Vault, p string) (*indexstore.KGSnapshot, error) {
 		reads.Add(1)
 		return old(v, p)
 	}
-	t.Cleanup(func() { readStoreFn = old })
+	t.Cleanup(func() { readKGFn = old })
 
 	ingestAll(t, v, ingest{"S1", "aa11", "2026-05-10", s1()})
 	query := func() int {
@@ -730,6 +731,96 @@ func TestLocalKGReloadIsFull(t *testing.T) {
 	}
 	if n := query(); n != 1 || reads.Load() != 3 {
 		t.Fatalf("after the epoch changed: %d triples, %d reads; want 1, 3", n, reads.Load())
+	}
+
+	// An epoch-only change: the store changes, and the counter file is put
+	// back to the cached gen with a new epoch. The cache must still reload.
+	g, err := indexstore.ReadGeneration(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitArchive(t, v, project, archiveCommit("S4", "dd44", "2026-05-14",
+		records(extraction{triples: []storage.Triple{{Subject: tripleT[0], Predicate: "knows", Object: "carol"}}})))
+	genPath, err := v.IndexGenerationPath(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(genPath, []byte(fmt.Sprintf("%d %d\n", g.Gen, g.Epoch+1000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := query(); n != 2 || reads.Load() != 4 {
+		t.Fatalf("after an epoch-only counter change: %d triples, %d reads; want 2, 4", n, reads.Load())
+	}
+}
+
+// dropLocalCache forgets a project's cached local KG, so the next read loads.
+func dropLocalCache(v *storage.Vault, p string) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	delete(cache, v.Root+"\x00"+p)
+}
+
+// The KG reads never load chunks.jsonl: with it unreadable, and the cache
+// dropped so every call really loads, they still answer, and the same.
+func TestKGReadNeverLoadsChunks(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("chmod 000 does not stop this user reading")
+	}
+	v := newVault(t)
+	ingestAll(t, v, ingest{"S1", "aa11", "2026-05-10", s1()}, ingest{"S2", "bb22", "2026-05-11", s2()})
+	mustTx(t, v, project, func(tx *indexstore.Tx) error {
+		return tx.Append(indexstore.NoteOwner("n"), []indexstore.OwnedChunk{{
+			Chunk:     indexstore.Chunk{ID: index.ChunkID("a chunk"), Content: "a chunk", Wing: project, Room: "r", Hall: "facts"},
+			Ownership: indexstore.Ownership{SourceType: "note", Day: "2026-05-10"},
+		}})
+	})
+	type answers struct {
+		stats    storage.KGStats
+		triples  []storage.Triple
+		entities []storage.Entity
+		query    []storage.Triple
+		timeline []storage.Triple
+	}
+	ask := func() answers {
+		t.Helper()
+		var a answers
+		var err error
+		if a.stats, err = KGStats(v, project); err != nil {
+			t.Fatalf("KGStats: %v", err)
+		}
+		if a.triples, err = ListTriples(v, project); err != nil {
+			t.Fatalf("ListTriples: %v", err)
+		}
+		if a.entities, _, err = ListEntities(v, project); err != nil {
+			t.Fatalf("ListEntities: %v", err)
+		}
+		if a.query, err = QueryEntity(v, project, tripleT[0], "", "both"); err != nil {
+			t.Fatalf("QueryEntity: %v", err)
+		}
+		if a.timeline, err = Timeline(v, project, tripleT[0]); err != nil {
+			t.Fatalf("Timeline: %v", err)
+		}
+		return a
+	}
+	want := ask()
+	if want.stats.TripleCount == 0 {
+		t.Fatal("fixture: no triples")
+	}
+	dir, err := v.IndexDir(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := filepath.Join(dir, "chunks.jsonl")
+	if _, err := os.Stat(chunks); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if err := os.Chmod(chunks, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(chunks, 0o644) })
+	dropLocalCache(v, project)
+	if got := ask(); !reflect.DeepEqual(got, want) {
+		t.Errorf("with chunks.jsonl unreadable:\n got  %+v\n want %+v", got, want)
 	}
 }
 
