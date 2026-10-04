@@ -64,10 +64,12 @@ func gitifyVault(t *testing.T, vaultPath string) (origin string) {
 	gitInVault(t, vaultPath, "init", "-b", "main")
 	gitInVault(t, vaultPath, "config", "user.email", "test@test.com")
 	gitInVault(t, vaultPath, "config", "user.name", "Test")
-	// Match production's canonical ignores for the two sidecars this path
-	// creates: the prune's .bak backup and the commit lock's directory.
+	// Production's canonical .gitignore, as vp init writes it: it covers the
+	// sidecars this path creates (the prune's .bak backup, the commit lock's
+	// directory), and it is complete, so vp config sync has no top-up of its
+	// own to commit (cmd_config_sync_vault_commit_test.go covers that).
 	if err := os.WriteFile(filepath.Join(vaultPath, ".gitignore"),
-		[]byte(".vp-locks/\n*.bak\n"), 0o644); err != nil {
+		[]byte(canonicalVaultGitignore()), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
 	gitInVault(t, vaultPath, "add", "-A")
@@ -278,10 +280,19 @@ func gitifyVaultUnborn(t *testing.T, vaultPath string) {
 	gitInVault(t, vaultPath, "init", "-b", "main")
 	gitInVault(t, vaultPath, "config", "user.email", "test@test.com")
 	gitInVault(t, vaultPath, "config", "user.name", "Test")
+	// Not the canonical file: this .gitignore is not vp's exact write, so
+	// vp config sync leaves it uncommitted and HEAD stays unborn, which is
+	// the state this fixture exists to give the prune.
 	if err := os.WriteFile(filepath.Join(vaultPath, ".gitignore"),
 		[]byte(".vp-locks/\n*.bak\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
+}
+
+// canonicalVaultGitignore is the vault .gitignore vp init writes on a fresh,
+// unmigrated vault: every canonical line, in order.
+func canonicalVaultGitignore() string {
+	return strings.Join(storage.CanonicalGitignorePatterns, "\n") + "\n"
 }
 
 // TestConfigSyncPruneOnUnbornHeadVaultSucceeds is the full-stack proof for
