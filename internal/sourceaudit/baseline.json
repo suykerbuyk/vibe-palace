@@ -265,6 +265,14 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked indexstore.Ledger.Batch",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision D9): the repair pass compares each ledgered import batch's chunk count with the chunks it owns and reports a shortfall. It lands with the store support one commit before the repair pass; the repair commit invokes it and deletes this entry."
+    },
+    {
+      "id": "uninvoked indexstore.Ledger.BatchIDs",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision D9): the repair pass visits every ledgered import batch, and nothing else lists them. It lands with the store support one commit before the repair pass; the repair commit invokes it and deletes this entry."
+    },
+    {
       "id": "uninvoked indexstore.Ledger.InBaseline",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Read by pending-archive-ingester-and-per-archive-commit-step: automatic triggers ingest only pending archives outside the baseline set. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },

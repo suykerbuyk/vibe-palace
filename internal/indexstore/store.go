@@ -139,6 +139,27 @@ func (f *chunkFold) dropOwner(o Owner, keep map[string]bool) bool {
 	return removed
 }
 
+// dropOwnersWhere removes every owner line for which drop is true, from every
+// chunk not in keep, in one pass. It reports whether it removed any.
+func (f *chunkFold) dropOwnersWhere(drop func(Owner) bool, keep map[string]bool) bool {
+	removed := false
+	for id, ols := range f.owners {
+		if keep[id] {
+			continue
+		}
+		out := ols[:0]
+		for _, ol := range ols {
+			if drop(ol.Owner) {
+				removed = true
+				continue
+			}
+			out = append(out, ol)
+		}
+		f.owners[id] = out
+	}
+	return removed
+}
+
 // prune deletes every chunk left with no owner of any kind.
 func (f *chunkFold) prune() bool {
 	out := f.order[:0]
@@ -270,11 +291,18 @@ func (f *kgFold) add(id string, o Owner, payload json.RawMessage) bool {
 // dropOwner removes o from every record, deletes the records left with no
 // owner, and reports whether anything was removed.
 func (f *kgFold) dropOwner(o Owner) bool {
+	k := o.key()
+	return f.dropOwnersWhere(func(cur Owner) bool { return cur.key() == k })
+}
+
+// dropOwnersWhere removes every owner for which drop is true, and deletes
+// every record left with no owner.
+func (f *kgFold) dropOwnersWhere(drop func(Owner) bool) bool {
 	removed := false
 	for id, os := range f.owners {
 		out := os[:0]
 		for _, cur := range os {
-			if cur.key() != o.key() {
+			if !drop(cur) {
 				out = append(out, cur)
 			} else {
 				removed = true

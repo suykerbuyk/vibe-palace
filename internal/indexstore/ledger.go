@@ -37,6 +37,7 @@ type ledgerRecord struct {
 	SHA             string   `json:"source_sha256,omitempty"`
 	SupersedingFrom string   `json:"superseding_from,omitempty"`
 	ArchivePath     string   `json:"archive_path,omitempty"`
+	CapturedAt      string   `json:"captured_at,omitempty"`
 	StartDay        string   `json:"start_day,omitempty"`
 	StartDaySource  string   `json:"start_day_source,omitempty"`
 	ChunkCount      *int     `json:"chunk_count,omitempty"`
@@ -69,15 +70,26 @@ type SessionRecord struct {
 	SHA             string // the live archive, or the one being superseded TO
 	SupersedingFrom string // in StateSuperseding: the archive being replaced
 	ArchivePath     string // for display only; nothing opens an archive through it
-	StartDay        string
-	StartDaySource  string
-	ChunkCount      int
-	Generation      int // 1 when first ledgered, +1 per supersede
+	// CapturedAt is the archive's manifest captured_at, when the writer gave
+	// one: the ingester compares it with a listed archive's to tell newer
+	// from older when the ledgered archive is no longer on disk.
+	CapturedAt     string
+	StartDay       string
+	StartDaySource string
+	ChunkCount     int
+	Generation     int // 1 when first ledgered, +1 per supersede
 }
 
 type batchRecord struct {
 	chunkCount int
 	startDay   string
+}
+
+// BatchRecord is a ledgered mempalace import batch.
+type BatchRecord struct {
+	ID         string
+	ChunkCount int // the distinct chunk ids the batch owns
+	StartDay   string
 }
 
 // Ledger is the folded ingest ledger of one project.
@@ -126,7 +138,7 @@ func foldLedger(recs []ledgerRecord) *Ledger {
 			}
 			l.sessions[r.SessionID] = SessionRecord{
 				SessionID: r.SessionID, State: r.State, SHA: r.SHA, SupersedingFrom: r.SupersedingFrom,
-				ArchivePath: r.ArchivePath, StartDay: r.StartDay, StartDaySource: r.StartDaySource,
+				ArchivePath: r.ArchivePath, CapturedAt: r.CapturedAt, StartDay: r.StartDay, StartDaySource: r.StartDaySource,
 				ChunkCount: n, Generation: r.Generation,
 			}
 			if r.SupersedingFrom != "" {
@@ -194,6 +206,33 @@ func (l *Ledger) InBaseline(sha string) bool {
 
 // FailureCount is an archive's failure count.
 func (l *Ledger) FailureCount(sha string) int { return l.failures[sha] }
+
+// Superseded reports whether an archive was replaced by a supersede or
+// recorded superseded on arrival: nothing of it may be ingested.
+func (l *Ledger) Superseded(sha string) bool {
+	_, ok := l.superseded[sha]
+	return ok
+}
+
+// Batch returns a ledgered import batch's record.
+func (l *Ledger) Batch(id string) (BatchRecord, bool) {
+	b, ok := l.batches[id]
+	if !ok {
+		return BatchRecord{}, false
+	}
+	return BatchRecord{ID: id, ChunkCount: b.chunkCount, StartDay: b.startDay}, true
+}
+
+// BatchIDs returns the ids of the ledgered import batches, sorted: the repair
+// pass visits every batch, and nothing else lists them.
+func (l *Ledger) BatchIDs() []string {
+	ids := make([]string, 0, len(l.batches))
+	for id := range l.batches {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
 
 // ArchiveRef names one tracked archive.
 type ArchiveRef struct {

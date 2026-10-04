@@ -42,13 +42,22 @@ type ArchiveCommit struct {
 	SessionID   string
 	SHA         string // the archive's source_sha256
 	ArchivePath string // for display only
-	// StartDay is the session's UTC start day (index.SessionDate), and
+	// CapturedAt is the archive manifest's captured_at, recorded on the
+	// session record (optional).
+	CapturedAt string
+	// StartDay is the session's UTC start day (archive.Manifest.SessionDay), and
 	// StartDaySource how it was found: DayFromTranscript or DayFromCapturedAt.
 	StartDay       string
 	StartDaySource string
 	Vectors        map[string][]float32 // by chunk id
 	Chunks         []OwnedChunk
 	KG             []KGRecord
+	// Retarget is for Supersede only: the source_sha256 of the archive the
+	// session is superseding TO, which is no longer on disk (the hook
+	// rewrote it before a crashed supersede could finish). The caller names
+	// it, and Supersede re-targets the session to this commit's archive
+	// only when it matches the ledger. Empty everywhere else.
+	Retarget string
 }
 
 // SupersedeCommit is a newer archive of a session whose ledger records an
@@ -67,6 +76,9 @@ type BatchCommit struct {
 func (c *ArchiveCommit) validate() error {
 	if c.SessionID == "" || c.SHA == "" {
 		return errors.New("indexstore: an archive commit needs a session id and a source_sha256")
+	}
+	if c.Retarget == c.SHA {
+		return errors.New("indexstore: an archive cannot re-target a supersede to itself")
 	}
 	if c.StartDaySource != DayFromTranscript && c.StartDaySource != DayFromCapturedAt {
 		return fmt.Errorf("indexstore: start day source %q is not %q or %q", c.StartDaySource, DayFromTranscript, DayFromCapturedAt)
@@ -322,6 +334,9 @@ func (tx *Tx) CommitArchive(c ArchiveCommit, vw VectorWriter) error {
 	if err := c.validate(); err != nil {
 		return err
 	}
+	if c.Retarget != "" {
+		return errors.New("indexstore: Retarget is for Supersede only")
+	}
 	s, err := tx.state()
 	if err != nil {
 		return err
@@ -364,11 +379,11 @@ func (tx *Tx) CommitArchive(c ArchiveCommit, vw VectorWriter) error {
 		return err
 	}
 	n := distinctIDs(c.Chunks)
-	if has && prev.ChunkCount == n && prev.StartDay == c.StartDay && prev.StartDaySource == c.StartDaySource {
+	if has && prev.ChunkCount == n && prev.StartDay == c.StartDay && prev.StartDaySource == c.StartDaySource && prev.CapturedAt == c.CapturedAt {
 		return tx.fail(commitStep("ledger"))
 	}
 	rec := ledgerRecord{
-		Kind: recSession, SessionID: c.SessionID, State: StateLive, SHA: c.SHA, ArchivePath: c.ArchivePath,
+		Kind: recSession, SessionID: c.SessionID, State: StateLive, SHA: c.SHA, ArchivePath: c.ArchivePath, CapturedAt: c.CapturedAt,
 		StartDay: c.StartDay, StartDaySource: c.StartDaySource, ChunkCount: &n, Generation: gen,
 	}
 	if err := tx.fail(tx.appendLedger(s, rec)); err != nil {
@@ -398,6 +413,14 @@ func (tx *Tx) CommitArchive(c ArchiveCommit, vw VectorWriter) error {
 // ownership removed. A crash after step 1 or 2 leaves the session superseding,
 // which is pending; calling Supersede again with the same commit repeats steps
 // 2 and 3, which are idempotent.
+//
+// Re-target. A session superseding to an archive B that is no longer on disk
+// (the hook rewrote it to C before the crashed supersede was resumed) can
+// never finish towards B. The caller passes C with Retarget = B. Step 1 then
+// records B superseded and re-marks the session superseding from the same
+// older archive to C; step 2 removes the ownership of both the older archive
+// and B (whatever part of B step 2 had already added), and step 3 records C
+// live. Retarget must name the ledger's target, or the call is refused.
 func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	if err := c.validate(); err != nil {
 		return err
@@ -419,7 +442,7 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	if err := tx.ensureChunkFingerprint(); err != nil {
 		return err
 	}
-	var old string
+	var old, vanished string
 	var prevGen int
 	switch {
 	case prev.State == StateLive && prev.SHA != c.SHA:
@@ -433,6 +456,16 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 		}
 	case prev.State == StateSuperseding && prev.SHA == c.SHA:
 		old, prevGen = prev.SupersedingFrom, prev.Generation
+	case prev.State == StateSuperseding && c.Retarget != "" && prev.SHA == c.Retarget:
+		old, prevGen, vanished = prev.SupersedingFrom, prev.Generation, prev.SHA
+		gone := ledgerRecord{Kind: recSuperseded, SessionID: c.SessionID, SHA: vanished}
+		mark := ledgerRecord{
+			Kind: recSession, SessionID: c.SessionID, State: StateSuperseding, SHA: c.SHA,
+			SupersedingFrom: old, ArchivePath: c.ArchivePath, Generation: prevGen,
+		}
+		if err := tx.fail(tx.appendLedger(s, gone, mark)); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: session %s records %s (%s); cannot supersede it with %s",
 			ErrOtherArchive, c.SessionID, prev.SHA, prev.State, c.SHA)
@@ -448,6 +481,10 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 		return err
 	}
 	newOwner, oldOwner := ArchiveOwner(c.SHA), ArchiveOwner(old)
+	// An archive the ledger records as superseded owns nothing: this also
+	// removes a vanished re-target's partial records when the re-targeted
+	// supersede is itself resumed after a crash.
+	supersededOwner := func(o Owner) bool { return o.Kind == OwnerArchive && s.ledger.Superseded(o.SHA) }
 	if err := tx.fail(tx.rewriteChunks(s, func(f *chunkFold) {
 		keep := map[string]bool{}
 		for _, r := range c.Chunks {
@@ -457,6 +494,7 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 			f.setOwner(r.ID, ownerLine{Owner: newOwner, Ownership: ol})
 		}
 		f.dropOwner(oldOwner, keep)
+		f.dropOwnersWhere(supersededOwner, keep)
 		f.prune()
 	})); err != nil {
 		return err
@@ -469,6 +507,7 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 			f.add(r.ID, newOwner, r.Payload)
 		}
 		f.dropOwner(oldOwner)
+		f.dropOwnersWhere(supersededOwner)
 	})); err != nil {
 		return err
 	}
@@ -477,7 +516,7 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	}
 	n := distinctIDs(c.Chunks)
 	live := ledgerRecord{
-		Kind: recSession, SessionID: c.SessionID, State: StateLive, SHA: c.SHA, ArchivePath: c.ArchivePath,
+		Kind: recSession, SessionID: c.SessionID, State: StateLive, SHA: c.SHA, ArchivePath: c.ArchivePath, CapturedAt: c.CapturedAt,
 		StartDay: c.StartDay, StartDaySource: c.StartDaySource, ChunkCount: &n, Generation: prevGen + 1,
 	}
 	if err := tx.fail(tx.appendLedger(s, live)); err != nil {
