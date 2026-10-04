@@ -36,12 +36,21 @@ import (
 //     is exempt from the write funnel BY VERB (a merge is N files in one
 //     operation, which no per-path primitive models), so a tool whose only
 //     vault writes are git-mediated reaches no sink and derives non-mutating —
-//     correctly, by the funnel's own definition. `vp_vault_tidy` and `vault
-//     commit` are exactly that shape (`vp_vault_sync` was too, until its pull
-//     began running the host-local index sweep, whose writes this analysis
-//     does see). Adopting the derived answer would SILENTLY UNGATE them. Separately, `vp config sync`
-//     and `vp_init` write with bare os.WriteFile/os.Remove/os.Rename outside
-//     the funnel entirely, and would be ungated for a different reason.
+//     correctly, by the funnel's own definition. DECLARED WINS for every such
+//     tool, permanently: git-mediated authorship is still authorship (`git
+//     merge` can leave conflict markers in resume.md), and a stale binary must
+//     refuse it, so adopting the derived answer would SILENTLY UNGATE real
+//     writers. `vault commit`, `vault tidy` and `vp_vault_tidy` were exactly
+//     that shape, and were accepted divergences on this ruling, until their
+//     commit-and-push reconcile began running the derived-path merge heal
+//     (storage.mergeFetchedTip -> vaultfs.Delete, task
+//     tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker); they now
+//     derive mutating and agree with their gate. `vp_vault_sync` agrees for
+//     the same kind of reason (its pull runs the host-local index sweep). A
+//     future tool whose only writes go through git is this shape again, and
+//     the ruling above is its answer. Separately, `vp config sync` and
+//     `vp_init` write with bare os.WriteFile/os.Remove/os.Rename outside the
+//     funnel entirely, and would be ungated for a different reason.
 //   - It OVER-derives, through two known imprecisions of this analysis — a
 //     shared generic instantiation and closure attribution, both documented
 //     below — so adopting the derived answer would also gate reads.

@@ -171,12 +171,14 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// lock itself out of every subsequent pull and could never reach the state —
 	// or the fix — that resolves the mismatch.
 	//
-	// The pull's one other worktree write is the derived-path merge heal: on a
-	// MIGRATED vault, a conflict on drawers or the ingest ledger alone is
-	// concluded by deleting them (vaultfs.Delete), which is the deletion the
-	// incoming migration commit already records. Transport too: it authors
-	// nothing and stamps nothing (sourceaudit baseline, ungated-vault-writer
-	// main.cmdVaultPull / main.cmdVaultSync).
+	// On a MIGRATED vault the pull also writes derived index paths, and nothing
+	// else: a merge conflict on drawers or the ingest ledger alone is concluded
+	// by deleting them (vaultfs.Delete), and after every merge the derived paths
+	// the merged tree tracks are untracked in a commit of the pull's own, which
+	// sync then pushes. Bounded by storage.isDerivedPath, gated by the marker
+	// read from the merged index or HEAD. Transport too: it authors nothing and
+	// stamps nothing (sourceaudit baseline, ungated-vault-writer
+	// main.cmdVaultPull / main.cmdVaultSync, ruled 2026-10-04).
 	reg.Register(cmdVaultPull())
 	reg.Register(cmdVaultPush())
 	// `vault sync` is UNWRAPPED for the same reason as pull and push above, and
