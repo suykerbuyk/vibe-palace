@@ -5,7 +5,9 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"os"
@@ -94,7 +96,8 @@ func TestIntegrationEmbedCacheLivesOutsideProjectTrees(t *testing.T) {
 	h.registerAllTools(t)
 	root := h.Vault.Root
 	const stem = "2026-09-10-aaaa0000-01"
-	ecNote(t, root, "notesonly", stem, "The gearbox rebuild replaced every bearing in the drivetrain.")
+	const body = "The gearbox rebuild replaced every bearing in the drivetrain."
+	ecNote(t, root, "notesonly", stem, body)
 
 	// The MCP layer wraps a list result as {"items": [...]}.
 	var sr struct {
@@ -126,7 +129,10 @@ func TestIntegrationEmbedCacheLivesOutsideProjectTrees(t *testing.T) {
 		t.Fatal("vp_search returned nothing for the notes-only project")
 	}
 
-	vec := "palace/.local/embed-cache/notesonly/note.notesonly." + stem + ".c0.vec"
+	// The note cache id: identity plus a content tag, 16 hex digits of sha256
+	// over the chunk text (internal/search, contentTag).
+	tag := sha256.Sum256([]byte(body))
+	vec := "palace/.local/embed-cache/notesonly/note.notesonly." + stem + ".c0." + hex.EncodeToString(tag[:8]) + ".vec"
 	if !ecExists(root, vec) {
 		t.Errorf("vector not at %s", vec)
 	}
@@ -313,7 +319,10 @@ func TestIntegrationConcurrentSweepsConverge(t *testing.T) {
 	const stem = "2026-09-10-bbbb0000-01"
 	body := "Notes about the compressor overhaul."
 	ecNote(t, root, "husk1", stem, body)
-	id := "note.husk1." + stem + ".c0"
+	// The note cache id search derives: identity plus a content tag, 16 hex
+	// digits of sha256 over the chunk text (internal/search, contentTag).
+	tag := sha256.Sum256([]byte(body))
+	id := "note.husk1." + stem + ".c0." + hex.EncodeToString(tag[:8])
 	want["palace/.local/embed-cache/husk1/"+id+".vec"] = ecLegacyVector(t, h, "husk1", id, body)
 	// husk2 is the incident's shape: in neither tree, only a cached vector left.
 	ecLegacyVector(t, h, "husk2", "7a31b05d", "gone")

@@ -25,9 +25,11 @@ const (
 
 // iterationCacheID returns the deterministic vector/cache ID for one chunk of
 // one iteration entry's SUMMARY row. Derived from (project, n, matchIndex,
-// chunkIndex) — not DrawerID = md5(wing+content).
-func iterationCacheID(project string, n, matchIndex, chunkIndex int) string {
-	return fmt.Sprintf("iter.%s.%d.m%d.c%d", project, n, matchIndex, chunkIndex)
+// chunkIndex) and the chunk's text (contentTag, notes.go) — not DrawerID =
+// md5(wing+content). The text is part of the id so a regenerated summary or an
+// edited entry is embedded again instead of serving the old text's vector.
+func iterationCacheID(project string, n, matchIndex, chunkIndex int, text string) string {
+	return fmt.Sprintf("iter.%s.%d.m%d.c%d.%s", project, n, matchIndex, chunkIndex, contentTag(text))
 }
 
 // iterationRawCacheID is iterationCacheID's counterpart for the always-emitted
@@ -36,8 +38,8 @@ func iterationCacheID(project string, n, matchIndex, chunkIndex int) string {
 // vector-store/metadata keys (see Engine.detectCollision in engine.go), and a
 // summary chunk sharing an id with a raw chunk would let one's cached vector
 // and metadata silently answer for the other's (different) content.
-func iterationRawCacheID(project string, n, matchIndex, chunkIndex int) string {
-	return fmt.Sprintf("iter.%s.%d.m%d.raw.c%d", project, n, matchIndex, chunkIndex)
+func iterationRawCacheID(project string, n, matchIndex, chunkIndex int, text string) string {
+	return fmt.Sprintf("iter.%s.%d.m%d.raw.c%d.%s", project, n, matchIndex, chunkIndex, contentTag(text))
 }
 
 // iterationSourceRef is per entry (not per chunk): iteration/{n}/m/{matchIndex}.
@@ -162,7 +164,7 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 				summaryEmitted = len(sParts) > 0
 				sRef := iterationSourceRef(e.N, matchIndex)
 				for cIdx, part := range sParts {
-					ids = append(ids, iterationCacheID(project, e.N, matchIndex, cIdx))
+					ids = append(ids, iterationCacheID(project, e.N, matchIndex, cIdx, part))
 					texts = append(texts, part)
 					metas = append(metas, drawerMeta{
 						Project:    project,
@@ -198,7 +200,7 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 
 		rRef := iterationRawSourceRef(e.N, matchIndex)
 		for cIdx, part := range rParts {
-			ids = append(ids, iterationRawCacheID(project, e.N, matchIndex, cIdx))
+			ids = append(ids, iterationRawCacheID(project, e.N, matchIndex, cIdx, part))
 			texts = append(texts, part)
 			metas = append(metas, drawerMeta{
 				Project:          project,

@@ -204,7 +204,7 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 		if m.ChunkIndex != i {
 			t.Errorf("chunk %d ChunkIndex = %d, want %d", i, m.ChunkIndex, i)
 		}
-		wantID := iterationRawCacheID("chunky", 9, 0, i)
+		wantID := iterationRawCacheID("chunky", 9, 0, i, texts[i])
 		if ids[i] != wantID {
 			t.Errorf("ids[%d] = %q, want %q", i, ids[i], wantID)
 		}
@@ -226,8 +226,8 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 }
 
 func TestIterationCacheID_IncludesAllFourFields(t *testing.T) {
-	id := iterationCacheID("vibe-palace", 315, 2, 4)
-	if id != "iter.vibe-palace.315.m2.c4" {
+	id := iterationCacheID("vibe-palace", 315, 2, 4, "text")
+	if id != "iter.vibe-palace.315.m2.c4."+contentTag("text") {
 		t.Fatalf("id = %q", id)
 	}
 	// Must not look like md5[:8] drawer ids.

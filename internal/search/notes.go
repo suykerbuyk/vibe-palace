@@ -4,6 +4,8 @@
 package search
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -36,8 +38,13 @@ const (
 )
 
 // noteCacheID returns the deterministic vector/cache ID for one chunk of one
-// session note. Derived from (project, note file stem, chunkIndex) — not
-// DrawerID = md5(wing+content).
+// session note. Derived from (project, note file stem, chunkIndex) and the
+// chunk's text (contentTag) — not DrawerID = md5(wing+content).
+//
+// The text is part of the id so an edited note gets a new id: the edited chunk
+// misses the embed cache and is embedded again, and the old vector becomes an
+// orphan the reaper collects. Without it, an edit kept serving the vector of
+// the text it replaced.
 //
 // That choice is the whole reason a note chunk cannot collide with a transcript
 // chunk: DrawerID hashes CONTENT, so identical text anywhere in the vault lands
@@ -51,8 +58,8 @@ const (
 // The stem comes from a filename under Projects/<p>/sessions, so it can carry
 // no path separator; it is embedded between a fixed prefix and suffix, so it
 // cannot escape the embed-cache directory either.
-func noteCacheID(project, stem string, chunkIndex int) string {
-	return fmt.Sprintf("note.%s.%s.c%d", project, stem, chunkIndex)
+func noteCacheID(project, stem string, chunkIndex int, text string) string {
+	return fmt.Sprintf("note.%s.%s.c%d.%s", project, stem, chunkIndex, contentTag(text))
 }
 
 // noteSummaryCacheID is noteCacheID's counterpart for the SUMMARY row (emitted
@@ -61,13 +68,24 @@ func noteCacheID(project, stem string, chunkIndex int) string {
 // treats these ids as global vector-store/metadata keys, and a summary row
 // sharing an id with a raw chunk would let one's cached vector and metadata
 // silently answer for the other's (different) content. noteCacheID always
-// ends in a literal ".c<digits>" chunk suffix; this id ends in a literal
-// ".summary" suffix instead, which is not a valid chunkIndex rendering, so the
-// two families can never produce the same string for any chunkIndex —
-// including chunk 0, where a naive noteCacheID(project, stem, 0) reuse would
-// have collided exactly with the raw first-chunk id "note.<project>.<stem>.c0".
-func noteSummaryCacheID(project, stem string) string {
-	return fmt.Sprintf("note.%s.%s.summary", project, stem)
+// carries a literal ".c<digits>." chunk component before its content tag; this
+// id carries a literal ".summary." component there instead, which is not a
+// valid chunkIndex rendering, so the two families can never produce the same
+// string for any chunkIndex or text — including chunk 0, where a naive
+// noteCacheID(project, stem, 0, text) reuse would have collided exactly with
+// the raw first-chunk id. Like noteCacheID it carries the text's content tag,
+// so a rewritten summary is embedded again.
+func noteSummaryCacheID(project, stem, text string) string {
+	return fmt.Sprintf("note.%s.%s.summary.%s", project, stem, contentTag(text))
+}
+
+// contentTag is the content part of a note or iteration cache id: 16 hex
+// digits (64 bits) of sha256 over the text. It only has to tell one text from
+// the next one written at the same identity (project, note or entry, chunk),
+// so 64 bits is ample; the identity part keeps distinct notes distinct.
+func contentTag(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
 }
 
 // noteSourceRef is per note (not per chunk): the note's path relative to the
@@ -170,7 +188,7 @@ func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, text
 		}
 
 		for cIdx, part := range parts {
-			ids = append(ids, noteCacheID(project, stem, cIdx))
+			ids = append(ids, noteCacheID(project, stem, cIdx, part))
 			texts = append(texts, part)
 			metas = append(metas, drawerMeta{
 				Project:          project,
@@ -192,7 +210,7 @@ func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, text
 		// SourceType/SourceRef/cache id so it can never collide with, or be
 		// dedup-shadowed by, this note's raw row(s).
 		if meta.SearchSummary != "" {
-			ids = append(ids, noteSummaryCacheID(project, stem))
+			ids = append(ids, noteSummaryCacheID(project, stem, meta.SearchSummary))
 			texts = append(texts, meta.SearchSummary)
 			metas = append(metas, drawerMeta{
 				Project:    project,

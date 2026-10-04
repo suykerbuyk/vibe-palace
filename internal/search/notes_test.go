@@ -263,21 +263,29 @@ func TestCollectNoteCorpus_UnparseableNoteIsSkipped(t *testing.T) {
 	}
 }
 
-// TestNoteCacheID_KeyedOnIdentityNotContent pins the honest residual, both
-// halves. The ID is keyed on (project, note, chunk) — the OPPOSITE trade from
-// DrawerID = md5(wing+content):
+// TestNoteCacheID_KeyedOnIdentityAndContent pins both halves of the id. It is
+// keyed on (project, note, chunk) AND on the chunk's text — the opposite trade
+// from DrawerID = md5(wing+content), which hashes the text alone:
 //
 //   - a note chunk can never share a key with a transcript chunk, because no
-//     DrawerID is ever computed over note text; and
+//     DrawerID is ever computed over note text;
 //   - two notes carrying IDENTICAL text still produce two separate rows, so the
 //     note corpus is ADDITIVE and does not dedup against transcripts or against
-//     itself.
-func TestNoteCacheID_KeyedOnIdentityNotContent(t *testing.T) {
-	if got := noteCacheID("vibe-palace", "2026-08-30-12a23ab8-08", 4); got != "note.vibe-palace.2026-08-30-12a23ab8-08.c4" {
+//     itself; and
+//   - the same note chunk with different text gets a different id, so an edit
+//     is embedded again instead of serving the old text's vector.
+func TestNoteCacheID_KeyedOnIdentityAndContent(t *testing.T) {
+	if got := noteCacheID("vibe-palace", "2026-08-30-12a23ab8-08", 4, "text"); got != "note.vibe-palace.2026-08-30-12a23ab8-08.c4."+contentTag("text") {
 		t.Fatalf("id = %q", got)
 	}
-	if len(noteCacheID("p", "s", 0)) == 8 {
+	if len(noteCacheID("p", "s", 0, "x")) == 8 {
 		t.Fatal("note cache id must not be an 8-char md5 drawer id")
+	}
+	if noteCacheID("p", "s", 0, "old text") == noteCacheID("p", "s", 0, "new text") {
+		t.Fatal("an edited chunk must get a new id")
+	}
+	if noteSummaryCacheID("p", "s", "old") == noteSummaryCacheID("p", "s", "new") {
+		t.Fatal("a rewritten summary must get a new id")
 	}
 
 	_, v := testEngine(t)
@@ -573,15 +581,15 @@ func TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero(t *testing.T) 
 	writeSessionNoteWithSummary(t, v.Root, project, stem, "2026-08-21", "wrap",
 		"Short raw body, a single chunk.", "A dense search summary.")
 
-	ids, _, metas, err := collectNoteCorpus(v, project)
+	ids, texts, metas, err := collectNoteCorpus(v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var rawChunkZeroID, summaryID string
+	var rawChunkZeroID, rawChunkZeroText, summaryID string
 	for i, m := range metas {
 		if m.SourceType == noteSourceType && m.ChunkIndex == 0 {
-			rawChunkZeroID = ids[i]
+			rawChunkZeroID, rawChunkZeroText = ids[i], texts[i]
 		}
 		if m.SourceType == noteSummarySourceType {
 			summaryID = ids[i]
@@ -594,10 +602,10 @@ func TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero(t *testing.T) 
 		t.Fatal("expected a summary row")
 	}
 
-	// This is precisely what a naive noteCacheID(project, stem, 0) reuse would
-	// produce for the summary row, so assert against it explicitly rather than
-	// only checking the two ids differ from each other in the abstract.
-	wouldBeNaiveID := noteCacheID(project, stem, 0)
+	// This is precisely what a naive noteCacheID(project, stem, 0, ...) reuse
+	// would produce for the summary row, so assert against it explicitly rather
+	// than only checking the two ids differ from each other in the abstract.
+	wouldBeNaiveID := noteCacheID(project, stem, 0, rawChunkZeroText)
 	if rawChunkZeroID != wouldBeNaiveID {
 		t.Fatalf("test assumption broken: raw chunk-0 id %q != noteCacheID(...,0) %q", rawChunkZeroID, wouldBeNaiveID)
 	}
@@ -671,8 +679,8 @@ func TestCollectNoteCorpus_ShortBodySingleChunkStillGetsSummaryRow(t *testing.T)
 			if m.ChunkIndex != 0 {
 				t.Errorf("summary row ChunkIndex = %d, want 0 (unchunked)", m.ChunkIndex)
 			}
-			if ids[i] != noteSummaryCacheID("shortnote", "2026-08-23-4444beef-01") {
-				t.Errorf("summary row id = %q, want %q", ids[i], noteSummaryCacheID("shortnote", "2026-08-23-4444beef-01"))
+			if want := noteSummaryCacheID("shortnote", "2026-08-23-4444beef-01", summaryText); ids[i] != want {
+				t.Errorf("summary row id = %q, want %q", ids[i], want)
 			}
 		default:
 			t.Errorf("unexpected SourceType %q", m.SourceType)
