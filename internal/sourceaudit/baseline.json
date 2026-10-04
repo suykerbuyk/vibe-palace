@@ -277,6 +277,10 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task index-fingerprints-project-lifecycle-and-migration-marker Scope 3. The epoch change alone, on a gone project's commit lock, with no removal. Non-test caller: vp vault rename's drain of the rename source (rename-core-fresh-target-with-digest-bind, \"Host-local index rename\", step 2), so an engine that remembers the source's Gen reloads. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
+      "id": "uninvoked indexstore.NoteFirst",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision R3): a trigger that loses the run lock records its First here. It lands one commit before ingest.Run, which calls it on a held lock; that commit deletes this entry."
+    },
+    {
       "id": "uninvoked indexstore.NoteOwner",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The note owner of a decision chunk. Non-test caller: decision-chunks-in-the-host-local-store. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -323,6 +327,10 @@
     {
       "id": "uninvoked indexstore.Tx.DeleteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (a corrupt or mismatched graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked indexstore.Tx.DropFirsts",
+      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision R3): the run drops served inbox entries. It lands one commit before ingest.Run, which calls it; that commit deletes this entry."
     },
     {
       "id": "uninvoked indexstore.Tx.RecordFailure",

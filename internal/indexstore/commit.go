@@ -53,10 +53,11 @@ type ArchiveCommit struct {
 	Chunks         []OwnedChunk
 	KG             []KGRecord
 	// Retarget is for Supersede only: the source_sha256 of the archive the
-	// session is superseding TO, which is no longer on disk (the hook
-	// rewrote it before a crashed supersede could finish). The caller names
-	// it, and Supersede re-targets the session to this commit's archive
-	// only when it matches the ledger. Empty everywhere else.
+	// session is superseding TO, which this commit's archive replaces
+	// before that supersede could finish: it is no longer on disk (the hook
+	// rewrote it), or a newer archive of the session arrived. The caller
+	// names it, and Supersede re-targets the session to this commit's
+	// archive only when it matches the ledger. Empty everywhere else.
 	Retarget string
 }
 

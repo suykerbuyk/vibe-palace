@@ -4,8 +4,12 @@
 package indexstore
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -199,5 +203,48 @@ func TestRetargetIsRefusedUnlessItNamesTheTarget(t *testing.T) {
 	}
 	if after := fileLines(t, pf.ledger); !slices.Equal(after, before) {
 		t.Fatal("a refused re-target wrote to the ledger")
+	}
+}
+
+// TestInboxRecordsAndDropsFirsts (R3): NoteFirst records a trigger's First
+// once, under the project's commit lock; a holder reads it with Firsts and
+// drops served entries; an emptied inbox is removed; a non-sha is refused and
+// a gone project is ErrProjectGone.
+func TestInboxRecordsAndDropsFirsts(t *testing.T) {
+	v := newVault(t)
+	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for _, sha := range []string{b, a, b} {
+		if err := NoteFirst(context.Background(), v, "alpha", sha, NoTimeout); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	mustTx(t, v, func(tx *Tx) error {
+		var err error
+		got, err = tx.Firsts()
+		return err
+	})
+	if !slices.Equal(got, []string{a, b}) {
+		t.Fatalf("Firsts = %v, want a and b once each", got)
+	}
+	mustTx(t, v, func(tx *Tx) error { return tx.DropFirsts([]string{a}) })
+	mustTx(t, v, func(tx *Tx) error {
+		var err error
+		got, err = tx.Firsts()
+		return err
+	})
+	if !slices.Equal(got, []string{b}) {
+		t.Fatalf("after dropping a: %v", got)
+	}
+	mustTx(t, v, func(tx *Tx) error { return tx.DropFirsts([]string{b}) })
+	pf, _ := filesFor(v, "alpha")
+	if _, err := os.Stat(filepath.Join(pf.dir, inboxFile)); !os.IsNotExist(err) {
+		t.Fatalf("the emptied inbox is still there (stat err %v)", err)
+	}
+	if err := NoteFirst(context.Background(), v, "alpha", "Projects/alpha/transcripts/x.jsonl.zst", NoTimeout); err == nil {
+		t.Fatal("NoteFirst accepted a path")
+	}
+	if err := NoteFirst(context.Background(), v, "gone", a, NoTimeout); !errors.Is(err, ErrProjectGone) {
+		t.Fatalf("NoteFirst on a gone project: %v, want ErrProjectGone", err)
 	}
 }

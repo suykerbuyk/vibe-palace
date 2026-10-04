@@ -43,6 +43,7 @@ var writersOutsideTx = map[string]string{
 	"RemoveGoneProject":             "removes a gone project's index/<p>/ only through LifecycleTx.RemoveProject, under the commit lock it has just taken (LockLifecycle)",
 	"RemoveGoneProjects":            "removes each named gone project's index/<p>/ through RemoveGoneProject, one commit lock at a time",
 	"ReapGoneProjects":              "removes each candidate's index/<p>/ through RemoveGoneProject, under its commit lock, and deletes .tomb-* tombstones, which no project maps to",
+	"NoteFirst":                     "rewrites index/<p>/first.inbox only through Tx.writeInbox, under the commit lock it has just taken (Lock)",
 }
 
 type funcInfo struct {
