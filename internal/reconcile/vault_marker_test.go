@@ -121,3 +121,26 @@ func TestVaultReconcile_MalformedMarkerWritesNothing(t *testing.T) {
 		t.Errorf(".gitignore was written: %q", got)
 	}
 }
+
+// Born migrated is InitVault-only (half b): ScaffoldNewVault alone — the
+// scaffold `vp vault init` passes, and the split destination's scaffold at
+// a32a2d4 — gives no marker and no derived lines. The marker comes from
+// storage.InitVault after the scaffold returns. Mutant: the marker written
+// in ScaffoldNewVault.
+func TestScaffoldNewVault_IsNotBornMigrated(t *testing.T) {
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	vault := filepath.Join(t.TempDir(), "dest")
+	if err := ScaffoldNewVault(context.Background(), vault); err != nil {
+		t.Fatalf("ScaffoldNewVault: %v", err)
+	}
+	if migrated, err := storage.VaultMigrated(vault); err != nil || migrated {
+		t.Errorf("VaultMigrated = %v, %v; want an unmarked vault", migrated, err)
+	}
+	if gitignoreHasDerived(t, vault) {
+		t.Error("ScaffoldNewVault wrote derived ignore lines")
+	}
+}

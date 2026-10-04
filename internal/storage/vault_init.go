@@ -188,6 +188,10 @@ func initFresh(ctx context.Context, path string, req InitVaultRequest) (*InitVau
 		removeNew()
 		return nil, fmt.Errorf("vault init: the scaffold did not stamp data format %d (got %d, %v)", surface.RequiredDataFormat, f, ferr)
 	}
+	if err := initBornMigrated(path); err != nil {
+		removeNew()
+		return nil, fmt.Errorf("vault init: %w", err)
+	}
 	// The new vault is the vault root.
 	vaultRoot := path
 	if err := atomicfile.Write(vaultRoot, filepath.Join(vaultRoot, filepath.FromSlash(remotesFile)), []byte(renderRemotesFile(req.Remotes))); err != nil {
@@ -351,10 +355,54 @@ func initPublish(held *vaultlock.Held, rep *InitVaultReport, m lifecycleMarker, 
 	return rep, nil
 }
 
+// initSurfaceStamp is the surface stamp a new vault is born with. Audits/ is
+// one of the stamp directories CheckCompatible scans, so the stamp gates a
+// binary older than the vault's creator from the first commit on.
+const initSurfaceStamp = "Audits/.surface"
+
+// initBornMigrated makes a vault `vp vault init` creates a MIGRATED vault
+// (ADR-014 decision 11; task
+// tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker, Scope 2): the
+// migration marker beside the data-format stamp, then the marker-gated
+// derived-index .gitignore lines (ReconcileVaultGitignore, the one emitter of
+// those lines, reads the marker just written), then the surface stamp.
+//
+// It runs in initFresh only, between the scaffold's data-format check and the
+// commit, so every completed run carries it: a resumed run either restarts
+// through initFresh or publishes the commit initFresh already made. It is
+// deliberately NOT in the shared create path (the reconciler's create branch,
+// reconcile.ScaffoldNewVault), which `vp init`, onboarding and the split
+// destination use.
+//
+// The stamp is surface.MCPSurfaceVersion, never a literal: CheckCompatible
+// takes the maximum stamp, so a number above the running binary's would make
+// the new vault refuse the binary that created it.
+//
+// No lock is taken here beyond the caller's: the manifest and stamp writers
+// take none, and ReconcileVaultGitignore takes the .gitignore path's own lock,
+// a different key from the vault-root lock initFresh holds.
+func initBornMigrated(path string) error {
+	m := surface.VaultManifest{
+		Format:       surface.RequiredDataFormat,
+		AuthoredOnly: surface.MarkerDate(time.Now().UTC().Format("2006-01-02")),
+	}
+	if err := surface.WriteVaultManifest(path, m); err != nil {
+		return fmt.Errorf("write the migration marker: %w", err)
+	}
+	if err := ReconcileVaultGitignore(path); err != nil {
+		return fmt.Errorf("write the derived-index ignore lines: %w", err)
+	}
+	if err := surface.WriteStamp(filepath.Join(path, filepath.FromSlash(filepath.Dir(initSurfaceStamp))),
+		surface.MCPSurfaceVersion, surface.WriterFingerprint(path)); err != nil {
+		return fmt.Errorf("write %s: %w", initSurfaceStamp, err)
+	}
+	return nil
+}
+
 func initReport(path string, req InitVaultRequest) *InitVaultReport {
 	return &InitVaultReport{
 		Path: path, Branch: initBranch, Remotes: req.Remotes, Upstream: req.Remotes[0].Name,
-		Files:  []string{".gitignore", ".vibe-palace/vault.toml", remotesFile},
+		Files:  []string{".gitignore", ".vibe-palace/vault.toml", initSurfaceStamp, remotesFile},
 		DryRun: req.DryRun,
 	}
 }

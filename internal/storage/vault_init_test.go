@@ -88,7 +88,7 @@ func TestInitVault_AdminStep1TwoRemotes(t *testing.T) {
 	}
 	files := strings.Split(gitRun(t, path, "ls-files"), "\n")
 	slices.Sort(files)
-	if want := []string{".gitignore", ".vibe-palace/remotes.toml", ".vibe-palace/vault.toml"}; !slices.Equal(files, want) {
+	if want := []string{".gitignore", ".vibe-palace/remotes.toml", ".vibe-palace/vault.toml", "Audits/.surface"}; !slices.Equal(files, want) {
 		t.Fatalf("tracked = %v, want %v", files, want)
 	}
 	if f, _ := surface.ReadFormat(path); f != surface.RequiredDataFormat {
