@@ -329,6 +329,8 @@ func ReadStore(vault *storage.Vault, project string) (*Store, error) {
 	return readStoreFiles(pf)
 }
 
+// readStoreFiles reads the ledger, then the chunks, then the KG records. It is
+// also the writer cache's loader (loadState), so that order stays.
 func readStoreFiles(pf projectFiles) (*Store, error) {
 	recs, err := readLedgerFile(pf.ledger)
 	if err != nil {
@@ -338,7 +340,7 @@ func readStoreFiles(pf projectFiles) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	kl, _, _, err := readLines(pf.kg)
+	kg, err := readKGFile(pf.kg)
 	if err != nil {
 		return nil, err
 	}
@@ -346,9 +348,60 @@ func readStoreFiles(pf projectFiles) (*Store, error) {
 		ledgerRecs: recs,
 		ledger:     foldLedger(recs),
 		chunks:     foldChunkLines(decodeLines(pf.chunks, cl, validChunkLine)),
-		kg:         foldKGLines(decodeLines(pf.kg, kl, validKGLine)),
+		kg:         kg,
 	}, nil
 }
+
+// readKGFile reads and folds the KG records file.
+func readKGFile(path string) (*kgFold, error) {
+	kl, _, _, err := readLines(path)
+	if err != nil {
+		return nil, err
+	}
+	return foldKGLines(decodeLines(path, kl, validKGLine)), nil
+}
+
+// KGSnapshot is a lock-free snapshot of one project's ledger and KG records,
+// for a reader that needs the knowledge graph and nothing else: it never
+// reads chunks.jsonl. Its KG view is exactly a Store's, because a KG record's
+// liveness depends on the ledger alone.
+//
+// The reader rule is Store's: read the change counter (ReadGeneration) BEFORE
+// the snapshot. A writer appends a record's KG lines before its ledger line,
+// and the snapshot reads the ledger first, so a read that races a commit can
+// only MISS that commit's records (they read as not yet live), for that one
+// call; it never shows a record the ledger does not make live. The commit's
+// counter bump makes the next comparison reload.
+type KGSnapshot struct {
+	ledger *Ledger
+	kg     *kgFold
+}
+
+// ReadKG reads a project's ledger and KG records without any lock, never its
+// chunks. Torn and malformed lines are handled as ReadStore handles them. A
+// project with no index reads as empty.
+func ReadKG(vault *storage.Vault, project string) (*KGSnapshot, error) {
+	pf, err := filesFor(vault, project)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := readLedgerFile(pf.ledger)
+	if err != nil {
+		return nil, err
+	}
+	kg, err := readKGFile(pf.kg)
+	if err != nil {
+		return nil, err
+	}
+	return &KGSnapshot{ledger: foldLedger(recs), kg: kg}, nil
+}
+
+// Ledger is the snapshot's folded ledger.
+func (s *KGSnapshot) Ledger() *Ledger { return s.ledger }
+
+// KG returns every KG record; with ledgeredOnly, only those with a live owner,
+// as Store.KG.
+func (s *KGSnapshot) KG(ledgeredOnly bool) []StoredKG { return kgRecords(s.kg, s.ledger, ledgeredOnly) }
 
 func readLedgerFile(path string) ([]ledgerRecord, error) {
 	lines, _, _, err := readLines(path)
@@ -378,14 +431,17 @@ func (s *Store) Chunks(ledgeredOnly bool) []StoredChunk {
 
 // KG returns every KG record. With ledgeredOnly, only records with a live
 // owner, by the same rule as Chunks.
-func (s *Store) KG(ledgeredOnly bool) []StoredKG {
+func (s *Store) KG(ledgeredOnly bool) []StoredKG { return kgRecords(s.kg, s.ledger, ledgeredOnly) }
+
+// kgRecords is the one KG view, shared by Store and KGSnapshot.
+func kgRecords(kg *kgFold, l *Ledger, ledgeredOnly bool) []StoredKG {
 	var out []StoredKG
-	for _, id := range s.kg.order {
-		rec := StoredKG{KGRecord: KGRecord{ID: id, Payload: s.kg.payloads[id]}, Owners: s.kg.owners[id]}
+	for _, id := range kg.order {
+		rec := StoredKG{KGRecord: KGRecord{ID: id, Payload: kg.payloads[id]}, Owners: kg.owners[id]}
 		if ledgeredOnly {
 			live := false
 			for _, o := range rec.Owners {
-				if _, ok := s.ledger.liveDay(o, ""); ok {
+				if _, ok := l.liveDay(o, ""); ok {
 					live = true
 					break
 				}
