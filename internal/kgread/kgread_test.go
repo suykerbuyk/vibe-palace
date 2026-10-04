@@ -73,12 +73,17 @@ func records(x extraction) []indexstore.KGRecord {
 	return out
 }
 
+// testRecipe is the chunk recipe every test Tx records, so a test that writes
+// chunks meets chunks.fingerprint's precondition (Tx.UseRecipe).
+var testRecipe = index.ChunkRecipe{IndexerVersion: index.IndexerVersion}
+
 func withTx(t *testing.T, v *storage.Vault, p string, f func(tx *indexstore.Tx) error) error {
 	t.Helper()
 	tx, err := indexstore.Lock(context.Background(), v, p, indexstore.NoTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx.UseRecipe(testRecipe)
 	ferr := f(tx)
 	if rerr := tx.Release(); ferr == nil {
 		ferr = rerr
@@ -857,6 +862,7 @@ func helperCommit() int {
 		return 1
 	}
 	defer tx.Release()
+	tx.UseRecipe(testRecipe)
 	if _, err := tx.EnsureLedger(nil); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
