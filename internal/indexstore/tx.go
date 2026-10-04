@@ -154,6 +154,41 @@ func (tx *Tx) Generation() Gen {
 	return tx.gen
 }
 
+// Project is the project whose index commit lock this Tx holds.
+func (tx *Tx) Project() string { return tx.project }
+
+// Held reports whether this Tx still holds the commit lock: true from Lock
+// until Commit or Release. A writer bound to a Tx (the embed cache's
+// Writer) refuses to write once it is false, so a vector can never be written
+// outside the lock by a caller that kept the writer past its Tx.
+func (tx *Tx) Held() bool {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	return tx.release != nil
+}
+
+// PutVectors writes vectors that belong to no commit step of this package:
+// the search engine's notes, iterations and tracked drawers, embedded outside
+// the lock and committed here in batches (ADR-014 decision 7, the tier table's
+// "notes embed and glide-path lazy embed" row). It refuses a finished Tx.
+//
+// A vector write is an append: the counter's gen moves when the Tx finishes,
+// so every running engine reloads and sees the new cache hits, and the epoch
+// is left alone. A batch that failed part-way still moves gen, because some
+// of its vectors may be on disk.
+func (tx *Tx) PutVectors(vw VectorWriter, vecs map[string][]float32) error {
+	if !tx.Held() {
+		return errors.New("indexstore: PutVectors on a finished Tx")
+	}
+	if err := tx.putVectors(vw, vecs); err != nil {
+		if len(vecs) > 0 {
+			tx.noteWrite(false)
+		}
+		return err
+	}
+	return nil
+}
+
 // noteWrite records that a write method changed the store. moreThanAppend is
 // set by every write that is more than an append, which changes the epoch.
 // Write methods call it only after their write succeeded, so a failed write

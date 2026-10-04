@@ -39,19 +39,15 @@ import (
 //
 // Because the lock is held, no commit step is between writing a vector and
 // writing the chunk that makes its id durable (the .vec rule), so no vector of
-// a STORE chunk that is durable, or in flight, can be reaped. That guarantee
-// covers store chunks only. Today the search engine's embed-cache Puts for
-// drawers, notes and iterations happen outside the commit lock, so such a
-// vector written after otherLive was read, for an id that is not yet in any
-// source otherLive saw, can still be reaped in that narrow window; the cost is
-// a re-embed. search-index-completeness-and-build-serialization closes it by
-// moving those Puts under the commit lock.
+// a STORE chunk that is durable, or in flight, can be reaped. Every other
+// vector (the search engine's drawers, notes and iterations) is written only
+// under the commit lock too, through the embed cache's Writer, so none can
+// land between otherLive's read and the unlink.
 //
 // Lock order: the caller holds the index commit lock and may take its own
 // in-process locks inside otherLive or afterwards, never the reverse. In the
-// search engine that order is commit lock, then e.mu. The per-project
-// in-process mutex of search-index-completeness-and-build-serialization is
-// taken BEFORE the commit lock, so it must not be e.mu.
+// search engine that order is the project's mutex, then the commit lock, then
+// e.mu (internal/search/lock.go).
 func (tx *Tx) Reap(otherLive func() (map[string]bool, error)) ([]string, error) {
 	s, err := tx.state()
 	if err != nil {

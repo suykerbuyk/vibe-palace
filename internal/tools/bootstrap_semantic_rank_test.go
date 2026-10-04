@@ -63,13 +63,13 @@ func TestSemanticRankerOrdersBySessionHits(t *testing.T) {
 	if err != nil || len(stored) == 0 {
 		t.Fatalf("list drawers: %v n=%d", err, len(stored))
 	}
-	if err := eng.IndexDrawers(context.Background(), []search.DrawerInput{{
-		Project: "test-proj", Wing: "wing-a", Room: "room-1", Drawer: stored[0],
-	}}); err != nil {
+	// A build makes the project current; a cold IndexDrawers alone would not
+	// (it is deferred to the next search, so HasIndex stays false).
+	if _, err := eng.Rebuild(context.Background(), "test-proj"); err != nil {
 		t.Fatal(err)
 	}
 	if !eng.HasIndex("test-proj") || !eng.EmbedderReady() {
-		t.Fatal("engine should be ready after IndexDrawers with a mock embedder")
+		t.Fatal("engine should be ready after a build with a mock embedder")
 	}
 
 	br := bootstrapResult(t, BootstrapContextTool(resolver, vault, eng), `{"project":"test-proj"}`)
@@ -211,9 +211,7 @@ func TestSemanticRankerIgnoresIterationOnlyHits(t *testing.T) {
 	if err != nil || len(stored) == 0 {
 		t.Fatalf("list drawers: %v n=%d", err, len(stored))
 	}
-	if err := eng.IndexDrawers(context.Background(), []search.DrawerInput{{
-		Project: "test-proj", Wing: "history", Room: "iterations", Drawer: stored[0],
-	}}); err != nil {
+	if _, err := eng.Rebuild(context.Background(), "test-proj"); err != nil {
 		t.Fatal(err)
 	}
 	if !eng.HasIndex("test-proj") {

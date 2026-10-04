@@ -169,7 +169,8 @@ func (tx *Tx) appendLines(path string, data []byte) error {
 	return nil
 }
 
-// putVectors writes each vector through vw.
+// putVectors writes each vector through vw, then flushes vw once if it is a
+// VectorFlusher, so a batch costs one directory fsync, not one per vector.
 func (tx *Tx) putVectors(vw VectorWriter, vecs map[string][]float32) error {
 	if len(vecs) == 0 {
 		return nil
@@ -185,6 +186,11 @@ func (tx *Tx) putVectors(vw VectorWriter, vecs map[string][]float32) error {
 	for _, id := range ids {
 		if err := vw.Put(tx.project, id, vecs[id]); err != nil {
 			return fmt.Errorf("indexstore: write vector %s: %w", id, err)
+		}
+	}
+	if f, ok := vw.(VectorFlusher); ok {
+		if err := f.Flush(); err != nil {
+			return fmt.Errorf("indexstore: flush vectors: %w", err)
 		}
 	}
 	tx.noteWrite(false)
@@ -297,8 +303,8 @@ func (tx *Tx) appendLedger(s *state, recs ...ledgerRecord) error {
 // the rebuild (ADR-014 decision 7, "Write order for each archive"). Each step
 // is durable before the next:
 //
-//  1. the vectors, through vw (atomic once search-index-completeness-and-
-//     build-serialization makes the embed cache's Put atomic);
+//  1. the vectors, through vw (the embed cache's writer writes each one
+//     atomically: temp file, fsync, rename);
 //  2. the chunks and their owner lines, appended and fsynced;
 //  3. the KG records and their owner lines, appended and fsynced;
 //  4. the ledger's session record, live, with the chunk count (the distinct

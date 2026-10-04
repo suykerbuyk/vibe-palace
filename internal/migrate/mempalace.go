@@ -191,6 +191,7 @@ func ImportMemPalace(
 	}
 
 	// Step 3: import drawers.
+	var toIndex []search.DrawerInput
 	for wi, w := range work {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -247,21 +248,16 @@ func ImportMemPalace(
 			continue
 		}
 
-		// Index with vector if engine is available.
+		// Index with vector if engine is available: collected here and
+		// indexed in one batch after the loop.
 		if engine != nil && wi < len(allVecs) {
-			if idxErr := engine.IndexDrawers(ctx, []search.DrawerInput{{
+			toIndex = append(toIndex, search.DrawerInput{
 				Project: "mempalace",
 				Wing:    w.wing,
 				Room:    w.room,
 				Drawer:  sd,
 				Vec:     allVecs[wi],
-			}}); idxErr != nil {
-				result.Errors = append(result.Errors, ImportError{
-					Project: "mempalace",
-					File:    mpExport.path,
-					Err:     idxErr,
-				})
-			}
+			})
 		}
 
 		result.DrawersCreated++
@@ -272,6 +268,21 @@ func ImportMemPalace(
 			Current: wi + 1,
 			Total:   len(work),
 		})
+	}
+
+	// Index the imported drawers in ONE call. It waits for the index locks
+	// (IndexDrawersWait): an import is an explicit operator run, so it must not
+	// drop vectors the way a busy capture may. Transitional:
+	// importers-write-the-frozen-tracked-corpus moves the import to the
+	// host-local store's CommitBatch.
+	if len(toIndex) > 0 {
+		if idxErr := engine.IndexDrawersWait(ctx, toIndex); idxErr != nil {
+			result.Errors = append(result.Errors, ImportError{
+				Project: "mempalace",
+				File:    mpExport.path,
+				Err:     idxErr,
+			})
+		}
 	}
 
 	// Step 4: import entities, in ONE batch.

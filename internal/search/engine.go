@@ -17,7 +17,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
-	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // drawerMeta stores metadata needed for filtering and boosting.
@@ -62,9 +61,22 @@ type Engine struct {
 	// Lazy per-project index construction. buildMu guards both maps; it is
 	// never held across a Rebuild, so builds for different projects run
 	// concurrently and never serialize behind one another.
+	//
+	// loaded is the store change counter (indexstore.ReadGeneration) each
+	// project's in-memory index was built at. A project is current only while
+	// the counter still reads that value: any change to gen or epoch means
+	// another process (or this one, out of step) wrote the store, and the next
+	// search rebuilds the project in full (Scope 7's reload rule; there is no
+	// incremental load). A project with no entry has never been built, or was
+	// invalidated (a capture insert that timed out), and the next search
+	// builds it.
 	buildMu   sync.Mutex
-	built     map[string]bool          // project -> index materialized
-	buildsRun map[string]*projectBuild // project -> in-flight build
+	loaded    map[string]indexstore.Gen // project -> counter its index was built at
+	buildsRun map[string]*projectBuild  // project -> in-flight build
+
+	// sems are the per-project mutexes (see lock.go). semMu guards the map.
+	semMu sync.Mutex
+	sems  map[string]chan struct{}
 
 	// beforeIndexClose, when set, runs just before a replaced index is
 	// closed. Tests use it to prove e.mu is not held there.
@@ -98,49 +110,74 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		config:    cfg,
 		indexes:   make(map[string]VectorIndex),
 		metadata:  make(map[string]drawerMeta),
-		built:     make(map[string]bool),
+		loaded:    make(map[string]indexstore.Gen),
 		buildsRun: make(map[string]*projectBuild),
+		sems:      make(map[string]chan struct{}),
 	}
 }
 
-// ensureIndex materializes a project's index on first use and memoizes the
-// result. It must be called with no engine lock held: Rebuild takes e.mu for
-// write, and Search takes it for read immediately afterwards.
+// ErrIndexNotReady is the first-build answer: a search reached a project that
+// has no in-memory index yet, and could not build one because another writer
+// in this process holds the project (it is waiting on an index commit another
+// process holds). search-first-build-and-empty-corpus-answer maps it to the
+// user-facing answer.
+var ErrIndexNotReady = errors.New("search index not built yet: the project is busy")
+
+// joinBuildHook, when a test sets it, runs when a search joins another
+// search's in-flight build of the same project.
+var joinBuildHook func(project string)
+
+// ensureIndex builds or reloads a project's index when the store says it must,
+// and returns once the project can be searched. It must be called with no
+// engine lock held: Rebuild acquires e.mu for write.
 //
-// A failed build is not memoized — the next search retries — but a build error
-// is returned to the caller rather than being swallowed into an empty result.
+// The reload rule (Scope 7): the store change counter is read first. The
+// project is current only while its in-memory index was built at exactly that
+// counter value; anything else (never built, invalidated, another gen or
+// epoch, a counter that is missing now or cannot be read) rebuilds the project
+// in full. Concurrent searches for one project join the same build.
+//
+// The build waits at most searchLockTimeout for the project's mutex. When that
+// runs out, a project that is already in memory is served as it is and stays
+// marked out of date, so the next search retries; a project with nothing in
+// memory returns ErrIndexNotReady. A failed build is not remembered, and its
+// error is returned rather than swallowed into an empty result.
 func (e *Engine) ensureIndex(ctx context.Context, project string) error {
+	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.buildMu.Lock()
-	if e.built[project] {
+	lg, ok := e.loaded[project]
+	if ok && gerr == nil && lg == g {
 		e.buildMu.Unlock()
 		return nil
 	}
 	if b, ok := e.buildsRun[project]; ok {
 		e.buildMu.Unlock()
+		if joinBuildHook != nil {
+			joinBuildHook(project)
+		}
 		<-b.done
 		return b.err
 	}
-	// An index populated incrementally (IndexDrawers) needs no rebuild.
-	e.mu.RLock()
-	_, indexed := e.indexes[project]
-	e.mu.RUnlock()
-	if indexed {
-		e.built[project] = true
-		e.buildMu.Unlock()
-		return nil
-	}
-
 	b := &projectBuild{done: make(chan struct{})}
 	e.buildsRun[project] = b
 	e.buildMu.Unlock()
 
-	_, b.err = e.Rebuild(ctx, project)
+	e.mu.RLock()
+	_, inMemory := e.indexes[project]
+	e.mu.RUnlock()
+
+	_, b.err = e.rebuildAndRemember(ctx, project, searchLockTimeout)
+	if isLockTimeout(b.err) {
+		if ok || inMemory {
+			slog.Info("search serves the loaded index: the project is busy", "project", project)
+			b.err = nil
+		} else {
+			b.err = fmt.Errorf("%w: %s", ErrIndexNotReady, project)
+		}
+	}
 
 	e.buildMu.Lock()
 	delete(e.buildsRun, project)
-	if b.err == nil {
-		e.built[project] = true
-	}
 	e.buildMu.Unlock()
 	close(b.done)
 
@@ -184,11 +221,18 @@ func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, error) 
 	return listed, nil
 }
 
-// HasIndex reports whether project already has a non-empty in-memory index.
+// HasIndex reports whether project already has a complete, non-empty
+// in-memory index: one a build made, never one a cold insert started.
 // It never triggers ensureIndex/Rebuild — bootstrap uses this to refuse a
 // semantic path that would block on a cold corpus build.
 func (e *Engine) HasIndex(project string) bool {
 	if e == nil {
+		return false
+	}
+	e.buildMu.Lock()
+	_, built := e.loaded[project]
+	e.buildMu.Unlock()
+	if !built {
 		return false
 	}
 	e.mu.RLock()
@@ -388,7 +432,39 @@ type DrawerInput struct {
 // missing a pre-computed Vec, the engine embeds in a single EmbedBatch call
 // (if the embedder supports it) to avoid per-item embedding round-trips.
 // Entries with non-nil Vec skip embedding entirely.
+//
+// The batch is split by project and committed one project at a time, in
+// sorted slug order: the project's mutex, its commit lock, the vectors
+// written to the embed cache, release, then the next project. The vectors are
+// committed before the in-memory insert, so a chunk this inserts is a cache
+// hit for every later build.
+//
+// It is the capture path's writer, so it waits at most searchLockTimeout for
+// each project (ADR-014 decision 7: note-time writers never stall behind an
+// ingest). When a project's wait runs out, its entries are neither committed
+// nor inserted, and the project is marked out of date, so the next search
+// rebuilds it from the tracked drawers capture wrote first and embeds them
+// again. On a vault that carries the migration marker there is no tracked
+// drawer to rebuild from, so a timeout is an error instead (capture never
+// calls this on such a vault: the capture child deletes IndexTranscript before
+// the marker can be written).
+//
+// On a project whose index is not in memory yet the insert is deferred: the
+// vectors are committed, and the next search builds the project (Scope 6, the
+// cold insert), so a partial insert never makes a project look built.
 func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
+	return e.indexDrawers(ctx, batch, searchLockTimeout)
+}
+
+// IndexDrawersWait is IndexDrawers with no lock timeout, for an explicit
+// operator run that must not drop vectors: the mempalace import. It is
+// transitional: importers-write-the-frozen-tracked-corpus moves the importer
+// to the store's CommitBatch and deletes it.
+func (e *Engine) IndexDrawersWait(ctx context.Context, batch []DrawerInput) error {
+	return e.indexDrawers(ctx, batch, indexstore.NoTimeout)
+}
+
+func (e *Engine) indexDrawers(ctx context.Context, batch []DrawerInput, timeout time.Duration) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -416,17 +492,66 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 		}
 	}
 
-	// Cache embeddings (non-fatal on failure).
+	byProject := map[string][]DrawerInput{}
 	for _, in := range batch {
-		if err := e.cache.Put(in.Project, in.Drawer.ID, in.Vec); err != nil {
-			slog.Warn("embed cache write failed", "project", in.Project, "drawer", in.Drawer.ID, "err", err)
+		byProject[in.Project] = append(byProject[in.Project], in)
+	}
+	projects := make([]string, 0, len(byProject))
+	for p := range byProject {
+		projects = append(projects, p)
+	}
+	sort.Strings(projects)
+	for _, p := range projects {
+		if err := e.indexProjectDrawers(ctx, p, byProject[p], timeout); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// indexProjectDrawers commits and inserts one project's share of a batch.
+func (e *Engine) indexProjectDrawers(ctx context.Context, project string, ins []DrawerInput, timeout time.Duration) error {
+	pl, err := e.lockProject(ctx, project, timeout)
+	if err != nil {
+		if isLockTimeout(err) {
+			return e.insertSkipped(project, err)
+		}
+		return err
+	}
+	defer pl.release()
+	tx, err := pl.Tx(ctx, timeout)
+	if errors.Is(err, indexstore.ErrProjectGone) {
+		return nil
+	}
+	if err != nil {
+		if isLockTimeout(err) {
+			return e.insertSkipped(project, err)
+		}
+		return err
+	}
+	vecs := make(map[string][]float32, len(ins))
+	for _, in := range ins {
+		vecs[in.Drawer.ID] = in.Vec
+	}
+	e.putVectorsLocked(tx, vecs)
+	before, after, err := pl.finishTx()
+	if err != nil {
+		slog.Warn("index commit failed", "project", project, "err", err)
+	}
+
+	e.buildMu.Lock()
+	lg, warm := e.loaded[project]
+	if warm && err == nil && chainsFrom(lg, before) {
+		e.loaded[project] = after
+	}
+	e.buildMu.Unlock()
+	if !warm {
+		return nil // deferred: the next search builds the project
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	for _, in := range batch {
+	for _, in := range ins {
 		idx, ok := e.indexes[in.Project]
 		if !ok {
 			dims, err := e.embedder.Dimensions()
@@ -451,22 +576,84 @@ func (e *Engine) IndexDrawers(ctx context.Context, batch []DrawerInput) error {
 	return nil
 }
 
+// insertSkipped handles a capture insert whose lock wait ran out: the project
+// is marked out of date, so the next search rebuilds it from the tracked
+// drawers. With the migration marker there are none, so it is an error.
+func (e *Engine) insertSkipped(project string, cause error) error {
+	migrated, err := storage.VaultMigrated(e.vault.Root)
+	if err != nil {
+		return fmt.Errorf("index drawers for %s: %w (and the migration marker could not be read: %v)", project, cause, err)
+	}
+	if migrated {
+		return fmt.Errorf("index drawers for %s: %w", project, cause)
+	}
+	e.buildMu.Lock()
+	delete(e.loaded, project)
+	e.buildMu.Unlock()
+	slog.Info("index insert skipped: the project is busy; the next search rebuilds it", "project", project, "err", cause)
+	return nil
+}
+
+// putVectorsLocked writes vecs to project's embed cache under tx. A cache
+// that holds another embedding regime refuses the writer: the vectors then
+// serve this process from memory only (ADR-014 decision 3), and nothing is
+// written. Any other failure is logged and is not fatal: a missing vector is
+// embedded again by a later build.
+func (e *Engine) putVectorsLocked(tx *indexstore.Tx, vecs map[string][]float32) {
+	w, err := e.cache.Writer(tx)
+	if err != nil {
+		if !errors.Is(err, ErrEmbedRegimeMismatch) {
+			slog.Warn("embed cache writer failed", "project", tx.Project(), "err", err)
+		}
+		return
+	}
+	if err := tx.PutVectors(w, vecs); err != nil {
+		slog.Warn("embed cache write failed", "project", tx.Project(), "err", err)
+	}
+}
+
 // RemoveDrawer evicts a drawer completely: it drops the vector from the
 // in-memory index, drops the global metadata entry, and unlinks the drawer's
-// cached .vec file. It is the search engine's complete eviction primitive —
-// wire it wherever a drawer is deleted so the long-lived vp mcp process stops
-// serving a drawer that is gone and stops leaking its vector. A missing .vec is
-// not an error. The file unlink runs after the lock is released so on-disk I/O
-// never serializes searches.
+// cached .vec file. It takes the project's mutex and index commit lock, as
+// every embed-cache write does, waiting for them; a caller that already holds
+// the commit lock uses evictLocked instead. A missing .vec is not an error.
 func (e *Engine) RemoveDrawer(project, id string) error {
+	ctx := context.Background()
+	pl, err := e.lockProject(ctx, project, indexstore.NoTimeout)
+	if err != nil {
+		return err
+	}
+	defer pl.release()
+	tx, err := pl.Tx(ctx, indexstore.NoTimeout)
+	if errors.Is(err, indexstore.ErrProjectGone) {
+		e.evictMemory(project, id)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	err = e.evictLocked(tx, project, id)
+	_, _, cerr := pl.finishTx()
+	return errors.Join(err, cerr)
+}
+
+// evictLocked is RemoveDrawer for a caller that ALREADY HOLDS the project's
+// index commit lock (tx): the reaper. It never takes a project mutex or a
+// commit lock itself; taking the commit lock again here would deadlock,
+// because a second acquisition by the same process blocks.
+func (e *Engine) evictLocked(tx *indexstore.Tx, project, id string) error {
+	e.evictMemory(project, id)
+	return e.cache.deleteLocked(tx, id)
+}
+
+// evictMemory drops id from project's in-memory index and the metadata.
+func (e *Engine) evictMemory(project, id string) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if idx, ok := e.indexes[project]; ok {
 		idx.Delete(id)
 	}
 	delete(e.metadata, id)
-	e.mu.Unlock()
-
-	return e.cache.Delete(project, id)
 }
 
 // Rebuild rebuilds the index for a project from scratch. It walks palace
@@ -515,8 +702,101 @@ type RebuildStats struct {
 // The judgement about whether an empty rebuild is acceptable belongs to the
 // CALLER that asked for one — see refreshIndexHandler, which refuses when the
 // operator asked to refresh an index and no index exists to refresh.
+//
+// It is the explicit entry (vp_refresh_index, vp search --rebuild), so it waits
+// for the project's mutex and commit lock with no timeout. The lazy search
+// path (ensureIndex) builds through the same code with searchLockTimeout.
 func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, error) {
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout)
+}
+
+// rebuildAndRemember rebuilds project and remembers the store counter its
+// index now matches. The counter is read BEFORE the build (the reader rule,
+// indexstore.ReadGeneration): a write that lands during the build moves the
+// counter past the remembered value, and the next search rebuilds again. The
+// cache forgets its remembered regime, so a regime another process replaced
+// is read afresh.
+func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration) (RebuildStats, error) {
+	g, gerr := indexstore.ReadGeneration(e.vault, project)
+	e.cache.Forget(project)
+	return e.rebuild(ctx, project, timeout, g, gerr == nil)
+}
+
+// remember records the counter project's in-memory index now matches. It is
+// called while the build still holds the project's mutex, so a writer waiting
+// on that mutex (IndexDrawers) sees the project as current the moment it gets
+// in, and inserts instead of deferring. A counter that could not be read is
+// not remembered: the next search rebuilds.
+func (e *Engine) remember(project string, g indexstore.Gen, readable bool) {
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
+	if !readable {
+		delete(e.loaded, project)
+		return
+	}
+	e.loaded[project] = g
+}
+
+// genChain follows a build's own commits from the counter it started at. A
+// build that saw every commit since then (its own Txs, each starting where the
+// previous one left the counter) may remember the counter its last commit left;
+// one that did not must keep the starting value, so the next search rebuilds
+// and picks up the other writer's change.
+type genChain struct {
+	cur    indexstore.Gen
+	broken bool
+}
+
+func (c *genChain) step(before, after indexstore.Gen) {
+	if !chainsFrom(c.cur, before) {
+		c.broken = true
+	}
+	c.cur = after
+}
+
+// chainsFrom reports whether a Tx that found the counter at before follows
+// directly from remembered: the same value, or, when there was no counter
+// yet, the counter Lock just created (gen 0, a fresh epoch), which no write
+// has moved.
+func chainsFrom(remembered, before indexstore.Gen) bool {
+	if remembered == (indexstore.Gen{}) {
+		return before.Gen == 0
+	}
+	return before == remembered
+}
+
+func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
+	if c.broken {
+		return start
+	}
+	return c.cur
+}
+
+// rebuild is Rebuild's body. It holds the project's mutex for the whole run,
+// so it never interleaves with IndexDrawers or RemoveDrawer on the project
+// (their inserts can no longer be dropped by its swap, nor their vectors
+// reaped). It embeds without the commit lock, commits each embed batch in its
+// own short Tx, and takes one final Tx for the reap. A commit lock that is busy
+// past timeout skips that write: the batch serves this process from memory and
+// is embedded again later, and the reap waits for the next build. Only a busy
+// mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
+func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, start indexstore.Gen, readable bool) (RebuildStats, error) {
 	var stats RebuildStats
+	pl, err := e.lockProject(ctx, project, timeout)
+	if err != nil {
+		return stats, err
+	}
+	defer pl.release()
+	chain := genChain{cur: start}
+
+	// The embed cache's directory first: resolving it runs the cache's one-time
+	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
+	// before any commit lock is held, and before the reap reads the layout. For
+	// a project with no corpus this is the only cache access a Rebuild makes.
+	if _, err := e.cache.dir(project); err != nil {
+		return stats, fmt.Errorf("embed cache dir: %w", err)
+	}
+
 	wings, err := e.vault.ListWings(project)
 	if err != nil {
 		return stats, fmt.Errorf("list wings: %w", err)
@@ -611,7 +891,8 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 	stats.Embedded = len(missIdx)
 	stats.CacheHits = stats.Indexed - stats.Embedded
 
-	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText); err != nil {
+	commit := func(batch map[string][]float32) { e.commitVectors(ctx, pl, timeout, batch, &chain) }
+	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText, commit); err != nil {
 		return stats, err
 	}
 
@@ -624,12 +905,8 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 		delete(e.indexes, project)
 		e.mu.Unlock()
 		e.closeReplaced(old)
-		if n, err := e.reap(ctx, project); err != nil {
-			slog.Warn("reap orphan vectors failed", "project", project, "err", err)
-		} else if n > 0 {
-			stats.Reaped = n
-			slog.Info("reaped orphan vectors", "project", project, "count", n)
-		}
+		stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain)
+		e.remember(project, chain.final(start), readable)
 		return stats, nil
 	}
 
@@ -658,13 +935,60 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 	e.mu.Unlock()
 	e.closeReplaced(old)
 
-	if n, err := e.reap(ctx, project); err != nil {
-		slog.Warn("reap orphan vectors failed", "project", project, "err", err)
-	} else if n > 0 {
-		stats.Reaped = n
-		slog.Info("reaped orphan vectors", "project", project, "count", n)
-	}
+	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain)
+	e.remember(project, chain.final(start), readable)
 	return stats, nil
+}
+
+// commitVectors commits one embed batch in its own short Tx. A busy commit
+// lock, a gone project or another embedding regime skips the write; the batch
+// still serves this process from memory.
+func (e *Engine) commitVectors(ctx context.Context, pl *projectLock, timeout time.Duration, batch map[string][]float32, chain *genChain) {
+	tx, err := pl.Tx(ctx, timeout)
+	if err != nil {
+		if !isLockTimeout(err) && !errors.Is(err, indexstore.ErrProjectGone) {
+			slog.Warn("embed cache commit skipped", "project", pl.project, "err", err)
+		}
+		return
+	}
+	e.putVectorsLocked(tx, batch)
+	before, after, err := pl.finishTx()
+	if err != nil {
+		slog.Warn("embed cache commit failed", "project", pl.project, "err", err)
+		chain.broken = true
+		return
+	}
+	chain.step(before, after)
+}
+
+// finalCommit takes the build's last Tx and reaps orphans under it
+// (reapLocked). It returns the number of vectors reaped. A busy commit lock
+// skips the reap: it is hygiene, and the next build reaps.
+func (e *Engine) finalCommit(ctx context.Context, pl *projectLock, timeout time.Duration, chain *genChain) int {
+	tx, err := pl.Tx(ctx, timeout)
+	if isLockTimeout(err) {
+		slog.Info("reap skipped: the index commit lock is busy", "project", pl.project)
+		return 0
+	}
+	if errors.Is(err, indexstore.ErrProjectGone) {
+		return 0
+	}
+	if err != nil {
+		slog.Warn("reap skipped", "project", pl.project, "err", err)
+		return 0
+	}
+	n, rerr := e.reapLocked(tx, pl.project)
+	before, after, cerr := pl.finishTx()
+	if rerr != nil || cerr != nil {
+		slog.Warn("reap orphan vectors failed", "project", pl.project, "err", errors.Join(rerr, cerr))
+		chain.broken = true
+		return n
+	}
+	chain.step(before, after)
+	if n > 0 {
+		slog.Info("reaped orphan vectors", "project", pl.project, "count", n)
+	}
+	return n
 }
 
 // detectCollision reports whether writing meta under id would overwrite an
@@ -699,66 +1023,27 @@ func (e *Engine) detectCollision(id string, meta drawerMeta) bool {
 	return true
 }
 
-// reapLockTimeout bounds how long a Rebuild waits for the project's index
-// commit lock to reap. Rebuild runs on the lazy search path, which never waits
-// on an ingest or a rebuild: a reap that cannot take the lock in time is
-// skipped (it is hygiene, and the next Rebuild reaps), never waited out. A var,
-// not a const, so a test can make the busy-lock skip immediate.
-var reapLockTimeout = 5 * time.Second
-
-// reap collects the project's orphan vectors (and orphaned store records)
-// through indexstore's Tx.Reap, under the project's index commit lock, and
-// evicts every reaped id from the in-memory index and metadata through
-// RemoveDrawer. It returns the number of vectors reaped.
+// reapLocked collects the project's orphan vectors (and orphaned store
+// records) through indexstore's Tx.Reap, under the index commit lock the
+// caller ALREADY HOLDS (tx), and evicts every reaped id from the in-memory
+// index and metadata through evictLocked. It returns the number of vectors
+// reaped. It never takes a project mutex or a commit lock itself.
 //
-// The live set is re-read under the lock (liveSourceIDs), never taken from the
+// The live set is read under the lock (liveSourceIDs), never taken from the
 // set this Rebuild started with: another process may have committed chunks
 // since, and their vectors must survive. Tx.Reap adds every chunk id in the
 // host-local store itself.
-//
-// 🔴 LOCK ORDER: the index commit lock, THEN e.mu. reap takes e.mu (through
-// RemoveDrawer) only while it holds the commit lock, and no code path takes
-// the commit lock while holding e.mu. The per-project in-process mutex that
-// search-index-completeness-and-build-serialization adds is taken BEFORE the
-// commit lock, so it must not be e.mu. Must be called with no engine lock held.
-func (e *Engine) reap(ctx context.Context, project string) (int, error) {
-	// The embed cache's directory first, as the reaper always did: resolving
-	// it runs the cache's one-time layout sweep (legacy caches migrated, husks
-	// healed, orphan caches reaped) and its fingerprint check. For a project
-	// with no corpus this is the only cache access a Rebuild makes, so skipping
-	// it would leave the sweep unrun. Tx.Reap then reads the swept layout.
-	if _, err := e.cache.dir(project); err != nil {
-		return 0, fmt.Errorf("embed cache dir: %w", err)
-	}
-	// The index sweep: gone projects' index stores, once per engine. It runs
-	// here, holding no commit lock, and never inside the embed cache's own sweep,
-	// whose first run can come from a Put made under a commit lock.
-	e.indexSweep.Do(func() { indexstore.ReapGoneProjects(ctx, e.vault) })
-	tx, err := indexstore.Lock(ctx, e.vault, project, reapLockTimeout)
-	if errors.Is(err, vaultlock.ErrLockWaitTimeout) {
-		slog.Info("reap skipped: the index commit lock is busy", "project", project)
-		return 0, nil
-	}
-	if errors.Is(err, indexstore.ErrProjectGone) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Release()
+func (e *Engine) reapLocked(tx *indexstore.Tx, project string) (int, error) {
 	reaped, err := tx.Reap(func() (map[string]bool, error) { return e.liveSourceIDs(project) })
 	if err != nil {
 		return 0, err
 	}
-	// Evict each reaped id from the in-memory index and metadata through the
-	// engine's eviction primitive. Its unlink of the .vec is a no-op by now,
-	// and it runs under the commit lock, as every .vec write must.
 	for _, id := range reaped {
-		if err := e.RemoveDrawer(project, id); err != nil {
+		if err := e.evictLocked(tx, project, id); err != nil {
 			slog.Warn("evict reaped vector failed", "project", project, "drawer", id, "err", err)
 		}
 	}
-	return len(reaped), tx.Commit()
+	return len(reaped), nil
 }
 
 // liveSourceIDs is the union of the ids every source Rebuild reads, re-read
@@ -802,9 +1087,9 @@ func (e *Engine) liveSourceIDs(project string) (map[string]bool, error) {
 }
 
 // embedMisses embeds the cache-miss drawers in batches, filling their slots in
-// vecs. Each vector is written to the embed cache as it lands, so a rebuild
-// killed partway through still leaves durable progress behind.
-func (e *Engine) embedMisses(ctx context.Context, project string, ids []string, vecs [][]float32, missIdx []int, missText []string) error {
+// vecs. Each batch is handed to commit as it lands, so a rebuild killed
+// partway through still leaves durable progress behind.
+func (e *Engine) embedMisses(ctx context.Context, project string, ids []string, vecs [][]float32, missIdx []int, missText []string, commit func(map[string][]float32)) error {
 	if len(missIdx) == 0 {
 		return nil
 	}
@@ -830,13 +1115,13 @@ func (e *Engine) embedMisses(ctx context.Context, project string, ids []string, 
 			return fmt.Errorf("embed drawers for %s: got %d vecs for %d inputs", project, len(got), len(batch))
 		}
 
+		landed := make(map[string][]float32, len(got))
 		for j, vec := range got {
 			pos := missIdx[start+j]
 			vecs[pos] = vec
-			if err := e.cache.Put(project, ids[pos], vec); err != nil {
-				slog.Warn("embed cache write failed", "project", project, "drawer", ids[pos], "err", err)
-			}
+			landed[ids[pos]] = vec
 		}
+		commit(landed)
 	}
 	return nil
 }
@@ -872,15 +1157,15 @@ func candidateCount(limit int) int {
 }
 
 // Close releases resources: every index (cancelling any background rebuild),
-// then the embedder. The lazy-build memo is cleared with the index map, so no
-// project reads as built once its index is gone.
+// then the embedder. The remembered counters are cleared with the index map,
+// so no project reads as built once its index is gone.
 func (e *Engine) Close() error {
 	e.mu.Lock()
 	indexes := e.indexes
 	e.indexes = make(map[string]VectorIndex)
 	e.mu.Unlock()
 	e.buildMu.Lock()
-	clear(e.built)
+	clear(e.loaded)
 	e.buildMu.Unlock()
 	for _, idx := range indexes {
 		e.closeReplaced(idx)

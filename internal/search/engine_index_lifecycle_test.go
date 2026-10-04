@@ -203,7 +203,7 @@ func TestEngineCloseClearsTheBuiltMemo(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng.buildMu.Lock()
-	builtBefore := eng.built["proj"]
+	_, builtBefore := eng.loaded["proj"]
 	eng.buildMu.Unlock()
 	if !builtBefore {
 		t.Fatal("the lazy search did not mark proj built; the test proves nothing")
@@ -213,7 +213,7 @@ func TestEngineCloseClearsTheBuiltMemo(t *testing.T) {
 	}
 	eng.buildMu.Lock()
 	defer eng.buildMu.Unlock()
-	if len(eng.built) != 0 {
-		t.Errorf("built = %v after Close, want empty: the index map is empty", eng.built)
+	if len(eng.loaded) != 0 {
+		t.Errorf("loaded = %v after Close, want empty: the index map is empty", eng.loaded)
 	}
 }

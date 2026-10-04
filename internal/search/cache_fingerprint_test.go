@@ -7,13 +7,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -70,10 +75,12 @@ func fpVecs(t *testing.T, v *storage.Vault) map[string]string {
 	return out
 }
 
-// T1: vectors written under fingerprint A are re-embedded once when the
-// embedder reports B, and never again after that. The invalidation removes
-// only *.vec files: every other entry in the directory survives.
-func TestEmbedCache_FingerprintMismatchReembedsOnce(t *testing.T) {
+// T1: an embedder change keeps every vector (ADR-014 decision 3: only `vp
+// index rebuild` discards). Under regime B the A vectors are byte-identical,
+// the sidecar still names A, every lookup is a miss, and nothing B embeds is
+// written: the notes are embedded in memory only, on every build, so two
+// regimes never mix. Going back to A serves the A vectors as hits again.
+func TestEmbedCache_RegimeChangeKeepsVectors(t *testing.T) {
 	v := fpVault(t)
 	if st := fpRebuild(t, v, "model-a"); st.Embedded != 3 {
 		t.Fatalf("first build embedded %d, want 3", st.Embedded)
@@ -81,35 +88,22 @@ func TestEmbedCache_FingerprintMismatchReembedsOnce(t *testing.T) {
 	if got, want := fpSidecar(t, v), embedder.Fingerprint("model-a", 0); got != want {
 		t.Fatalf("sidecar %q, want %q", got, want)
 	}
-	dir := fpCacheDir(v)
-	others := map[string]string{"notes.txt": "operator note\n", "x.vec.tmp": "partial\n"}
-	for name, body := range others {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
+	before := fpVecs(t, v)
+
+	for range 2 {
+		if st := fpRebuild(t, v, "model-b"); st.Embedded != 3 || st.CacheHits != 0 {
+			t.Fatalf("under another regime stats = %+v, want all 3 embedded in memory and no hit", st)
+		}
+		if got, want := fpSidecar(t, v), embedder.Fingerprint("model-a", 0); got != want {
+			t.Fatalf("sidecar %q after a build under B, want it untouched (%q)", got, want)
+		}
+		if after := fpVecs(t, v); !maps.Equal(after, before) {
+			t.Fatalf("vectors changed under another regime: %v -> %v", before, after)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "sub.vec"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
-	st := fpRebuild(t, v, "model-b")
-	if st.Embedded != 3 || st.CacheHits != 0 {
-		t.Fatalf("after a regime change stats = %+v, want all 3 re-embedded and no stale hit", st)
-	}
-	if got, want := fpSidecar(t, v), embedder.Fingerprint("model-b", 0); got != want {
-		t.Errorf("sidecar %q, want %q", got, want)
-	}
-	for name, body := range others {
-		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != body {
-			t.Errorf("non-vector file %s must survive invalidation: %q, %v", name, got, err)
-		}
-	}
-	if st, err := os.Stat(filepath.Join(dir, "sub.vec")); err != nil || !st.IsDir() {
-		t.Errorf("a directory named *.vec must survive invalidation: %v", err)
-	}
-
-	if st := fpRebuild(t, v, "model-b"); st.Embedded != 0 || st.CacheHits != 3 {
-		t.Errorf("a second engine under B: stats %+v, want 3 hits and no re-embed", st)
+	if st := fpRebuild(t, v, "model-a"); st.Embedded != 0 || st.CacheHits != 3 {
+		t.Errorf("back under A: stats %+v, want 3 hits and no re-embed", st)
 	}
 }
 
@@ -132,22 +126,199 @@ func TestEmbedCache_FingerprintMatchIsAHit(t *testing.T) {
 	}
 }
 
-// T3: a directory with no sidecar is the pre-fingerprint regime: invalidated
-// once, then fingerprinted and served as hits.
-func TestEmbedCache_UnfingerprintedCacheInvalidatesOnce(t *testing.T) {
+// T3: vectors with no sidecar cannot be attributed to any regime, so they are
+// a mismatch (ADR-014 decision 3): every lookup is a miss, the vectors stay
+// byte-identical, and no sidecar is written that would adopt them.
+func TestEmbedCache_VectorsWithNoSidecarAreAMismatch(t *testing.T) {
 	v := fpVault(t)
 	fpRebuild(t, v, "model-a")
-	if err := os.Remove(filepath.Join(fpCacheDir(v), storage.EmbedCacheFingerprintFile)); err != nil {
+	side := filepath.Join(fpCacheDir(v), storage.EmbedCacheFingerprintFile)
+	if err := os.Remove(side); err != nil {
 		t.Fatal(err)
 	}
-	if st := fpRebuild(t, v, "model-a"); st.Embedded != 3 || st.CacheHits != 0 {
-		t.Fatalf("legacy cache: stats %+v, want all 3 re-embedded once", st)
+	before := fpVecs(t, v)
+	for range 2 {
+		if st := fpRebuild(t, v, "model-a"); st.Embedded != 3 || st.CacheHits != 0 {
+			t.Fatalf("unattributed vectors: stats %+v, want all 3 embedded in memory and no hit", st)
+		}
 	}
-	if fpSidecar(t, v) != embedder.Fingerprint("model-a", 0) {
-		t.Error("the sidecar must be written after the one-time invalidation")
+	if _, err := os.Stat(side); !os.IsNotExist(err) {
+		t.Fatalf("a sidecar was written over unattributed vectors (stat err %v)", err)
 	}
-	if st := fpRebuild(t, v, "model-a"); st.Embedded != 0 || st.CacheHits != 3 {
-		t.Errorf("after the one-time invalidation: stats %+v, want 3 hits", st)
+	if after := fpVecs(t, v); !maps.Equal(after, before) {
+		t.Fatalf("unattributed vectors changed: %v -> %v", before, after)
+	}
+}
+
+// A directory with no sidecar AND no vector is simply not built: the first
+// write writes the sidecar, then its vector, and the vectors are hits after.
+func TestEmbedCache_EmptyDirectoryIsNotAMismatch(t *testing.T) {
+	v := fpVault(t)
+	if err := os.MkdirAll(fpCacheDir(v), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if st := fpRebuild(t, v, "model-a"); st.Embedded != 3 {
+		t.Fatalf("first build embedded %d, want 3", st.Embedded)
+	}
+	if got, want := fpSidecar(t, v), embedder.Fingerprint("model-a", 0); got != want {
+		t.Fatalf("sidecar %q, want %q", got, want)
+	}
+	if st := fpRebuild(t, v, "model-a"); st.CacheHits != 3 {
+		t.Fatalf("second build stats %+v, want 3 hits", st)
+	}
+}
+
+// Writer re-reads the regime under the commit lock every time; it never
+// trusts the per-instance memo Get keeps. Here engine A's cache has already
+// classified the project as its own regime; another writer (a rebuild under
+// another regime, holding the commit lock) then replaces the sidecar. A's next
+// Writer is refused, and nothing is written.
+func TestEmbedCache_WriterRereadsTheRegimeUnderTheLock(t *testing.T) {
+	v := fpVault(t)
+	eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "model-a"})
+	t.Cleanup(func() { eng.Close() })
+	if _, err := eng.Rebuild(context.Background(), "proj"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.cache.Get("proj", "anything"); err != nil {
+		t.Fatal(err)
+	}
+	if r := eng.cache.regimes["proj"]; r != regimeMatch {
+		t.Fatalf("precondition: A's memo = %v, want a match", r)
+	}
+
+	tx, err := indexstore.Lock(context.Background(), v, "proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fpCacheDir(v), storage.EmbedCacheFingerprintFile),
+		[]byte(embedder.Fingerprint("model-b", 0)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Release(); err != nil {
+		t.Fatal(err)
+	}
+	before := fpVecs(t, v)
+
+	err = cachePut(t, eng.cache, "proj", "new-vector", []float32{1, 2, 3})
+	if !errors.Is(err, ErrEmbedRegimeMismatch) {
+		t.Fatalf("A's write after the regime changed: %v, want ErrEmbedRegimeMismatch", err)
+	}
+	if after := fpVecs(t, v); !maps.Equal(after, before) {
+		t.Fatalf("a vector was written past another regime's sidecar: %v -> %v", before, after)
+	}
+}
+
+// The sidecar is written before the first vector of a directory, and made
+// durable first. A crash between the two (the vector's write fails) leaves the
+// sidecar and no vector: a built, empty directory of this regime, not a
+// mismatch, and the next write succeeds.
+func TestEmbedCache_SidecarBeforeTheFirstVector(t *testing.T) {
+	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
+	c := NewEmbedCache(v)
+	c.fingerprint = embedder.Fingerprint("model-a", 0)
+	old := cacheWriteFn
+	cacheWriteFn = func(path string, data []byte) error {
+		if strings.HasSuffix(path, ".vec") {
+			return errors.New("injected crash before the first vector")
+		}
+		return old(path, data)
+	}
+	err := cachePut(t, c, "proj", "d1", []float32{1, 2})
+	cacheWriteFn = old
+	if err == nil {
+		t.Fatal("the injected vector failure did not fail the write")
+	}
+	dir := filepath.Join(v.Root, "palace", ".local", "embed-cache", "proj")
+	if got, err := os.ReadFile(filepath.Join(dir, storage.EmbedCacheFingerprintFile)); err != nil || strings.TrimSpace(string(got)) != c.fingerprint {
+		t.Fatalf("sidecar after the crash = %q, %v; want this regime's, written first", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "d1.vec")); !os.IsNotExist(err) {
+		t.Fatalf("a vector exists after its write failed (stat err %v)", err)
+	}
+	if r, err := c.classify(dir); err != nil || r == regimeMismatch {
+		t.Fatalf("the directory after the crash reads %v, %v; want it built, not a mismatch", r, err)
+	}
+	if err := cachePut(t, c, "proj", "d1", []float32{1, 2}); err != nil {
+		t.Fatalf("the next write: %v", err)
+	}
+}
+
+// A writer is bound to its Tx: once the Tx is committed, a Put through it is
+// refused and writes nothing.
+func TestEmbedCache_WriterRefusesAFinishedTx(t *testing.T) {
+	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
+	c := NewEmbedCache(v)
+	tx, err := indexstore.Lock(context.Background(), v, "proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := mustWriter(t, c, tx)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Put("proj", "late", []float32{1}); err == nil {
+		t.Fatal("a Put through a writer whose Tx was committed succeeded")
+	}
+	if _, err := c.Writer(tx); err == nil {
+		t.Fatal("Writer accepted a committed Tx")
+	}
+	p, _ := c.path("proj", "late")
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("the refused Put wrote %s (stat err %v)", p, err)
+	}
+}
+
+// An atomic Put never exposes a short vector: while one writer replaces a
+// vector over and over (each under the commit lock, as production writes),
+// lock-free readers only ever read one of the two whole vectors. An in-place
+// os.WriteFile truncates before it writes, so a reader can see a short or
+// empty file.
+func TestEmbedCache_PutIsAtomicForReaders(t *testing.T) {
+	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
+	c := NewEmbedCache(v)
+	a := make([]float32, 384)
+	b := make([]float32, 384)
+	for i := range a {
+		a[i], b[i] = 1, 2
+	}
+	if err := cachePut(t, c, "proj", "d", a); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	var bad atomic.Int64
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := c.Get("proj", "d")
+				if err != nil || len(got) != 384 || (got[0] != 1 && got[0] != 2) || got[383] != got[0] {
+					bad.Add(1)
+				}
+			}
+		})
+	}
+	for i := range 300 {
+		vec := a
+		if i%2 == 0 {
+			vec = b
+		}
+		if err := cachePut(t, c, "proj", "d", vec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if n := bad.Load(); n > 0 {
+		t.Fatalf("%d reads saw a short, empty or mixed vector", n)
 	}
 }
 

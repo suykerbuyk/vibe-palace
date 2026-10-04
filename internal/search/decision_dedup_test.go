@@ -32,7 +32,7 @@ import (
 // imported back.
 func TestDedupKeepsBothDecisionsAndTheTranscriptOfOneSession(t *testing.T) {
 	eng, v := testEngine(t)
-	mkProject(t, v, "proj")
+	warmProject(t, eng, v, "proj")
 	ctx := context.Background()
 
 	const sessionID = "2026-06-21-abcd1234-01"
@@ -103,7 +103,7 @@ func TestDedupKeepsBothDecisionsAndTheTranscriptOfOneSession(t *testing.T) {
 // does. Both survive, and a reader can see the decision was revised.
 func TestDedupKeepsBothTheSupersededAndRevisedDecisionAtOneIndex(t *testing.T) {
 	eng, v := testEngine(t)
-	mkProject(t, v, "proj")
+	warmProject(t, eng, v, "proj")
 	ctx := context.Background()
 
 	const sessionID = "2026-06-21-abcd1234-01"

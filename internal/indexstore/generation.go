@@ -25,10 +25,11 @@ import (
 //     discard, a delete, a relabel, a torn-line truncation, a reap, an owner
 //     line rewritten). A graph write bumps Gen only.
 //
-// A running engine that sees only Gen grow loads what was appended; any other
-// change forces a full reload of the project. That reload rule belongs to
-// search-index-completeness-and-build-serialization; this package owns only
-// the counter.
+// A running engine reloads a project in full on any change to Gen or Epoch
+// (there is no incremental load); the epoch tells the store's own writer cache
+// that its remembered state is no longer a prefix of the files. That reload
+// rule belongs to search-index-completeness-and-build-serialization; this
+// package owns only the counter.
 //
 // Epoch is never 0 in a counter that exists, so the zero Gen means "no counter
 // yet".

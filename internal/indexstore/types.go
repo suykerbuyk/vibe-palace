@@ -130,10 +130,21 @@ type Labels struct {
 
 // VectorWriter writes one chunk's vector into the embed cache. It is injected
 // because the embed cache lives in internal/search, which imports this
-// package; *search.EmbedCache satisfies it. Making Put atomic is
-// search-index-completeness-and-build-serialization's job.
+// package. The only production implementation is the writer
+// (*search.EmbedCache).Writer returns for a held Tx: it writes each vector
+// atomically (temp file, fsync, rename), checks the cache's embedding regime
+// under the lock, and refuses once its Tx is finished. *search.EmbedCache
+// itself does not satisfy this interface, so no vector is written outside the
+// index commit lock.
 type VectorWriter interface {
 	Put(project, id string, vec []float32) error
+}
+
+// VectorFlusher is an optional VectorWriter extension: putVectors calls Flush
+// once after a batch, so the writer can make the whole batch durable with one
+// directory fsync instead of one per vector.
+type VectorFlusher interface {
+	Flush() error
 }
 
 // Day sources, recorded on ledger records.

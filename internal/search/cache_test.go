@@ -6,6 +6,7 @@ package search
 import (
 	"context"
 	"encoding/binary"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -23,10 +24,11 @@ func testVault(t *testing.T) *storage.Vault {
 
 func TestCachePutGet(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
 
 	vec := []float32{0.1, 0.2, 0.3, -0.5}
-	if err := c.Put("proj", "drawer-1", vec); err != nil {
+	if err := cachePut(t, c, "proj", "drawer-1", vec); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -59,6 +61,7 @@ func TestCacheMiss(t *testing.T) {
 
 func TestCacheBinaryFormat(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
 
 	dims := 384
@@ -67,7 +70,7 @@ func TestCacheBinaryFormat(t *testing.T) {
 		vec[i] = float32(i) / float32(dims)
 	}
 
-	if err := c.Put("proj", "drawer-1", vec); err != nil {
+	if err := cachePut(t, c, "proj", "drawer-1", vec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,9 +88,10 @@ func TestCacheBinaryFormat(t *testing.T) {
 
 func TestCacheDelete(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
 
-	if err := c.Put("proj", "d1", []float32{1, 2, 3}); err != nil {
+	if err := cachePut(t, c, "proj", "d1", []float32{1, 2, 3}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	path, _ := c.path("proj", "d1")
@@ -95,7 +99,7 @@ func TestCacheDelete(t *testing.T) {
 		t.Fatalf("precondition: .vec should exist: %v", err)
 	}
 
-	if err := c.Delete("proj", "d1"); err != nil {
+	if err := cacheDelete(t, c, "proj", "d1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -103,23 +107,28 @@ func TestCacheDelete(t *testing.T) {
 	}
 
 	// A missing file is not an error.
-	if err := c.Delete("proj", "d1"); err != nil {
+	if err := cacheDelete(t, c, "proj", "d1"); err != nil {
 		t.Errorf("Delete of missing file returned %v, want nil", err)
 	}
-	if err := c.Delete("proj", "never-cached"); err != nil {
+	if err := cacheDelete(t, c, "proj", "never-cached"); err != nil {
 		t.Errorf("Delete of never-cached returned %v, want nil", err)
 	}
 }
 
 func TestCacheOverwrite(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
 
 	v1 := []float32{1.0, 2.0, 3.0}
 	v2 := []float32{4.0, 5.0, 6.0}
 
-	_ = c.Put("proj", "d1", v1)
-	_ = c.Put("proj", "d1", v2)
+	if err := cachePut(t, c, "proj", "d1", v1); err != nil {
+		t.Fatal(err)
+	}
+	if err := cachePut(t, c, "proj", "d1", v2); err != nil {
+		t.Fatal(err)
+	}
 
 	got, _ := c.Get("proj", "d1")
 	for i := range v2 {
@@ -130,24 +139,23 @@ func TestCacheOverwrite(t *testing.T) {
 }
 
 // TestEmbedCachePut_NeverCreatesAProjectTree pins the invariant the move exists
-// for: a Put on a slug with no tree at all lands under palace/.local/ and
-// creates nothing under palace/<slug>/ or Projects/<slug>/. Pointing path()
-// back at storage.LocalDir turns this red.
+// for: a Put lands under palace/.local/ and creates nothing under
+// palace/<slug>/ (here the project lives in Projects/ only, as a notes-only
+// project does). Pointing path() back at storage.LocalDir turns this red.
 func TestEmbedCachePut_NeverCreatesAProjectTree(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "ghost")
 	c := NewEmbedCache(v)
 
-	if err := c.Put("ghost", "d1", []float32{1, 2}); err != nil {
+	if err := cachePut(t, c, "ghost", "d1", []float32{1, 2}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	want := filepath.Join(v.Root, "palace", ".local", "embed-cache", "ghost", "d1.vec")
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("vector not at %s: %v", want, err)
 	}
-	for _, rel := range []string{"palace/ghost", "Projects/ghost"} {
-		if _, err := os.Stat(filepath.Join(v.Root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
-			t.Errorf("a Put created %s (stat err %v) — the cache must write only under palace/.local/", rel, err)
-		}
+	if _, err := os.Stat(filepath.Join(v.Root, "palace", "ghost")); !os.IsNotExist(err) {
+		t.Errorf("a Put created palace/ghost (stat err %v) — the cache must write only under palace/.local/", err)
 	}
 }
 
@@ -155,14 +163,11 @@ func TestEmbedCachePut_NeverCreatesAProjectTree(t *testing.T) {
 // one is refused on every operation rather than joined into a path.
 func TestEmbedCache_RefusesInvalidSlug(t *testing.T) {
 	c := NewEmbedCache(testVault(t))
-	if err := c.Put("../escape", "d1", []float32{1}); err == nil {
+	if err := cachePut(t, c, "../escape", "d1", []float32{1}); err == nil {
 		t.Error("Put accepted an invalid slug")
 	}
 	if _, err := c.Get("Not A Slug", "d1"); err == nil {
 		t.Error("Get accepted an invalid slug")
-	}
-	if err := c.Delete("", "d1"); err == nil {
-		t.Error("Delete accepted an invalid slug")
 	}
 }
 
@@ -186,12 +191,14 @@ func writeLegacyVector(t *testing.T, root, project, id string, vec []float32) st
 	return p
 }
 
-// TestEmbedCache_LegacyVectorsMigrateThenReembedOnce: the layout move still
-// happens on the first cache operation, but a legacy vector carries no
-// embedding-regime fingerprint, so its regime is unknown and it is re-embedded
-// ONCE (it may predate a truncation change: the 2026-09-24 fingerprint unit).
-// After that the directory is fingerprinted and a fresh engine serves hits.
-func TestEmbedCache_LegacyVectorsMigrateThenReembedOnce(t *testing.T) {
+// TestEmbedCache_LegacyVectorsMigrateAndCountAsAMismatch: the layout move
+// still happens on the first cache operation, but a legacy vector carries no
+// embedding-regime sidecar, so its regime cannot be told (it may predate a
+// truncation change: the 2026-09-24 fingerprint unit). It is a mismatch
+// (ADR-014 decision 3): every engine embeds the drawers in memory, the moved
+// vectors stay byte-for-byte, and no sidecar adopts them. Only `vp index
+// rebuild` removes them.
+func TestEmbedCache_LegacyVectorsMigrateAndCountAsAMismatch(t *testing.T) {
 	eng, v, _ := countingEngine(t, storage.Config{})
 	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content one", "facts")
 	d2 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content two", "facts")
@@ -210,15 +217,19 @@ func TestEmbedCache_LegacyVectorsMigrateThenReembedOnce(t *testing.T) {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if stats.Embedded != 2 || stats.CacheHits != 0 {
-		t.Fatalf("stats = %+v, want the 2 unfingerprinted legacy vectors re-embedded once", stats)
+		t.Fatalf("stats = %+v, want the 2 unattributed legacy vectors missed", stats)
 	}
 	if _, err := os.Stat(filepath.Join(v.Root, "palace", "proj", ".local")); !os.IsNotExist(err) {
 		t.Errorf("the emptied legacy .local must be healed away (stat err %v)", err)
 	}
+	newDir := filepath.Join(v.Root, "palace", ".local", "embed-cache", "proj")
 	for _, d := range []storage.Drawer{d1, d2} {
-		if _, err := os.Stat(filepath.Join(v.Root, "palace", ".local", "embed-cache", "proj", d.ID+".vec")); err != nil {
+		if _, err := os.Stat(filepath.Join(newDir, d.ID+".vec")); err != nil {
 			t.Errorf("vector %s not at the new path: %v", d.ID, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(newDir, storage.EmbedCacheFingerprintFile)); !os.IsNotExist(err) {
+		t.Errorf("a sidecar was written over unattributed vectors (stat err %v)", err)
 	}
 
 	again := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10})
@@ -227,8 +238,8 @@ func TestEmbedCache_LegacyVectorsMigrateThenReembedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Rebuild: %v", err)
 	}
-	if stats.Embedded != 0 || stats.CacheHits != 2 {
-		t.Errorf("second engine stats = %+v, want 2 cache hits and no re-embed", stats)
+	if stats.Embedded != 2 || stats.CacheHits != 0 {
+		t.Errorf("second engine stats = %+v, want the mismatch to hold until a rebuild", stats)
 	}
 }
 
@@ -269,8 +280,9 @@ func TestEmbedCache_SweepFailureIsNotFatal(t *testing.T) {
 		t.Skip("root ignores directory permissions")
 	}
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
-	if err := c.Put("proj", "d1", []float32{3}); err != nil {
+	if err := cachePut(t, c, "proj", "d1", []float32{3}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	palace := filepath.Join(v.Root, "palace")
@@ -311,7 +323,7 @@ func TestEmbedCache_ConcurrentInstancesConverge(t *testing.T) {
 			c := NewEmbedCache(v)
 			p := []string{"alpha", "beta"}[w%2]
 			for i := range 5 {
-				if err := c.Put(p, "put"+string(rune('a'+w))+string(rune('a'+i)), []float32{float32(w), float32(i)}); err != nil {
+				if err := cachePut(t, c, p, "put"+string(rune('a'+w))+string(rune('a'+i)), []float32{float32(w), float32(i)}); err != nil {
 					errs[w] = err
 					return
 				}
@@ -348,27 +360,32 @@ func TestEmbedCache_ConcurrentInstancesConverge(t *testing.T) {
 	}
 }
 
-// TestEmbedCachePut_RetriesWhenItsDirectoryVanishes drives Put's own retry. The
+// TestEmbedCachePut_RetriesWhenItsDirectoryVanishes drives put's own retry. The
 // first write finds its directory gone — as when a sweep's rename replaced the
-// empty directory Put had just made — and fails with ENOENT; Put must re-create
-// the directory and land the vector. Deleting the retry from Put turns this red.
+// empty directory put had just made — and fails with ENOENT; put must re-create
+// the directory and land the vector. Deleting the retry from put turns this red.
 func TestEmbedCachePut_RetriesWhenItsDirectoryVanishes(t *testing.T) {
 	v := testVault(t)
+	ensureProjectDir(t, v, "proj")
 	c := NewEmbedCache(v)
 	calls := 0
-	old := cacheWriteFile
-	cacheWriteFile = func(name string, data []byte, perm os.FileMode) error {
+	old := cacheWriteFn
+	cacheWriteFn = func(name string, data []byte) error {
 		calls++
 		if calls == 1 {
+			// atomicfile creates the directory itself, so the race is the
+			// directory vanishing between that and its temp file: the write
+			// fails with ENOENT.
 			if err := os.Remove(filepath.Dir(name)); err != nil {
 				t.Fatalf("remove the directory under the first write: %v", err)
 			}
+			return &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 		}
-		return os.WriteFile(name, data, perm)
+		return old(name, data)
 	}
-	t.Cleanup(func() { cacheWriteFile = old })
+	t.Cleanup(func() { cacheWriteFn = old })
 
-	if err := c.Put("proj", "d1", []float32{7, 8}); err != nil {
+	if err := cachePut(t, c, "proj", "d1", []float32{7, 8}); err != nil {
 		t.Fatalf("Put failed after its directory vanished once: %v", err)
 	}
 	if calls != 2 {

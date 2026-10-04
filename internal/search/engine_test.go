@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/index"
@@ -263,6 +262,7 @@ func TestDeduplication(t *testing.T) {
 	eng.metadata[d1.ID] = makeDrawerMeta("proj", "wing-a", "room-1", d1)
 	eng.metadata[d2.ID] = makeDrawerMeta("proj", "wing-a", "room-1", d2)
 	eng.mu.Unlock()
+	markLoaded(t, eng, "proj")
 
 	results, err := eng.Search(ctx, "chunk of document", SearchFilters{Project: "proj"})
 	if err != nil {
@@ -352,6 +352,7 @@ func TestRemoveDrawerUnlinksVec(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
 
+	warmProject(t, eng, v, "proj")
 	d := addDrawer(t, v, "proj", "wing-a", "room-1", "removable content", "facts")
 	if err := eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-a", Room: "room-1", Drawer: d}}); err != nil {
 		t.Fatal(err)
@@ -380,8 +381,10 @@ func TestRemoveDrawerUnlinksVec(t *testing.T) {
 // colliding entry rather than overwriting, and does NOT panic — a panic would
 // take down the long-lived vp mcp process.
 func TestCollisionDetectorFires(t *testing.T) {
-	eng, _ := testEngine(t)
+	eng, v := testEngine(t)
 	ctx := context.Background()
+	warmProject(t, eng, v, "proj-a")
+	warmProject(t, eng, v, "proj-b")
 
 	const id = "deadbeef"
 	first := storage.Drawer{ID: id, Content: "alpha distinct content", Hall: "facts", SourceType: "manual", FiledAt: "2026-04-07T00:00:00Z"}
@@ -456,7 +459,7 @@ func TestReapOrphanVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{drawerID, chunk.ID, "orphan1", "orphan2"} {
-		if err := eng.cache.Put("proj", id, []float32{1, 2, 3}); err != nil {
+		if err := cachePut(t, eng.cache, "proj", id, []float32{1, 2, 3}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -471,7 +474,7 @@ func TestReapOrphanVectors(t *testing.T) {
 	eng.indexes["proj"] = idx
 	eng.mu.Unlock()
 
-	n, err := eng.reap(ctx, "proj")
+	n, err := reapProject(t, eng, "proj")
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -494,50 +497,30 @@ func TestReapOrphanVectors(t *testing.T) {
 		t.Errorf("the in-memory index holds %d ids after the reap, want 1 (orphan1 evicted)", idx.Len())
 	}
 
-	if n, err := eng.reap(ctx, "no-such-project"); err != nil || n != 0 {
+	if n, err := reapProject(t, eng, "no-such-project"); err != nil || n != 0 {
 		t.Errorf("reap of a project not in the vault = %d, %v; want 0, nil", n, err)
 	}
 }
 
-// While another holder has the project's index commit lock, a Rebuild skips
-// its reap instead of waiting: no error, nothing reaped, the orphan vector
-// still there. reap itself reports the skip as success. Once the lock is free
-// the next Rebuild reaps.
+// While another holder has the project's index commit lock, a lazy build
+// skips its reap instead of waiting: no error, nothing reaped, the orphan
+// vector still there. Once the lock is free the next build reaps.
 func TestRebuildSkipsTheReapWhileTheCommitLockIsBusy(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
 	addDrawer(t, v, "proj", "wing", "room", "a drawer", "facts")
-	if err := eng.cache.Put("proj", "orphan", []float32{1, 2, 3}); err != nil {
+	if err := cachePut(t, eng.cache, "proj", "orphan", []float32{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
 	orphan, _ := eng.cache.path("proj", "orphan")
-	old := reapLockTimeout
-	reapLockTimeout = 0
-	defer func() { reapLockTimeout = old }()
 
 	held, err := indexstore.Lock(ctx, v, "proj", indexstore.NoTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	var stats RebuildStats
-	var rerr, reapErr error
-	var n int
-	go func() {
-		defer close(done)
-		stats, rerr = eng.Rebuild(ctx, "proj")
-		n, reapErr = eng.reap(ctx, "proj")
-	}()
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("Rebuild waited for a busy commit lock instead of skipping its reap")
-	}
+	stats, rerr := eng.rebuildAndRemember(ctx, "proj", 0)
 	if rerr != nil || stats.Reaped != 0 {
-		t.Fatalf("Rebuild with the lock busy: err=%v reaped=%d; want no error and 0", rerr, stats.Reaped)
-	}
-	if reapErr != nil || n != 0 {
-		t.Fatalf("reap with the lock busy = %d, %v; want 0, nil (a skip, not a failure)", n, reapErr)
+		t.Fatalf("lazy build with the lock busy: err=%v reaped=%d; want no error and 0", rerr, stats.Reaped)
 	}
 	if _, err := os.Stat(orphan); err != nil {
 		t.Fatal("the orphan vector was reaped while the commit lock was busy")
@@ -545,18 +528,17 @@ func TestRebuildSkipsTheReapWhileTheCommitLockIsBusy(t *testing.T) {
 	if err := held.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if stats, err := eng.Rebuild(ctx, "proj"); err != nil || stats.Reaped != 1 {
-		t.Fatalf("Rebuild with the lock free: err=%v reaped=%d; want 1", err, stats.Reaped)
+	if stats, err := eng.rebuildAndRemember(ctx, "proj", 0); err != nil || stats.Reaped != 1 {
+		t.Fatalf("lazy build with the lock free: err=%v reaped=%d; want 1", err, stats.Reaped)
 	}
 }
 
-// reap resolves the embed cache's directory before it reaps, as the reaper
-// always did, so the cache's one-time sweep and fingerprint check run even for
-// a project whose Rebuild reads no corpus. Here the project's only content is
-// a stored chunk whose vector carries an older embedding regime's sidecar: the
-// check replaces the sidecar and wipes the stale vector, which Tx.Reap alone
-// would keep (the chunk is in the store).
-func TestReapRunsTheEmbedCacheCheckFirst(t *testing.T) {
+// The reap never discards another embedding regime's vectors (ADR-014
+// decision 3: only vp index rebuild discards). Here the project's only content
+// is a stored chunk whose vector carries an older regime's sidecar: after a
+// Rebuild and its reap the sidecar and the vector are byte-identical, and the
+// cache serves the chunk as a miss.
+func TestReapKeepsAnotherRegimesVectors(t *testing.T) {
 	eng, v := testEngine(t)
 	ctx := context.Background()
 	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "proj"), 0o755); err != nil {
@@ -587,15 +569,17 @@ func TestReapRunsTheEmbedCacheCheckFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := eng.reap(ctx, "proj"); err != nil {
+	if _, err := eng.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(side)
-	if err != nil || strings.TrimSpace(string(got)) != eng.cache.fingerprint {
-		t.Fatalf("sidecar after the reap = %q, %v; want the engine's regime %q", got, err, eng.cache.fingerprint)
+	if got, err := os.ReadFile(side); err != nil || string(got) != "an older embedding regime\n" {
+		t.Fatalf("sidecar after the reap = %q, %v; want it untouched", got, err)
 	}
-	if _, err := os.Stat(vec); !os.IsNotExist(err) {
-		t.Fatal("a vector of an older regime survived: the embed cache's check did not run")
+	if got, err := os.ReadFile(vec); err != nil || len(got) != 12 {
+		t.Fatalf("the older regime's vector after the reap = %v, %v; want it kept", got, err)
+	}
+	if got, err := eng.cache.Get("proj", chunk.ID); err != nil || got != nil {
+		t.Fatalf("Get on another regime's vector = %v, %v; want a miss", got, err)
 	}
 }
 
@@ -607,11 +591,10 @@ func TestReapFailsOnAnUnreadableRoom(t *testing.T) {
 		t.Skip("root reads a mode-000 file")
 	}
 	eng, v := testEngine(t)
-	ctx := context.Background()
 	d1 := addDrawer(t, v, "proj", "wing", "r1", "first room drawer", "facts")
 	d2 := addDrawer(t, v, "proj", "wing", "r2", "second room drawer", "facts")
 	for _, id := range []string{d1.ID, d2.ID} {
-		if err := eng.cache.Put("proj", id, []float32{1, 2, 3}); err != nil {
+		if err := cachePut(t, eng.cache, "proj", id, []float32{1, 2, 3}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -624,7 +607,7 @@ func TestReapFailsOnAnUnreadableRoom(t *testing.T) {
 	}
 	defer os.Chmod(room, 0o644)
 
-	if _, err := eng.reap(ctx, "proj"); err == nil {
+	if _, err := reapProject(t, eng, "proj"); err == nil {
 		t.Fatal("reap succeeded although a room could not be read")
 	}
 	for _, id := range []string{d1.ID, d2.ID} {
@@ -647,7 +630,7 @@ func TestRebuildReapsOrphanVectors(t *testing.T) {
 	}
 
 	// Plant an orphan vector for a drawer that does not exist on disk.
-	if err := eng.cache.Put("proj", "ghost123", []float32{1, 2, 3}); err != nil {
+	if err := cachePut(t, eng.cache, "proj", "ghost123", []float32{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
 	ghostPath, _ := eng.cache.path("proj", "ghost123")
