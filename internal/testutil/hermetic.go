@@ -49,6 +49,18 @@ var (
 // write counter files into the checked-in fixture. GOTELEMETRY=off in the
 // environment does not stop that; only the mode file does.
 //
+// It also makes git hermetic, so a test commits on a CI runner with no git
+// config exactly as it does on a developer's host. GIT_CONFIG_GLOBAL points at
+// the fixture's git/config, which holds the suite's one test identity;
+// GIT_CONFIG_NOSYSTEM=1 drops the host's system config; and an ambient
+// GIT_AUTHOR_*/GIT_COMMITTER_*/EMAIL is unset. So no test inherits the host's
+// identity, signing or autocrlf settings: a test that passed only because the
+// developer's ~/.gitconfig had a user.email fails here too. A config FILE, not
+// identity env vars: a repository's own user.email still wins over it, and a
+// test that wants no identity (or a global config of its own) sets
+// GIT_CONFIG_GLOBAL itself. A test that writes `git config --global` writes
+// into the fixture and fails the hash check below.
+//
 // The fixture is read-only. RunHermetic hashes the whole fixture tree before
 // and after m.Run() and fails the package, naming every added, removed or
 // changed entry, if a test wrote into it — the signature of a test that writes
@@ -71,6 +83,10 @@ func RunHermetic(m *testing.M) int {
 		return 2
 	}
 	fixtureXDG = dir
+	if err := hermeticGit(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "testutil.RunHermetic: %v\n", err)
+		return 2
+	}
 
 	code := m.Run()
 
@@ -115,6 +131,31 @@ func UseAmbientConfig(t *testing.T) {
 // was lost, which must fail rather than skip.
 func XDGIsFixture() bool {
 	return fixtureXDG != "" && os.Getenv("XDG_CONFIG_HOME") == fixtureXDG
+}
+
+// gitIdentityEnv is every variable git reads an identity from ahead of its
+// config files. hermeticGit unsets them so the fixture identity is the one in
+// effect.
+var gitIdentityEnv = []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"}
+
+// hermeticGit points git at the fixture's global config and away from the
+// host's (see RunHermetic).
+func hermeticGit(fixture string) error {
+	global := filepath.Join(fixture, "git", "config")
+	if _, err := os.Stat(global); err != nil {
+		return fmt.Errorf("git identity fixture missing: %w", err)
+	}
+	for k, v := range map[string]string{"GIT_CONFIG_GLOBAL": global, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(k, v); err != nil {
+			return fmt.Errorf("set %s: %w", k, err)
+		}
+	}
+	for _, k := range gitIdentityEnv {
+		if err := os.Unsetenv(k); err != nil {
+			return fmt.Errorf("unset %s: %w", k, err)
+		}
+	}
+	return nil
 }
 
 func failed(code int) int {

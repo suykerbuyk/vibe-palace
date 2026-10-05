@@ -1,0 +1,6 @@
+# The test suite's git identity: RunHermetic points GIT_CONFIG_GLOBAL here, so
+# every test commits as this identity on every host, a CI runner with no git
+# config included. Read-only, like the rest of this fixture tree.
+[user]
+	name = vp test
+	email = test@vibe-palace.invalid
