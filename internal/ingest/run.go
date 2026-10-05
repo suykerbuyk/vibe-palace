@@ -97,9 +97,9 @@ type RunResult struct {
 	Failed    int      // archives that failed (a failure record each)
 	Changed   int      // archives rewritten mid-run, left for the next run
 	Repaired  int      // archives re-ingested by the repair pass
-	Projects  []string // the projects visited, in order
-	Stopped   string   // why the run stopped early: "budget", "wall clock", "checkpoint"
-	Passes    int      // RunHeld passes: 1, plus one per re-acquire after the release
+	Projects  []string // the projects the run visited (had archives or a ledger), in order
+	Stopped   string   // why the run stopped early: "budget", "wall clock", "checkpoint", "cancelled"
+	Passes    int      // RunHeld passes, including re-runs before the release and after a re-acquire
 }
 
 // ErrNoTarget: a run was not given a vault root and a project.
@@ -113,12 +113,44 @@ var noteFirstTimeout = 5 * time.Second
 // the run lock is released.
 var beforeReleaseFn func()
 
+// runMemo is what one Run remembers across its passes and lock acquisitions:
+// the archives it attempted (never retried in the same run) and the Warns it
+// wrote (each once per archive per run).
+type runMemo struct {
+	attempted map[string]bool
+	warned    map[string]bool
+}
+
+func newMemo() *runMemo { return &runMemo{attempted: map[string]bool{}, warned: map[string]bool{}} }
+
+// attemptKey is how a run remembers an archive: its source_sha256, or, for
+// an archive with none, its path, so a failing hashless archive is attempted
+// once (code review fix 2).
+func attemptKey(e *archive.Entry, sha string) string {
+	if sha != "" {
+		return sha
+	}
+	return "path:" + e.ArchivePath
+}
+
+// warnOnce logs a Warn the first time key is seen in this run.
+func (m *runMemo) warnOnce(key, msg string, args ...any) {
+	if m == nil || m.warned[key] {
+		return
+	}
+	m.warned[key] = true
+	slog.Warn(msg, args...)
+}
+
 // Run is the pending-archive ingester (Scope 4). It try-locks the index run
 // lock; when another run holds it, it records First in the project's inbox
-// (plan revision R3) and returns at once. Otherwise it runs RunHeld, then
-// releases the lock through ReleaseAndRecheck with the in-scope pending set
-// its last rescan saw, and runs again when an archive arrived that the rescan
-// did not see (ADR-014 decision 7, "No lost trigger").
+// (plan revision R3) and returns at once. Otherwise it runs the pass, then
+// rescans: while the rescan finds an in-scope archive this run has not
+// attempted and the budget is not spent, it runs the pass again, so an
+// archive that arrived during the pass (or during its heal) is served now
+// (code review fix 1). Then it releases the lock through ReleaseAndRecheck,
+// with the set that last rescan saw, and runs again, with a fresh budget,
+// when an archive arrived after it (ADR-014 decision 7, "No lost trigger").
 func Run(ctx context.Context, d Deps, o RunOptions) (RunResult, error) {
 	var res RunResult
 	if o.VaultRoot == "" || o.Project == "" || d.Vault == nil {
@@ -138,23 +170,34 @@ func Run(ctx context.Context, d Deps, o RunOptions) (RunResult, error) {
 		}
 		return res, nil
 	}
+	memo := newMemo()
+	pending := func() ([]string, error) { return inScopePending(d, o) }
 	for {
-		r, err := RunHeld(ctx, d, held, o)
-		res.add(r)
-		res.Passes++
-		if err != nil {
-			_ = held.Release()
-			return res, err
+		st := newState(d, o, memo)
+		var seenList []string
+		for {
+			before := st.progress()
+			r, err := runHeld(ctx, d, held, o, st)
+			res.add(r)
+			res.Passes++
+			if err != nil {
+				_ = held.Release()
+				return res, err
+			}
+			if st.stopped == "checkpoint" || st.stopped == "cancelled" {
+				return res, held.Release()
+			}
+			seenList, err = pending()
+			if err != nil {
+				_ = held.Release()
+				return res, err
+			}
+			unattempted := slices.ContainsFunc(seenList, func(s string) bool { return !memo.attempted[s] })
+			if !unattempted || st.stopped != "" || st.progress() == before {
+				break
+			}
 		}
-		if r.Stopped == "checkpoint" {
-			return res, held.Release()
-		}
-		pending := func() ([]string, error) { return inScopePending(d, o) }
-		seenList, err := pending()
-		if err != nil {
-			_ = held.Release()
-			return res, err
-		}
+		res.Stopped = st.stopped
 		seen := map[string]struct{}{}
 		for _, s := range seenList {
 			seen[s] = struct{}{}
@@ -175,28 +218,56 @@ func (r *RunResult) add(o RunResult) {
 	r.Failed += o.Failed
 	r.Changed += o.Changed
 	r.Repaired += o.Repaired
-	r.Projects = append(r.Projects, o.Projects...)
+	for _, p := range o.Projects {
+		if !slices.Contains(r.Projects, p) {
+			r.Projects = append(r.Projects, p)
+		}
+	}
 	if o.Stopped != "" {
 		r.Stopped = o.Stopped
 	}
 }
 
-// runState is one RunHeld's bookkeeping.
+// runState is the bookkeeping of one lock acquisition: its budget, and what
+// its passes did.
 type runState struct {
+	memo      *runMemo
 	start     time.Time
 	budget    RunBudget
-	admitted  int             // archives committed or attempted: the budget's count
-	attempted map[string]bool // never retried in the same run
-	skipped   map[string]bool // projects skipped for a fingerprint reason: warned once
+	admitted  int             // archives and repair units committed or attempted: the budget's count
+	skipped   map[string]bool // projects skipped (stale, or an error reading them): warned once
 	repaired  map[string]bool // projects whose repair pass ran
+	commits   map[string]int  // commits per project, for the heal
+	healedAt  map[string]int  // commits per project when it was last healed
+	firsts    map[string]map[string]bool
+	visited   []string
 	done      int
 	total     int
+	committed int
 	stopped   string
 }
 
-// admit reports whether another archive may start: the first archive of a
-// run always may; after that, the archive count and the wall-clock cap,
-// checked between archives through the injected clock.
+func newState(d Deps, o RunOptions, memo *runMemo) *runState {
+	return &runState{
+		memo: memo, start: d.now(), budget: o.budget(),
+		skipped: map[string]bool{}, repaired: map[string]bool{}, commits: map[string]int{}, healedAt: map[string]int{},
+		firsts: map[string]map[string]bool{},
+	}
+}
+
+// progress is what a pass changed: a pass that changes nothing ends the
+// re-runs, so a run never loops on an archive it cannot attempt.
+func (st *runState) progress() int { return st.admitted + st.committed }
+
+func (st *runState) visit(p string) {
+	if !slices.Contains(st.visited, p) {
+		st.visited = append(st.visited, p)
+	}
+}
+
+// admit reports whether another archive or repair unit may start: the first
+// of an acquisition always may; after that, the archive count and the
+// wall-clock cap, checked between archives through the injected clock.
 func (st *runState) admit(d Deps, explicit bool) bool {
 	if explicit || st.admitted == 0 {
 		return true
@@ -213,19 +284,68 @@ func (st *runState) admit(d Deps, explicit bool) bool {
 }
 
 // RunHeld is the pass for a caller that already holds the run lock (the
-// rebuild driver, 7-S4): it never takes, releases or re-acquires it. The
-// triggering project goes first, then every other project with archives, in
-// slug order. Each pass over the projects is repeated while it made progress
-// and the budget lasts; an archive is never retried within one RunHeld.
+// rebuild driver, 7-S4): it never takes, releases or re-acquires it.
 func RunHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions) (RunResult, error) {
+	st := newState(d, o, newMemo())
+	r, err := runHeld(ctx, d, held, o, st)
+	r.Stopped = st.stopped
+	return r, err
+}
+
+// runHeld is one pass:
+//
+//  1. every in-scope project's ledger is created up front, so a budget stop
+//     cannot let archives that arrive meanwhile join a baseline created later;
+//  2. the pending archives, the triggering project first, then the others in
+//     slug order, repeated while a pass makes progress and the budget lasts;
+//  3. the repair pass, only after every project's pending archives, so a
+//     repair that keeps failing cannot starve another project (fix 4);
+//  4. the graph heal of each visited project, after its last commit.
+//
+// An error reading one project is logged and that project skipped; it never
+// stops the run for the others.
+func runHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, st *runState) (RunResult, error) {
 	var res RunResult
-	st := &runState{start: d.now(), budget: o.budget(), attempted: map[string]bool{}, skipped: map[string]bool{}, repaired: map[string]bool{}}
 	projects, err := projectOrder(d, o.Project)
 	if err != nil {
 		return res, err
 	}
+	for _, p := range projects {
+		if err := ctx.Err(); err != nil {
+			st.stopped = "cancelled"
+			res.Stopped = st.stopped
+			return res, nil
+		}
+		if st.skipped[p] || st.firsts[p] != nil {
+			continue
+		}
+		if skip := staleSkip(d, p, st); skip {
+			continue
+		}
+		entries, err := archive.ListEntries(d.Vault.Root, p)
+		if err != nil {
+			st.skip(p, "ingest: cannot list the project's archives; skipped this run", err)
+			continue
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		first := ""
+		if p == o.Project {
+			first = o.First
+		}
+		firsts, err := ensureLedger(ctx, d, p, first)
+		if errors.Is(err, indexstore.ErrProjectGone) {
+			continue
+		}
+		if err != nil {
+			st.skip(p, "ingest: cannot create the project's ledger; skipped this run", err)
+			continue
+		}
+		st.firsts[p] = firsts
+	}
 	for {
-		before := st.admitted
+		before := st.progress()
 		for _, p := range projects {
 			if st.stopped != "" {
 				break
@@ -233,35 +353,52 @@ func RunHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions
 			if err := held.SetProject(p); err != nil {
 				return res, err
 			}
-			if !slices.Contains(res.Projects, p) {
-				res.Projects = append(res.Projects, p)
-			}
-			first := ""
-			if p == o.Project {
-				first = o.First
-			}
-			if err := runProject(ctx, d, held, o, p, first, st, &res); err != nil {
+			if err := runPending(ctx, d, held, o, p, st, &res); err != nil {
 				return res, err
 			}
 		}
-		if st.stopped != "" || st.admitted == before {
+		if st.stopped != "" || st.progress() == before {
 			break
 		}
 	}
-	res.Stopped = st.stopped
-	// The graph heal, once per project visited, after its last commit, with
+	for _, p := range projects {
+		if st.stopped != "" {
+			break
+		}
+		if st.skipped[p] || st.repaired[p] {
+			continue
+		}
+		st.repaired[p] = true
+		if err := repairProject(ctx, d, o, p, st, &res); err != nil {
+			st.skip(p, "ingest: the repair pass failed; skipped this run", err)
+		}
+	}
+	// The graph heal, once per visited project after its last commit, with
 	// the run lock held; never for a project skipped as stale, nor for the
 	// project whose rebuild heals it itself (SkipHeal).
-	for _, p := range res.Projects {
-		if st.skipped[p] || (o.SkipHeal && p == o.Project) || st.stopped == "checkpoint" {
+	for _, p := range st.visited {
+		if st.skipped[p] || (o.SkipHeal && p == o.Project) || st.stopped == "checkpoint" || st.stopped == "cancelled" {
+			continue
+		}
+		if h, ok := st.healedAt[p]; ok && h == st.commits[p] {
 			continue
 		}
 		if !o.Explicit && d.now().Sub(st.start) >= st.budget.WallClock {
 			break
 		}
+		st.healedAt[p] = st.commits[p]
 		healGraph(ctx, d, p)
 	}
+	res.Projects = slices.Clone(st.visited)
+	res.Stopped = st.stopped
 	return res, nil
+}
+
+// skip marks a project skipped for the rest of this acquisition, with one
+// Warn per run.
+func (st *runState) skip(p, msg string, err error) {
+	st.skipped[p] = true
+	st.memo.warnOnce("skip:"+p+":"+msg, msg, "project", p, "error", err)
 }
 
 // projectOrder is the triggering project, then every other project in slug
@@ -288,38 +425,44 @@ type item struct {
 	retarget string
 }
 
-// runProject is one project's pass: its pending archives in scope, newest
-// first (First first), then its inbox upkeep and its older archives recorded
-// superseded.
-func runProject(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, p, first string, st *runState, res *RunResult) error {
+// runPending is one project's pending archives in scope, newest first (First
+// and inbox entries first), then its older archives recorded superseded and
+// its inbox upkeep.
+func runPending(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, p string, st *runState, res *RunResult) error {
 	if st.skipped[p] {
 		return nil
 	}
-	if skip, err := staleSkip(d, p); err != nil || skip {
-		st.skipped[p] = skip
-		return err
-	}
 	entries, err := archive.ListEntries(d.Vault.Root, p)
 	if err != nil {
-		slog.Warn("ingest: cannot list archives", "project", p, "error", err)
+		st.skip(p, "ingest: cannot list the project's archives; skipped this run", err)
 		return nil
 	}
 	if len(entries) == 0 {
-		// A project of import batches alone still gets its repair pass.
-		return repairOnce(ctx, d, o, p, nil, st, res)
-	}
-	firsts, err := ensureLedger(ctx, d, p, first)
-	if errors.Is(err, indexstore.ErrProjectGone) {
 		return nil
 	}
-	if err != nil {
-		return err
+	firsts := st.firsts[p]
+	if firsts == nil {
+		// Archives that arrived after the up-front step, in a project that
+		// had none then.
+		first := ""
+		if p == o.Project {
+			first = o.First
+		}
+		if firsts, err = ensureLedger(ctx, d, p, first); err != nil {
+			if !errors.Is(err, indexstore.ErrProjectGone) {
+				st.skip(p, "ingest: cannot create the project's ledger; skipped this run", err)
+			}
+			return nil
+		}
+		st.firsts[p] = firsts
 	}
 	snap, err := indexstore.ReadStore(d.Vault, p)
 	if err != nil {
-		return err
+		st.skip(p, "ingest: cannot read the project's index store; skipped this run", err)
+		return nil
 	}
-	items := plan(entries, snap.Ledger(), firsts, o, st.attempted, d.Vault.Root, true)
+	st.visit(p)
+	items := plan(entries, snap.Ledger(), firsts, o, st.memo, d.Vault.Root)
 	st.total += len(items)
 	for _, it := range items {
 		if !st.admit(d, o.Explicit) {
@@ -333,39 +476,35 @@ func runProject(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOpti
 			break
 		}
 	}
-	if err := repairOnce(ctx, d, o, p, entries, st, res); err != nil {
-		return err
-	}
-	return tidyProject(ctx, d, p, entries)
-}
-
-// repairOnce runs the repair pass for p once per RunHeld, while the run is
-// not stopped.
-func repairOnce(ctx context.Context, d Deps, o RunOptions, p string, entries []*archive.Entry, st *runState, res *RunResult) error {
-	if st.repaired[p] || st.stopped != "" {
+	if st.skipped[p] || st.stopped == "cancelled" {
 		return nil
 	}
-	st.repaired[p] = true
-	return repairProject(ctx, d, o, p, entries, st, res)
+	if err := tidyProject(ctx, d, p, entries); err != nil && !errors.Is(err, indexstore.ErrProjectGone) {
+		st.skip(p, "ingest: cannot tidy the project's ledger; skipped this run", err)
+	}
+	return nil
 }
 
 // staleSkip reports whether project is stale for a fingerprint reason: its
 // chunk recipe or embedding regime is another's. It is skipped, never
 // discarded, with one Warn naming `vp index rebuild` (Chair ruling 2: a Warn
-// reaches the bootstrap health alert).
-func staleSkip(d Deps, p string) (bool, error) {
+// reaches the bootstrap health alert). An error reading its state skips it
+// for this run, with a Warn, and never stops the run.
+func staleSkip(d Deps, p string, st *runState) bool {
 	_, reasons, err := d.Engine.Stale(p)
 	if err != nil {
-		return false, err
+		st.skip(p, "ingest: cannot read the project's stale state; skipped this run", err)
+		return true
 	}
 	for _, r := range reasons {
 		if r.Kind == indexstore.StaleFingerprint {
-			slog.Warn("ingest: project skipped: its index was built under another "+r.Fingerprint+" fingerprint; run `vp index rebuild`",
+			st.skipped[p] = true
+			st.memo.warnOnce("stale:"+p, "ingest: project skipped: its index was built under another "+r.Fingerprint+" fingerprint; run `vp index rebuild`",
 				"project", p, "fingerprint", r.Fingerprint)
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // ensureLedger creates the project's ledger when it has none, leaving the
@@ -400,9 +539,11 @@ func ensureLedger(ctx context.Context, d Deps, p, first string) (map[string]bool
 
 // plan returns the project's archives a run ingests, newest first, the
 // trigger's First (or an inbox entry) ahead of the rest. For each session the
-// live archive is the newest listed one (latest captured_at) on disk. When
-// warn is set, the skips that need the operator are logged.
-func plan(entries []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool, o RunOptions, attempted map[string]bool, root string, warn bool) []item {
+// live archive is the newest listed one (latest captured_at) on disk. With a
+// memo, the skips that need the operator are logged once per archive per run
+// and attempted archives are left out; with none (the rescan) nothing is
+// logged.
+func plan(entries []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool, o RunOptions, memo *runMemo, root string) []item {
 	bySession := map[string][]*archive.Entry{}
 	var order []string
 	for _, e := range entries {
@@ -424,7 +565,7 @@ func plan(entries []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool
 				newest = e
 			}
 		}
-		if it, ok := decide(sid, newest, list, l, firsts, o, attempted, root, warn); ok {
+		if it, ok := decide(sid, newest, list, l, firsts, o, memo, root); ok {
 			out = append(out, it)
 		}
 	}
@@ -441,29 +582,35 @@ func plan(entries []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool
 // decide is one session's choice: whether its newest listed archive is
 // pending and in scope, and with which re-target.
 func decide(sid string, newest *archive.Entry, list []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool,
-	o RunOptions, attempted map[string]bool, root string, warn bool) (item, bool) {
+	o RunOptions, memo *runMemo, root string) (item, bool) {
 	sha := newest.Manifest.SourceSHA256
-	logf := func(msg string, args ...any) {
-		if warn {
-			slog.Warn(msg, append([]any{"session", sid, "archive", newest.ArchivePath}, args...)...)
-		}
+	warn := func(kind, msg string, args ...any) {
+		memo.warnOnce(kind+":"+newest.ArchivePath, msg, append([]any{"session", sid, "archive", newest.ArchivePath}, args...)...)
+	}
+	// An archive this run already attempted is never retried in it, hashless
+	// ones included (fix 2).
+	if memo != nil && memo.attempted[attemptKey(newest, sha)] {
+		return item{}, false
 	}
 	if sha == "" {
 		if !o.Explicit {
 			// R4: an archive with no source_sha256 can be keyed only by
 			// reading it, so an automatic run would re-read it every time;
 			// it is left to `vp index rebuild`.
-			logf("ingest: archive has no source_sha256; left to `vp index rebuild`")
+			warn("nohash", "ingest: archive has no source_sha256; left to `vp index rebuild`")
 			return item{}, false
 		}
 		return item{e: newest}, true
 	}
-	if attempted[sha] || l.Superseded(sha) {
-		return item{}, false
-	}
 	rec, has := l.Session(sid)
 	it := item{e: newest}
 	switch {
+	case has && rec.State == indexstore.StateSuperseding && sha == rec.SupersedingFrom && !listedSHA(list, rec.SHA):
+		// R1: the supersede's target vanished and nothing newer is on
+		// disk: the session reverts to its source archive.
+		it.retarget = rec.SHA
+	case l.Superseded(sha):
+		return item{}, false
 	case !has:
 	case rec.State == indexstore.StateLive && rec.SHA == sha:
 		return item{}, false
@@ -472,7 +619,7 @@ func decide(sid string, newest *archive.Entry, list []*archive.Entry, l *indexst
 			rec.ArchivePath != vaultRel(root, newest.ArchivePath) {
 			// The ledgered live archive is gone and nothing listed is
 			// known to be newer: never roll the session back.
-			logf("ingest: the session's ingested archive is no longer on disk and no newer one is; left to `vp index rebuild`",
+			warn("gone", "ingest: the session's ingested archive is no longer on disk and no newer one is; left to `vp index rebuild`",
 				"ledgered", rec.SHA)
 			return item{}, false
 		}
@@ -484,14 +631,14 @@ func decide(sid string, newest *archive.Entry, list []*archive.Entry, l *indexst
 	}
 	superseding := has && rec.State == indexstore.StateSuperseding
 	switch {
-	case l.InBaseline(sha) && !firsts[sha]:
+	case l.InBaseline(sha) && !firsts[sha] && !superseding:
 		return item{}, false
 	case l.FailureCount(sha) >= o.failureLimit() && !superseding:
 		// R2: never for a session mid-supersede, which search would
 		// otherwise lose until a rebuild.
 		return item{}, false
 	case newest.Manifest.SourceBytes > o.maxSourceBytes():
-		logf("ingest: archive is larger than an automatic run takes; left to `vp index rebuild`",
+		warn("size", "ingest: archive is larger than an automatic run takes; left to `vp index rebuild`",
 			"source_bytes", newest.Manifest.SourceBytes, "limit", o.maxSourceBytes())
 		return item{}, false
 	}
@@ -508,7 +655,8 @@ func listedSHA(list []*archive.Entry, sha string) bool {
 }
 
 // ingestOne ingests one archive and accounts for it. It reports stop when
-// the project's pass must end (the project is gone or stale).
+// the project's pass must end (the project is gone or stale, or the run is
+// stopping).
 func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, p string, it item, st *runState, res *RunResult) (bool, error) {
 	sha := it.e.Manifest.SourceSHA256
 	r, err := IngestArchive(ctx, d, p, it.e, IngestOptions{Embed: true, Checkpoint: o.Checkpoint, Retarget: it.retarget})
@@ -521,24 +669,33 @@ func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptio
 		return false, nil
 	case err == nil:
 		res.Committed++
+		st.committed++
+		st.commits[p]++
 	case errors.Is(err, ErrCheckpoint):
 		slog.Warn("ingest: run stopped at a checkpoint", "project", p, "archive", it.e.ArchivePath, "error", err)
 		st.stopped = "checkpoint"
+		return true, nil
+	case ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// A cancelled run is not the archive's fault.
+		slog.Info("ingest: run cancelled", "project", p, "archive", it.e.ArchivePath)
+		st.stopped = "cancelled"
 		return true, nil
 	case errors.Is(err, indexstore.ErrProjectGone):
 		// R6: the project went away; no failure, on to the next project.
 		slog.Info("ingest: project removed during the run", "project", p)
 		return true, nil
 	case errors.Is(err, ErrFingerprintStale):
-		slog.Warn("ingest: project skipped: its index was built under another chunk recipe or embedding regime; run `vp index rebuild`",
+		st.skipped[p] = true
+		st.memo.warnOnce("stale:"+p, "ingest: project skipped: its index was built under another chunk recipe or embedding regime; run `vp index rebuild`",
 			"project", p, "error", err)
+		return true, nil
+	case errors.Is(err, indexstore.ErrNoLedger):
+		slog.Warn("ingest: the project's ledger disappeared during the run (a discard?); its pass ends", "project", p)
 		return true, nil
 	case errors.Is(err, archive.ErrArchiveChanged):
 		// Adopted note: rewritten since the listing; retried next run.
 		slog.Info("ingest: archive rewritten during the run; retried next run", "project", p, "archive", it.e.ArchivePath)
 		res.Changed++
-	case errors.Is(err, indexstore.ErrNoLedger):
-		return true, nil
 	default:
 		res.Failed++
 		slog.Warn("ingest: archive failed", "project", p, "archive", it.e.ArchivePath, "source_sha256", sha, "error", err)
@@ -547,7 +704,10 @@ func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptio
 		}
 	}
 	st.admitted++
-	st.attempted[sha] = true
+	st.memo.attempted[attemptKey(it.e, it.e.Manifest.SourceSHA256)] = true
+	if sha != "" {
+		st.memo.attempted[sha] = true
+	}
 	st.done++
 	if err := held.SetProgress(st.done, st.total); err != nil {
 		return false, err
@@ -655,11 +815,11 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 		}
 		snap, err := indexstore.ReadStore(d.Vault, p)
 		if err != nil {
-			return nil, err
+			continue // the pass logged it; one unreadable project never stops the rest
 		}
 		inbox, err := indexstore.ReadFirsts(d.Vault, p)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		firsts := map[string]bool{}
 		for _, s := range inbox {
@@ -673,7 +833,7 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 			}
 			continue
 		}
-		for _, it := range plan(entries, snap.Ledger(), firsts, o, nil, d.Vault.Root, false) {
+		for _, it := range plan(entries, snap.Ledger(), firsts, o, nil, d.Vault.Root) {
 			out = append(out, it.e.Manifest.SourceSHA256)
 		}
 	}

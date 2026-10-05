@@ -313,6 +313,10 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (saving the graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
+      "id": "uninvoked ingest.RunHeld",
+      "reason": "STAGED for explicit-resumable-index-rebuild-with-disk-watchdog (child 7), its one caller by design: the rebuild driver holds the index run lock itself (KindRebuild) and runs the pending-archive pass under it through RunHeld, which never takes, releases or re-acquires the lock (task pending-archive-ingester-and-per-archive-commit-step, Scope 4, 7-S4). Run uses the same internal pass (runHeld) with its own lock. TestRunHeldRunsUnderTheCallersLock pins it. Child 7's driver invokes it and deletes this entry."
+    },
+    {
       "id": "uninvoked mcp.KnowledgeURI",
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. The resource template IS registered so vibe-palace://knowledge/<project> resolves; no tool response ever hands one to a client. Its three former siblings here — CommandURI, SessionURI, SkillURI — were emitted by hoist-recovery-handles-above-bulk-across-the-surface and left this baseline; KnowledgeURI could NOT follow them, because it addresses a Knowledge markdown FILE while vp_get_knowledge returns KG TRIPLES. It is not a recovery handle for that tool's body, it is a pointer to a different document, so emitting it would have been a lie rather than a fix. Giving vp_get_knowledge a real hatch means paging its unbounded triple list, which is a design. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },

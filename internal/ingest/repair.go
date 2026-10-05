@@ -32,7 +32,11 @@ import (
 //     the import restores it.
 
 // repairProject runs the repair pass for project p.
-func repairProject(ctx context.Context, d Deps, o RunOptions, p string, entries []*archive.Entry, st *runState, res *RunResult) error {
+func repairProject(ctx context.Context, d Deps, o RunOptions, p string, st *runState, res *RunResult) error {
+	entries, err := archive.ListEntries(d.Vault.Root, p)
+	if err != nil {
+		return err
+	}
 	snap, err := indexstore.ReadStore(d.Vault, p)
 	if err != nil {
 		return err
@@ -47,7 +51,7 @@ func repairProject(ctx context.Context, d Deps, o RunOptions, p string, entries 
 	for _, e := range entries {
 		sha, sid := e.Manifest.SourceSHA256, e.Manifest.SessionID
 		rec, ok := l.Session(sid)
-		if sha == "" || !ok || rec.State != indexstore.StateLive || rec.SHA != sha || st.attempted[sha] {
+		if sha == "" || !ok || rec.State != indexstore.StateLive || rec.SHA != sha || st.memo.attempted["repair:"+sha] {
 			continue
 		}
 		if snap.CountChunks(indexstore.ArchiveOwner(sha)) >= rec.ChunkCount {
@@ -60,7 +64,7 @@ func repairProject(ctx context.Context, d Deps, o RunOptions, p string, entries 
 			"owned", snap.CountChunks(indexstore.ArchiveOwner(sha)), "recorded", rec.ChunkCount)
 		_, err := IngestArchive(ctx, d, p, e, IngestOptions{Embed: true, Checkpoint: o.Checkpoint, Repair: true})
 		st.admitted++
-		st.attempted[sha] = true
+		st.memo.attempted["repair:"+sha] = true
 		switch {
 		case err == nil:
 			res.Repaired++
