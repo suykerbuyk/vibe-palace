@@ -87,6 +87,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// blanket, config-independent classification, exactly like every other
 	// entry in this list.
 	reg.Register(mutates(cmdDrainSummaries()))
+	// drain archives writes only host-local files under palace/.local/ (the
+	// index store, the embed cache, vp.log), never a tracked one, so it is
+	// not a mutating command.
+	reg.Register(cmdDrainArchives())
 	reg.Register(cmdSummarize())
 	// `summarize iterations` writes vault-committed iteration summaries
 	// (storage.Vault.WriteIterationSummary, via the same
