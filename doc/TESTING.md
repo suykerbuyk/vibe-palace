@@ -1681,6 +1681,20 @@ The run (`run_test.go`) and the repair (`repair_test.go`):
 | `TestRepairReembedsMissingVectors`, `TestRepairReingestsAChunkShortfall`, `TestRepairOfImportBatches` | The repair pass: exactly the missing vectors, one owner per budget unit, the reason cleared only when none is left and never on a stale project; a shortfall re-ingested; a batch's vectors repaired and its shortfall reported |
 | `TestGraphHealIsCalledPerProject` | One heal per visited project, under the run lock and after its commits; none for a stale project or under `SkipHeal` |
 
+The code review's fixes (`review_fix_test.go`, adapted from the reviewer's
+repros):
+
+| Test | What it proves |
+|------|----------------|
+| `TestRunServesAnArchiveThatArrivesDuringTheRun` | An archive that arrives during the run (its trigger losing the lock) is served by the holder before it releases |
+| `TestRunAttemptsAFailingHashlessArchiveOnce` | An explicit run reads a failing hashless archive once, under a deadline |
+| `TestRunRevertsAStuckSupersede` | A supersede whose target vanished with nothing newer reverts to its source, which keeps its chunks and KG records |
+| `TestRunRepairDoesNotStarveOtherProjects` | A repair that keeps failing never starves another project's pending archive |
+| `TestRunWarnsOncePerArchivePerRun` | The no-hash and size-cap Warns are written once per run across repeated passes |
+| `TestTidyLeavesANewerArchiveItDidNotIngestPending`, `TestRunDoesNotChargeAnArchiveCommittedUnderTheLock` | Tidy never records superseded a newer archive the run left alone; the under-lock path writes nothing and is charged nothing |
+| `TestRunCreatesEveryLedgerUpFront`, `TestRunIsolatesAProjectItCannotRead`, `TestRunCancelledIsNotAFailure`, `TestRunLogsALedgerThatDisappeared`, `TestRunDoesNotHealAProjectFoundStaleMidRun`, `TestRunListsOnlyVisitedProjects` | The fold-ins: ledgers created up front, a project read error isolated, a cancel never a failure, a vanished ledger logged, a mid-run stale project unhealed, only visited projects listed |
+| `internal/indexstore`: `TestSupersedeRevertsToItsSourceWhenTheTargetVanished`; `internal/archive`: `TestReadVerifiedTreatsAMissingFileAsAChange` | The store's revert keeps the source's KG; a file gone since the listing is a change, not a failure |
+
 `cmd/vp/cmd_drain_archives_test.go` pins the command: it resolves nothing,
 logs to the vault's `vp.log`, ignores a non-sha `--first`, and builds no
 model with nothing to embed.
