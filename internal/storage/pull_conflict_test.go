@@ -438,3 +438,129 @@ func TestSyncVault_PullRefusalIsNotDropped(t *testing.T) {
 		t.Errorf("the remote moved %s -> %s", remoteBefore, got)
 	}
 }
+
+// pickWorld is a host whose origin changed notes.md and Templates/commands/x.md
+// while the host committed its own notes.md, fetched but not merged.
+func pickWorld(t *testing.T) string {
+	t.Helper()
+	const tmpl = "Templates/commands/x.md"
+	dir := initTestRepo(t)
+	origin := initBareRemote(t)
+	gitRun(t, dir, "remote", "add", "origin", origin)
+	writeFile(t, dir, "notes.md", "SEED\n")
+	writeFile(t, dir, tmpl, "SEED\n")
+	gitRun(t, dir, "add", "--", "notes.md", tmpl)
+	gitRun(t, dir, "commit", "-q", "-m", "seed")
+	gitRun(t, dir, "push", "-q", "origin", "main")
+	advanceRemoteMulti(t, origin, func(clone string) {
+		writeFile(t, clone, "notes.md", "REMOTE\n")
+		writeFile(t, clone, tmpl, "REMOTE\n")
+	})
+	writeFile(t, dir, "notes.md", "LOCAL\n")
+	gitRun(t, dir, "commit", "-q", "-am", "local")
+	gitRun(t, dir, "fetch", "-q", "origin")
+	return dir
+}
+
+// Review fix 1: an unfinished operation that leaves NO marker file — here
+// `cherry-pick -n` — is still someone else's. Its conflicted index entries are
+// refused before anything runs. (a) The template heal used to discard the
+// staged template and blame vp's merge; (b) on a migrated vault the derived
+// heal used to delete the drawer and commit the human's half-finished pick.
+// (c) A multi-commit cherry-pick stopped between commits leaves only
+// .git/sequencer. Mutants: the unmerged-entries probe removed; the sequencer
+// probe removed.
+func TestPull_NeverTouchesAnOperationWithNoMarkerFile(t *testing.T) {
+	const tmpl = "Templates/commands/x.md"
+	wantRefused := func(t *testing.T, err error, want string) {
+		t.Helper()
+		var unsafe *vaultTreeUnsafeError
+		if !errors.As(err, &unsafe) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Pull = %v, want a refusal saying %q", err, want)
+		}
+	}
+
+	t.Run("cherry-pick -n with a staged template", func(t *testing.T) {
+		dir := pickWorld(t)
+		if _, err := gitCmd(dir, mergeTimeout, "cherry-pick", "-n", "origin/main"); err == nil {
+			t.Fatal("the pick was meant to conflict")
+		}
+		if gitPathExists(t, dir, "CHERRY_PICK_HEAD") || gitPathExists(t, dir, "MERGE_HEAD") {
+			t.Fatal("precondition: cherry-pick -n leaves no marker file")
+		}
+		head := gitRun(t, dir, "rev-parse", "HEAD")
+		staged := gitRun(t, dir, "ls-files", "-s", "--", tmpl)
+		status := gitRun(t, dir, "status", "--porcelain")
+
+		res, err := Pull(dir, []string{"origin"})
+		wantRefused(t, err, "the index holds conflicted entries vp did not create (notes.md)")
+		if len(res.HealedTemplates) > 0 || len(res.RemoteResults) > 0 {
+			t.Errorf("the pull ran: healed %q, results %v", res.HealedTemplates, res.RemoteResults)
+		}
+		if got := readFile(t, dir, tmpl); got != "REMOTE\n" {
+			t.Errorf("the staged %s was discarded: %q", tmpl, got)
+		}
+		if got := gitRun(t, dir, "ls-files", "-s", "--", tmpl); got != staged {
+			t.Errorf("the staged entry changed: %q -> %q", staged, got)
+		}
+		if got := gitRun(t, dir, "status", "--porcelain"); got != status {
+			t.Errorf("the tree changed: %q -> %q", status, got)
+		}
+		if got := gitRun(t, dir, "rev-parse", "HEAD"); got != head {
+			t.Errorf("HEAD moved %s -> %s", head, got)
+		}
+	})
+
+	t.Run("cherry-pick -n of the migration on a lagging host", func(t *testing.T) {
+		w := newMergeWorld(t)
+		lag := w.host(t)
+		editDrawer(t, lag)
+		w.pushMigration(t)
+		gitRun(t, lag, "fetch", "-q", "origin")
+		if _, err := gitCmd(lag, mergeTimeout, "cherry-pick", "-n", "origin/main"); err == nil {
+			t.Fatal("the pick was meant to conflict")
+		}
+		head := gitRun(t, lag, "rev-parse", "HEAD")
+		calls := spyHeal(t)
+
+		_, err := Pull(lag, []string{"origin"})
+		wantRefused(t, err, fixtureDrawer)
+		if *calls != 0 {
+			t.Errorf("the heal ran %d times on someone else's conflicted index", *calls)
+		}
+		if got := gitRun(t, lag, "rev-parse", "HEAD"); got != head {
+			t.Errorf("HEAD moved %s -> %s: the human's pick was committed", head, got)
+		}
+		if gitRun(t, lag, "ls-files", "-u", "--", fixtureDrawer) == "" || !onDisk(lag, fixtureDrawer) {
+			t.Error("the drawer is no longer conflicted and on disk")
+		}
+	})
+
+	t.Run("a multi-commit cherry-pick stopped between commits", func(t *testing.T) {
+		dir := pickWorld(t)
+		// origin/main's notes.md change conflicts; resolving it and committing
+		// by hand concludes that one commit and leaves the sequence stopped.
+		advanceRemote(t, gitRun(t, dir, "remote", "get-url", "origin"), "later.md", "later\n")
+		gitRun(t, dir, "fetch", "-q", "origin")
+		if _, err := gitCmd(dir, mergeTimeout, "cherry-pick", "origin/main~1", "origin/main"); err == nil {
+			t.Fatal("the pick was meant to conflict")
+		}
+		gitRun(t, dir, "checkout", "--theirs", "--", "notes.md")
+		gitRun(t, dir, "add", "--", "notes.md")
+		gitRun(t, dir, "commit", "-q", "--no-edit")
+		if !gitPathExists(t, dir, "sequencer") || gitPathExists(t, dir, "CHERRY_PICK_HEAD") || gitRun(t, dir, "ls-files", "-u") != "" {
+			t.Fatalf("precondition: want only .git/sequencer, got CHERRY_PICK_HEAD %v, unmerged %q",
+				gitPathExists(t, dir, "CHERRY_PICK_HEAD"), gitRun(t, dir, "ls-files", "-u"))
+		}
+		head := gitRun(t, dir, "rev-parse", "HEAD")
+
+		_, err := Pull(dir, []string{"origin"})
+		wantRefused(t, err, "a multi-commit cherry-pick or revert (sequencer)")
+		if got := gitRun(t, dir, "rev-parse", "HEAD"); got != head {
+			t.Errorf("HEAD moved %s -> %s", head, got)
+		}
+		if !gitPathExists(t, dir, "sequencer") {
+			t.Error("the sequencer state was removed")
+		}
+	})
+}

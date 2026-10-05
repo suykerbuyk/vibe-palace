@@ -1602,20 +1602,78 @@ func mergeFetchedTip(vaultPath, remote, branch string, rep *DerivedMergeReport) 
 	return out, conflict
 }
 
-// refuseOperationInProgress refuses, as *vaultTreeUnsafeError, when a merge,
-// cherry-pick, revert or rebase is in progress in the vault, or when that
-// cannot be told. what names the refused action ("merge origin/main",
-// "pull"). vp never leaves one of these behind on purpose, so it belongs to
-// someone else, and nothing may touch the tree under it.
+// refuseOperationInProgress refuses, as *vaultTreeUnsafeError, when someone
+// else's git operation is unfinished in the vault, or when that cannot be
+// told. what names the refused action ("merge origin/main", "pull"). vp
+// never leaves one behind on purpose, so it belongs to someone else, and
+// nothing may touch the tree under it. Three probes, because no one probe
+// sees them all:
+//
+//   - a merge, cherry-pick, revert or rebase with its marker file
+//     (operationInProgress);
+//   - a multi-commit cherry-pick or revert stopped between commits: .git/
+//     sequencer, with no *_HEAD once the stopped commit was concluded;
+//   - conflicted index entries with NO marker file at all, which `cherry-pick
+//     -n`, `stash pop`, `checkout -m` and `apply -3` leave. A merge over them
+//     fails, and the derived heal would then read them as the merge's own:
+//     delete the paths and commit the human's half-finished operation.
 func refuseOperationInProgress(vaultPath, what string) error {
+	cannotTell := func(err error) error {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", what, err)}
+	}
 	op, err := operationInProgress(vaultPath)
 	if err != nil {
-		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", what, err)}
+		return cannotTell(err)
+	}
+	if op == "" {
+		seq, err := sequencerInProgress(vaultPath)
+		if err != nil {
+			return cannotTell(err)
+		}
+		if seq {
+			op = "a multi-commit cherry-pick or revert (sequencer)"
+		}
 	}
 	if op != "" {
 		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: %s is in progress in the vault and vp did not start it; nothing was touched — conclude or abort it by hand first", what, describeOperation(op))}
 	}
+	entries, err := unmergedPathsZ(vaultPath)
+	if err != nil {
+		return cannotTell(err)
+	}
+	if len(entries) > 0 {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: the index holds conflicted entries vp did not create (%s), left by an operation with no marker file such as `cherry-pick -n`, `stash pop`, `checkout -m` or `apply -3`; nothing was touched — resolve or reset them by hand first", what, namePaths(entryPaths(entries)))}
+	}
 	return nil
+}
+
+// sequencerInProgress reports whether git's sequencer state directory exists:
+// a multi-commit cherry-pick or revert that has not finished.
+func sequencerInProgress(vaultPath string) (bool, error) {
+	p, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--git-path", "sequencer")
+	if err != nil {
+		return false, fmt.Errorf("locate sequencer: %w", err)
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(vaultPath, p)
+	}
+	fi, err := os.Stat(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", p, err)
+	}
+	return fi.IsDir(), nil
+}
+
+// namePaths joins paths for an error, naming at most ten.
+func namePaths(paths []string) string {
+	const most = 10
+	if len(paths) <= most {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:most], ", "), len(paths)-most)
 }
 
 // mergeConflictError is a merge mergeFetchedTip started that conflicted on

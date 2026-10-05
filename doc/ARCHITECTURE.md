@@ -731,10 +731,15 @@ a merge` until a human resolved it (the iteration-413 jam). The rule is now the
 reconcile's: vp aborts only a conflicted merge it started, and never touches one
 it did not start.
 
-- `pullCore` refuses outright, before the template heal, when a merge,
-  cherry-pick, revert or rebase is already in progress (`refuseOperationInProgress`);
-  the heal would otherwise discard a human's staged resolution of a template.
-  `mergeFetchedTip` refuses the same state again under the commit lock.
+- `pullCore` refuses outright, before the template heal, when someone else's git
+  operation is unfinished (`refuseOperationInProgress`): a merge, cherry-pick,
+  revert or rebase with its marker file; a multi-commit cherry-pick or revert
+  stopped between commits (`.git/sequencer`); or conflicted index entries with no
+  marker file at all, which `cherry-pick -n`, `stash pop`, `checkout -m` and
+  `apply -3` leave. The template heal would otherwise discard a human's staged
+  resolution, and the derived heal would read their conflict as the merge's own
+  and commit it. `mergeFetchedTip` refuses the same states again under the
+  commit lock.
 - A conflict the derived-path heal does not take is aborted. The error
   (`*mergeConflictError`) names the paths, listed before the abort, the ref, the
   incoming tip, and the remedy: merge by hand, resolve, commit, then `vp vault
