@@ -4,8 +4,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -561,6 +563,60 @@ func TestPull_NeverTouchesAnOperationWithNoMarkerFile(t *testing.T) {
 		}
 		if !gitPathExists(t, dir, "sequencer") {
 			t.Error("the sequencer state was removed")
+		}
+	})
+}
+
+// captureWarnings routes slog's default logger at Warn and above into a
+// buffer for the rest of the test.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// Every pull abort is logged at Warn, so bootstrap health surfaces it, and a
+// failed abort says the conflicted merge is still in the vault rather than
+// that it was aborted. Mutants: the Warn lowered to Debug; one message for
+// both outcomes.
+func TestPull_AbortIsLoggedAndAFailedAbortSaysSo(t *testing.T) {
+	t.Run("aborted", func(t *testing.T) {
+		dir, _ := pullConflictWorld(t)
+		buf := captureWarnings(t)
+		if _, err := Pull(dir, []string{"origin"}); err != nil {
+			t.Fatalf("Pull: %v", err)
+		}
+		got := buf.String()
+		for _, want := range []string{"level=WARN", "vp aborted it, nothing was merged", "remote=origin", "paths=[notes.md]"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the log must contain %q, got:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "abort FAILED") {
+			t.Errorf("a successful abort was logged as failed:\n%s", got)
+		}
+	})
+	t.Run("abort failed", func(t *testing.T) {
+		dir, _ := pullConflictWorld(t)
+		_, setMode := reconcileGitShim(t)
+		setMode("fail-merge-abort")
+		buf := captureWarnings(t)
+		_, err := Pull(dir, []string{"origin"})
+		setMode("")
+		if err != nil {
+			t.Fatalf("Pull: %v", err)
+		}
+		got := buf.String()
+		for _, want := range []string{"level=WARN", "abort FAILED", "the conflicted merge is still in the vault", "shim: merge --abort refused"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the log must contain %q, got:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "nothing was merged") {
+			t.Errorf("a failed abort was logged as aborted:\n%s", got)
 		}
 	})
 }

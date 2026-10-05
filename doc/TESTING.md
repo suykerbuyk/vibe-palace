@@ -839,6 +839,7 @@ shim is `reconcileGitShim` (`vaultsync_merge_test.go`).
 | `TestPull_NeverTouchesAnOperationWithNoMarkerFile` | Conflicted index entries with no marker file (`cherry-pick -n`) are refused before anything runs: a staged template keeps its bytes and entry, and on a migrated vault the drawer is neither healed nor committed; a stopped multi-commit cherry-pick (only `.git/sequencer`) is refused too |
 | `TestPull_KilledMergeIsNotAborted` | `hang-merge` and `signal-merge`: the killed-merge wording and its `index.lock` clause, the lock kept, no `merge --abort`, the later remote skipped and never fetched |
 | `TestPull_FailedAbortIsTreeUnsafe` | A failed `merge --abort` is `*vaultTreeUnsafeError` naming the abort's failure, never "was aborted", and stops the sweep |
+| `TestPull_AbortIsLoggedAndAFailedAbortSaysSo` | Every pull abort logs at Warn with the remote and paths; a failed abort logs that the conflicted merge is still in the vault, never that it was aborted |
 | `TestPullSweepStops`, `TestPull_RefusedMergeMovesOn`, `TestPull_UntrackFailureMovesOn` | The per-error sweep rule: stop on a conflict, an unsafe tree, a departure or anything unrecognised; go on after a merge refused before it started or a failed untrack |
 | `TestPull_CleanMergeKeepsGitOutput` | `RemoteOutput` still carries git's merge output through the shared merge |
 | `TestSyncVault_PullRefusalIsNotDropped` | `SyncVault` returns `pullCore`'s refusal and pushes nothing (it used to drop the error and push) |

@@ -296,10 +296,14 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 			}
 			var conflict *mergeConflictError
 			if errors.As(err, &conflict) {
-				slog.Warn("vault pull: merge conflicted; vp aborted it, nothing was merged",
-					"remote", remote, "ref", conflict.ref, "tip", conflict.tip,
-					"paths", conflict.paths, "abort_failed", conflict.abortErr != nil)
-				if conflict.abortErr == nil {
+				attrs := []any{"remote", remote, "ref", conflict.ref, "tip", conflict.tip, "paths", conflict.paths}
+				if conflict.abortErr != nil {
+					// The conflicted merge is STILL in the vault: say so, not
+					// that it was aborted.
+					slog.Warn("vault pull: merge conflicted and vp's abort FAILED; the conflicted merge is still in the vault, and no vault commit can run until it is resolved or aborted by hand",
+						append(attrs, "abort_err", conflict.abortErr.Error())...)
+				} else {
+					slog.Warn("vault pull: merge conflicted; vp aborted it, nothing was merged", attrs...)
 					err = fmt.Errorf("%w — the pull from %s was NOT applied; to take its commits, merge by hand (git -C %s merge %s), resolve, commit, then run vp vault sync", err, remote, vaultPath, ref)
 				}
 			}
