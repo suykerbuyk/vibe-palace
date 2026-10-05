@@ -43,6 +43,10 @@ const checkpointEvery = 500
 type CacheEngine interface {
 	CachedVector(project, id string) ([]float32, bool, error)
 	CacheWriter(tx *indexstore.Tx) (*search.CacheWriter, error)
+	// RepairScan proves, under the held commit lock, that every loaded
+	// local-tier chunk has a vector: the one thing that clears the
+	// missing-vector stale reason.
+	RepairScan(tx *indexstore.Tx) (search.RepairProof, error)
 	// Stale reports the project's stale reasons, fingerprints included,
 	// with no model and no lock.
 	Stale(project string) (bool, []indexstore.StaleReason, error)
@@ -75,6 +79,10 @@ type IngestOptions struct {
 	// is no longer on disk: the archive being ingested replaces it (plan
 	// revision R1). Run sets it; empty otherwise.
 	Retarget string
+	// Repair re-commits the session's live archive (the repair pass's
+	// chunk-count shortfall): the missing records are added and nothing is
+	// rewritten. Without it, an archive already live is AlreadyLedgered.
+	Repair bool
 }
 
 // Outcome is what IngestArchive did with an archive.
@@ -180,7 +188,7 @@ func IngestArchive(ctx context.Context, d Deps, project string, e *archive.Entry
 	}
 	if done, err := alreadyLive(d.Vault, project, res.SessionID, res.SHA); err != nil {
 		return res, err
-	} else if done {
+	} else if done && !opts.Repair {
 		res.Outcome = AlreadyLedgered
 		return res, nil
 	}
@@ -198,7 +206,7 @@ func IngestArchive(ctx context.Context, d Deps, project string, e *archive.Entry
 	if beforeLockFn != nil {
 		beforeLockFn(project, e)
 	}
-	out, err := commit(ctx, d, project, ix.Recipe, c, opts.Retarget)
+	out, err := commit(ctx, d, project, ix.Recipe, c, opts)
 	res.Outcome = out
 	return res, err
 }
@@ -325,7 +333,7 @@ func newerThan(a, b string) bool {
 }
 
 // commit is the commit step under the project's index commit lock.
-func commit(ctx context.Context, d Deps, project string, recipe index.ChunkRecipe, c indexstore.ArchiveCommit, retarget string) (Outcome, error) {
+func commit(ctx context.Context, d Deps, project string, recipe index.ChunkRecipe, c indexstore.ArchiveCommit, opts IngestOptions) (Outcome, error) {
 	tx, err := indexstore.Lock(ctx, d.Vault, project, indexstore.NoTimeout)
 	if err != nil {
 		return Committed, err
@@ -350,7 +358,8 @@ func commit(ctx context.Context, d Deps, project string, recipe index.ChunkRecip
 		return Committed, indexstore.ErrNoLedger
 	}
 	prev, has := l.Session(c.SessionID)
-	if has && prev.State == indexstore.StateLive && prev.SHA == c.SHA {
+	repair := has && prev.State == indexstore.StateLive && prev.SHA == c.SHA
+	if repair && !opts.Repair {
 		return AlreadyLedgered, nil
 	}
 	// An archive older than the live one is never ingested over it.
@@ -376,9 +385,9 @@ func commit(ctx context.Context, d Deps, project string, recipe index.ChunkRecip
 	}
 	// 5. The commit, or the supersede.
 	out := Committed
-	if has {
+	if has && !repair {
 		out = Superseded
-		c.Retarget = retarget
+		c.Retarget = opts.Retarget
 		err = tx.Supersede(c, vw)
 	} else {
 		err = tx.CommitArchive(c, vw)

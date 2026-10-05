@@ -257,14 +257,6 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
-      "id": "uninvoked indexstore.Ledger.Batch",
-      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision D9): the repair pass compares each ledgered import batch's chunk count with the chunks it owns and reports a shortfall. It lands with the store support one commit before the repair pass; the repair commit invokes it and deletes this entry."
-    },
-    {
-      "id": "uninvoked indexstore.Ledger.BatchIDs",
-      "reason": "STAGED for pending-archive-ingester-and-per-archive-commit-step (plan revision D9): the repair pass visits every ledgered import batch, and nothing else lists them. It lands with the store support one commit before the repair pass; the repair commit invokes it and deletes this entry."
-    },
-    {
       "id": "uninvoked indexstore.Ledger.Pending",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The pending fold. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (what to ingest) and index-coverage-instrument (the pending report). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -283,10 +275,6 @@
     {
       "id": "uninvoked indexstore.RunLock.CompletedRebuild",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The only source of a RebuildProof. Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, when a rebuild run completes. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Store.CountChunks",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: pending-archive-ingester-and-per-archive-commit-step's repair pass, which compares it with the ledger's chunk count. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.ClearBaseline",
@@ -331,14 +319,6 @@
     {
       "id": "uninvoked palace.CompressBatch",
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
-    },
-    {
-      "id": "uninvoked search.ClearMissingVectors",
-      "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). Clears only the missing_vectors stale reason, with a RepairProof from a RepairScan under the same held commit lock. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
-    },
-    {
-      "id": "uninvoked search.Engine.RepairScan",
-      "reason": "STAGED API, ADR-014 decision 3, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-3). The scan under a held commit lock that finds a vector for every loaded local-tier chunk and mints the RepairProof ClearMissingVectors takes. Non-test caller: the repair pass of pending-archive-ingester-and-per-archive-commit-step. This entry goes stale the moment that caller lands."
     },
     {
       "id": "uninvoked search.Engine.TrulyEmpty",

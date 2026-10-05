@@ -148,8 +148,10 @@ func TestLockDiscipline(t *testing.T) {
 
 // TestPutVectorsWritesOnlyThroughTheTxWriter: every production call
 // X.PutVectors(w, ...) anywhere in the module passes a writer that the same
-// function obtained from a .Writer(...) call, so no caller can hand the store a
-// VectorWriter that ignores the lock or the regime.
+// function obtained from a .Writer(...) call, or from .CacheWriter(...), which
+// is Engine.CacheWriter: a thin exposure that returns the same EmbedCache.Writer
+// (engine.go). So no caller can hand the store a VectorWriter that ignores the
+// lock or the regime.
 func TestPutVectorsWritesOnlyThroughTheTxWriter(t *testing.T) {
 	root := filepath.Join("..", "..")
 	seen := 0
@@ -162,7 +164,7 @@ func TestPutVectorsWritesOnlyThroughTheTxWriter(t *testing.T) {
 			ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
 				if as, ok := n.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
 					if c, ok := as.Rhs[0].(*ast.CallExpr); ok {
-						if sel, ok := c.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Writer" {
+						if sel, ok := c.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Writer" || sel.Sel.Name == "CacheWriter") {
 							if id, ok := as.Lhs[0].(*ast.Ident); ok {
 								fromWriter[id.Name] = true
 							}

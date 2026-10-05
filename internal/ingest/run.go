@@ -96,6 +96,7 @@ type RunResult struct {
 	Committed int      // archives committed or superseded
 	Failed    int      // archives that failed (a failure record each)
 	Changed   int      // archives rewritten mid-run, left for the next run
+	Repaired  int      // archives re-ingested by the repair pass
 	Projects  []string // the projects visited, in order
 	Stopped   string   // why the run stopped early: "budget", "wall clock", "checkpoint"
 	Passes    int      // RunHeld passes: 1, plus one per re-acquire after the release
@@ -173,6 +174,7 @@ func (r *RunResult) add(o RunResult) {
 	r.Committed += o.Committed
 	r.Failed += o.Failed
 	r.Changed += o.Changed
+	r.Repaired += o.Repaired
 	r.Projects = append(r.Projects, o.Projects...)
 	if o.Stopped != "" {
 		r.Stopped = o.Stopped
@@ -186,6 +188,7 @@ type runState struct {
 	admitted  int             // archives committed or attempted: the budget's count
 	attempted map[string]bool // never retried in the same run
 	skipped   map[string]bool // projects skipped for a fingerprint reason: warned once
+	repaired  map[string]bool // projects whose repair pass ran
 	done      int
 	total     int
 	stopped   string
@@ -216,7 +219,7 @@ func (st *runState) admit(d Deps, explicit bool) bool {
 // and the budget lasts; an archive is never retried within one RunHeld.
 func RunHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions) (RunResult, error) {
 	var res RunResult
-	st := &runState{start: d.now(), budget: o.budget(), attempted: map[string]bool{}, skipped: map[string]bool{}}
+	st := &runState{start: d.now(), budget: o.budget(), attempted: map[string]bool{}, skipped: map[string]bool{}, repaired: map[string]bool{}}
 	projects, err := projectOrder(d, o.Project)
 	if err != nil {
 		return res, err
@@ -246,6 +249,18 @@ func RunHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions
 		}
 	}
 	res.Stopped = st.stopped
+	// The graph heal, once per project visited, after its last commit, with
+	// the run lock held; never for a project skipped as stale, nor for the
+	// project whose rebuild heals it itself (SkipHeal).
+	for _, p := range res.Projects {
+		if st.skipped[p] || (o.SkipHeal && p == o.Project) || st.stopped == "checkpoint" {
+			continue
+		}
+		if !o.Explicit && d.now().Sub(st.start) >= st.budget.WallClock {
+			break
+		}
+		healGraph(ctx, d, p)
+	}
 	return res, nil
 }
 
@@ -290,7 +305,8 @@ func runProject(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOpti
 		return nil
 	}
 	if len(entries) == 0 {
-		return nil
+		// A project of import batches alone still gets its repair pass.
+		return repairOnce(ctx, d, o, p, nil, st, res)
 	}
 	firsts, err := ensureLedger(ctx, d, p, first)
 	if errors.Is(err, indexstore.ErrProjectGone) {
@@ -317,7 +333,20 @@ func runProject(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOpti
 			break
 		}
 	}
+	if err := repairOnce(ctx, d, o, p, entries, st, res); err != nil {
+		return err
+	}
 	return tidyProject(ctx, d, p, entries)
+}
+
+// repairOnce runs the repair pass for p once per RunHeld, while the run is
+// not stopped.
+func repairOnce(ctx context.Context, d Deps, o RunOptions, p string, entries []*archive.Entry, st *runState, res *RunResult) error {
+	if st.repaired[p] || st.stopped != "" {
+		return nil
+	}
+	st.repaired[p] = true
+	return repairProject(ctx, d, o, p, entries, st, res)
 }
 
 // staleSkip reports whether project is stale for a fingerprint reason: its
