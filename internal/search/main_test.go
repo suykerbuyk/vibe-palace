@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/coder/hnsw"
+
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // distanceRegistrationErr is what checkDistanceRegistered found, before any
@@ -26,7 +28,7 @@ func TestMain(m *testing.M) {
 		os.Exit(runHelper())
 	}
 	distanceRegistrationErr = checkDistanceRegistered()
-	os.Exit(m.Run())
+	os.Exit(testutil.RunHermetic(m))
 }
 
 // checkDistanceRegistered proves, on a raw library graph, that the library's

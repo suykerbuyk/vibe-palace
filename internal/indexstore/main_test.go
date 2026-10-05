@@ -19,6 +19,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
 
 // Multi-process tests re-exec this test binary as a helper process. The
@@ -39,7 +40,7 @@ func TestMain(m *testing.M) {
 		os.Exit(runHelper(mode))
 	}
 	lockRecorder = leaf.record
-	code := m.Run()
+	code := testutil.RunHermetic(m)
 	if v := leaf.violations(); len(v) > 0 {
 		fmt.Fprintln(os.Stderr, "index commit lock is not a leaf:")
 		for _, s := range v {

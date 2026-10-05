@@ -33,7 +33,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv("KGREAD_HELPER") == "commit" {
 		os.Exit(helperCommit())
 	}
-	os.Exit(m.Run())
+	os.Exit(testutil.RunHermetic(m))
 }
 
 const project = "alpha"
