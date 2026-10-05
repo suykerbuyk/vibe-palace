@@ -433,12 +433,17 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	if !s.ledger.Exists() {
 		return ErrNoLedger
 	}
-	if _, gone := s.ledger.superseded[c.SHA]; gone {
-		return fmt.Errorf("%w: %s", ErrSuperseded, c.SHA)
-	}
 	prev, ok := s.ledger.Session(c.SessionID)
 	if !ok {
 		return fmt.Errorf("indexstore: session %s is not in the ledger; nothing to supersede", c.SessionID)
+	}
+	// A revert: the session's superseding target vanished with nothing newer
+	// on disk, and the caller re-targets it back to the archive it was
+	// superseding FROM (plan revision R1). That archive reads superseded
+	// until this commit makes it current again.
+	revert := prev.State == StateSuperseding && c.Retarget != "" && c.Retarget == prev.SHA && c.SHA == prev.SupersedingFrom
+	if _, gone := s.ledger.superseded[c.SHA]; gone && !revert {
+		return fmt.Errorf("%w: %s", ErrSuperseded, c.SHA)
 	}
 	if err := tx.ensureChunkFingerprint(); err != nil {
 		return err
@@ -485,7 +490,12 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 	// An archive the ledger records as superseded owns nothing: this also
 	// removes a vanished re-target's partial records when the re-targeted
 	// supersede is itself resumed after a crash.
+	// (The archive being made live is never in that set: the fold drops the
+	// archive a session record names, which covers a revert's own archive.)
 	supersededOwner := func(o Owner) bool { return o.Kind == OwnerArchive && s.ledger.Superseded(o.SHA) }
+	// On a revert the archive being superseded FROM is the one being made
+	// live: its fresh records must not be dropped as the old owner's.
+	dropOld := old != c.SHA
 	if err := tx.fail(tx.rewriteChunks(s, func(f *chunkFold) {
 		keep := map[string]bool{}
 		for _, r := range c.Chunks {
@@ -494,7 +504,9 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 			ol.Day = ""
 			f.setOwner(r.ID, ownerLine{Owner: newOwner, Ownership: ol})
 		}
-		f.dropOwner(oldOwner, keep)
+		if dropOld {
+			f.dropOwner(oldOwner, keep)
+		}
 		f.dropOwnersWhere(supersededOwner, keep)
 		f.prune()
 	})); err != nil {
@@ -507,7 +519,9 @@ func (tx *Tx) Supersede(c SupersedeCommit, vw VectorWriter) error {
 		for _, r := range c.KG {
 			f.add(r.ID, newOwner, r.Payload)
 		}
-		f.dropOwner(oldOwner)
+		if dropOld {
+			f.dropOwner(oldOwner)
+		}
 		f.dropOwnersWhere(supersededOwner)
 	})); err != nil {
 		return err

@@ -93,8 +93,8 @@ func TestSessionRecordCarriesCapturedAt(t *testing.T) {
 }
 
 // supersedeCrashedTowards leaves session S superseding from A (chunks x, y)
-// to B (chunks y, z), killed after B's chunk rewrite: B's records are in the
-// store, owned by B, and the session is not done.
+// to B (chunks y, z), killed after B's KG rewrite: B's chunks and KG records
+// are in the store, owned by B, and the session is not done.
 func supersedeCrashedTowards(t *testing.T) *storage.Vault {
 	t.Helper()
 	v := newVault(t)
@@ -104,7 +104,7 @@ func supersedeCrashedTowards(t *testing.T) *storage.Vault {
 		}
 		return tx.CommitArchive(commitOf("S", "A", "2026-05-13", "x", "y"), newRecordingVW(nil))
 	})
-	killAt(t, "chunks")
+	killAt(t, "kg")
 	err := withTx(t, v, func(tx *Tx) error {
 		return tx.Supersede(commitOf("S", "B", "2026-05-14", "y", "z"), newRecordingVW(nil))
 	})
@@ -117,6 +117,15 @@ func supersedeCrashedTowards(t *testing.T) *storage.Vault {
 	}
 	if n := ledgered(t, v).CountChunks(ArchiveOwner("B")); n == 0 {
 		t.Fatal("precondition: B's chunk rewrite must have landed")
+	}
+	bKG := 0
+	for _, k := range ledgered(t, v).KG(false) {
+		if slices.Contains(k.Owners, ArchiveOwner("B")) {
+			bKG++
+		}
+	}
+	if bKG == 0 {
+		t.Fatal("precondition: B's KG rewrite must have landed")
 	}
 	return v
 }
@@ -247,4 +256,36 @@ func TestInboxRecordsAndDropsFirsts(t *testing.T) {
 	if err := NoteFirst(context.Background(), v, "gone", a, NoTimeout); !errors.Is(err, ErrProjectGone) {
 		t.Fatalf("NoteFirst on a gone project: %v, want ErrProjectGone", err)
 	}
+}
+
+// TestSupersedeRevertsToItsSourceWhenTheTargetVanished (R1): the supersede
+// towards B crashed and B is gone with nothing newer: Supersede(A, Retarget B)
+// makes A live again (generation 2), records B superseded, and keeps A's own
+// chunks and KG records, owned by A, while nothing is owned by B.
+func TestSupersedeRevertsToItsSourceWhenTheTargetVanished(t *testing.T) {
+	v := supersedeCrashedTowards(t)
+	a := commitOf("S", "A", "2026-05-13", "x", "y")
+	a.Retarget = "B"
+	mustTx(t, v, func(tx *Tx) error { return tx.Supersede(a, newRecordingVW(nil)) })
+	st := ledgered(t, v)
+	l := st.Ledger()
+	if s, _ := l.Session("S"); s.State != StateLive || s.SHA != "A" || s.Generation != 2 {
+		t.Fatalf("session %+v, want A live at generation 2", s)
+	}
+	if l.Superseded("A") || !l.Superseded("B") {
+		t.Fatalf("superseded: A %v, B %v; want A current, B superseded", l.Superseded("A"), l.Superseded("B"))
+	}
+	if got, want := ids(st.Chunks(true)), sorted(idOf("x"), idOf("y")); !slices.Equal(got, want) {
+		t.Fatalf("live chunks %v, want A's x and y", got)
+	}
+	aKG := 0
+	for _, k := range st.KG(true) {
+		if slices.Contains(k.Owners, ArchiveOwner("A")) {
+			aKG++
+		}
+	}
+	if aKG != 2 {
+		t.Fatalf("A owns %d live KG records, want its 2: the revert dropped its own records", aKG)
+	}
+	noArchiveOwns(t, v, "B")
 }

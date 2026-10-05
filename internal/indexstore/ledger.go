@@ -141,9 +141,14 @@ func foldLedger(recs []ledgerRecord) *Ledger {
 				ArchivePath: r.ArchivePath, CapturedAt: r.CapturedAt, StartDay: r.StartDay, StartDaySource: r.StartDaySource,
 				ChunkCount: n, Generation: r.Generation,
 			}
-			if r.SupersedingFrom != "" {
+			if r.SupersedingFrom != "" && r.SupersedingFrom != r.SHA {
 				l.superseded[r.SupersedingFrom] = struct{}{}
 			}
+			// The archive a session record names, live or superseding TO, is
+			// the session's current one, never superseded: a supersede
+			// reverted to its original archive (plan revision R1) makes it
+			// current again.
+			delete(l.superseded, r.SHA)
 		case recSuperseded:
 			l.superseded[r.SHA] = struct{}{}
 		case recBatch:
