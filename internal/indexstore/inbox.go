@@ -54,13 +54,15 @@ func NoteFirst(ctx context.Context, vault *storage.Vault, project, sha string, t
 
 // Firsts returns the project's inbox: archives triggers named and could not
 // serve, sorted.
-func (tx *Tx) Firsts() ([]string, error) {
-	data, err := os.ReadFile(tx.inboxPath())
+func (tx *Tx) Firsts() ([]string, error) { return readInbox(tx.inboxPath()) }
+
+func readInbox(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("indexstore: read %s: %w", tx.inboxPath(), err)
+		return nil, fmt.Errorf("indexstore: read %s: %w", path, err)
 	}
 	var out []string
 	for _, l := range strings.Split(string(data), "\n") {
@@ -99,4 +101,14 @@ func (tx *Tx) writeInbox(shas []string) error {
 		return fmt.Errorf("indexstore: create %s: %w", tx.files.dir, err)
 	}
 	return writeFile(tx.inboxPath(), []byte(strings.Join(shas, "\n")+"\n"))
+}
+
+// ReadFirsts reads project's inbox without a lock, for the run's post-release
+// recheck: the file is only ever replaced whole.
+func ReadFirsts(vault *storage.Vault, project string) ([]string, error) {
+	pf, err := filesFor(vault, project)
+	if err != nil {
+		return nil, err
+	}
+	return readInbox(filepath.Join(pf.dir, inboxFile))
 }

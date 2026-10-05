@@ -157,8 +157,15 @@ func (f *fixture) entry(project, sha string) *archive.Entry {
 	return nil
 }
 
-// ensureLedger creates project's ledger with an empty baseline set.
-func (f *fixture) ensureLedger(project string, exclude ...string) {
+// ensureLedger creates project's ledger with an empty baseline set: every
+// archive listed now is new, not backlog.
+func (f *fixture) ensureLedger(project string) { f.makeLedger(project, nil) }
+
+// ensureLedgerWithBaseline creates project's ledger with every archive listed
+// now in the baseline set, as a fresh host's first run does.
+func (f *fixture) ensureLedgerWithBaseline(project string) { f.makeLedger(project, []string{}) }
+
+func (f *fixture) makeLedger(project string, exclude []string) {
 	f.t.Helper()
 	tx, err := indexstore.Lock(context.Background(), f.v, project, indexstore.NoTimeout)
 	if err != nil {

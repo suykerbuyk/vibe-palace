@@ -43,6 +43,9 @@ const checkpointEvery = 500
 type CacheEngine interface {
 	CachedVector(project, id string) ([]float32, bool, error)
 	CacheWriter(tx *indexstore.Tx) (*search.CacheWriter, error)
+	// Stale reports the project's stale reasons, fingerprints included,
+	// with no model and no lock.
+	Stale(project string) (bool, []indexstore.StaleReason, error)
 }
 
 // Deps are the ingester's collaborators.
@@ -116,6 +119,8 @@ var (
 // prepared and before the lock-free ledger check that precedes embedding;
 // beforeLockFn runs after embedding and before the commit lock is taken.
 var (
+	// readVerifiedFn is the one read of an archive; a test counts the opens.
+	readVerifiedFn = archive.ReadVerified
 	afterPrepareFn func(project string, e *archive.Entry)
 	beforeLockFn   func(project string, e *archive.Entry)
 )
@@ -142,7 +147,7 @@ func IngestArchive(ctx context.Context, d Deps, project string, e *archive.Entry
 	if e.Manifest != nil {
 		res.SessionID, res.SHA = e.Manifest.SessionID, e.Manifest.SourceSHA256
 	}
-	va, err := archive.ReadVerified(e)
+	va, err := readVerifiedFn(e)
 	if err != nil {
 		return res, err
 	}
