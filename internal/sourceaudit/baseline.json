@@ -285,6 +285,10 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The only source of a RebuildProof. Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, when a rebuild run completes. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
+      "id": "uninvoked indexstore.SetCommitStepHook",
+      "reason": "TEST SEAM, deliberately uninvoked in production (delta re-review of pending-archive-ingester-and-per-archive-commit-step, M2): it lets a package that drives the store (internal/ingest) kill a commit right after a named durable step, as a crashed process would, so the ingester's crash tests (TestRunDropsAVanishedTargetsPartialKG) can prove a vanished supersede target's unledgered KG records are dropped. It only swaps the package's own commitStep seam and returns the restore; no production code calls it."
+    },
+    {
       "id": "uninvoked indexstore.Tx.ClearBaseline",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, with the proof of a completed rebuild. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },

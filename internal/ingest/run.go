@@ -423,6 +423,7 @@ func projectOrder(d Deps, first string) ([]string, error) {
 type item struct {
 	e        *archive.Entry
 	retarget string
+	revert   bool // the session reverts to its source archive (R1)
 }
 
 // runPending is one project's pending archives in scope, newest first (First
@@ -608,7 +609,7 @@ func decide(sid string, newest *archive.Entry, list []*archive.Entry, l *indexst
 	case has && rec.State == indexstore.StateSuperseding && sha == rec.SupersedingFrom && !listedSHA(list, rec.SHA):
 		// R1: the supersede's target vanished and nothing newer is on
 		// disk: the session reverts to its source archive.
-		it.retarget = rec.SHA
+		it.retarget, it.revert = rec.SHA, true
 	case l.Superseded(sha):
 		return item{}, false
 	case !has:
@@ -671,6 +672,11 @@ func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptio
 		res.Committed++
 		st.committed++
 		st.commits[p]++
+		if it.revert {
+			// The rollback is never silent.
+			slog.Info("ingest: a session mid-supersede reverted to its source archive: its target is no longer on disk and no newer archive is",
+				"project", p, "session", it.e.Manifest.SessionID, "archive", it.e.ArchivePath, "source_sha256", sha, "vanished", it.retarget)
+		}
 	case errors.Is(err, ErrCheckpoint):
 		slog.Warn("ingest: run stopped at a checkpoint", "project", p, "archive", it.e.ArchivePath, "error", err)
 		st.stopped = "checkpoint"

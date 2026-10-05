@@ -1693,6 +1693,7 @@ repros):
 | `TestRunWarnsOncePerArchivePerRun` | The no-hash and size-cap Warns are written once per run across repeated passes |
 | `TestTidyLeavesANewerArchiveItDidNotIngestPending`, `TestRunDoesNotChargeAnArchiveCommittedUnderTheLock` | Tidy never records superseded a newer archive the run left alone; the under-lock path writes nothing and is charged nothing |
 | `TestRunCreatesEveryLedgerUpFront`, `TestRunIsolatesAProjectItCannotRead`, `TestRunCancelledIsNotAFailure`, `TestRunLogsALedgerThatDisappeared`, `TestRunDoesNotHealAProjectFoundStaleMidRun`, `TestRunListsOnlyVisitedProjects` | The fold-ins: ledgers created up front, a project read error isolated, a cancel never a failure, a vanished ledger logged, a mid-run stale project unhealed, only visited projects listed |
+| `TestRunDropsAVanishedTargetsPartialKG` | A supersede killed right after its KG step (through `indexstore.SetCommitStepHook`), whose target is then removed or rewritten: the next run leaves no KG record of any kind (`KG(false)`) owned by the vanished target, and a revert to the source archive is logged at Info |
 | `internal/indexstore`: `TestSupersedeRevertsToItsSourceWhenTheTargetVanished`; `internal/archive`: `TestReadVerifiedTreatsAMissingFileAsAChange` | The store's revert keeps the source's KG; a file gone since the listing is a change, not a failure |
 
 `cmd/vp/cmd_drain_archives_test.go` pins the command: it resolves nothing,

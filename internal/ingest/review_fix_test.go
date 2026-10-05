@@ -412,3 +412,70 @@ func TestRunListsOnlyVisitedProjects(t *testing.T) {
 		t.Fatalf("projects %v, want only alpha (beta has nothing)", res.Projects)
 	}
 }
+
+// crashOnceAt makes the first commit step named step fail, as a process
+// killed right after that step would.
+func crashOnceAt(t *testing.T, step string) {
+	t.Helper()
+	var fired atomic.Bool
+	restore := indexstore.SetCommitStepHook(func(s string) error {
+		if s == step && !fired.Swap(true) {
+			return errors.New("killed after " + s)
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+}
+
+// TestRunDropsAVanishedTargetsPartialKG (delta review, M2; the reviewer's
+// test): a supersede from A towards B dies right after B's KG rewrite, so B
+// owns KG records nothing ledgers (KG(true) hides them). Then B is removed
+// (the session reverts to A) or rewritten to C (the session re-targets). The
+// next run leaves no KG record of any kind owned by B. The revert is logged.
+func TestRunDropsAVanishedTargetsPartialKG(t *testing.T) {
+	for _, rewrite := range []bool{false, true} {
+		f := newFixture(t)
+		f.ensureLedger("alpha")
+		f.archiveOf("alpha", "S", transcript(t0, "a", 2), day(1))
+		f.run(RunOptions{})
+		b := f.archiveOf("alpha", "S", transcript(t0, "b zeta omega", 3), day(3))
+		crashOnceAt(t, "kg")
+		f.run(RunOptions{})
+		bo := indexstore.ArchiveOwner(b.Manifest.SourceSHA256)
+		ownedByB := func() int {
+			n := 0
+			for _, k := range f.store("alpha").KG(false) {
+				if slices.Contains(k.Owners, bo) {
+					n++
+				}
+			}
+			return n
+		}
+		if ownedByB() == 0 {
+			t.Fatalf("rewrite=%v: precondition: B's KG rewrite must have landed", rewrite)
+		}
+		if rewrite {
+			f.archiveOf("alpha", "S", transcript(t0, "c", 4), day(3).Add(time.Hour))
+		} else {
+			os.Remove(b.ArchivePath)
+			os.Remove(b.ManifestPath)
+		}
+		logs := captureLogs(t)
+		f.run(RunOptions{})
+		if n := ownedByB(); n != 0 {
+			t.Fatalf("rewrite=%v: B still owns %d KG records", rewrite, n)
+		}
+		if s, ok := f.live("alpha", "S"); !ok {
+			t.Fatalf("rewrite=%v: session %+v not live", rewrite, s)
+		}
+		reverted := 0
+		for _, r := range logs.recs {
+			if strings.Contains(r.msg, "reverted to its source archive") && r.attrs["session"] == "S" && r.attrs["vanished"] == b.Manifest.SourceSHA256 {
+				reverted++
+			}
+		}
+		if want := map[bool]int{false: 1, true: 0}[rewrite]; reverted != want {
+			t.Fatalf("rewrite=%v: %d revert Info lines, want %d", rewrite, reverted, want)
+		}
+	}
+}
