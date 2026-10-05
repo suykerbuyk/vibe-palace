@@ -175,3 +175,17 @@ func TestReadVerifiedRefusesASourceLengthMismatch(t *testing.T) {
 		t.Fatalf("ReadVerified = %v, want ErrArchiveCorrupt on source_bytes", err)
 	}
 }
+
+// TestReadVerifiedTreatsAMissingFileAsAChange: the compressed file is gone
+// while its listed manifest is still there (a rewrite renamed it away and has
+// not written the new manifest yet): ErrArchiveChanged, retried next run,
+// never a failure.
+func TestReadVerifiedTreatsAMissingFileAsAChange(t *testing.T) {
+	_, e := listOne(t)
+	if err := os.Rename(e.ArchivePath, e.ArchivePath+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadVerified(e); !errors.Is(err, ErrArchiveChanged) {
+		t.Fatalf("ReadVerified = %v, want ErrArchiveChanged", err)
+	}
+}

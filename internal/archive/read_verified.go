@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/klauspost/compress/zstd"
@@ -63,7 +64,10 @@ func ReadVerified(e *Entry) (VerifiedArchive, error) {
 	}
 	data, err := readArchiveFile(e.ArchivePath)
 	if err != nil {
-		if sameManifest(e) != nil {
+		// A file gone since the listing (renamed away mid-rewrite, the new
+		// manifest not yet written) is a change, retried next run, as is any
+		// read error while the manifest changed.
+		if errors.Is(err, fs.ErrNotExist) || sameManifest(e) != nil {
 			return VerifiedArchive{}, fmt.Errorf("%w: %s", ErrArchiveChanged, e.ArchivePath)
 		}
 		return VerifiedArchive{}, fmt.Errorf("archive: read %s: %w", e.ArchivePath, err)
