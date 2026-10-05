@@ -247,7 +247,8 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"discover rooms": true,
 		"tune rooms":     true,
 		// vault copy writes project content into the served vault and commits it.
-		"vault copy": true,
+		"vault copy":   true,
+		"vault rename": true,
 		// runDrainSummaries (cmd_drain.go) resolves the project's own
 		// [summarization] config and, when enabled/resolvable, constructs a
 		// real itersummary.IterationSummarizer that writes vault-committed

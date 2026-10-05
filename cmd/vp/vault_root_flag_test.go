@@ -395,6 +395,7 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 		"vault status":  {"--no-fetch"},
 		"vault project": {"delete", "vibe-palace", "--discard"},
 		"vault copy":    {"p", "--from", "git@example.invalid:x/src.git", "--dry-run"},
+		"vault rename":  {"old-name", "new-name", "--dry-run"},
 	}
 	const gateMsg = "this binary supports MCP surface"
 

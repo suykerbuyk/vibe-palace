@@ -235,6 +235,9 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// mutates(): `vault copy` writes project content into the served vault and
 	// commits it, so it fail-stops against a vault written by a newer binary.
 	reg.Register(mutates(cmdVaultCopy()))
+	// mutates(): `vault rename` moves a project's footprint, rewrites its stored
+	// identifiers and commits them, so it fail-stops against a newer-binary vault.
+	reg.Register(mutates(cmdVaultRename()))
 	reg.Register(cmdVaultStatus())
 	reg.Register(cmdVaultRead())
 	reg.Register(mutates(cmdVaultWrite()))

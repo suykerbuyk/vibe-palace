@@ -100,6 +100,41 @@ func (v *Vault) RecordDepartureForDelete(held *vaultlock.Held, slug string, kind
 	return rel, created, warnings, err
 }
 
+// RecordDepartureForRename is RecordDepartureForPurge for `vp vault rename`:
+// the renamed slug's record (kind departure.Renamed, to = the new slug) is
+// written before the move's commit and committed with it, in the same commit
+// (commitRenameLocked). requireAbsent is false — by the time the rename
+// commits, Projects/<old>/ has been moved to Projects/<new>/, so the old tree
+// is already gone, exactly as a purge records after its removal.
+//
+// THE WRITER DERIVES THE GENERATION, monotonic for the project across every
+// vault it has lived in: one more than the highest generation of any version of
+// the slug's record in HEAD's history (highestDepartureGeneration). A rename is
+// in-vault, so there is no destination generation. It reads committed history,
+// never the working tree, so a re-run over a crashed run's own uncommitted
+// record derives the same number — and a revert of the rename followed by a
+// re-rename never writes the same generation twice. warnings name older
+// unreadable versions skipped during the walk.
+//
+// It calls highestDepartureGeneration directly, not DepartureGeneration: the
+// latter's kind guard admits only MovedToVault/Deleted, and widening it is
+// unnecessary (highestDepartureGeneration has no kind guard).
+//
+// held is the rename's own root-lock token, held for the whole run.
+func (v *Vault) RecordDepartureForRename(held *vaultlock.Held, slug, to string) (rel string, created bool, warnings []string, err error) {
+	if held == nil {
+		return "", false, nil, fmt.Errorf("a rename records its departure under its own root-lock token")
+	}
+	highest, warnings, err := v.highestDepartureGeneration(slug)
+	if err != nil {
+		return "", false, nil, err
+	}
+	rel, created, err = v.writeDeparture(held, departure.Record{
+		Slug: slug, Kind: departure.Renamed, To: to, Generation: highest + 1,
+	}, false)
+	return rel, created, warnings, err
+}
+
 // DepartureGeneration is the generation RecordDepartureForDelete would write
 // for slug, without writing: what the dry run shows, with its warnings.
 //

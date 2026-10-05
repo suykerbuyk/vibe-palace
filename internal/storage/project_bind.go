@@ -33,6 +33,12 @@ const (
 	// BindNew binds a project born in another vault: the default vault must
 	// never have held it. The target need not hold it yet (`vp init` follows).
 	BindNew BindMode = "new"
+	// BindRenamed re-points an existing binding from an old slug to a new one in
+	// the SAME vault, after `vp vault rename`. It is NOT a BindProjectVaults mode
+	// (that writer only ADDs and refuses to re-point): the rekey has its own
+	// entry point, RenameProjectVaultBinding, so the add-only/no-re-point rule
+	// for moved/new is never loosened.
+	BindRenamed BindMode = "renamed"
 )
 
 // BindRequest is one `vp config bind` / `vp_config_bind` call.
@@ -422,6 +428,132 @@ func casWriteHostConfig(path string, old, next []byte, backup *string) error {
 	}
 	*backup = bak
 	return nil
+}
+
+// RenameProjectVaultBinding re-points this host's [project_vaults] binding from
+// <old> to <new>, keeping the SAME vault path, in ONE compare-and-set write —
+// the per-host step after `vp vault rename` (`vp config bind --renamed <old>
+// <new>`). It is the one rekey spliceProjectVault refuses; it has its OWN splice
+// (renameSpliceProjectVault) so the add-only/no-re-point rule for moved/new is
+// never loosened. It is host-local and lives outside any rename commit.
+//
+// It is a no-op when <old> is not bound (nothing to move), idempotent (when
+// <old> is gone and <new> already binds the vault it reports "already bound"),
+// and refuses when <old> is still bound AND <new> is already bound to something
+// (an ambiguous re-point a human must resolve). config.toml.bak stays the exact
+// pre-image: the delete of <old> and the add of <new> are one write.
+func RenameProjectVaultBinding(old, new string, dryRun bool) (BindReport, error) {
+	rep := BindReport{DryRun: dryRun}
+	refuse := func(format string, a ...any) (BindReport, error) {
+		return rep, fmt.Errorf("refusing to re-point the binding of %q to %q: %s", old, new, fmt.Sprintf(format, a...))
+	}
+	if err := slug.Validate(old); err != nil {
+		return rep, fmt.Errorf("refusing to re-point: project %q: %v", old, err)
+	}
+	if err := slug.Validate(new); err != nil {
+		return rep, fmt.Errorf("refusing to re-point: project %q: %v", new, err)
+	}
+	if old == new {
+		return refuse("the old and new slugs are the same")
+	}
+	bindings, cfgPath, oldBytes, err := readProjectVaultsBytes()
+	if err != nil {
+		return refuse("the host config cannot be used: %v", err)
+	}
+	rep.ConfigPath = cfgPath
+	if cfgPath == "" {
+		return refuse("the host config directory cannot be resolved")
+	}
+	if oldBytes == nil {
+		// No global config, so no bindings: nothing to re-point.
+		rep.Change = "not bound"
+		return rep, nil
+	}
+	val, bound := bindings[old]
+	newVal, newBound := bindings[new]
+	switch {
+	case !bound && newBound:
+		// Already re-pointed (idempotent): <old> is gone and <new> is bound.
+		rep.Vault, rep.Change = newVal, "already bound"
+		return rep, nil
+	case !bound:
+		rep.Change = "not bound"
+		return rep, nil
+	case newBound:
+		return refuse("%q is already bound to %q; remove one binding by hand", new, newVal)
+	}
+	rep.Vault = val
+
+	next, change, err := renameSpliceProjectVault(string(oldBytes), old, new, val)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	// Exactly <old> removed and <new> added with <old>'s value; nothing else.
+	if err := projectVaultsPostcondition(string(oldBytes), next, map[string]string{old: "", new: val}); err != nil {
+		return refuse("%v", err)
+	}
+	rep.Change = change
+	if dryRun {
+		return rep, nil
+	}
+
+	bindBeforeWrite()
+	if err := casWriteHostConfig(cfgPath, oldBytes, []byte(next), &rep.BackupPath); err != nil {
+		return refuse("%v", err)
+	}
+	bindBeforeVerify()
+	after, _, verr := readProjectVaults()
+	restore := func(cause error) (BindReport, error) {
+		if rerr := restoreHostLocalCAS(cfgPath, []byte(next), oldBytes); rerr != nil {
+			return rep, fmt.Errorf("%w; RESTORING %s ALSO FAILED: %v — its pre-image is %s", cause, cfgPath, rerr, rep.BackupPath)
+		}
+		return rep, fmt.Errorf("%w; %s was restored to its previous bytes", cause, cfgPath)
+	}
+	if verr != nil {
+		return restore(fmt.Errorf("verify: %w", verr))
+	}
+	if _, still := after[old]; still {
+		return restore(fmt.Errorf("verify: %s still binds %q after the re-point", cfgPath, old))
+	}
+	if got, ok := after[new]; !ok || got != val {
+		return restore(fmt.Errorf("verify: %s does not bind %q to %q after the re-point (got %q, present %t)", cfgPath, new, val, got, ok))
+	}
+	rep.Warnings = append(rep.Warnings, "a running MCP server resolved its vault at startup and will refuse writes "+
+		"(StaleBindingError) until your AI host reloads it")
+	return rep, nil
+}
+
+// renameSpliceProjectVault replaces the [project_vaults].<old> line with a
+// <new> line carrying the same value, in one edit, changing no other byte. It
+// refuses if <new> already has a line (a re-point of <new>), and errors if
+// <old> is absent or there is no [project_vaults] section.
+func renameSpliceProjectVault(text, old, new, val string) (string, string, error) {
+	lines := strings.Split(text, "\n")
+	for _, sr := range FindSectionRanges(text) {
+		if sr.Name != projectVaultsKey {
+			continue
+		}
+		oldIdx := -1
+		for i := sr.StartLine + 1; i < sr.EndLine && i < len(lines); i++ {
+			k, ok := parseKeyAssignment(trimLeftSpace(lines[i]), false)
+			if !ok {
+				continue
+			}
+			if k == new {
+				return "", "", fmt.Errorf("line %d %q already binds %s; re-pointing %s is refused — edit it by hand", i+1, lines[i], new, new)
+			}
+			if k == old {
+				oldIdx = i
+			}
+		}
+		if oldIdx < 0 {
+			return "", "", fmt.Errorf("[%s] holds no binding for %s", projectVaultsKey, old)
+		}
+		newLine := new + " = " + rebindQuote(val)
+		lines[oldIdx] = newLine
+		return strings.Join(lines, "\n"), "- " + old + "\n+ " + newLine, nil
+	}
+	return "", "", fmt.Errorf("the host config has no [%s] section", projectVaultsKey)
 }
 
 // spliceProjectVault ADDS [project_vaults].<key> = "<value>" and changes no

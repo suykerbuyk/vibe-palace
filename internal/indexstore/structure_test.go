@@ -44,6 +44,8 @@ var writersOutsideTx = map[string]string{
 	"RemoveGoneProjects":            "removes each named gone project's index/<p>/ through RemoveGoneProject, one commit lock at a time",
 	"ReapGoneProjects":              "removes each candidate's index/<p>/ through RemoveGoneProject, under its commit lock, and deletes .tomb-* tombstones, which no project maps to",
 	"NoteFirst":                     "rewrites index/<p>/first.inbox only through Tx.writeInbox, under the commit lock it has just taken (Lock)",
+	"AdoptRenamedProject":           "the host-local rename orchestrator: it moves index/<old>/ and rewrites it only through (*Tx).AdoptRenamedStore, under the NEW slug's commit lock it takes; its own writes outside that Tx are the importer marker rename (palace/.local/imports/) and the rename-pending record removal, both host-local and done under the lifecycle run lock it holds",
+	"UndoRenamedProject":            "the host-local rename undo: the mirror of AdoptRenamedProject, moving the store back only through (*Tx).AdoptRenamedStore under the OLD slug's commit lock, with the same host-local imports rename and record removal under the run lock",
 }
 
 type funcInfo struct {

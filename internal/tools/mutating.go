@@ -110,6 +110,11 @@ var MutatingToolNames = []string{
 	// publishes. plan writes nothing to the vault and is admitted
 	// per-invocation by vaultCopyReadOnly. See vault_copy.go.
 	"vp_vault_copy",
+	// vp_vault_rename is gated on the TOOL, which writes on one of its two
+	// actions: apply renames a project in the served vault, commits and
+	// publishes. plan writes nothing and is admitted per-invocation by
+	// vaultRenameReadOnly. See vault_rename.go.
+	"vp_vault_rename",
 	// vp_palace_backfill_decisions appends decision drawers recovered from
 	// historical session notes (AppendDrawers -> appendUnderLock, family F4).
 	// It is gated on the TOOL, dry run included, and deliberately carries NO

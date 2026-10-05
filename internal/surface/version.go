@@ -328,7 +328,7 @@ import (
 // nothing. The data format does NOT move: nothing already on disk needs
 // migrating, record fields are optional (Parse accepts unknown fields), and an
 // older binary already reads kind `deleted` as malformed-but-departed. The
-// next release tag is therefore v8.2.0 (v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>,
+// next release tag is therefore v9.2.0 (v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>,
 // build restarting at 0 on a new surface/format pair).
 //
 // Rollout: `make install` on every host, then restart every AI harness on it,
@@ -343,7 +343,7 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 8
+const MCPSurfaceVersion int = 9
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

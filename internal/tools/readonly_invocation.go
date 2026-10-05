@@ -61,6 +61,9 @@ var ParamAwareToolNames = []string{
 	// vp_vault_copy admits plan, which snapshots the source remote into
 	// private scratch and writes nothing to the vault. apply is never admitted.
 	"vp_vault_copy",
+	// vp_vault_rename admits plan, the dry run, which reads and plans the rename
+	// and writes nothing to the vault. apply is never admitted (vault_rename.go).
+	"vp_vault_rename",
 }
 
 // readOnlyIf adapts a typed decision over a tool's own params struct into the

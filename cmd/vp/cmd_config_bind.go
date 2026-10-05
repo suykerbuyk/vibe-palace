@@ -19,6 +19,7 @@ var configBindFlags = []cli.FlagDef{
 	{Name: "--vault", Arg: "PATH", Help: "The vault the project lives in on this host: absolute, or starting with ~/ (required)"},
 	{Name: "--checkout", Arg: "DIR", Help: "A checkout of the project to verify after the write; repeatable"},
 	{Name: "--new", Help: "The project was born in that vault; this host's default vault never held it"},
+	{Name: "--renamed", Help: "Re-point an existing binding after `vp vault rename`: give the OLD and NEW slugs (no --vault); it moves the [project_vaults] key, keeping the same vault"},
 	{Name: "--allow-unlabelled", Help: "Bind although the departure record names no destination to check the vault's remotes against"},
 	{Name: "--dry-run", Help: "Check everything and show the change; write nothing"},
 	{Name: "--json", Help: "Print the report as JSON"},
@@ -59,6 +60,9 @@ func runConfigBind(args []string, out, errOut io.Writer) int {
 	if len(fv.Args()) == 0 {
 		fmt.Fprintln(errOut, "vp config bind: name at least one project slug")
 		return cli.ExitUser
+	}
+	if fv.Bool("--renamed") {
+		return runConfigBindRenamed(fv, out, errOut)
 	}
 	if fv.Get("--vault") == "" {
 		fmt.Fprintln(errOut, "vp config bind: --vault is required")
@@ -123,6 +127,45 @@ func runConfigBind(args []string, out, errOut io.Writer) int {
 		for _, h := range rep.GrepHits {
 			fmt.Fprintf(out, "  %s:%s: %s\n", h.File, h.Line, h.Text)
 		}
+	}
+	for _, w := range rep.Warnings {
+		fmt.Fprintf(out, "warning: %s\n", w)
+	}
+	return cli.ExitOK
+}
+
+// runConfigBindRenamed handles `vp config bind --renamed <old> <new>`: the
+// per-host re-point of a binding after a rename. It takes exactly the old and
+// new slugs and no --vault (the vault is unchanged).
+func runConfigBindRenamed(fv *cli.FlagValues, out, errOut io.Writer) int {
+	if fv.Get("--vault") != "" {
+		fmt.Fprintln(errOut, "vp config bind --renamed: --vault is not used; the rename keeps the same vault")
+		return cli.ExitUser
+	}
+	if len(fv.Args()) != 2 {
+		fmt.Fprintln(errOut, "vp config bind --renamed: name exactly the old and new slugs: vp config bind --renamed <old> <new>")
+		return cli.ExitUser
+	}
+	rep, err := storage.RenameProjectVaultBinding(fv.Args()[0], fv.Args()[1], fv.Bool("--dry-run"))
+	if err != nil {
+		fmt.Fprintf(errOut, "vp config bind --renamed: %v\n", err)
+		return cli.ExitUser
+	}
+	if fv.Bool("--json") {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rep); err != nil {
+			fmt.Fprintf(errOut, "vp config bind --renamed: %v\n", err)
+			return cli.ExitSystem
+		}
+		return cli.ExitOK
+	}
+	if rep.DryRun {
+		fmt.Fprintln(out, "DRY RUN — nothing was written")
+	}
+	fmt.Fprintf(out, "config: %s\nvault:  %s\nchange: %s\n", rep.ConfigPath, rep.Vault, rep.Change)
+	if rep.BackupPath != "" {
+		fmt.Fprintf(out, "backup: %s\n", rep.BackupPath)
 	}
 	for _, w := range rep.Warnings {
 		fmt.Fprintf(out, "warning: %s\n", w)

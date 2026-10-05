@@ -1,5 +1,5 @@
 {
-  "surface_version": 8,
+  "surface_version": 9,
   "tools": [
     {
       "name": "vp_append_iteration",
@@ -375,6 +375,11 @@
       "name": "vp_vault_read",
       "mutating": false,
       "schema_sha256": "4f768bb46ff73962a783d9d88aea245f2c629888dca4b990ca8d12d95c3848fe"
+    },
+    {
+      "name": "vp_vault_rename",
+      "mutating": true,
+      "schema_sha256": "e5940477d866941d8167e1a17a682dbe35ac29a4ea456ba0106231b9c137a408"
     },
     {
       "name": "vp_vault_sha256",

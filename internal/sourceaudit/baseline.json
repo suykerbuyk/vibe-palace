@@ -285,10 +285,6 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The pending fold. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (what to ingest) and index-coverage-instrument (the pending report). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.LifecycleTx.ChangeEpoch",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task index-fingerprints-project-lifecycle-and-migration-marker Scope 3. The epoch change alone, on a gone project's commit lock, with no removal. Non-test caller: vp vault rename's drain of the rename source (rename-core-fresh-target-with-digest-bind, \"Host-local index rename\", step 2), so an engine that remembers the source's Gen reloads. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.NoteOwner",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The note owner of a decision chunk. Non-test caller: decision-chunks-in-the-host-local-store. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -311,10 +307,6 @@
     {
       "id": "uninvoked indexstore.Tx.ReplaceOwned",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: decision-chunks-in-the-host-local-store (a note's decision set). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.Rewrite",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test callers: palace-navigation-over-the-host-local-chunk-store (the relabel) and index-fingerprints-project-lifecycle-and-migration-marker (the project rename's wing rewrite). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.WriteGraph",
@@ -519,6 +511,14 @@
     {
       "id": "vault-write-outside-funnel search.cacheWriteFn",
       "reason": "host-local derived index under palace/.local — ignored by git, not vault content (ADR-014). cacheWriteFn (the embed cache's one file write, a seam a test replaces to fail or race a write) passes \"\" as atomicfile.Write's vault root on purpose: its only destinations are the embed-cache vectors and their regime sidecar under palace/.local/embed-cache/<p>/, which the canonical ignore line palace/.local/ (internal/storage/git.go:30) keeps out of git, so a .surface stamp would be wrong. Every call runs under a held index commit lock, through (*EmbedCache).Writer. Task search-index-completeness-and-build-serialization (R-4: atomic Put)."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.Vault.RemoveRenamePending",
+      "reason": "HOST-LOCAL IGNORED MARKER, not tracked vault content: it removes palace/.local/index/.rename-pending/<slug>, a git-ignored per-host hint written by WriteRenamePending. It must NOT stamp the surface or take the vault root lock (the host-local rename step holds the index run and commit locks, never the root lock), so routing it through vaultfs.Delete would be wrong. Mirrors internal/indexstore's own palace/.local removals, which this audit exempts. Pinned by task rename-core-fresh-target-with-digest-bind (U9 increment 2)."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.Vault.WriteRenamePending",
+      "reason": "HOST-LOCAL IGNORED MARKER, not tracked vault content: it writes palace/.local/index/.rename-pending/<slug> (content = the target slug), a git-ignored per-host hint read by the index sweep. It deliberately passes atomicfile.Write's vaultRoot=\"\" to SKIP the MCP-surface stamp, exactly as the audit text permits for a genuinely non-vault destination (cf. internal/wrapstate's project-root anchors). Stamping a host-local ignored file would be wrong. Pinned by task rename-core-fresh-target-with-digest-bind (U9 increment 2)."
     },
     {
       "id": "vault-write-outside-funnel storage.writeScoringConfigAt",

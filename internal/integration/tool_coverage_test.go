@@ -2060,6 +2060,55 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 		},
 	},
+	"vp_vault_rename": {
+		build: func(t *testing.T, h *testHarness) any {
+			const project = "cov-vaultrename"
+			// plan requires the bound vault to be a git repo at the tip of every
+			// remote; it writes nothing.
+			covGitVault(t, h)
+			run := func(dir string, args ...string) string {
+				t.Helper()
+				cmd := exec.Command("git", args...)
+				cmd.Dir = dir
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %s", args, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			covMarkMigrated(t, h.Vault.Root)
+			if err := os.MkdirAll(filepath.Join(h.Vault.Root, "Projects", project), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(h.Vault.Root, "Projects", project, "resume.md"),
+				[]byte("---\nproject: "+project+"\n---\n# "+project+" — Working Context\nstuff\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run(h.Vault.Root, "add", "-A")
+			run(h.Vault.Root, "commit", "-q", "-m", "seed rename project")
+			vBare := t.TempDir()
+			run(vBare, "init", "-q", "--bare")
+			run(h.Vault.Root, "remote", "add", "origin", "file://"+vBare)
+			run(h.Vault.Root, "push", "-q", "origin", "HEAD")
+			return map[string]any{"action": "plan", "from": project, "to": project + "-new"}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				Plan struct {
+					Digest  string `json:"digest"`
+					Command string `json:"command"`
+				} `json:"plan"`
+				Complete bool `json:"complete"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Plan.Digest == "" || !strings.Contains(out.Plan.Command, "--expect "+out.Plan.Digest) {
+				t.Errorf("digest %q, command %q", out.Plan.Digest, out.Plan.Command)
+			}
+			if !out.Complete {
+				t.Error("complete is not true")
+			}
+		},
+	},
 	"vp_vault_merge": {
 		build: func(t *testing.T, h *testHarness) any {
 			const project = "cov-vaultmerge"

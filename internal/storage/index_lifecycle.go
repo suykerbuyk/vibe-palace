@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
@@ -26,6 +27,43 @@ func VaultMigrated(root string) (bool, error) {
 		return false, err
 	}
 	return m.AuthoredOnly != "", nil
+}
+
+// WriteRenamePending writes this host's rename-pending record for project
+// (content = the target slug), fsynced. `vp vault rename` writes it BEFORE its
+// tracked commit so 1b's index sweep keeps index/<project>/ until the
+// host-local step has moved the store; the step (or an aborted run) removes it.
+// It is a host-local, git-ignored marker under palace/.local, so it is written
+// through atomicfile with no vault-root surface stamp.
+func (v *Vault) WriteRenamePending(project, to string) error {
+	if err := slug.Validate(project); err != nil {
+		return fmt.Errorf("rename-pending record: project: %w", err)
+	}
+	if err := slug.Validate(to); err != nil {
+		return fmt.Errorf("rename-pending record: target: %w", err)
+	}
+	path, err := v.IndexRenamePendingPath(project)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.Write("", path, []byte(to+"\n"), atomicfile.WithFsync()); err != nil {
+		return fmt.Errorf("write rename-pending record: %w", err)
+	}
+	return nil
+}
+
+// RemoveRenamePending removes this host's rename-pending record for project. An
+// absent record is not an error (idempotent): the host-local step, an undo, and
+// an aborted run all call it.
+func (v *Vault) RemoveRenamePending(project string) error {
+	path, err := v.IndexRenamePendingPath(project)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove rename-pending record: %w", err)
+	}
+	return nil
 }
 
 // RenamePending reads this host's rename-pending record for project: the slug it
