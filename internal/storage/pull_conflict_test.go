@@ -412,3 +412,29 @@ func TestPull_CleanMergeKeepsGitOutput(t *testing.T) {
 		t.Errorf("RemoteOutput[origin] = %q, want git's merge output", out)
 	}
 }
+
+// R7: SyncVault used to drop pullCore's error (`pull, _ :=`), so a pull that
+// refused before touching anything left an empty verdict, and the sync went on
+// to push. Mutant: the error dropped again.
+func TestSyncVault_PullRefusalIsNotDropped(t *testing.T) {
+	dir, bare := syncSeedRemote(t)
+	commitLocal(t, dir, "ahead.md", "unpushed\n")
+	remoteBefore := gitRun(t, bare, "rev-parse", "main")
+	// A rebase stopped by someone else, with a clean tree: nothing for the
+	// refuse-on-dirt step to see, so only pullCore's own refusal stands
+	// between this sync and the push. git reads the state directory alone.
+	if err := os.Mkdir(filepath.Join(dir, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := SyncVault(dir, []string{"origin"})
+	if err == nil || !strings.Contains(err.Error(), "refusing to pull: a rebase is in progress") {
+		t.Fatalf("SyncVault = %v, want pullCore's refusal", err)
+	}
+	if res.Push != nil {
+		t.Error("the push ran after the pull refused")
+	}
+	if got := gitRun(t, bare, "rev-parse", "main"); got != remoteBefore {
+		t.Errorf("the remote moved %s -> %s", remoteBefore, got)
+	}
+}

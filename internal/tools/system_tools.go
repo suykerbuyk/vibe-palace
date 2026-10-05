@@ -454,7 +454,18 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				if res.Refused {
 					return nil, apperr.Caller(fmt.Errorf("sync: %w", err))
 				}
-				return nil, fmt.Errorf("sync: %w", err)
+				// A pull verdict names the failing remotes but not why; the
+				// why — an aborted conflict's paths and remedy above all —
+				// rides in the error, as gitPull's does.
+				var failed strings.Builder
+				if res.Pull != nil {
+					for _, remote := range remotes {
+						if rerr := res.Pull.RemoteResults[remote]; rerr != nil {
+							fmt.Fprintf(&failed, "\n[pull %s] FAILED: %v", remote, rerr)
+						}
+					}
+				}
+				return nil, fmt.Errorf("sync: %w%s", err, failed.String())
 			}
 			return map[string]any{
 				"status":     "ok",

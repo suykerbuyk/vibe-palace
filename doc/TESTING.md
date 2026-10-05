@@ -840,6 +840,8 @@ shim is `reconcileGitShim` (`vaultsync_merge_test.go`).
 | `TestPull_FailedAbortIsTreeUnsafe` | A failed `merge --abort` is `*vaultTreeUnsafeError` naming the abort's failure, never "was aborted", and stops the sweep |
 | `TestPullSweepStops`, `TestPull_RefusedMergeMovesOn`, `TestPull_UntrackFailureMovesOn` | The per-error sweep rule: stop on a conflict, an unsafe tree, a departure or anything unrecognised; go on after a merge refused before it started or a failed untrack |
 | `TestPull_CleanMergeKeepsGitOutput` | `RemoteOutput` still carries git's merge output through the shared merge |
+| `TestSyncVault_PullRefusalIsNotDropped` | `SyncVault` returns `pullCore`'s refusal and pushes nothing (it used to drop the error and push) |
+| `internal/tools`: `TestVaultSyncToolNamesTheAbortedConflict` | `vp_vault_sync` `pull` and `sync` errors name the aborted conflict's path and remedy |
 
 The pullCore halves of `TestHeal_MixedConflictIsNotHealed`,
 `TestHeal_MalformedMarkerInTheMergedTree`, `TestHeal_UnmigratedDrawerConflictIsLeftAlone`

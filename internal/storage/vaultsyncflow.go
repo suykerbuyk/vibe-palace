@@ -137,11 +137,13 @@ func SyncPreview(vaultPath string) (scan *TidyResult, refused bool, err error) {
 //     uncommitted non-artifact work must get human eyes before we entangle it
 //     with a merge. Memory is NOT dirt (decision 7) and never blocks.
 //
-//   - The pull gate is on the VERDICT, not the Go error (FINDING A). A merge
-//     failure — a conflict, which pullCore aborts, a refusal, a killed merge —
-//     is recorded ONLY in PullResult.RemoteResults. A bare `if err != nil`
-//     would sail straight past it and push. Gate on RemoteVerdict, which reads
-//     RemoteResults. DO NOT "simplify" this into an error check.
+//   - The pull gate is on BOTH the Go error and the VERDICT (FINDING A). The
+//     error is pullCore's pre-flight refusal (a pending lifecycle commit, a
+//     nested git, a git operation already in progress): nothing was pulled,
+//     and dropping it once let a sync go on to push with an empty verdict.
+//     A merge failure — a conflict, which pullCore aborts, a refusal, a
+//     killed merge — is recorded ONLY in PullResult.RemoteResults, so the
+//     verdict gate is the one that sees it. DO NOT "simplify" either away.
 //
 //   - A post-merge re-assert (FINDING A) runs even after a clean pull verdict:
 //     a merge that reports success can still leave residue (a half-applied
@@ -215,15 +217,19 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 		result.CommitSHA = tidy.CommitSHA
 	}
 
-	// 4. Pull each remote. A merge failure lives in RemoteResults (FINDING A).
-	// Gate on RemoteVerdict — a non-empty verdict (a failed fetch/merge or an
-	// aborted conflict) stops before we push.
-	pull, _ := pullCore(vaultPath, remotes)
+	// 4. Pull each remote. pullCore's error is a pre-flight refusal and stops
+	// the sync; a per-remote failure lives in RemoteResults (FINDING A). Gate on
+	// both — a non-empty verdict (a failed fetch/merge or an aborted conflict)
+	// stops before we push.
+	pull, pullErr := pullCore(vaultPath, remotes)
 	result.Pull = pull
-	// Right after the merge and BEFORE the verdict gate below, so a sync that
-	// merged a departure removes the moved project's embed cache even when a
-	// later remote fails. The pass skips itself while a merge is unfinished.
+	// Right after the merge and BEFORE the gates below, so a sync that merged
+	// a departure removes the moved project's embed cache even when a later
+	// remote fails. The pass skips itself while a merge is unfinished.
 	sweepDepartedAfterPull(vaultPath)
+	if pullErr != nil {
+		return result, pullErr
+	}
 	if v := RemoteVerdict(OpPull, pull.RemoteResults, ""); v != "" {
 		return result, errors.New(v)
 	}
