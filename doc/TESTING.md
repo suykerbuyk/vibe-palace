@@ -1627,6 +1627,72 @@ Elsewhere:
 | `internal/tools`: `TestVaultSplitPurge_RemovesSourceTreesAfterVerify`, `TestPurgeCommitsItsWholeResultInOneCommit` | A split departure purges the slug's `palace/.local/imports/<s>/` marker and leaves another slug's |
 | `internal/storage`: `TestLegacyEntityLineWithPropertiesSurvives` | `Entity` has no `Properties` field, but a tracked line that carries `properties` still lists and is never rewritten |
 
+### `internal/ingest/` — the pending-archive ingester (`pending-archive-ingester-and-per-archive-commit-step`)
+
+Every test builds real archives with `archive.Create` in a temp vault, with an
+engine over a counting mock embedder. No test embeds against a live vault or
+asserts wall-clock time: the wall-clock cap reads an injected clock, and races
+use the package's seams (`afterPrepareFn`, `beforeLockFn`, `beforeReleaseFn`,
+`readVerifiedFn`).
+
+The store support:
+
+| Test | What it proves |
+|------|----------------|
+| `internal/archive`: `TestReadVerified*` | The whole-archive read: one read of the file; length, `source_bytes` and hash checked; a manifest-less archive keyed by its bytes; a manifest changed or moved since the listing, or rewritten mid-read, is `ErrArchiveChanged`, never `ErrArchiveCorrupt` |
+| `internal/indexstore`: `TestLedgerBatchAndSupersededReaders`, `TestSessionRecordCarriesCapturedAt` | `Ledger.Batch`, `BatchIDs` (sorted), `Superseded`; `captured_at` recorded, back-filled, not re-appended |
+| `internal/indexstore`: `TestSupersedeRetargetsAVanishedTarget`, `TestSupersedeRetargetResumesAfterACrash`, `TestRetargetIsRefusedUnlessItNamesTheTarget` | R1: a supersede whose target vanished re-targets, leaving no chunk or KG record owned by either replaced archive, also when the re-target itself crashed |
+| `internal/indexstore`: `TestInboxRecordsAndDropsFirsts` | R3: the first-inbox records a trigger's First once, drops served entries, refuses a non-sha |
+| `internal/search`: `TestCachedVectorChecksTheRegime` | Another regime's vector, or one with no sidecar, is never a cache hit |
+
+The commit step (`ingest_test.go`):
+
+| Test | What it proves |
+|------|----------------|
+| `TestIngestArchiveCommitsAPendingArchive` | Owners are the archive's `source_sha256`; every chunk has a vector; the ledger record carries the vault-relative path, hash, distinct chunk count, `captured_at`, start day and source, generation 1; `git status` stays empty |
+| `TestIngestArchiveDatesFromTheSession` | The start day is the UTC day of the first timestamped record, else `captured_at`'s |
+| `TestToCommitCountsDistinctChunks` | A repeated chunk is owned once |
+| `TestIngestArchiveEmbedsOnlyMisses`, `TestIngestArchiveWithoutEmbedding` | Only cache misses are embedded; `Embed: false` embeds nothing |
+| `TestIngestArchiveHoldsNoCommitLockWhileEmbedding` | The commit lock is free while the embedder is blocked |
+| `TestIngestArchiveRechecksBeforeEmbedding`, `TestIngestArchiveRechecksUnderTheLock` | R6: an archive another process ledgered is not embedded (the other process committed without vectors, so a missing check shows as embed calls) and not written twice |
+| `TestIngestArchiveStopsOnAProjectRemovedMidRun` | `ErrProjectGone`, and no index directory |
+| `TestIngestArchiveRefusesAnotherRecipe`, `TestIngestArchiveRefusesAnotherRegime` | Another recipe (also written mid-run, R7) or regime: nothing written |
+| `TestIngestArchiveSupersedes` | A newer archive supersedes; an older one met under the lock is recorded superseded, never ingested over the live one |
+| `TestIngestArchiveCheckpoint`, `TestIngestArchiveFailsOnCorruptBytes` | A checkpoint error abandons the archive; corrupt bytes are an error, never ledgered |
+
+The run (`run_test.go`) and the repair (`repair_test.go`):
+
+| Test | What it proves |
+|------|----------------|
+| `TestRunIngestsOnlyArchivesOutsideTheBaseline` | Automatic scope is the archives outside the baseline set, whatever their dates; an explicit run takes the backlog |
+| `TestRunLeavesTheTriggersArchiveOutOfTheBaseline` | The trigger's First is ingested, the rest becomes backlog |
+| `TestRunOrdersNewestFirstTriggeringProjectFirst` | The trigger's project first, each newest first |
+| `TestRunBudgetCountsArchives`, `TestRunWallClockCap`, `TestRunDefaultsAreSmallAndStated` | The archive budget, the wall-clock cap (injected clock), and the small UNMEASURED defaults (R5) |
+| `TestRunSkipsAnArchiveOverTheSizeCap`, `TestRunSkipsAnArchiveWithNoHash` | R5 and R4: left to the rebuild with one Warn, no failure record |
+| `TestRunFailureLimit`, `TestRunEndsWithoutRetryingAFailure`, `TestRunNonFatalFailure` | One failure per run, the limit N, an explicit retry; a failure is never an ingest; a rewritten archive starts at 0; no retry in the same run; non-fatal |
+| `TestRunFailureLimitSparesASupersedingSession` | R2: the limit never hides a session mid-supersede |
+| `TestRunCheckpointStopsTheRun` | No archive ledgered, no failure record |
+| `TestRunSkipsAStaleProjectWithAWarn`, `TestRunWarnsOnAFingerprintWrittenMidRun` | Chair ruling 2 and R7: one Warn naming `vp index rebuild`, no archive of that project opened, other projects still ingested |
+| `TestRunExitsWhenTheRunLockIsHeld`, `TestRunServesALosingTriggersFirst` | A held lock (any kind) exits at once and leaves First in the inbox; the holder serves it, also when the note lands after the ledger exists (R3) |
+| `TestRunHolderRecordAndProgress`, `TestRunHeldRunsUnderTheCallersLock`, `TestRunNoLostTrigger` | Holder record and progress; RunHeld keeps the caller's lock; a late archive re-acquires, budget leftovers do not |
+| `TestRunMovesOnFromAProjectRemovedMidRun`, `TestRunDoesNotChargeAnArchiveAnotherRunCommitted`, `TestRunRetriesARewrittenArchiveNextRun` | R6 and the adopted note: no failure record, no budget or progress for another run's archive, a rewrite retried next run |
+| `TestRunSupersedesInEitherOrder`, `TestRunSameDayRewriteSupersedesByHash`, `TestRunRetargetsAfterACrashAndARewrite`, `TestRunNeverRollsBack` | Supersede in either order with the older never opened; hash owners on a same-day rewrite; R1 at the run level; no rollback when the live archive vanished |
+| `TestRunWritesOnlyHostLocalFiles` | An unmigrated vault with a tracked drawer: only `palace/.local/` changes |
+| `TestRepairReembedsMissingVectors`, `TestRepairReingestsAChunkShortfall`, `TestRepairOfImportBatches` | The repair pass: exactly the missing vectors, one owner per budget unit, the reason cleared only when none is left and never on a stale project; a shortfall re-ingested; a batch's vectors repaired and its shortfall reported |
+| `TestGraphHealIsCalledPerProject` | One heal per visited project, under the run lock and after its commits; none for a stale project or under `SkipHeal` |
+
+`cmd/vp/cmd_drain_archives_test.go` pins the command: it resolves nothing,
+logs to the vault's `vp.log`, ignores a non-sha `--first`, and builds no
+model with nothing to embed.
+
+**Not covered here, by design.** The write order, a killed commit's resume
+without duplicates and the supersede steps are `CommitArchive`'s and
+`Supersede`'s, pinned in `internal/indexstore` (`TestPerArchiveWriteOrderAndKills`,
+`TestSupersedeSteps`). The shared-record dating rule is the store's fold
+(`TestSharedRecordDating`; `kgread`'s `TestEarliestOwnerAcrossKinds`).
+`Engine.RepairScan` holds the commit lock for a whole store scan; searches
+keep reading but skip their completeness writes meanwhile.
+
 ### Index fingerprints, the migration marker and the lifecycle removal
 
 Task `index-fingerprints-project-lifecycle-and-migration-marker` (ADR-014
