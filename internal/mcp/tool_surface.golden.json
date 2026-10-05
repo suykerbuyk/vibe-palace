@@ -274,7 +274,7 @@
     {
       "name": "vp_refresh_index",
       "mutating": true,
-      "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+      "schema_sha256": "ce48f7b5583eba3a498e3d0d9d1d0bd2f43e6525390ae86fbf5ce5015bc11705"
     },
     {
       "name": "vp_repo_freshness",

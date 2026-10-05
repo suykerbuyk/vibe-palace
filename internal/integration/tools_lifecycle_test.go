@@ -246,21 +246,28 @@ func TestRefreshIndex(t *testing.T) {
 		testinfra.WithDrawer("test-proj", "memory", "notes", "rust ownership model", "long-term", "2026-01-02T10:00:00Z"),
 	)
 
-	// Refresh index.
+	// vp_refresh_index now starts a DETACHED rebuild and returns at once; the
+	// harness's launcher records the spawn without running it.
 	raw := h.callTool(t, "vp_refresh_index", map[string]any{
 		"project": "test-proj",
 	})
-	if !strings.Contains(raw, "rebuilt") {
-		t.Fatalf("refresh: %s", raw)
+	if !strings.Contains(raw, "started") {
+		t.Fatalf("refresh did not report a started rebuild: %s", raw)
+	}
+	if n := len(h.RecordedLaunches()); n != 1 {
+		t.Fatalf("refresh launched %d rebuilds, want 1", n)
 	}
 
-	// Search should now find results.
+	// The search assertion moves to a rebuild run in-process (the detached
+	// launch is recorded, not executed, in the harness): index the drawers,
+	// then search finds them.
+	if _, err := h.Engine.Rebuild(context.Background(), "test-proj"); err != nil {
+		t.Fatalf("in-process rebuild: %v", err)
+	}
 	raw = h.callTool(t, "vp_search", map[string]any{
 		"project": "test-proj",
 		"query":   "concurrency",
 	})
-	// With mock embedder, results may not be semantically relevant,
-	// but the search should return something since drawers exist.
 	if raw == "" {
 		t.Fatal("search after rebuild returned empty")
 	}

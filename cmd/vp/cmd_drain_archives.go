@@ -91,6 +91,9 @@ func runDrainArchives(ctx context.Context, vaultRoot, project, first string, err
 	defer eng.Close()
 	res, err := ingest.Run(ctx, ingest.Deps{Vault: v, Engine: eng, Embedder: emb}, ingest.RunOptions{
 		VaultRoot: vaultRoot, Project: project, First: first,
+		// The disk/inode watchdog as the during-run check, so a background
+		// run cannot fill the filesystem that holds palace/.local/ either.
+		Checkpoint: ingest.ReserveCheckpoint(nil, v.VaultLocalDir(), ingest.Reserve{}),
 	})
 	if err != nil {
 		slog.Warn("vp drain archives: the run stopped", "project", project, "error", err)

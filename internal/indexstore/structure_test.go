@@ -207,9 +207,10 @@ var discardOnly = map[string]bool{
 	"ClearBaseline": true, "ClearFailures": true, "CompletedRebuild": true,
 }
 
-// rebuildDriverDirs is where the rebuild driver will live. Empty until that
-// child lands: until then nothing outside this package may discard.
-var rebuildDriverDirs = map[string]bool{}
+// rebuildDriverDirs is where the rebuild driver lives
+// (explicit-resumable-index-rebuild-with-disk-watchdog): internal/ingest, which
+// holds ingest.Rebuild. Nothing outside this package and that one may discard.
+var rebuildDriverDirs = map[string]bool{"internal/ingest": true}
 
 // Only the rebuild discards: outside internal/indexstore, no non-test Go file
 // calls Tx.Discard, ClearBaseline, ClearFailures or CompletedRebuild, or names

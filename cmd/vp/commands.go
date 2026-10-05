@@ -118,6 +118,13 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdHookInstall())
 	reg.Register(cmdHookUninstall())
 	reg.Register(mutates(cmdInit(info)))
+	reg.Register(cmdIndex())
+	// Bare, not mutates(): `vp index rebuild` writes ONLY host-local state under
+	// the git-ignored palace/.local/ (the index store, ledger, embed cache and
+	// run-lock holder), never tracked vault content — the same disposition as
+	// `vp drain archives` and `vp search`. Its derived-gate divergence is
+	// accepted in internal/sourceaudit/baseline.json.
+	reg.Register(cmdIndexRebuild())
 	reg.Register(cmdInject())
 	reg.Register(cmdSearch())
 	reg.Register(cmdSessions())

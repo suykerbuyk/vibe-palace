@@ -4,21 +4,23 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
-	"github.com/suykerbuyk/vibe-palace/internal/archive"
-	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
+	"github.com/suykerbuyk/vibe-palace/internal/ingest"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/onboard"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -904,253 +906,52 @@ func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 type refreshIndexParams struct {
-	Project string `json:"project"`
+	Project     string `json:"project"`
+	MaxArchives int    `json:"max_archives"`
+	DryRun      bool   `json:"dry_run"`
 }
 
 var refreshIndexSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"project": {"type": "string", "description": "Project slug."}
+		"project": {"type": "string", "description": "Project slug."},
+		"max_archives": {"type": "integer", "description": "Optional cap on the number of archives the spawned rebuild attempts; 0 (the default) means no cap."},
+		"dry_run": {"type": "boolean", "description": "Report the rebuild's plan and disk/inode estimate in-process, writing nothing and taking no lock, instead of starting a rebuild."}
 	},
 	"required": ["project"]
 }`)
 
-func RefreshIndexTool(engine *search.Engine, vault *storage.Vault) mcp.Tool {
+func RefreshIndexTool(engine *search.Engine, vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_refresh_index",
-		Description: "Rebuild a project's semantic search index from every source it has: its " +
-			"existing drawer store, its iterations.md corpus, the BODIES of its session " +
-			"notes under Projects/<slug>/sessions/, and a BACKFILL from any " +
-			"archived transcripts under Projects/<slug>/transcripts/. The archives are " +
-			"decompressed and fed to the same indexer capture uses, so a backfilled drawer " +
-			"is identical to one written at capture time — this is how a project with " +
-			"session history but no palace store becomes searchable. The note bodies need " +
-			"no store and no archive at all, which is how a project captured as NOTES ONLY " +
-			"becomes searchable. The first run over an " +
-			"archive decompresses it; later runs SKIP any archive whose source_sha256 is " +
-			"already recorded in palace/<slug>/ingested-archives.jsonl, so a re-run neither " +
-			"re-reads them nor duplicates drawers. Reports what it did (drawers, " +
-			"iteration_chunks, note_chunks, indexed, embedded, cache_hits, reaped, plus " +
-			"archives_found, " +
-			"archives_ingested, archives_skipped, archive_drawers and any archive_failures) " +
-			"so a real rebuild is distinguishable from a no-op and a skip is never counted " +
-			"as an ingest. It cannot invent content that " +
-			"was never captured: it REFUSES when the project has no palace store, nothing " +
-			"indexable, AND no transcript archives, rather than reporting a success it did " +
-			"not achieve. Refreshing a notes-only project indexes its notes without creating " +
-			"palace/<slug>/ (the embed cache lives under palace/.local/), so it does not " +
-			"clear that project's project-tree-coherence finding.",
+		Description: "Start an explicit, resumable rebuild of a project's host-local search " +
+			"index (`vp index rebuild <project>`) as a DETACHED background process, and " +
+			"return at once — a rebuild runs for minutes to hours (it ingests the historical " +
+			"backlog, re-embeds misses and rebuilds every tier), far longer than an MCP " +
+			"client waits. It never runs the rebuild inside this call. Before spawning it " +
+			"makes two in-process checks, taking NO lock: it REFUSES a truly empty project " +
+			"(no notes, no iterations, no tracked archives, no local chunks, no tracked " +
+			"drawers) rather than start a run that can only no-op; and it reads the run " +
+			"lock's advisory holder record and, while that names a live process, REFUSES " +
+			"naming the holder (pid, kind, project, start time) instead of starting a second " +
+			"run. Otherwise it spawns `vp index rebuild` (output to palace/.local/rebuild.log) " +
+			"and returns {started: true, pid, log}; the spawned process's own try-lock is the " +
+			"authoritative check. Read the run's progress through vp_index_status, never by " +
+			"waiting on this call. With dry_run: true it instead runs the preflight in-process " +
+			"— the pending archives, the baseline set, the disk/inode estimate and the " +
+			"reserve — writing nothing and taking no lock. max_archives caps the spawned run.",
 		Schema:  refreshIndexSchema,
-		Handler: refreshIndexHandler(engine, vault),
-		// Mutating because it WRITES, on two independent paths: the archive
-		// backfill reaches storage.Vault.AppendDrawers -> appendUnderLock, and
-		// the embed pass writes .vec cache files on every cache miss. Rebuild
-		// used to be a third — it could create palace/<slug>/ outright for a
-		// project that had no store, because the embed cache lived there — and
-		// no longer is: the cache lives under palace/.local/embed-cache/.
-		// It was registered non-mutating for a long time, and the derived call
-		// graph reported the disagreement as accepted-under-protest debt for
-		// exactly that long.
+		Handler: refreshIndexHandler(engine, vault, launch),
+		// Mutating because, on the start path, it launches a process that writes
+		// this host's local index under palace/.local/ (the chunk store, the
+		// local KG, the ledger and the embed cache). The dry-run path writes
+		// nothing, but the tool is declared by its most-privileged path.
 		Mutating: true,
 	}
 }
 
-// backfillStats reports what a historical-archive ingest actually did.
-//
-// Ingested and Skipped are separate counts and must stay separate: reporting a
-// skip as an ingest would say "I read 373 archives" about a run that opened
-// none of them, which is the same class of false success this tool was already
-// caught making once.
-type backfillStats struct {
-	ArchivesFound    int
-	ArchivesIngested int
-	ArchivesSkipped  int
-	Drawers          int
-	Failures         []string
-}
-
-// backfillFromArchives turns a project's ARCHIVED TRANSCRIPTS into drawers.
-//
-// 🔴 WHY THIS IS IN THE HANDLER AND NOT IN Rebuild/ensureIndex. Piece 1 of this
-// task established that a judgement belongs to the caller that ASKED: ensureIndex
-// calls Rebuild before every cold search, so anything placed there runs because
-// somebody searched. A mass decompress-and-embed of every historical archive is
-// the last thing that should fire on a search. vp_refresh_index is the caller
-// that asked for an index; the ingest lives here and nowhere else.
-//
-// It adds no chunker, no classifier and no decompressor. archive.ListEntries
-// and archive.Extract already exist, and the text they yield is handed to the
-// SAME capture.Indexer.IndexTranscript that runs at capture time. That is not a
-// convenience — it is the correctness argument. The hook path reads the host
-// transcript file RAW (os.ReadFile -> string, internal/hook/hook.go) and passes
-// those bytes straight to IndexTranscript, and archive.Extract yields the same
-// original bytes (they are what source_sha256 covers). So a backfilled drawer is
-// byte-for-byte what capture-time indexing would have written. Introducing a
-// JSONL-to-prose transform here would have made backfilled content DIFFER from
-// captured content, which is a worse outcome than the noise it removes.
-//
-// Idempotent, and CHEAPLY so — the second half of that is the part that was
-// missing. storage.DrawerID is derived from the chunk content, and AppendDrawers
-// reports how many drawers it actually appended rather than erroring per
-// duplicate, so a re-run adds nothing. It used to add nothing at the cost of a
-// full room rescan and rewrite PER CHUNK, which is why a re-run cost the same as
-// a first run and neither could finish; the batch entry point pays one read per
-// (archive, room) and writes only when something is new.
-//
-// Per-archive failures are collected and reported rather than aborting the
-// sweep — one unreadable archive must not strand the rest. A CANCELLED context
-// is the one exception: it aborts, because continuing to write for a client
-// that has gone away is the defect, not resilience.
-func backfillFromArchives(ctx context.Context, engine *search.Engine, vault *storage.Vault, project string) (backfillStats, error) {
-	var bs backfillStats
-
-	entries, err := archive.ListEntries(vault.Root, project)
-	if err != nil {
-		return bs, fmt.Errorf("list transcript archives: %w", err)
-	}
-	bs.ArchivesFound = len(entries)
-	if len(entries) == 0 {
-		return bs, nil
-	}
-
-	cfg, err := vault.LoadConfig(project)
-	if err != nil {
-		return bs, fmt.Errorf("load config: %w", err)
-	}
-	// The engine is passed, so IndexTranscript both writes drawers AND indexes
-	// them — the backfill is self-sufficient rather than depending on the
-	// caller's Rebuild to make its work reachable.
-	//
-	// MEASURED, because the obvious worry here is wrong: Engine.IndexDrawers
-	// writes each vector to the embed cache, so the Rebuild that follows gets
-	// cache hits and embeds NOTHING extra. A counting embedder over a fixture
-	// archive reports 8 texts embedded during ingest and 8 in total after the
-	// rebuild. Passing nil to avoid a "double embed" would buy no work at all
-	// and would trade it for an ordering dependency in which backfilled drawers
-	// sit on disk unreachable by search if the Rebuild is ever reordered away.
-	indexer := capture.NewIndexer(vault, engine, engine.Embedder(), cfg)
-
-	// The ingest ledger, read ONCE for the whole sweep. This is what makes run
-	// two cheap: without it every run decompressed all 373 archives and walked
-	// IndexTranscript over every chunk of them, only to discover at the end
-	// that every drawer was already filed. The set is a few hundred hashes and
-	// is discarded when this function returns — it is a loop variable, not a
-	// cache with a lifetime.
-	//
-	// A ledger that cannot be READ is not a reason to refuse the sweep: the
-	// worst case is the behaviour that existed before it, so it degrades to a
-	// full reingest rather than to a failure.
-	//
-	// The legacy ledger is first deleted when no drawer is tracked any more
-	// (ADR-014 decision 2): a ledger that outlived its drawers would skip every
-	// archive it lists forever. capture-and-backfill-write-host-local-index-only
-	// deletes this call with the legacy reader and writer.
-	if deleted, err := indexstore.DeleteLegacyLedgerIfUntracked(vault, project); err != nil {
-		slog.Warn("refresh index: legacy ingest ledger left in place", "project", project, "err", err)
-	} else if deleted {
-		slog.Info("refresh index: legacy ingest ledger deleted; no drawer is tracked any more", "project", project)
-	}
-	ingested, err := vault.IngestedArchives(project)
-	if err != nil {
-		slog.Warn("refresh index: ingest ledger unreadable, reingesting everything",
-			"project", project, "err", err)
-		ingested = map[string]struct{}{}
-	}
-
-	// 🔴 THE ONLY CANCELLATION POINT ON THIS PATH. Nothing below observes ctx
-	// except the embedder: IndexTranscript's chunk, classify and append work
-	// takes no ctx at all. Without this check a client that gave up — an MCP
-	// idle timeout, an operator's Ctrl-C — was released while this loop kept
-	// decompressing and writing archives nobody was waiting for. Checked at the
-	// TOP of the iteration so a cancellation costs at most the archive already
-	// in flight, and reported as an error rather than a short success so the
-	// counts never describe a sweep that was cut off.
-	start := time.Now()
-	for i, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return bs, fmt.Errorf("backfill cancelled after %d/%d archives: %w", i, len(entries), err)
-		}
-
-		sourceSHA, sessionID := "", ""
-		if e.Manifest != nil {
-			sourceSHA = e.Manifest.SourceSHA256
-			sessionID = e.Manifest.SessionID
-		}
-
-		// Skip BEFORE the decompress. Extracting and then discovering every
-		// chunk is a duplicate is the expensive half of the old behaviour, and
-		// it is the half the ledger exists to delete.
-		if sourceSHA != "" {
-			if _, done := ingested[sourceSHA]; done {
-				bs.ArchivesSkipped++
-				slog.Debug("refresh index: archive already ingested",
-					"project", project, "archive", i+1, "of", len(entries),
-					"session_id", sessionID, "source_sha256", sourceSHA)
-				continue
-			}
-		}
-
-		var buf bytes.Buffer
-		if _, err := archive.Extract(e.ArchivePath, &buf); err != nil {
-			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: extract: %v", filepath.Base(e.ArchivePath), err))
-			continue
-		}
-		st, err := indexer.IndexTranscript(ctx, sessionID, project, buf.String())
-		if err != nil {
-			bs.Failures = append(bs.Failures, fmt.Sprintf("%s: index: %v", filepath.Base(e.ArchivePath), err))
-			continue
-		}
-		bs.ArchivesIngested++
-		bs.Drawers += st.Drawers
-
-		// Record AFTER a successful ingest, and record it even when the archive
-		// yielded ZERO new drawers — "already filed by capture" is exactly as
-		// ingested as "filed by this run", and the whole point is to not open
-		// this file again. The ordering is deliberate: a crash between the
-		// ingest and this write costs a reingest, which IndexTranscript makes
-		// harmless, whereas writing first would let a crash mark an archive
-		// done that was never read.
-		if sourceSHA == "" {
-			// Nothing to key on. Ingest it every time and say so, rather than
-			// writing a row that can never match.
-			slog.Warn("refresh index: archive has no source_sha256, cannot be skipped on a later run",
-				"project", project, "archive", i+1, "of", len(entries), "session_id", sessionID)
-		} else if err := vault.RecordIngestedArchive(project, storage.IngestedArchive{
-			SourceSHA256: sourceSHA,
-			SessionID:    sessionID,
-		}); err != nil {
-			// The ingest itself SUCCEEDED, so this is not an archive failure
-			// and must not be counted as one. It costs a reingest next run, and
-			// the operator should see why.
-			slog.Warn("refresh index: ingest succeeded but ledger write failed",
-				"project", project, "session_id", sessionID, "err", err)
-			bs.Failures = append(bs.Failures,
-				fmt.Sprintf("%s: ledger: %v (archive was ingested; it will be re-ingested next run)",
-					filepath.Base(e.ArchivePath), err))
-		} else {
-			// Guard the sweep against itself: two archives can carry the same
-			// bytes, and the second must skip rather than reingest.
-			ingested[sourceSHA] = struct{}{}
-		}
-
-		// Per-archive, at Info, because the enclosing start/done pair cannot
-		// distinguish a slow sweep from a stuck one — and "hung or just slow?"
-		// being unanswerable is what cost an hour of re-runs here. One line per
-		// archive is bounded by the archive count, not by the chunk count.
-		slog.Info("refresh index: archive ingested",
-			"project", project,
-			"archive", i+1,
-			"of", len(entries),
-			"session_id", sessionID,
-			"drawers", st.Drawers,
-			"elapsed", time.Since(start),
-		)
-	}
-	return bs, nil
-}
-
-func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.HandlerFunc {
-	return func(ctx context.Context, params json.RawMessage) (any, error) {
+func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.HandlerFunc {
+	return func(_ context.Context, params json.RawMessage) (any, error) {
 		var p refreshIndexParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -1159,125 +960,114 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault) mcp.Handle
 			return nil, fmt.Errorf("project is required")
 		}
 
-		// A rebuild over a real corpus can run for minutes with nothing else to
-		// show for it: mcp.makeHandler's own enter/exit logging is Debug, and
-		// the default log level is Info, so a long refresh was silent until
-		// something finally Warned (measured 2026-08-24, a ~20-minute hang
-		// with no log line before the operator cancelled). These two lines are
-		// visible at the default level so "it started" and "it finished" are
-		// never in doubt; the exit line reports whatever stats were reached
-		// even on an error return.
-		start := time.Now()
-		var bf backfillStats
-		var stats search.RebuildStats
-		slog.Info("refresh index: start", "project", p.Project)
-		defer func() {
-			slog.Info("refresh index: done",
-				"project", p.Project,
-				"elapsed", time.Since(start),
-				"drawers", stats.Drawers,
-				"embedded", stats.Embedded,
-				"cache_hits", stats.CacheHits,
-			)
-		}()
+		deps := ingest.Deps{Vault: vault, Engine: engine, Embedder: engine.Embedder()}
 
-		// Ask BEFORE rebuilding. The backfill below writes drawers, so asking
-		// afterwards answers a different question than the one the refusal
-		// turns on. A rebuild itself no longer creates anything under
-		// palace/<project>/ — the embed cache moved to
-		// palace/.local/embed-cache/<project>/ — and none of its corpora ever
-		// wrote palace/<project>/drawers, which is what HasPalaceStore stats.
-		// The ordering stays, as defence.
-		hadStore, err := vault.HasPalaceStore(p.Project)
+		// dry_run: the preflight in-process. It writes nothing and takes no
+		// lock, so a trigger that arrives during it is never turned away
+		// (ADR-014 decision 7; this child's Scope 2).
+		if p.DryRun {
+			rep, err := ingest.DryRun(deps, ingest.RebuildOptions{Project: p.Project, MaxArchives: p.MaxArchives})
+			if err != nil {
+				return nil, fmt.Errorf("refresh index %q: dry run: %w", p.Project, err)
+			}
+			return refreshDryRunResult(rep), nil
+		}
+
+		// "Nothing to refresh": the in-process preflight on child 2's
+		// TrulyEmpty, before any spawn. A truly empty project (no notes, no
+		// iterations, no tracked archives, no local chunks and no tracked
+		// drawers) is refused rather than starting a run that can only no-op.
+		empty, err := engine.TrulyEmpty(p.Project)
 		if err != nil {
-			return nil, fmt.Errorf("check palace store: %w", err)
+			return nil, fmt.Errorf("check project corpus: %w", err)
+		}
+		if empty {
+			return nil, fmt.Errorf("refresh index %q: nothing to refresh — the project has no "+
+				"session notes, no iterations, no tracked transcript archives, no host-local "+
+				"chunks, and no tracked drawers, so `vp index rebuild` would index nothing. "+
+				"Capture work in this project first; do not delete its history.", p.Project)
 		}
 
-		// Backfill BEFORE Rebuild. IndexTranscript writes drawers and indexes
-		// them, so running it first lets the subsequent Rebuild walk the new
-		// drawers too and leaves the on-disk corpus and the in-memory vector
-		// index describing the same thing. Running it after would report counts
-		// for a corpus the rebuild never saw.
-		bf, err = backfillFromArchives(ctx, engine, vault, p.Project)
+		// The run lock's advisory holder record, read WITHOUT taking the lock:
+		// a status probe never try-locks, because a colliding trigger would see
+		// the lock held, exit, and be lost. While it names a live process,
+		// refuse naming the holder; the spawned run's own try-lock stays the
+		// authoritative check (ADR-014 lines 613-621).
+		if h, herr := indexstore.ReadHolder(vault); herr == nil && pidAlive(h.PID) {
+			return nil, fmt.Errorf("refresh index %q: an index run already holds the lock: "+
+				"pid %d, kind %s, project %q, started %s. Read its progress with "+
+				"vp_index_status; this call started nothing.",
+				p.Project, h.PID, h.Kind, h.Project, h.StartTime.UTC().Format(time.RFC3339))
+		}
+
+		// Spawn `vp index rebuild` detached and return at once. --vault-root is
+		// passed because a detached child's working directory is not the vault.
+		// The spawned process's own try-lock is the authoritative check: if a
+		// run holds the lock, it exits naming the holder in its log. Because
+		// this handler took no lock, a trigger that arrives meanwhile is never
+		// turned away by it.
+		args := []string{"index", "rebuild", p.Project, "--vault-root", vault.Root}
+		if p.MaxArchives > 0 {
+			args = append(args, "--max-archives", strconv.Itoa(p.MaxArchives))
+		}
+		logPath := filepath.Join(vault.VaultLocalDir(), "rebuild.log")
+		pid, err := launch("", args, logPath)
 		if err != nil {
-			return nil, fmt.Errorf("backfill from archives: %w", err)
+			// No lock was taken, so no trigger was lost; the next trigger or
+			// call serves the project. One warning, then the error.
+			slog.Warn("refresh index: could not launch the rebuild", "project", p.Project, "error", err)
+			return nil, fmt.Errorf("refresh index %q: launch rebuild: %w", p.Project, err)
 		}
-
-		stats, err = engine.Rebuild(ctx, p.Project)
-		if err != nil {
-			return nil, fmt.Errorf("rebuild index: %w", err)
-		}
-
-		// 🔴 The operator asked for an index and there is none. Refuse — do not
-		// report a zero-count success. `{"status":"rebuilt"}` was previously
-		// returned here having walked nothing, which is worse than a missing
-		// feature: it CLOSES the investigation. An operator clearing a
-		// project-tree-coherence finding sees success, the next audit reports
-		// the finding again, and the natural reading is that the audit is
-		// flaky rather than that this tool lied (iter 265).
-		//
-		// The condition is "no store AND nothing indexed", not "no store".
-		// Since a583440 the iterations corpus is a second source that needs no
-		// palace store, so a project with iterations.md but no drawers gets a
-		// real index from a rebuild, with no store before or after it —
-		// refusing that would be this same defect inverted, reporting failure
-		// for work that was done. The session-note corpus is a third such
-		// source, and it widens that reach past note-only projects: ANY project
-		// with session notes now has indexable content here, whether or not it
-		// also has drawers, iterations or archives.
-		// ArchivesSkipped counts here as evidence, not just ArchivesIngested: an
-		// archive the ledger already covers is content this project HAS, so a
-		// second run over a project whose every archive is ingested must not
-		// suddenly report "nothing to refresh" for the corpus the first run
-		// filed. Without that term the ledger would turn a success into a
-		// refusal on the very next call.
-		if !hadStore && stats.Indexed == 0 && bf.ArchivesIngested == 0 && bf.ArchivesSkipped == 0 {
-			return nil, fmt.Errorf(
-				"refresh index %q: nothing to refresh — no palace store at palace/%s/drawers, "+
-					"and no indexable content anywhere (0 drawers, 0 iteration chunks, "+
-					"0 session-note chunks, %d transcript archives).\n"+
-					"This tool re-embeds an existing corpus, indexes the BODIES of any "+
-					"session notes under Projects/%s/sessions/, and backfills from ARCHIVED "+
-					"TRANSCRIPTS under Projects/%s/transcripts/; it cannot invent content "+
-					"that was never captured.\n"+
-					"Drawers are written at capture time from the TRANSCRIPT "+
-					"(internal/capture indexes the transcript, never the session note), so "+
-					"a project captured without a transcript and without an archive has no "+
-					"drawers. That is why the note bodies are a SEPARATE corpus source: a "+
-					"note IS captured content, so indexing it invents nothing, and a "+
-					"project with notes but no transcript is searchable through them. This "+
-					"project has neither.\n"+
-					"Next step: capture new work in this project normally. Do NOT delete "+
-					"the history — a session note here would make this project searchable "+
-					"on the next refresh, so the absence is of content, not of a repair "+
-					"path.",
-				p.Project, p.Project, bf.ArchivesFound, p.Project, p.Project)
-		}
-
-		return map[string]any{
-			"status":           "rebuilt",
-			"project":          p.Project,
-			"had_palace_store": hadStore,
-			"drawers":          stats.Drawers,
-			"iteration_chunks": stats.IterationChunks,
-			"note_chunks":      stats.NoteChunks,
-			"indexed":          stats.Indexed,
-			"embedded":         stats.Embedded,
-			"cache_hits":       stats.CacheHits,
-			"reaped":           stats.Reaped,
-			// Backfill counts are reported separately from the rebuild's own
-			// counts: "I re-embedded 40 drawers" and "I created 12 of them from
-			// archives just now" are different claims, and collapsing them would
-			// hide whether the backfill did anything.
-			"archives_found":    bf.ArchivesFound,
-			"archives_ingested": bf.ArchivesIngested,
-			// Archives the ingest ledger already covers, which were never
-			// opened on this call. Reported beside ingested rather than folded
-			// into it: "found 373, ingested 0, skipped 373" is the shape of a
-			// healthy second run, and it is unreadable if the two collapse.
-			"archives_skipped": bf.ArchivesSkipped,
-			"archive_drawers":  bf.Drawers,
-			"archive_failures": bf.Failures,
-		}, nil
+		return map[string]any{"started": true, "pid": pid, "log": logPath}, nil
 	}
+}
+
+// refreshDryRunResult renders a DryRunReport as the tool's result: per project
+// the pending archives and the baseline set separately with their bytes, plus
+// the estimate, the reserve, the free space and any start refusal.
+func refreshDryRunResult(rep ingest.DryRunReport) map[string]any {
+	projects := make([]map[string]any, 0, len(rep.Projects))
+	for _, pe := range rep.Projects {
+		projects = append(projects, map[string]any{
+			"project":                     pe.Project,
+			"pending_archives":            pe.PendingArchives,
+			"pending_compressed_bytes":    pe.PendingCompressedBytes,
+			"pending_uncompressed_bytes":  pe.PendingUncompressedBytes,
+			"baseline_archives":           pe.BaselineArchives,
+			"baseline_compressed_bytes":   pe.BaselineCompressedBytes,
+			"baseline_uncompressed_bytes": pe.BaselineUncompressedBytes,
+			"estimate_bytes":              pe.Estimate.Bytes,
+			"estimate_inodes":             pe.Estimate.Inodes,
+		})
+	}
+	out := map[string]any{
+		"dry_run":        true,
+		"projects":       projects,
+		"reserve_bytes":  rep.Reserve.Bytes,
+		"reserve_inodes": rep.Reserve.Inodes,
+		"free_bytes":     rep.Free.Bytes,
+	}
+	if rep.Free.HasInodes {
+		out["free_inodes"] = rep.Free.Inodes
+	}
+	if rep.Refusal != "" {
+		out["refusal"] = rep.Refusal
+	}
+	return out
+}
+
+// pidAlive reports whether pid names a live process. The holder record is
+// advisory and the spawned rebuild's own try-lock is authoritative, so a
+// conservative answer only ever costs an extra harmless spawn. A process alive
+// but owned by another user (EPERM) counts as alive.
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

@@ -53,6 +53,23 @@ type RunOptions struct {
 	// Explicit is true only for the rebuild driver: every pending archive,
 	// no baseline set, no failure limit, no size cap, no budget.
 	Explicit bool
+	// Only, when set, limits the pass to this single project (the rebuild
+	// driver's per-project explicit pass, so other projects are served only by
+	// its later automatic-scope rescan). Empty means the triggering project
+	// first, then the rest in slug order.
+	Only string
+	// Skip names projects left out of the pass entirely: not visited, not
+	// ingested, not rescanned (`vp index rebuild --skip`). A skipped project's
+	// ledger, baseline set and chunks are untouched.
+	Skip []string
+	// MaxArchives, when > 0, stops the pass after it has attempted that many
+	// archives, even in Explicit mode where there is otherwise no budget
+	// (`vp index rebuild --max-archives N`). The run then does not complete.
+	MaxArchives int
+	// NoEmbed makes every IngestArchive write chunks, local KG and the ledger
+	// but embed nothing, and skips the repair pass's vector re-embed
+	// (`vp index rebuild --no-embed`). The automatic ingester never sets it.
+	NoEmbed bool
 	// Checkpoint is passed to every IngestArchive; an error stops the run.
 	Checkpoint func(n int) error
 	// SkipHeal skips the graph heal for Project (the rebuild heals it once
@@ -63,6 +80,11 @@ type RunOptions struct {
 	Budget         RunBudget
 	FailureLimit   int
 	MaxSourceBytes int64
+}
+
+// skipped reports whether project is named by Skip.
+func (o RunOptions) skipped(project string) bool {
+	return slices.Contains(o.Skip, project)
 }
 
 func (o RunOptions) budget() RunBudget {
@@ -98,8 +120,12 @@ type RunResult struct {
 	Changed   int      // archives rewritten mid-run, left for the next run
 	Repaired  int      // archives re-ingested by the repair pass
 	Projects  []string // the projects the run visited (had archives or a ledger), in order
-	Stopped   string   // why the run stopped early: "budget", "wall clock", "checkpoint", "cancelled"
+	Stopped   string   // why the run stopped early: "budget", "wall clock", "max archives", "checkpoint", "cancelled"
 	Passes    int      // RunHeld passes, including re-runs before the release and after a re-acquire
+	// FailedSHAs is the source_sha256 of every archive that got a failure
+	// record in this run, so the rebuild driver can prove a completed rebuild
+	// (RunLock.CompletedRebuild) that keeps those failures named.
+	FailedSHAs []string
 }
 
 // ErrNoTarget: a run was not given a vault root and a project.
@@ -223,6 +249,11 @@ func (r *RunResult) add(o RunResult) {
 			r.Projects = append(r.Projects, p)
 		}
 	}
+	for _, s := range o.FailedSHAs {
+		if !slices.Contains(r.FailedSHAs, s) {
+			r.FailedSHAs = append(r.FailedSHAs, s)
+		}
+	}
 	if o.Stopped != "" {
 		r.Stopped = o.Stopped
 	}
@@ -231,25 +262,26 @@ func (r *RunResult) add(o RunResult) {
 // runState is the bookkeeping of one lock acquisition: its budget, and what
 // its passes did.
 type runState struct {
-	memo      *runMemo
-	start     time.Time
-	budget    RunBudget
-	admitted  int             // archives and repair units committed or attempted: the budget's count
-	skipped   map[string]bool // projects skipped (stale, or an error reading them): warned once
-	repaired  map[string]bool // projects whose repair pass ran
-	commits   map[string]int  // commits per project, for the heal
-	healedAt  map[string]int  // commits per project when it was last healed
-	firsts    map[string]map[string]bool
-	visited   []string
-	done      int
-	total     int
-	committed int
-	stopped   string
+	memo        *runMemo
+	start       time.Time
+	budget      RunBudget
+	maxArchives int             // MaxArchives cap (0 = none), honoured even in Explicit mode
+	admitted    int             // archives and repair units committed or attempted: the budget's count
+	skipped     map[string]bool // projects skipped (stale, or an error reading them): warned once
+	repaired    map[string]bool // projects whose repair pass ran
+	commits     map[string]int  // commits per project, for the heal
+	healedAt    map[string]int  // commits per project when it was last healed
+	firsts      map[string]map[string]bool
+	visited     []string
+	done        int
+	total       int
+	committed   int
+	stopped     string
 }
 
 func newState(d Deps, o RunOptions, memo *runMemo) *runState {
 	return &runState{
-		memo: memo, start: d.now(), budget: o.budget(),
+		memo: memo, start: d.now(), budget: o.budget(), maxArchives: o.MaxArchives,
 		skipped: map[string]bool{}, repaired: map[string]bool{}, commits: map[string]int{}, healedAt: map[string]int{},
 		firsts: map[string]map[string]bool{},
 	}
@@ -266,10 +298,18 @@ func (st *runState) visit(p string) {
 }
 
 // admit reports whether another archive or repair unit may start: the first
-// of an acquisition always may; after that, the archive count and the
+// of an acquisition always may; after that, the MaxArchives cap (honoured even
+// in Explicit mode), then, for an automatic run, the archive count and the
 // wall-clock cap, checked between archives through the injected clock.
 func (st *runState) admit(d Deps, explicit bool) bool {
-	if explicit || st.admitted == 0 {
+	if st.admitted == 0 {
+		return true
+	}
+	if st.maxArchives > 0 && st.admitted >= st.maxArchives {
+		st.stopped = "max archives"
+		return false
+	}
+	if explicit {
 		return true
 	}
 	if st.admitted >= st.budget.Archives {
@@ -306,7 +346,7 @@ func RunHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions
 // stops the run for the others.
 func runHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, st *runState) (RunResult, error) {
 	var res RunResult
-	projects, err := projectOrder(d, o.Project)
+	projects, err := projectOrder(d, o)
 	if err != nil {
 		return res, err
 	}
@@ -319,8 +359,13 @@ func runHeld(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions
 		if st.skipped[p] || st.firsts[p] != nil {
 			continue
 		}
-		if skip := staleSkip(d, p, st); skip {
-			continue
+		// An explicit rebuild processes a fingerprint-stale project (it has
+		// discarded and reset the fingerprint first); only the automatic pass
+		// skips one and leaves it to `vp index rebuild` (ruling B, round 7).
+		if !o.Explicit {
+			if skip := staleSkip(d, p, st); skip {
+				continue
+			}
 		}
 		entries, err := archive.ListEntries(d.Vault.Root, p)
 		if err != nil {
@@ -401,17 +446,28 @@ func (st *runState) skip(p, msg string, err error) {
 	st.memo.warnOnce("skip:"+p+":"+msg, msg, "project", p, "error", err)
 }
 
-// projectOrder is the triggering project, then every other project in slug
-// order.
-func projectOrder(d Deps, first string) ([]string, error) {
+// projectOrder is the order a pass visits projects: with Only set, that one
+// project alone; otherwise the triggering project, then every other project in
+// slug order. Projects named by Skip are left out of either form.
+func projectOrder(d Deps, o RunOptions) ([]string, error) {
+	if o.Only != "" {
+		if o.skipped(o.Only) {
+			return nil, nil
+		}
+		return []string{o.Only}, nil
+	}
 	all, err := d.Vault.ListAllProjects()
 	if err != nil {
 		return nil, err
 	}
-	out := []string{first}
+	first := o.Project
+	out := []string{}
+	if first != "" && !o.skipped(first) {
+		out = append(out, first)
+	}
 	var rest []string
 	for _, p := range all {
-		if p.Slug != first {
+		if p.Slug != first && !o.skipped(p.Slug) {
 			rest = append(rest, p.Slug)
 		}
 	}
@@ -660,7 +716,7 @@ func listedSHA(list []*archive.Entry, sha string) bool {
 // stopping).
 func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptions, p string, it item, st *runState, res *RunResult) (bool, error) {
 	sha := it.e.Manifest.SourceSHA256
-	r, err := IngestArchive(ctx, d, p, it.e, IngestOptions{Embed: true, Checkpoint: o.Checkpoint, Retarget: it.retarget})
+	r, err := IngestArchive(ctx, d, p, it.e, IngestOptions{Embed: !o.NoEmbed, Checkpoint: o.Checkpoint, Retarget: it.retarget})
 	if r.SHA != "" {
 		sha = r.SHA
 	}
@@ -704,6 +760,9 @@ func ingestOne(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOptio
 		res.Changed++
 	default:
 		res.Failed++
+		if sha != "" {
+			res.FailedSHAs = append(res.FailedSHAs, sha)
+		}
 		slog.Warn("ingest: archive failed", "project", p, "archive", it.e.ArchivePath, "source_sha256", sha, "error", err)
 		if ferr := recordFailure(ctx, d, p, it.e.Manifest.SessionID, sha, err); ferr != nil {
 			slog.Warn("ingest: could not record the failure", "project", p, "source_sha256", sha, "error", ferr)
@@ -803,7 +862,7 @@ func tidyProject(ctx context.Context, d Deps, p string, entries []*archive.Entry
 // predicate ReleaseAndRecheck calls after the release. A gone project has no
 // pending archive, so it never makes a run re-acquire (R6).
 func inScopePending(d Deps, o RunOptions) ([]string, error) {
-	projects, err := projectOrder(d, o.Project)
+	projects, err := projectOrder(d, o)
 	if err != nil {
 		return nil, err
 	}

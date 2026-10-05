@@ -193,7 +193,7 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 		}
 	}()
 
-	_, b.err = e.rebuildAndRemember(ctx, project, searchLockTimeout)
+	_, b.err = e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch)
 	finished = true
 	if isLockTimeout(b.err) {
 		if ok || inMemory {
@@ -753,7 +753,46 @@ type RebuildStats struct {
 // for the project's mutex and commit lock with no timeout. The lazy search
 // path (ensureIndex) builds through the same code with searchLockTimeout.
 func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeSearch)
+}
+
+// rebuildMode selects how a rebuild treats cache misses, tier by tier (the
+// explicit/lazy option of explicit-resumable-index-rebuild-with-disk-watchdog,
+// Scope 5). The search and ingest paths use the default (modeSearch); only the
+// `vp index rebuild` driver asks for the other two.
+type rebuildMode struct {
+	embedLocal  bool // embed local-tier (ledgered-source) misses too
+	embedOthers bool // embed decision/drawer/iteration/note misses
+}
+
+var (
+	// modeSearch is the lazy search/refresh default: the notes, decision,
+	// iteration and drawer tiers embed their misses; a local-tier miss is left
+	// to the ingester's repair pass or an explicit rebuild, and sets the
+	// missing-vector stale reason.
+	modeSearch = rebuildMode{embedLocal: false, embedOthers: true}
+	// modeExplicit (`vp index rebuild`) also embeds local-tier misses, so a
+	// completed rebuild repairs every missing vector.
+	modeExplicit = rebuildMode{embedLocal: true, embedOthers: true}
+	// modeNoEmbed (`vp index rebuild --no-embed`) embeds nothing: the index is
+	// built from cache hits only, and every miss is left out — a local-tier
+	// miss still sets the missing-vector stale reason.
+	modeNoEmbed = rebuildMode{embedLocal: false, embedOthers: false}
+)
+
+// RebuildExplicit rebuilds every tier like Rebuild, and additionally embeds
+// every local-tier cache miss, so a completed `vp index rebuild` leaves no
+// missing vector. The rebuild driver calls it.
+func (e *Engine) RebuildExplicit(ctx context.Context, project string) (RebuildStats, error) {
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeExplicit)
+}
+
+// RebuildNoEmbed rebuilds from embed-cache hits only, embedding nothing. A
+// local-tier miss is counted and sets the missing-vector stale reason, so a
+// `--no-embed` run can never read current with no vectors. The rebuild driver
+// calls it for `--no-embed`.
+func (e *Engine) RebuildNoEmbed(ctx context.Context, project string) (RebuildStats, error) {
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeNoEmbed)
 }
 
 // rebuildAndRemember rebuilds project and remembers the store counter its
@@ -762,13 +801,13 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 // counter past the remembered value, and the next search rebuilds again. The
 // cache forgets its remembered regime, so a regime another process replaced
 // is read afresh.
-func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration) (RebuildStats, error) {
+func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration, mode rebuildMode) (RebuildStats, error) {
 	e.buildMu.Lock()
 	inv := e.invalidated[project]
 	e.buildMu.Unlock()
 	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.cache.Forget(project)
-	return e.rebuild(ctx, project, timeout, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
+	return e.rebuild(ctx, project, timeout, mode, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
 }
 
 // buildStart is what a build knew when it started: the store counter (and
@@ -844,7 +883,7 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 // past timeout skips that write: the batch serves this process from memory and
 // is embedded again later, and the reap waits for the next build. Only a busy
 // mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
-func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, start buildStart) (RebuildStats, error) {
+func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, start buildStart) (RebuildStats, error) {
 	var stats RebuildStats
 	pl, err := e.lockProject(ctx, project, timeout)
 	if err != nil {
@@ -894,6 +933,9 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			return stats, err
 		}
 		if c.SourceType == storage.SourceTypeDecision {
+			if vec == nil && !mode.embedOthers {
+				continue // --no-embed: a decision miss is left out (cache hits only)
+			}
 			stats.DecisionChunks++
 			if c.Selected != nil {
 				decisionNotes[c.Selected.ID] = true
@@ -904,8 +946,16 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			}
 		} else {
 			if vec == nil {
-				facts.localMisses++
-				continue
+				if !mode.embedLocal {
+					// The default and --no-embed: leave the miss out and count
+					// it, so it sets the missing-vector stale reason.
+					facts.localMisses++
+					continue
+				}
+				// Explicit: embed this local-tier miss; it becomes a hit with a
+				// vector, so no missing-vector reason is set.
+				missIdx = append(missIdx, len(vecs))
+				missText = append(missText, c.Content)
 			}
 			facts.localHits++
 			if c.Selected != nil {
@@ -972,6 +1022,9 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 					return stats, err
 				}
 				if vec == nil {
+					if !mode.embedOthers {
+						continue // --no-embed: cache hits only
+					}
 					missIdx = append(missIdx, len(vecs))
 					missText = append(missText, d.Content)
 				}
@@ -1003,6 +1056,9 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			return stats, err
 		}
 		if vec == nil {
+			if !mode.embedOthers {
+				continue // --no-embed: cache hits only
+			}
 			missIdx = append(missIdx, len(vecs))
 			missText = append(missText, iterTexts[i])
 		}
@@ -1033,6 +1089,9 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			return stats, err
 		}
 		if vec == nil {
+			if !mode.embedOthers {
+				continue // --no-embed: cache hits only
+			}
 			missIdx = append(missIdx, len(vecs))
 			missText = append(missText, noteTexts[i])
 		}

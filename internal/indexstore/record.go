@@ -41,6 +41,42 @@ func record(ev lockEvent) {
 			(*o)(ev.project, CommitReleased)
 		}
 	}
+	if o := runObserver.Load(); o != nil {
+		switch ev.kind {
+		case evRunTry:
+			(*o)(RunTry)
+		case evRunAcquired:
+			(*o)(RunAcquired)
+		case evRunReleased:
+			(*o)(RunReleased)
+		}
+	}
+}
+
+// RunLockEvent is what ObserveRunLocks reports.
+type RunLockEvent string
+
+const (
+	// RunTry: a run lock try-acquire is about to happen (the only authoritative
+	// check; a status probe must never cause one).
+	RunTry RunLockEvent = "try"
+	// RunAcquired: the run lock is held.
+	RunAcquired RunLockEvent = "acquired"
+	// RunReleased: the run lock is released.
+	RunReleased RunLockEvent = "released"
+)
+
+// runObserver is ObserveRunLocks' observer.
+var runObserver atomic.Pointer[func(RunLockEvent)]
+
+// ObserveRunLocks installs f to see every run-lock try, acquire and release
+// this process performs, and returns a function that removes it. It is a TEST
+// SEAM, declared in non-test code because tests in other packages need it: the
+// rebuild driver pins that it try-locks the run lock exactly once per run and
+// that vp_refresh_index's probe never try-locks it. Production never sets it.
+func ObserveRunLocks(f func(RunLockEvent)) (restore func()) {
+	runObserver.Store(&f)
+	return func() { runObserver.Store(nil) }
 }
 
 // CommitLockEvent is what ObserveCommitLocks reports.

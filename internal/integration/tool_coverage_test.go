@@ -2202,16 +2202,17 @@ var toolCoverageFixtures = map[string]toolFixture{
 			return map[string]any{"project": "cov-refreshindex"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
+			// The tool now starts a DETACHED rebuild and returns at once; the
+			// harness's launcher records the spawn without running it.
 			var out struct {
-				Status  string `json:"status"`
-				Drawers int    `json:"drawers"`
+				Started bool `json:"started"`
 			}
 			covUnmarshal(t, payload, &out)
-			if out.Status != "rebuilt" {
-				t.Errorf("status = %q, want rebuilt", out.Status)
+			if !out.Started {
+				t.Errorf("result did not report a started rebuild: %s", payload)
 			}
-			if out.Drawers < 1 {
-				t.Errorf("drawers = %d, want >= 1 (one drawer was seeded)", out.Drawers)
+			if n := len(h.RecordedLaunches()); n != 1 {
+				t.Errorf("launched %d rebuilds, want 1", n)
 			}
 		},
 	},

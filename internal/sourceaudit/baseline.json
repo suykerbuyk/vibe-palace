@@ -153,6 +153,10 @@
       "reason": "DELIBERATE, and unlike the cmdCheck/cmdMCP entries the path is GENUINE: cmdHook -> runHook -> hook.Run -> archive.Create -> vaultfs.RenameNoLock is a real vault mutation reached by a real call chain. DECLARED WINS anyway, on a ruling that predates this derivation: internal/surface/gate.go documents EnforceWarnOnly as existing 'so an out-of-date binary can never block a capture or a read'. A capture that fail-stops is a capture that is LOST, and losing history to protect a schema is the wrong trade. This is one of the two disagreements the plan task predicted would be correct rather than fixable. Accepted."
     },
     {
+      "id": "derived-gate-divergence cli.cmdIndexRebuild",
+      "reason": "DECLARED UNGATED ON PURPOSE, the shape of derived-gate-divergence cli.cmdDrainArchives and cli.cmdSearch. `vp index rebuild` writes ONLY host-local state under the git-ignored palace/.local/ (the index store, ledger and local KG through indexstore.Tx, the embed cache through the Tx-bound writer, the run-lock holder record, and vp.log) and NO tracked vault content. Derived TRUE only through the static witness cmdIndexRebuild -> runIndexRebuild -> ingest.Rebuild -> indexstore.TryRunLock -> (*RunLock).writeHolderLocked -> indexstore.writeFile -> atomicfile.Write, whose vault root is \"\", so surface.StampForPath never runs and the static rules cannot see the \"\" argument. DECLARED WINS: gating the rebuild would make a binary older than the vault refuse to rebuild this host's own derived index, which ADR-014 does not ask for; the host-local index is per host and has no surface floor to protect. Task explicit-resumable-index-rebuild-with-disk-watchdog, Scope 1; ruled by the vibe-palace Chair (2026-10-04 go-ahead)."
+    },
+    {
       "id": "derived-gate-divergence cli.cmdMCP",
       "reason": "DELIBERATE, and the decision predates this rule. internal/mcp/tools.go: 'There is deliberately NO MCP startup gate — vp is MCP-primary, so the server stays up and the remediation surfaces in-band as a tool error payload.' Writes are gated PER TOOL at Registry.gateIfMutating, which both dispatch paths route through, and since 6254549 that gate is param-aware. A CLI-level mutates() here would refuse to start the server outright, taking vp_bootstrap_context away exactly when an agent needs to discover what is wrong. HONEST NOTE ON THE PATH: the witness runs cmdMCP -> serveMCP -> bootstrap -> tools.RegisterAll -> a tool constructor -> [closure] -> atomicfile.Write, which is REGISTRATION, not invocation — the same closure-attribution artifact as cli.cmdCheck. The exemption is real; this particular path is not evidence for it. Accepted."
     },
@@ -197,6 +201,10 @@
       "reason": "HOST-LOCAL, OUTSIDE THE FUNNEL ENTIRELY — derived FALSE, and correctly so: the tool's only write is EnqueueIterationSummaryTool -> summarize.EnqueueIterationSummary -> enqueue(), which writes a job file straight with os.WriteFile/os.MkdirAll against <project_path>/.vibe-palace/summarization-queue/ — never atomicfile.Write, vaultfs.RemoveNoLock/RenameNoLock, or Vault.appendUnderLock. It touches no vault content at all. DECLARED WINS anyway: MutatingToolNames's own doc comment scopes the gate to 'the vault (OR project-root state)', not vault content alone, and this queue file is exactly the project-root/host-local state class vp_stamp_iter and vp_ingest_commit_msg are gated for — it happens to sit even further outside the funnel than either of those (both of which route their own project-root writes through atomicfile.Write and so do not diverge here), because SummaryItem's on-disk shape is queue mechanics a stale binary could still write incompatibly with a newer drain. Fix direction: none expected — like cli.cmdConfigSync's host-local upgrade branch, this is deliberately raw, host-local I/O outside the funnel by design, not an omission."
     },
     {
+      "id": "derived-gate-divergence mcp.vp_refresh_index",
+      "reason": "DECLARED GATED (Mutating: true), derived FALSE — anticipated by task explicit-resumable-index-rebuild-with-disk-watchdog (round-1 review S2) and ruled by the vibe-palace Chair (2026-10-04 go-ahead, ruling E). Derived FALSE because vp_refresh_index no longer runs any index write in-process: its handler reads engine.TrulyEmpty and indexstore.ReadHolder (both read-only, no lock), and on the start path calls detachlaunch.LaunchFunc to spawn a DETACHED `vp index rebuild` child that does the host-local writes. The real work is behind a spawned process, invisible to per-function reachability — the same shape as derived-gate-divergence mcp.vp_trigger_summarization_drain. DECLARED WINS: the tool stays Mutating (it is listed in tools.MutatingToolNames and its most-privileged path launches a host-local-index writer); adopting the derived answer would silently ungate it. The dry_run path (ingest.DryRun) writes nothing and takes no lock."
+    },
+    {
       "id": "derived-gate-divergence mcp.vp_search",
       "reason": "DECLARED UNGATED ON PURPOSE: vp_search reaches Engine.Rebuild on a cold or out-of-date project (ensureIndex): its vector commits, its completeness record and its orphan reaper. the only writes on the path are the host-local derived index under palace/.local — ignored by git, not vault content (ADR-014): the per-project index commit lock and change counter that Engine.Rebuild takes (lockProject -> (*projectLock).Tx -> indexstore.Lock) and bumps to commit its embedded vectors in batches (Tx.PutVectors through (*EmbedCache).Writer: the vectors and their regime sidecar under palace/.local/embed-cache/<p>/), to record what the build found in palace/.local/index/<p>/completeness.json (writeCompletenessLocked -> Tx.WriteCompleteness, rewritten only when it changes), and to reap orphans (reapLocked -> Tx.Reap), and the reaper's unlinks of orphan vectors and orphan host-local records. The reach to a vault mutation primitive is static only: indexstore writes through atomicfile.Write with vaultRoot \"\", which never calls surface.StampForPath, and it removes nothing through vaultfs. Gating search would make a binary older than the vault refuse to SEARCH it, a behaviour change ADR-014 does not ask for; the host-local index is per host and has no surface floor to protect. RULED by the vibe-palace Chair, 2026-10-02 (task host-local-index-store-ledger-and-fingerprint, slice 3 review, B1): ACCEPTED. The writes are host-local under the git-ignored palace/.local, through atomicfile.Write with vault root \"\", so no surface stamp is written; gating search would make older binaries refuse to search newer vaults, contrary to ADR-014; and the static rules cannot see the \"\" argument (precedent: derived-gate-divergence mcp.vp_enqueue_iteration_summary)."
     },
@@ -219,6 +227,10 @@
     {
       "id": "ungated-vault-writer main.cmdHook",
       "reason": "DELIBERATE, and the path is GENUINE (main.cmdHook -> main.runHook -> hook.Run -> archive.Create -> archive.stampVault) — unlike the three entries above, this one really is a vault writer reached by a real call chain. It is exempt anyway: internal/surface/gate.go's EnforceWarnOnly is documented as \"Used by `vp hook` and read-only CLI commands so an out-of-date binary can never block a capture.\" A capture that fail-stops is a capture that is LOST, and losing history to protect a schema is the wrong trade. Accepted."
+    },
+    {
+      "id": "ungated-vault-writer main.cmdIndexRebuild",
+      "reason": "DECLARED UNGATED, same disposition as ungated-vault-writer main.cmdDrainArchives and main.cmdSearch: `vp index rebuild` writes ONLY host-local files under the git-ignored palace/.local/ (the index store, ledger, local KG, embed cache, run-lock holder record and vp.log) and NO tracked vault content; the static reach to atomicfile.Write is indexstore's write with vault root \"\", which writes no surface stamp. Task explicit-resumable-index-rebuild-with-disk-watchdog, Scope 1."
     },
     {
       "id": "ungated-vault-writer main.cmdMCP",
@@ -265,6 +277,10 @@
       "reason": "TEST-ONLY BY DESIGN (its own doc says 'useful for testing'), cross-package so it cannot move into a _test.go. Callers: cmd/vp/main_test.go and internal/cli/registry_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only intent declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked indexstore.DeleteLegacyLedgerIfUntracked",
+      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), which was this function's one caller (the top of the backfill, before it read the legacy ledger). The ingester no longer reads the legacy ledger at all. Child 4 depends on this child and deletes DeleteLegacyLedgerIfUntracked with the legacy reader and writer (IngestedArchives, RecordIngestedArchive); this entry goes stale and the gate demands its removal the moment that child lands."
+    },
+    {
       "id": "uninvoked indexstore.Ledger.Pending",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The pending fold. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (what to ingest) and index-coverage-instrument (the pending report). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
@@ -281,24 +297,12 @@
       "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because a test in another package needs it: internal/search pins that the engine's index sweep (indexstore.ReapGoneProjects) never runs while the engine holds an index commit lock (the sweep would then hold two). A lock taken and released leaves no other trace, so without it the sweep could move after indexstore.Lock (into (*projectLock).Tx, or under reapLocked's held lock) and every test would pass. Production never sets it. Task index-fingerprints-project-lifecycle-and-migration-marker (code review S1)."
     },
     {
-      "id": "uninvoked indexstore.RunLock.CompletedRebuild",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The only source of a RebuildProof. Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, when a rebuild run completes. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+      "id": "uninvoked indexstore.ObserveRunLocks",
+      "reason": "DELIBERATE TEST SEAM, the shape of uninvoked indexstore.ObserveCommitLocks, declared in non-test code because tests in other packages need it: explicit-resumable-index-rebuild-with-disk-watchdog pins that the rebuild driver try-locks the index run lock exactly once per run (TestRebuildTakesTheRunLockOnce, internal/ingest) and that vp_refresh_index's probe reads the holder record without ever try-locking it (TestRefreshIndexRefusesOnALiveHolder, internal/tools) — a try-lock taken and released leaves no other trace. Production never sets it."
     },
     {
       "id": "uninvoked indexstore.SetCommitStepHook",
       "reason": "TEST SEAM, deliberately uninvoked in production (delta re-review of pending-archive-ingester-and-per-archive-commit-step, M2): it lets a package that drives the store (internal/ingest) kill a commit right after a named durable step, as a crashed process would, so the ingester's crash tests (TestRunDropsAVanishedTargetsPartialKG) can prove a vanished supersede target's unledgered KG records are dropped. It only swaps the package's own commitStep seam and returns the restore; no production code calls it."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.ClearBaseline",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, with the proof of a completed rebuild. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.ClearFailures",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: explicit-resumable-index-rebuild-with-disk-watchdog, with the proof of a completed rebuild. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.ClearStale",
-      "reason": "STAGED API, ADR-014 decisions 3 and 8, task search-index-completeness-and-build-serialization Scope 3 (plan revisions R-2, R-3). Clears both stale reasons in completeness.json, refusing anything but a completed rebuild's RebuildProof. Non-test caller: the rebuild driver of explicit-resumable-index-rebuild-with-disk-watchdog, once every completed-rebuild condition holds. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.DeleteGraph",
@@ -317,10 +321,6 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (saving the graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked ingest.RunHeld",
-      "reason": "STAGED for explicit-resumable-index-rebuild-with-disk-watchdog (child 7), its one caller by design: the rebuild driver holds the index run lock itself (KindRebuild) and runs the pending-archive pass under it through RunHeld, which never takes, releases or re-acquires the lock (task pending-archive-ingester-and-per-archive-commit-step, Scope 4, 7-S4). Run uses the same internal pass (runHeld) with its own lock. TestRunHeldRunsUnderTheCallersLock pins it. Child 7's driver invokes it and deletes this entry."
-    },
-    {
       "id": "uninvoked mcp.KnowledgeURI",
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. The resource template IS registered so vibe-palace://knowledge/<project> resolves; no tool response ever hands one to a client. Its three former siblings here — CommandURI, SessionURI, SkillURI — were emitted by hoist-recovery-handles-above-bulk-across-the-surface and left this baseline; KnowledgeURI could NOT follow them, because it addresses a Knowledge markdown FILE while vp_get_knowledge returns KG TRIPLES. It is not a recovery handle for that tool's body, it is a pointer to a different document, so emitting it would have been a lie rather than a fix. Giving vp_get_knowledge a real hatch means paging its unbounded triple list, which is a design. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },
@@ -331,10 +331,6 @@
     {
       "id": "uninvoked palace.CompressBatch",
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
-    },
-    {
-      "id": "uninvoked search.Engine.TrulyEmpty",
-      "reason": "STAGED API, ADR-014 decision 8, task search-index-completeness-and-build-serialization Scope 5. The one \"truly empty\" predicate (no notes, iterations, tracked transcript archives, store chunks, or, without the marker, tracked drawers), loading no embedder. Non-test callers: search-first-build-and-empty-corpus-answer and index-coverage-instrument, which must not re-derive it. This entry goes stale the moment the first of them lands."
     },
     {
       "id": "uninvoked sourceaudit.Baseline.Diff",
@@ -363,6 +359,14 @@
     {
       "id": "uninvoked storage.RebindCheckout",
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
+    },
+    {
+      "id": "uninvoked storage.Vault.IngestedArchives",
+      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger reader. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes IngestedArchives with RecordIngestedArchive and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
+    },
+    {
+      "id": "uninvoked storage.Vault.RecordIngestedArchive",
+      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger writer. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes RecordIngestedArchive with IngestedArchives and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
     },
     {
       "id": "uninvoked storage.Vault.SetClock",

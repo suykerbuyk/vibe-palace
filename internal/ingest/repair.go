@@ -62,7 +62,7 @@ func repairProject(ctx context.Context, d Deps, o RunOptions, p string, st *runS
 		}
 		slog.Info("ingest: re-ingesting an archive short of chunks", "project", p, "archive", e.ArchivePath,
 			"owned", snap.CountChunks(indexstore.ArchiveOwner(sha)), "recorded", rec.ChunkCount)
-		_, err := IngestArchive(ctx, d, p, e, IngestOptions{Embed: true, Checkpoint: o.Checkpoint, Repair: true})
+		_, err := IngestArchive(ctx, d, p, e, IngestOptions{Embed: !o.NoEmbed, Checkpoint: o.Checkpoint, Repair: true})
 		st.admitted++
 		st.memo.attempted["repair:"+sha] = true
 		switch {
@@ -90,6 +90,11 @@ func repairProject(ctx context.Context, d Deps, o RunOptions, p string, st *runS
 // repairVectors re-embeds the missing vectors of chunks a ledgered archive or
 // batch owns, and clears the missing-vector reason once none is left.
 func repairVectors(ctx context.Context, d Deps, o RunOptions, p string, snap *indexstore.Store, st *runState) error {
+	if o.NoEmbed {
+		// --no-embed embeds nothing, so there is no vector repair to do; the
+		// missing-vector stale reason stays until a later run embeds.
+		return nil
+	}
 	byOwner := map[string]map[string]string{} // owner key -> chunk id -> content
 	var owners []string
 	for _, c := range snap.Chunks(true) {

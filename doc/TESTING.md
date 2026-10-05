@@ -3269,60 +3269,76 @@ The surviving property is covered by `TestBootstrapPushesHealthWhenDegraded` and
 
 ---
 
-## `vp_refresh_index` — the mutating flag and a ratchet that had to be narrowed
+## `vp_refresh_index` — a detached start, a probe that never locks, and the flag it keeps
 
-`internal/tools/refresh_index_backfill_test.go`. From
-`refresh-index-reports-rebuilt-while-writing-nothing`.
+`internal/tools/refresh_index_backfill_test.go` and
+`internal/tools/refresh_index_notes_test.go`. From
+`explicit-resumable-index-rebuild-with-disk-watchdog`, which turned this tool from
+a synchronous backfill into the detached front door of `vp index rebuild`.
 
-### 🔴 The ratchet this task ASKED for is the wrong test — do not reinstate it
+### Why the call returns before the work does
 
-The task demanded that a `"rebuilt"` status imply **at least one observable write**
-under `palace/<project>/`. That expectation is **refuted**. `Rebuild` builds the
-index IN MEMORY (`e.indexes[project]`); `.vec` files are written only as a
-cache-**MISS** side effect (`embedMisses` → `cache.Put`). A rebuild whose vectors
-are all cached correctly writes nothing, so the `dotfiles` control case the task
-filed as its sharpest evidence was legitimate behaviour.
+A rebuild ingests the historical backlog, re-embeds every cache miss and rebuilds
+every tier; measured against real archives it runs for minutes to hours, far past
+any MCP client's timeout. So the tool no longer rebuilds inside the call. On the
+start path it SPAWNS `vp index rebuild <project> --vault-root <root>
+[--max-archives N]` as a detached process (the registry's injected
+`detachlaunch.LaunchFunc`, output to `palace/.local/rebuild.log`) and returns
+`{started: true, pid, log}` at once. Progress is read through `vp_index_status`,
+never by waiting on this call. The old synchronous `backfillFromArchives` and its
+`{status:"rebuilt", archives_ingested, …}` result are gone; the ingest itself now
+lives in `internal/ingest` (the `ingest.Rebuild` driver over the shared
+`IngestArchive` commit step) and is pinned by that package's tests — a rebuild then
+a search that finds transcript text, resume, the single discard, the watchdog, and
+completion.
 
-That ratchet would have gone red on correct code, and the "fix" would have been to
-make the tool write something it does not need to write.
+### Two in-process checks before the spawn, and neither takes a lock
+
+The tool still answers two questions itself, cheaply and without a run lock:
+
+- **Nothing to refresh.** `engine.TrulyEmpty(project)` — no session notes, no
+  iterations, no tracked archives, no host-local chunks and (with no migration
+  marker) no tracked drawers — is refused, naming what a rebuild would index,
+  rather than spawning a run that could only no-op.
+- **A run already holds the lock.** The tool reads the run lock's ADVISORY holder
+  record (`indexstore.ReadHolder`) and, while it names a live pid, refuses naming
+  the holder — pid, kind, project and start time. It does **not** try-lock to find
+  out: a try-lock would hold the run lock for a moment, and a capture trigger that
+  collided with it would see the lock held, exit, and be lost with no rescan to
+  serve it. Reading the record never collides. Its answer is only advisory, so the
+  spawned process's own try-lock stays the authoritative check: if a run is in
+  fact holding the lock, the child exits naming the holder in its log, and because
+  this handler took no lock, a trigger arriving meanwhile is never turned away by
+  it.
+
+`dry_run: true` runs the preflight (`ingest.DryRun`) in-process instead of
+spawning: the pending archives and the baseline set counted separately with their
+bytes, the estimate, the reserve and the free space. It writes nothing and takes no
+lock.
 
 | Test | What it proves |
 |------|----------------|
-| `TestRefreshIndexRebuiltOnlyWhenThereWasSomethingToRefresh` | Ratchet 1, written to the property that IS true: `rebuilt` is claimed only when there was something to refresh, the refusal fires when there was not, and the counts that make the claim falsifiable are present with at least one non-zero. **Asserts no filesystem write** |
-| `TestRefreshIndexCacheHitRebuildIsLegitimate` | The control case, kept as a PASSING test so the refuted expectation cannot be re-derived from the symptom text. A second refresh is all cache hits: `indexed > 0` with `embedded == 0` is CORRECT |
+| `TestRefreshIndexStartsADetachedRebuild` | With a recording launcher, a project that has content returns `{started: true, pid, log}` after **exactly one** launch of `vp index rebuild <project> --vault-root <root>`, and the handler itself opened no archive and built no index |
+| `TestRefreshIndexRefusesOnALiveHolder` | A holder record naming a live pid: the tool refuses, naming pid, kind, project and start time, and records **zero** launches. A record naming a dead pid: the tool spawns. The handler never try-locks the run lock (`indexstore.ObserveRunLocks` records zero tries by it) |
+| `TestRefreshIndexFailedSpawn` | A launcher that returns an error: the tool returns an error naming it and reports no `started`; no lock was taken, so no trigger was lost |
+| `TestRefreshIndexNothingToRefreshStaysReachable` | A truly empty project is refused with zero launches; a notes-only project launches once — the refusal is driven by `TrulyEmpty`, not by counts a detached call no longer has |
+| `TestRefreshIndexDryRunIsInProcess` | `dry_run: true` returns the preflight report with pending and baseline counted separately, records zero launches, takes no run lock and leaves no holder record |
 | `TestRefreshIndexIsRegisteredMutating` | The flag itself, plus absence from `ReadOnlyServeToolNames` |
 
-`TestRefreshIndexStillRefusesWhenThereIsNothingToBackfill` (Piece 1) remains the
-no-store half; ratchet 1 sits beside it rather than replacing it.
+### Why the flag stays mutating
 
-### The session-note corpus narrowed the refusal — `refresh_index_notes_test.go`
-
-From `session-notes-without-transcript-have-no-index-backfill`. `Rebuild` gained
-a **third** corpus source (the bodies of `Projects/<slug>/sessions/*.md`), so a
-project captured as notes only — no transcript, no archive, no drawer store — now
-has indexable content and the refusal must no longer fire for it. The refusal's
-message also had to be corrected: its corpus enumeration was short by one source,
-and its "delete the orphaned history" advice became actively harmful.
-
-| Test | What it proves |
-|------|----------------|
-| 🔴 `TestRefreshIndexNoLongerRefusesANoteOnlyProject` | Drives the refusal **branch**, not its wording: `stats.Indexed` moves off zero, so `!hadStore && stats.Indexed == 0 && …` is unreachable for this project and the tool takes the success path. Asserts the search hit comes back with `source_type=session-note` and a navigable `source_ref`, and that the note pass created neither a drawer store nor a `kg/` directory. Carries no "unreachable before the refresh" control, unlike the archive test — `Engine.Search` calls `ensureIndex`, so the note corpus is reachable from the FIRST search with no explicit refresh at all |
-| `TestRefreshIndexStillRefusesAProjectWithNoNotesEither` | Keeps the refusal **reachable** — a refusal that can never fire is the failure mode one layer below the one this change fixes. Fixture asserted empty on all four axes (no store, no notes, no iterations, no archives). Also pins the corrected message: it enumerates `0 session-note chunks`, no longer advises deleting history the note corpus can index, and keeps the principle that the tool "cannot invent content that was never captured" |
-| `TestRefreshIndexNoteCorpusIsNotLimitedToNoteOnlyProjects` | The widened blast radius, pinned honestly: a project with iterations **and** notes gets both, `indexed == iteration_chunks + note_chunks`. Nothing in this change may claim the note source affects only note-only projects |
-
-### Why the flag is load-bearing in two places at once
-
-`vp_refresh_index` writes on three paths — the archive backfill via
-`AppendDrawer` → `atomicfile.Write`, `.vec` cache files on every embed miss, and
-`Rebuild` creating `palace/<slug>/`. Registered non-mutating, that one bit both
-under-gated the tool for a stale binary AND published a writer on the read-only
-`vp mcp serve` allow-list, which `readonly_serve.go` calls a security failure that
-is not detectable after the fact.
-
-Correcting it requires the constructor flag **and** a `MutatingToolNames` entry:
-`TestMutatingToolNamesMatchRegistry` pins that pair, and
-`TestReadOnlyServeAgreesWithSurfaceGateToday` / `TestReadOnlyServePartitionsTheRegistry`
-require the tool to move BETWEEN the two declarations rather than out of one.
+The tool keeps `Mutating: true`. Its start path launches a process that writes this
+host's local index under `palace/.local/` (the chunk store, the local KG, the
+ledger and the embed cache); the dry-run path writes nothing, but a tool is
+declared by its most-privileged path. Registered non-mutating, that one bit would
+both under-gate the tool for a stale binary and publish a writer on the read-only
+`vp mcp serve` allow-list, which `readonly_serve.go` treats as a security failure.
+The flag plus its `MutatingToolNames` entry are pinned together by
+`TestMutatingToolNamesMatchRegistry`, and
+`TestReadOnlyServeAgreesWithSurfaceGateToday` /
+`TestReadOnlyServePartitionsTheRegistry` keep the tool on the mutating side of the
+partition. The schema's new optional `max_archives` and `dry_run` fields (with
+`project` still required) are covered by the regenerated tool-surface golden.
 
 ---
 
