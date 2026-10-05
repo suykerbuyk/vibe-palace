@@ -1369,3 +1369,39 @@ func assertBytesEqual(t *testing.T, label string, want, got []byte) {
 	t.Errorf("%s: bytes differ between legacy and sync paths\n--- legacy ---\n%s\n--- sync ---\n%s",
 		label, want, got)
 }
+
+// With no git committer identity anywhere, vp config sync cannot commit the
+// vault .gitignore its Vault tier writes. It says so with the same remedy vp
+// init's [FAIL] Vault row gives, and exits non-zero, rather than skipping the
+// commit and leaving a vault the next sync refuses. user.useConfigOnly makes the
+// missing identity deterministic: without it git would invent one from the
+// host name on a host whose name has a domain.
+func TestConfigSync_NoGitIdentityReportsTheRemedyAndExitsNonZero(t *testing.T) {
+	if !storage.GitAvailable() {
+		t.Skip("git not in PATH")
+	}
+	_, _, projectDir := seedFreshVault(t)
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, []byte("[user]\n\tuseConfigOnly = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
+
+	var out string
+	var code int
+	errOut := captureStderr(t, func() { out, code = runSyncWithStdin(t, "", []string{"--project-root", projectDir, "--yes"}) })
+	if code != cli.ExitSystem {
+		t.Errorf("exit %d, want ExitSystem\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	folded := foldSpace(out + errOut)
+	for _, want := range []string{"no git identity configured", "set a git committer identity"} {
+		if !strings.Contains(folded, want) {
+			t.Errorf("config sync output does not name %q:\nstdout:\n%s\nstderr:\n%s", want, out, errOut)
+		}
+	}
+}
