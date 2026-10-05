@@ -267,8 +267,8 @@ func TestHeal_RefusedMergeIsLeftAlone(t *testing.T) {
 }
 
 // Mixed conflict, migrated (S6): a drawer UD plus a note UU. The heal is
-// all-or-nothing, so nothing is healed: pullCore leaves the merge for the
-// operator; mergeFetchedTip aborts and the drawer is restored. Mutant: a
+// all-or-nothing, so nothing is healed: both pullCore and mergeFetchedTip
+// abort, the drawer is restored, and the error names both paths. Mutant: a
 // partial heal.
 func TestHeal_MixedConflictIsNotHealed(t *testing.T) {
 	setup := func(t *testing.T) string {
@@ -290,18 +290,23 @@ func TestHeal_MixedConflictIsNotHealed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.RemoteResults["origin"] == nil || len(res.Derived.Healed) > 0 || !mergeInProgress(lag) {
-			t.Errorf("want the conflict left whole for the operator: %v, healed %q, in progress %v",
-				res.RemoteResults["origin"], res.Derived.Healed, mergeInProgress(lag))
+		rerr := res.RemoteResults["origin"]
+		var conflict *mergeConflictError
+		if !errors.As(rerr, &conflict) || len(res.Derived.Healed) > 0 || mergeInProgress(lag) {
+			t.Errorf("want the conflict aborted, nothing healed: %v, healed %q, in progress %v",
+				rerr, res.Derived.Healed, mergeInProgress(lag))
 		}
-		if !onDisk(lag, fixtureDrawer) {
-			t.Error("the drawer was deleted on a mixed conflict")
+		if rerr != nil && (!strings.Contains(rerr.Error(), "notes.md") || !strings.Contains(rerr.Error(), fixtureDrawer)) {
+			t.Errorf("the error must name both conflicting paths: %v", rerr)
+		}
+		if got, _ := os.ReadFile(filepath.Join(lag, fixtureDrawer)); !strings.Contains(string(got), "lag") {
+			t.Errorf("drawer not restored by the abort: %q", got)
 		}
 	})
 	t.Run("mergeFetchedTip", func(t *testing.T) {
 		lag := setup(t)
 		var rep DerivedMergeReport
-		if err := mergeFetchedTip(lag, "origin", "main", &rep); err == nil {
+		if _, err := mergeFetchedTip(lag, "origin", "main", &rep); err == nil {
 			t.Fatal("want the conflict to fail the merge")
 		}
 		if mergeInProgress(lag) || len(rep.Healed) > 0 {
@@ -526,8 +531,8 @@ func TestUntrack_FailureRestoresTheIndex(t *testing.T) {
 }
 
 // Malformed manifest in the MERGED TREE: the incoming migration carries
-// `authored_only = 5`. The heal fails closed: pullCore leaves the merge with
-// the error; mergeFetchedTip aborts with it. Mutant: the error read as
+// `authored_only = 5`. The heal fails closed: pullCore and mergeFetchedTip
+// both abort with the error. Mutant: the error read as
 // unmigrated (pullCore result without authored_only).
 func TestHeal_MalformedMarkerInTheMergedTree(t *testing.T) {
 	setup := func(t *testing.T) string {
@@ -549,13 +554,16 @@ func TestHeal_MalformedMarkerInTheMergedTree(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantMarkerErr(t, "pull", res.RemoteResults["origin"])
-		if len(res.Derived.Healed) > 0 || !mergeInProgress(lag) {
+		if len(res.Derived.Healed) > 0 || mergeInProgress(lag) {
 			t.Errorf("healed %q, in progress %v", res.Derived.Healed, mergeInProgress(lag))
+		}
+		if !tracked(t, lag, fixtureDrawer) {
+			t.Error("the drawer was not restored by the abort")
 		}
 	})
 	t.Run("mergeFetchedTip", func(t *testing.T) {
 		lag := setup(t)
-		err := mergeFetchedTip(lag, "origin", "main", nil)
+		_, err := mergeFetchedTip(lag, "origin", "main", nil)
 		wantMarkerErr(t, "mergeFetchedTip", err)
 		if mergeInProgress(lag) {
 			t.Error("merge left in progress")
@@ -591,7 +599,8 @@ func TestUntrack_MalformedHEADManifest(t *testing.T) {
 	}
 }
 
-// UU on kg/entities.jsonl is reported by name and never resolved.
+// UU on kg/entities.jsonl is reported by name and never resolved: the merge
+// is aborted with the lag host's own entities kept.
 func TestHeal_EntitiesBothChangedIsNamed(t *testing.T) {
 	const ent = "palace/p/kg/entities.jsonl"
 	w := newMergeWorld(t)
@@ -614,8 +623,11 @@ func TestHeal_EntitiesBothChangedIsNamed(t *testing.T) {
 	if rerr := res.RemoteResults["origin"]; rerr == nil || !strings.Contains(rerr.Error(), "unresolved conflict on "+ent) {
 		t.Errorf("want the entities conflict named: %v", rerr)
 	}
-	if !mergeInProgress(lag) {
-		t.Error("the conflict was resolved")
+	if mergeInProgress(lag) {
+		t.Error("the conflicted merge was left in progress")
+	}
+	if got := readFile(t, lag, ent); got != `{"id":"lag"}`+"\n" {
+		t.Errorf("entities = %q, want the lag host's own line kept", got)
 	}
 }
 
@@ -676,8 +688,8 @@ func TestPull_IsTheWayOutOfAMalformedMarker(t *testing.T) {
 
 // R3: the heal leaves an UNMIGRATED vault alone. Before the migration drawers
 // are tracked records, so a pulled drawer modify/delete conflict stays the
-// operator's: pullCore leaves the merge with the drawer on disk and unmerged,
-// and mergeFetchedTip aborts with the drawer kept. Mutant: the heal run
+// operator's: pullCore and mergeFetchedTip both abort with the drawer kept,
+// tracked, and named in the error. Mutant: the heal run
 // without the migrated check.
 func TestHeal_UnmigratedDrawerConflictIsLeftAlone(t *testing.T) {
 	setup := func(t *testing.T) string {
@@ -700,17 +712,18 @@ func TestHeal_UnmigratedDrawerConflictIsLeftAlone(t *testing.T) {
 		if res.RemoteResults["origin"] == nil || len(res.Derived.Healed) > 0 {
 			t.Errorf("want the conflict left alone: %v, healed %q", res.RemoteResults["origin"], res.Derived.Healed)
 		}
-		if !mergeInProgress(lag) || !onDisk(lag, fixtureDrawer) {
-			t.Errorf("in progress %v, drawer on disk %v; want both", mergeInProgress(lag), onDisk(lag, fixtureDrawer))
+		if mergeInProgress(lag) || !onDisk(lag, fixtureDrawer) || !tracked(t, lag, fixtureDrawer) {
+			t.Errorf("in progress %v, drawer on disk %v, tracked %v; want aborted with the drawer kept",
+				mergeInProgress(lag), onDisk(lag, fixtureDrawer), tracked(t, lag, fixtureDrawer))
 		}
-		if u := gitRun(t, lag, "ls-files", "-u", "--", fixtureDrawer); u == "" {
-			t.Error("the drawer is no longer in the conflict")
+		if rerr := res.RemoteResults["origin"]; rerr == nil || !strings.Contains(rerr.Error(), fixtureDrawer) {
+			t.Errorf("the error must name the drawer: %v", rerr)
 		}
 	})
 	t.Run("mergeFetchedTip", func(t *testing.T) {
 		lag := setup(t)
 		var rep DerivedMergeReport
-		if err := mergeFetchedTip(lag, "origin", "main", &rep); err == nil {
+		if _, err := mergeFetchedTip(lag, "origin", "main", &rep); err == nil {
 			t.Fatal("want the conflict to fail the merge")
 		}
 		if mergeInProgress(lag) || len(rep.Healed) > 0 || !onDisk(lag, fixtureDrawer) || !tracked(t, lag, fixtureDrawer) {

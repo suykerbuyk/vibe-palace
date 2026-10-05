@@ -30,7 +30,7 @@ import (
 // convergence push).
 var afterPushHook = func(remote string) {}
 
-// mergeTimeout is the deadline on the reconcile's merge (mergeFetchedTip). It
+// mergeTimeout is the deadline on the vault merge (mergeFetchedTip). It
 // is a variable only so a test can drive a merge past it; production code must
 // leave it alone.
 var mergeTimeout = 120 * time.Second
@@ -1010,7 +1010,7 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string, rep *De
 		if _, err := gitCmd(vaultPath, 60*time.Second, "fetch", remote); err != nil {
 			continue
 		}
-		mergeErr := mergeFetchedTip(vaultPath, remote, branch, rep)
+		_, mergeErr := mergeFetchedTip(vaultPath, remote, branch, rep)
 		var notStarted *mergeNotStartedError
 		var unsafe *vaultTreeUnsafeError
 		switch {
@@ -1518,17 +1518,18 @@ func commitPathspec(vaultPath string, limit time.Duration, message string, paths
 }
 
 // mergeFetchedTip merges the already-fetched <remote>/<branch> into HEAD — the
-// plain merge pullCore runs (vaultpull.go), and the commit-and-push reconcile's
-// only way of taking in a remote's commits. nil means HEAD now descends from
-// the remote tip.
+// one merge of incoming vault commits: pullCore's (vaultpull.go), and the
+// commit-and-push reconcile's only way of taking in a remote's commits. nil
+// means HEAD now descends from the remote tip. out is git's merge output,
+// empty when no merge ran.
 //
 // It only ever cleans up after a merge THIS call started. In order:
 //
 //  1. Any merge, cherry-pick, revert or rebase already in progress refuses,
-//     touching nothing (*vaultTreeUnsafeError). pullCore deliberately leaves a
-//     conflicted merge for the operator; merging over it fails and aborting
-//     it would destroy their hand resolution. A probe that cannot tell refuses
-//     the same way.
+//     touching nothing (*vaultTreeUnsafeError). vp never leaves one behind on
+//     purpose, so it is a human's (or a crashed process's): merging over it
+//     fails, and aborting it would destroy their hand resolution. A probe
+//     that cannot tell refuses the same way.
 //  2. The departure guard: a remote tip that takes away a project this host
 //     still has work under is refused with the *DepartedWorkError, before
 //     anything changes. It runs here so no caller can merge without it.
@@ -1539,8 +1540,9 @@ func commitPathspec(vaultPath string, limit time.Duration, message string, paths
 //     own) and a half-updated tree with no MERGE_HEAD, so it is reported as
 //     such (*vaultTreeUnsafeError, killedMergeError).
 //  5. A merge this call left in progress (MERGE_HEAD, or unmerged paths) is
-//     aborted with `merge --abort`. A failed abort is joined into the error and
-//     is *vaultTreeUnsafeError.
+//     aborted with `merge --abort` and returned as *mergeConflictError, which
+//     names the paths that conflicted (listed before the abort). A failed
+//     abort is *vaultTreeUnsafeError wrapping it.
 //  6. Anything else is git refusing before it changed anything — staged
 //     changes in the index, or the incoming change touching a modified or
 //     untracked file in the way — returned as *mergeNotStartedError.
@@ -1551,29 +1553,27 @@ func commitPathspec(vaultPath string, limit time.Duration, message string, paths
 // paths the merged tree tracks are UNTRACKED and committed. A failed untrack
 // is *derivedUntrackError: the merge stands, and the caller does not push.
 // rep, when non-nil, collects what both did.
-func mergeFetchedTip(vaultPath, remote, branch string, rep *DerivedMergeReport) error {
+func mergeFetchedTip(vaultPath, remote, branch string, rep *DerivedMergeReport) (out string, err error) {
 	ref := remote + "/" + branch
-	if op, err := operationInProgress(vaultPath); err != nil {
-		return &vaultTreeUnsafeError{fmt.Errorf("refusing to merge %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", ref, err)}
-	} else if op != "" {
-		return &vaultTreeUnsafeError{fmt.Errorf("refusing to merge %s: %s is in progress in the vault and vp did not start it; nothing was touched — conclude or abort it by hand first", ref, describeOperation(op))}
+	if refusal := refuseOperationInProgress(vaultPath, "merge "+ref); refusal != nil {
+		return "", refusal
 	}
 	if derr := guardIncomingDepartures(vaultPath, remote, branch); derr != nil {
-		return derr
+		return "", derr
 	}
-	_, mergeErr := gitCmd(vaultPath, mergeTimeout, "merge", ref)
+	out, mergeErr := gitCmd(vaultPath, mergeTimeout, "merge", ref)
 	if mergeErr == nil {
-		return untrackAfterMerge(vaultPath, rep)
+		return out, untrackAfterMerge(vaultPath, rep)
 	}
 	if killed := killedMergeError(vaultPath, ref, mergeErr); killed != nil {
-		return &vaultTreeUnsafeError{killed}
+		return out, &vaultTreeUnsafeError{killed}
 	}
 	op, err := operationInProgress(vaultPath)
 	if err != nil {
-		return &vaultTreeUnsafeError{fmt.Errorf("%w; and whether it left a merge in progress cannot be told: %w", mergeErr, err)}
+		return out, &vaultTreeUnsafeError{fmt.Errorf("%w; and whether it left a merge in progress cannot be told: %w", mergeErr, err)}
 	}
 	if op != "MERGE_HEAD" && len(unmergedPaths(vaultPath)) == 0 {
-		return &mergeNotStartedError{mergeErr}
+		return out, &mergeNotStartedError{mergeErr}
 	}
 	var (
 		healed, named []string
@@ -1585,13 +1585,91 @@ func mergeFetchedTip(vaultPath, remote, branch string, rep *DerivedMergeReport) 
 	}
 	if healErr == nil && handled {
 		rep.add(DerivedMergeReport{Healed: healed})
-		return untrackAfterMerge(vaultPath, rep)
+		return out, untrackAfterMerge(vaultPath, rep)
 	}
-	mergeErr = joinHealOutcome(mergeErr, named, healErr)
+	// The paths are listed from entries, read BEFORE the abort: after it the
+	// index has no unmerged entries left to name.
+	conflict := &mergeConflictError{
+		err:   joinHealOutcome(mergeErr, named, healErr),
+		ref:   ref,
+		tip:   shortTip(vaultPath, ref),
+		paths: entryPaths(entries),
+	}
 	if _, abortErr := gitCmd(vaultPath, 10*time.Second, "merge", "--abort"); abortErr != nil {
-		return &vaultTreeUnsafeError{fmt.Errorf("%w; abort failed: %w", mergeErr, abortErr)}
+		conflict.abortErr = abortErr
+		return out, &vaultTreeUnsafeError{conflict}
 	}
-	return mergeErr
+	return out, conflict
+}
+
+// refuseOperationInProgress refuses, as *vaultTreeUnsafeError, when a merge,
+// cherry-pick, revert or rebase is in progress in the vault, or when that
+// cannot be told. what names the refused action ("merge origin/main",
+// "pull"). vp never leaves one of these behind on purpose, so it belongs to
+// someone else, and nothing may touch the tree under it.
+func refuseOperationInProgress(vaultPath, what string) error {
+	op, err := operationInProgress(vaultPath)
+	if err != nil {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: cannot tell whether a git operation is in progress, so nothing was touched: %w", what, err)}
+	}
+	if op != "" {
+		return &vaultTreeUnsafeError{fmt.Errorf("refusing to %s: %s is in progress in the vault and vp did not start it; nothing was touched — conclude or abort it by hand first", what, describeOperation(op))}
+	}
+	return nil
+}
+
+// mergeConflictError is a merge mergeFetchedTip started that conflicted on
+// paths the derived heal did not take. With abortErr nil the merge was
+// aborted: HEAD, the index and the conflicted files are as they were before
+// it. With abortErr set the abort failed, the conflicted merge is still in
+// the tree, and the error is always wrapped in *vaultTreeUnsafeError.
+type mergeConflictError struct {
+	err      error    // git's merge error, joined with what the heal found
+	ref      string   // the merged ref, <remote>/<branch>
+	tip      string   // the incoming tip, short; empty when it could not be read
+	paths    []string // the unmerged paths, listed before the abort
+	abortErr error
+}
+
+func (e *mergeConflictError) Error() string {
+	what := e.ref
+	if e.tip != "" {
+		what += " at " + e.tip
+	}
+	on := "paths that could not be listed"
+	if len(e.paths) > 0 {
+		on = strings.Join(e.paths, ", ")
+	}
+	if e.abortErr != nil {
+		return fmt.Sprintf("%v; the merge of %s conflicted on %s; abort failed, so the conflicted merge is still in the vault: %v", e.err, what, on, e.abortErr)
+	}
+	return fmt.Sprintf("%v; the merge of %s conflicted on %s and was aborted, so nothing was merged", e.err, what, on)
+}
+
+func (e *mergeConflictError) Unwrap() []error {
+	if e.abortErr != nil {
+		return []error{e.err, e.abortErr}
+	}
+	return []error{e.err}
+}
+
+// shortTip is ref's commit as a short SHA, or "" when it cannot be read: it
+// only decorates an error, so it never fails one.
+func shortTip(vaultPath, ref string) string {
+	tip, err := gitCmd(vaultPath, 5*time.Second, "rev-parse", "--short", ref)
+	if err != nil {
+		return ""
+	}
+	return tip
+}
+
+// entryPaths is the paths of entries, in order.
+func entryPaths(entries []unmergedEntry) []string {
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.path)
+	}
+	return paths
 }
 
 // untrackAfterMerge runs the post-merge untrack and reports it, wrapping a
@@ -1701,7 +1779,7 @@ func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult)
 	// failure (a departure refusal, an aborted conflict, a refusal before the
 	// merge started, a killed merge) skips the push for this remote — the
 	// commit stays local (Stranded surfaces it).
-	if mergeErr := mergeFetchedTip(vaultPath, remote, branch, &result.Derived); mergeErr != nil {
+	if _, mergeErr := mergeFetchedTip(vaultPath, remote, branch, &result.Derived); mergeErr != nil {
 		result.RemoteResults[remote] = reconcileFailure("merge of "+remote+"/"+branch+" failed", mergeErr)
 		return false
 	}

@@ -729,8 +729,8 @@ between our push and the convergence is not overwritten),
 commit, not the merge on top of it), and the source pin `TestNoVaultPushForces`
 (no production file in `internal/storage` spells `--force`,
 `--force-with-lease`, `-f` or a `+refspec` on a push; its subtest proves it fires).
-`_LeavesAMergeItDidNotStartAlone` (a hand-resolved merge pullCore left in
-progress: the call refuses naming `MERGE_HEAD`, and the resolution's bytes, index
+`_LeavesAMergeItDidNotStartAlone` (a hand-resolved merge in progress that vp
+did not start: the call refuses naming `MERGE_HEAD`, and the resolution's bytes, index
 entry and `MERGE_HEAD` survive — `mergeFetchedTip` only aborts a merge it
 started), `TestKilledMergeErrorNamesTheLockAndRemovesNothing` (a deadline kill is
 reported as one, names the `index.lock` it left, and removes nothing),
@@ -824,6 +824,27 @@ bare-remote + clone fixtures):
 | `TestPull_NonMainBranch` | Heal + merge work against a non-`main` branch |
 | `TestDirtyTemplateCommandPaths` | The dirty-path scan (reusing tidy's porcelain parser) selects exactly `Templates/commands/*.md` |
 | `TestPullResult_Stranded` | `Stranded()` reports a pull that reached no remote |
+| `TestPull_ConflictSkipsTheLaterRemotes` | A conflict on the first remote is aborted, and every later remote is skipped with the reason restated, never fetched |
+
+#### A conflicted pull is aborted (`vault-pull-leaves-a-conflicted-merge-in-the-shared-tree`)
+
+`internal/storage/pull_conflict_test.go`, toy repos with real `git`; the git
+shim is `reconcileGitShim` (`vaultsync_merge_test.go`).
+
+| Test | What it proves |
+|------|----------------|
+| `TestPull_ConflictIsAbortedAndNamed` | No `MERGE_HEAD` or unmerged entry is left; HEAD, the conflicted file and the host's unrelated dirt are unchanged; the `*mergeConflictError` names the paths, `origin/main`, the short tip and the remedy; git's output is kept |
+| `TestPull_ConflictNeverBlocksATypedWriter` | After a conflicted pull a typed writer's pathspec commit goes through (the iteration-413 jam) |
+| `TestPull_NeverAbortsAMergeItDidNotStart` | A merge in progress that vp did not start is refused, naming `MERGE_HEAD`: a human's staged template resolution keeps its bytes and index entry (the heal used to discard it), and a derived-only conflict is not healed and committed (`healConflicts` is never called) |
+| `TestPull_KilledMergeIsNotAborted` | `hang-merge` and `signal-merge`: the killed-merge wording and its `index.lock` clause, the lock kept, no `merge --abort`, the later remote skipped and never fetched |
+| `TestPull_FailedAbortIsTreeUnsafe` | A failed `merge --abort` is `*vaultTreeUnsafeError` naming the abort's failure, never "was aborted", and stops the sweep |
+| `TestPullSweepStops`, `TestPull_RefusedMergeMovesOn`, `TestPull_UntrackFailureMovesOn` | The per-error sweep rule: stop on a conflict, an unsafe tree, a departure or anything unrecognised; go on after a merge refused before it started or a failed untrack |
+| `TestPull_CleanMergeKeepsGitOutput` | `RemoteOutput` still carries git's merge output through the shared merge |
+
+The pullCore halves of `TestHeal_MixedConflictIsNotHealed`,
+`TestHeal_MalformedMarkerInTheMergedTree`, `TestHeal_UnmigratedDrawerConflictIsLeftAlone`
+and `TestHeal_EntitiesBothChangedIsNamed` changed from "the merge is left in
+progress" to "aborted, the drawer or entities file restored, the error kept".
 
 ### `internal/storage/` — Vault Sync Orchestration (tidy-before-push)
 
@@ -841,7 +862,7 @@ fixtures):
 | `TestSyncVault_GenuineDirtRefusesBeforeNetwork` | Genuine non-artifact dirt refuses the sync up front, before any pull/push |
 | `TestSyncVault_MemoryDoesNotBlock` | Pending `Projects/<slug>/memory/…` is expected, not dirt — it never blocks the sync |
 | `TestSyncVault_DeferredInFlightTranscript` | A `.jsonl.zst` whose sibling manifest is not yet on disk is deferred, never committed half-complete |
-| `TestSyncVault_PullConflictAbortsBeforePush` | A merge conflict (recorded in `RemoteResults`, not the Go error) aborts before the push |
+| `TestSyncVault_PullConflictAbortsBeforePush` | A merge conflict (recorded in `RemoteResults`, not the Go error) stops the sync before the push, with the conflict aborted and named |
 | `TestTidyVault_DefersInFlightTranscript` | The classifier routes the manifest-pending transcript half to `Deferred`, not `Swept` |
 | `TestPushPlain_SingleRemote` / `_TwoRemotesBothSucceed` / `_BadRemoteBestEffort` | The plain-push loop attempts every remote best-effort and returns no top-level error |
 

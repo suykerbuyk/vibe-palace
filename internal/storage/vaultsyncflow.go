@@ -137,13 +137,11 @@ func SyncPreview(vaultPath string) (scan *TidyResult, refused bool, err error) {
 //     uncommitted non-artifact work must get human eyes before we entangle it
 //     with a merge. Memory is NOT dirt (decision 7) and never blocks.
 //
-//   - The pull gate is on the VERDICT, not the Go error (FINDING A). Pull
-//     returns err == nil UNCONDITIONALLY — a merge conflict is recorded ONLY in
-//     PullResult.RemoteResults, and Pull leaves conflict markers plus unmerged
-//     index entries in the tree with no cleanup. A bare `if err != nil` would
-//     sail straight past a conflicted merge and push the broken tree. Gate on
-//     RemoteVerdict, which reads RemoteResults. DO NOT "simplify" this into an
-//     error check.
+//   - The pull gate is on the VERDICT, not the Go error (FINDING A). A merge
+//     failure — a conflict, which pullCore aborts, a refusal, a killed merge —
+//     is recorded ONLY in PullResult.RemoteResults. A bare `if err != nil`
+//     would sail straight past it and push. Gate on RemoteVerdict, which reads
+//     RemoteResults. DO NOT "simplify" this into an error check.
 //
 //   - A post-merge re-assert (FINDING A) runs even after a clean pull verdict:
 //     a merge that reports success can still leave residue (a half-applied
@@ -217,9 +215,9 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 		result.CommitSHA = tidy.CommitSHA
 	}
 
-	// 4. Pull each remote. Pull ALWAYS returns err == nil; the real verdict lives
-	// in RemoteResults (FINDING A). Gate on RemoteVerdict — a non-empty verdict
-	// (a failed fetch/merge or a conflict) aborts before we push over it.
+	// 4. Pull each remote. A merge failure lives in RemoteResults (FINDING A).
+	// Gate on RemoteVerdict — a non-empty verdict (a failed fetch/merge or an
+	// aborted conflict) stops before we push.
 	pull, _ := pullCore(vaultPath, remotes)
 	result.Pull = pull
 	// Right after the merge and BEFORE the verdict gate below, so a sync that

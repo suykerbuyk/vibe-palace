@@ -123,12 +123,12 @@ func TestSyncVault_MemoryDoesNotBlock(t *testing.T) {
 }
 
 // TestSyncVault_PullConflictAbortsBeforePush is the critical FINDING A guard.
-// Pull returns err == nil even on a merge conflict; the conflict lives only in
-// PullResult.RemoteResults, and SyncVault must gate on the VERDICT, not the Go
-// error. We create a genuine divergence on a tracked file so step 4's merge
-// conflicts, then assert SyncVault returns a non-nil error AND the bare remote's
-// ref was NOT advanced to the local HEAD — proving the conflicted local commit
-// was never pushed.
+// Pull returns err == nil on a merge conflict; the conflict (aborted) lives
+// only in PullResult.RemoteResults, and SyncVault must gate on the VERDICT. We
+// create a genuine divergence on a tracked file so step 4's merge conflicts,
+// then assert SyncVault fails with the conflict named per remote, the bare
+// remote's ref was NOT advanced — the conflicted local commit was never
+// pushed — and the vault is left with no merge in progress.
 func TestSyncVault_PullConflictAbortsBeforePush(t *testing.T) {
 	dir, bare := syncSeedRemote(t)
 
@@ -157,6 +157,12 @@ func TestSyncVault_PullConflictAbortsBeforePush(t *testing.T) {
 	}
 	if res.Pull.RemoteResults["origin"] == nil {
 		t.Error("the conflict must be recorded in Pull.RemoteResults[origin]")
+	}
+	if rerr := res.Pull.RemoteResults["origin"]; rerr == nil || !strings.Contains(rerr.Error(), "conflicted on F.md and was aborted") {
+		t.Errorf("the pull result must name the aborted conflict: %v", rerr)
+	}
+	if gitPathExists(t, dir, "MERGE_HEAD") || gitRun(t, dir, "ls-files", "-u") != "" {
+		t.Error("the sync left the conflicted merge in the vault")
 	}
 	if res.Push != nil {
 		t.Error("push must never run after a conflicted pull")

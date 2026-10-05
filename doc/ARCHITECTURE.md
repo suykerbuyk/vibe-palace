@@ -718,11 +718,37 @@ mirrors `PushResult` but drops `CommitSHA`, adds `HealedTemplates []string` and
 `RemoteOutput map[string]string`, and exposes `AllPulled()` / `AnyPulled()` /
 `Stranded()` alongside the per-remote `RemoteResults`.
 
-`Pull` keeps **plain merge semantics** — the same merge the push path's
-reconcile runs (`mergeFetchedTip`), but without its abort-on-conflict or its
-fast-forward converge loop: incoming history is merged, never replayed. It attempts **every** remote and records each outcome in
-`RemoteResults` rather than aborting internally, leaving each front-end its own
-policy. The CLI `pullAll` is best-effort / continue-all, adds a CLI-only
+`Pull` keeps **plain merge semantics** and merges through the same function as
+the push path's reconcile (`mergeFetchedTip`), without its fast-forward converge
+loop: incoming history is merged, never replayed. It attempts every remote and
+records each outcome in `RemoteResults`, leaving each front-end its own policy,
+and stops the sweep only on the failures `pullSweepStops` names.
+
+**A conflicted pull is aborted** (`vault-pull-leaves-a-conflicted-merge-in-the-shared-tree`,
+2026-10-04). A pull used to leave `MERGE_HEAD` and conflict markers in the shared
+vault, and every typed writer then failed with `cannot do a partial commit during
+a merge` until a human resolved it (the iteration-413 jam). The rule is now the
+reconcile's: vp aborts only a conflicted merge it started, and never touches one
+it did not start.
+
+- `pullCore` refuses outright, before the template heal, when a merge,
+  cherry-pick, revert or rebase is already in progress (`refuseOperationInProgress`);
+  the heal would otherwise discard a human's staged resolution of a template.
+  `mergeFetchedTip` refuses the same state again under the commit lock.
+- A conflict the derived-path heal does not take is aborted. The error
+  (`*mergeConflictError`) names the paths, listed before the abort, the ref, the
+  incoming tip, and the remedy: merge by hand, resolve, commit, then `vp vault
+  sync`. Every abort logs a warning.
+- A killed merge is never aborted and removes nothing; a failed abort is
+  `*vaultTreeUnsafeError`. Both stop the sweep, as do a conflict and a departure.
+  A merge refused before it started, and a failed derived untrack, go on to the
+  next remote.
+
+What an abort does **not** restore: template dirt the phantom heal discarded
+before the merge (only ever bytes equal to the remote's), and a writer's edit to
+a conflicted file landing between the merge and the abort (typed writers lock per
+file, not the root key the merge holds). Both are recorded on
+`vault-git-stranded-state-is-reported-nowhere`. The CLI `pullAll` is best-effort / continue-all, adds a CLI-only
 `--dry-run`, and re-prints each remote's captured output to stderr; the MCP
 `gitPull` is fail-fast (returns on the first failing remote) and folds the
 captured output into its response payload.
@@ -748,7 +774,7 @@ rename/copy handling* above) — no new porcelain parser was added.
 
 The heal clears a **dirty-tree obstruction only**; it is not a committed-conflict
 resolver. A template that has genuinely diverged at the commit level on two hosts
-still produces a normal merge conflict, exactly as before.
+still produces a merge conflict, which the pull aborts and names.
 
 ---
 

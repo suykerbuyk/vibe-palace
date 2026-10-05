@@ -32,10 +32,11 @@ const departureGuardMaxPaths = 12
 // re-create or conflict on. It must be called AFTER the remote was fetched and
 // BEFORE anything merges, rebases or heals.
 //
-// 🔴 EVERY MERGE AND REBASE OF INCOMING VAULT COMMITS CALLS THIS. There are
-// exactly two in the tree, both merges — pullCore's, and mergeFetchedTip, the
-// one merge both commit-and-push reconciles (reconcileIfAhead, and
-// pushCommitted's on a rejected push) go through — plus SyncVault's pre-flight, which
+// 🔴 EVERY MERGE AND REBASE OF INCOMING VAULT COMMITS CALLS THIS. There is
+// exactly one in the tree, a merge: mergeFetchedTip, which pullCore and both
+// commit-and-push reconciles (reconcileIfAhead, and pushCommitted's on a
+// rejected push) go through. pullCore also calls this itself, before its
+// template heal, so a refusal touches nothing; and SyncVault's pre-flight
 // runs it before its own tidy commit so a refusal leaves HEAD untouched. They
 // are all in this package, which the CLI, the MCP tools and the SessionEnd
 // hook's harvest all reach, so no front end can bypass it.

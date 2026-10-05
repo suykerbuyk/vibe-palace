@@ -216,13 +216,14 @@ func TestPull_RestartFlow(t *testing.T) {
 	}
 }
 
-// TestPull_ConflictStopsSweep proves Fix #2: once a remote's merge leaves the
-// tree with unmerged (conflict) paths, the sweep stops — every later remote is
-// recorded with the skip sentinel and is never fetched or merged. origin diverges
-// from a divergent local commit on the same line (a real merge conflict); backup
-// is a healthy remote that would otherwise merge, proving it was deliberately
-// skipped rather than failing on its own.
-func TestPull_ConflictStopsSweep(t *testing.T) {
+// TestPull_ConflictSkipsTheLaterRemotes proves Fix #2 under the abort: once a
+// remote's merge conflicts, the merge is aborted and the sweep stops — every
+// later remote is recorded skipped, with the reason restated, and is never
+// fetched or merged. origin diverges from a divergent local commit on the same
+// line (a real merge conflict); backup is a healthy remote that would otherwise
+// merge, proving it was deliberately skipped rather than failing on its own.
+// Mutant: the stop-the-sweep return removed.
+func TestPull_ConflictSkipsTheLaterRemotes(t *testing.T) {
 	dir := initTestRepo(t)
 	origin := initBareRemote(t)
 	backup := initBareRemote(t)
@@ -252,11 +253,14 @@ func TestPull_ConflictStopsSweep(t *testing.T) {
 	if skip == nil {
 		t.Fatalf("backup should be recorded as skipped, got nil")
 	}
-	if !strings.Contains(skip.Error(), "skipped") {
-		t.Errorf("backup should carry the skip sentinel, got %v", skip)
+	if !strings.Contains(skip.Error(), "skipped: origin conflicted and its merge was aborted, so nothing was merged") {
+		t.Errorf("backup should carry the restated skip reason, got %v", skip)
 	}
 	if out, ok := res.RemoteOutput["backup"]; ok && out != "" {
 		t.Errorf("skipped backup must never be attempted (no output), got %q", out)
+	}
+	if gitPathExists(t, dir, "MERGE_HEAD") || gitRun(t, dir, "ls-files", "-u") != "" {
+		t.Error("the conflicted merge was left in the tree")
 	}
 }
 

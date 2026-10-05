@@ -4,7 +4,9 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,11 +20,12 @@ import (
 // can re-print without Pull ever touching os.Stderr.
 type PullResult struct {
 	// RemoteResults is the per-remote pull outcome (nil = success). Pull attempts
-	// every remote in the slice and records each result here, stopping early only
-	// when a merge leaves the tree with unmerged (conflict) paths: no later remote
-	// can merge onto a conflicted tree, so the remaining remotes are recorded with
-	// a skip sentinel instead of being attempted. Best-effort callers iterate the
-	// whole map; fail-fast callers stop at the first non-nil entry.
+	// every remote in the slice and records each result here, stopping early
+	// only on the failures pullSweepStops names — a conflict (aborted), a tree
+	// nothing may merge into, a departure — after which the remaining remotes
+	// are recorded with a skip reason instead of being attempted. Best-effort
+	// callers iterate the whole map; fail-fast callers stop at the first
+	// non-nil entry.
 	RemoteResults map[string]error
 	// RemoteOutput holds the combined (stdout+stderr) git output per remote — the
 	// pull's merge output, or the fetch error output when the pre-pull fetch
@@ -113,20 +116,22 @@ func (r *PullResult) Stranded() bool {
 // RemoteResults rather than aborting internally — the two front-ends differ on
 // error semantics (best-effort vs fail-fast), output channel, and a CLI-only
 // dry-run, so Pull returns data and leaves those policy choices to the callers.
-// The one early exit is a merge that leaves unmerged paths: the conflicted tree
-// is unmergeable, so the remaining remotes are recorded as skipped (see below).
-// It NEVER writes to os.Stderr.
+// Early exits are the failures pullSweepStops names; the remaining remotes are
+// then recorded as skipped (see below). It NEVER writes to os.Stderr.
 //
-// Pull keeps plain MERGE semantics — the same merge the push path's reconcile
-// runs (mergeFetchedTip) — but it deliberately does NOT abort a conflicted
-// merge or run the push path's converge loop.
+// Pull merges through mergeFetchedTip, the same merge the push path's
+// reconcile runs, and so follows its rule: a conflicted merge the pull started
+// is ABORTED (the vault is left at its pre-pull HEAD, the conflicting paths
+// named, the remedy given), and a merge, cherry-pick, revert or rebase it did
+// not start is never touched. It does not run the push path's converge loop.
 //
-// One pre-flight exception to "returns data, not errors": before anything else
+// Pre-flight exceptions to "returns data, not errors": before anything else
 // runs — before the phantom-template scan, before any remote is touched — Pull
 // refuses outright if the vault is nested inside another repository's work
-// tree (see RefuseIfNestedVaultGit). That refusal IS the top-level error return
-// and is the verdict on its own; every existing caller already checks the
-// returned err before touching RemoteResults, so this adds no new obligation.
+// tree (see RefuseIfNestedVaultGit), if a lifecycle command's commit is
+// pending, or if a git operation is already in progress in the vault. Each
+// refusal IS the top-level error return and is the verdict on its own; every
+// caller checks the returned err before touching RemoteResults.
 //
 // Phantom-template self-heal: before the merge, each working-tree-dirty
 // Templates/commands/*.md path whose content provably equals the freshly-fetched
@@ -176,15 +181,24 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	if err := refuseOnLifecyclePendingStrict(vaultPath); err != nil {
 		return result, err
 	}
+	// 🔴 BEFORE THE TEMPLATE SCAN AND HEAL. A merge, cherry-pick, revert or
+	// rebase in progress is someone else's — vp aborts its own conflicted
+	// merges — and the heal below would discard their staged resolution of a
+	// template (`checkout HEAD --` of a path whose resolved bytes equal the
+	// remote's). mergeFetchedTip refuses the same state again under the lock;
+	// that check alone came too late for the heal.
+	if err := refuseOperationInProgress(vaultPath, "pull"); err != nil {
+		return result, err
+	}
 	branch := branchOrMain(vaultPath)
 
 	// Scan the dirty Templates/commands/*.md set ONCE, before the loop. The set
 	// never grows across remotes: a clean merge leaves the touched templates
-	// committed (so clean, and absent from a re-scan), and a conflict trips the
-	// break below before any later remote runs. The per-remote diff against the
-	// (per-remote) ref still happens inside the loop; only the candidate-path scan
-	// is hoisted. `healed` records paths already discarded so a later remote does
-	// not re-probe them.
+	// committed (so clean, and absent from a re-scan), and an aborted conflict
+	// restores the tree and stops the sweep before any later remote runs. The
+	// per-remote diff against the (per-remote) ref still happens inside the
+	// loop; only the candidate-path scan is hoisted. `healed` records paths
+	// already discarded so a later remote does not re-probe them.
 	dirty := dirtyTemplateCommandPaths(vaultPath)
 	healed := map[string]bool{}
 	// Latest failure reason per candidate path. Reconciled against `healed`
@@ -224,8 +238,9 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 			// first (see guardIncomingDepartures).
 			if err := guardIncomingDepartures(vaultPath, remote, branch); err != nil {
 				result.RemoteResults[remote] = err
+				why, _ := pullSweepStops(remote, err)
 				for _, skipped := range remotes[i+1:] {
-					result.RemoteResults[skipped] = fmt.Errorf("skipped: %s carries a departure this host still has work under; carry that work across first", remote)
+					result.RemoteResults[skipped] = fmt.Errorf("skipped: %s", why)
 				}
 				return true
 			}
@@ -268,57 +283,35 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 				result.HealedTemplates = append(result.HealedTemplates, p)
 			}
 
-			// Merge the already-fetched remote-tracking ref. `git fetch` above updated
-			// <remote>/<branch>, so `git merge <remote>/<branch>` reuses it — same
-			// plain-merge semantics as `git pull <remote> <branch>` (no rebase) but
-			// without the second fetch that `git pull` would perform.
-			out, err := gitCmd(vaultPath, 120*time.Second, "merge", ref)
+			// Merge the already-fetched remote-tracking ref through the one
+			// guarded merge (mergeFetchedTip): plain-merge semantics, as `git
+			// pull <remote> <branch>` without its second fetch. On a migrated
+			// vault a conflict on derived paths alone is healed and the merge
+			// concluded; any other conflict is ABORTED and named.
+			out, err := mergeFetchedTip(vaultPath, remote, branch, &result.Derived)
 			result.RemoteOutput[remote] = out
-			result.RemoteResults[remote] = err
-
-			// On a migrated vault (derived_merge.go): a conflict on derived paths
-			// alone is healed and the merge concluded, so this remote's result is
-			// OVERWRITTEN to success; a conflict the heal does not take stays the
-			// operator's, with what the heal found joined to it. Every successful
-			// merge then untracks the derived paths it (re-)tracked; a failed
-			// untrack is this remote's result, so SyncVault does not push.
-			if err != nil {
-				var (
-					healedDerived, named []string
-					handled              bool
-				)
-				entries, healErr := unmergedPathsZ(vaultPath)
-				if healErr == nil && len(entries) > 0 {
-					healedDerived, named, handled, healErr = healConflicts(vaultPath, entries)
-				}
-				switch {
-				case healErr == nil && handled:
-					result.Derived.add(DerivedMergeReport{Healed: healedDerived})
-					result.RemoteResults[remote] = nil
-					err = nil
-				case healErr != nil || len(named) > 0:
-					result.RemoteResults[remote] = joinHealOutcome(err, named, healErr)
-				}
-			}
 			if err == nil {
-				if uerr := untrackAfterMerge(vaultPath, &result.Derived); uerr != nil {
-					result.RemoteResults[remote] = uerr
+				result.RemoteResults[remote] = nil
+				return false
+			}
+			var conflict *mergeConflictError
+			if errors.As(err, &conflict) {
+				slog.Warn("vault pull: merge conflicted; vp aborted it, nothing was merged",
+					"remote", remote, "ref", conflict.ref, "tip", conflict.tip,
+					"paths", conflict.paths, "abort_failed", conflict.abortErr != nil)
+				if conflict.abortErr == nil {
+					err = fmt.Errorf("%w — the pull from %s was NOT applied; to take its commits, merge by hand (git -C %s merge %s), resolve, commit, then run vp vault sync", err, remote, vaultPath, ref)
 				}
 			}
-
-			// A merge that left unmerged paths makes the tree unmergeable: no later
-			// remote can merge onto a conflicted tree, and continuing would only run
-			// doomed heal+merge attempts. Record the remaining (not-yet-attempted)
-			// remotes with a skip sentinel and abandon the sweep. A plain fetch/network
-			// failure (handled above with `continue`) carries no unmerged paths and so
-			// still falls through to the next mirror — best-effort preserved.
-			if err != nil && len(unmergedPaths(vaultPath)) > 0 {
-				for _, skipped := range remotes[i+1:] {
-					result.RemoteResults[skipped] = fmt.Errorf("skipped: prior remote left an unresolved merge conflict")
-				}
-				return true
+			result.RemoteResults[remote] = err
+			why, stop := pullSweepStops(remote, err)
+			if !stop {
+				return false
 			}
-			return false
+			for _, skipped := range remotes[i+1:] {
+				result.RemoteResults[skipped] = fmt.Errorf("skipped: %s", why)
+			}
+			return true
 		}()
 		release()
 		if stop {
@@ -336,6 +329,42 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	}
 
 	return result, nil
+}
+
+// pullSweepStops is the pull's rule for the remotes after a failed merge:
+// stop, recording each later remote as skipped for why, or go on to the next.
+//
+//   - A tree nothing may merge into (*vaultTreeUnsafeError: an operation in
+//     progress, a killed merge, a failed abort). STOP. Checked first: a failed
+//     abort wraps the conflict.
+//   - A conflict (the merge was aborted): every mirror carries the same
+//     commits, so each would conflict the same way. STOP.
+//   - A departure onto work this host still has under the departed project
+//     (*DepartedWorkError): the work has to be carried across first. STOP.
+//   - A merge git refused before changing anything (*mergeNotStartedError): the
+//     tree is as it was, and a mirror may still merge. GO ON.
+//   - A merge that stands but whose derived-path untrack failed
+//     (*derivedUntrackError): the tree is a clean merge result. GO ON.
+//   - Anything else: STOP — an unrecognised failure is never merged past.
+func pullSweepStops(remote string, err error) (why string, stop bool) {
+	var (
+		unsafe     *vaultTreeUnsafeError
+		conflict   *mergeConflictError
+		departed   *DepartedWorkError
+		notStarted *mergeNotStartedError
+		untrack    *derivedUntrackError
+	)
+	switch {
+	case errors.As(err, &unsafe):
+		return fmt.Sprintf("%s left the vault in a state nothing may merge into (see its error)", remote), true
+	case errors.As(err, &conflict):
+		return fmt.Sprintf("%s conflicted and its merge was aborted, so nothing was merged; a mirror carries the same commits and would conflict the same way", remote), true
+	case errors.As(err, &departed):
+		return fmt.Sprintf("%s carries a departure this host still has work under; carry that work across first", remote), true
+	case errors.As(err, &notStarted), errors.As(err, &untrack):
+		return "", false
+	}
+	return fmt.Sprintf("%s failed in a way the pull does not merge past (see its error)", remote), true
 }
 
 // dirtyTemplateCommandPaths returns the working-tree-dirty paths matching the

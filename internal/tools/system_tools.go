@@ -495,8 +495,9 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 func gitPull(root string, remotes []string) (string, error) {
 	// storage.Pull is best-effort across mirror remotes: it attempts each,
-	// self-healing phantom Templates/commands/*.md dirt before the merge, and stops
-	// early only when a merge conflict leaves the tree unmergeable.
+	// self-healing phantom Templates/commands/*.md dirt before the merge. A
+	// conflicted merge it started is aborted and named, and stops the sweep, as
+	// do a killed merge and a departure (storage.pullSweepStops).
 	//
 	// 🔴 THIS USED TO RETURN AT THE FIRST FAILING REMOTE, which meant the two
 	// front-ends disagreed about the same event: the CLI printed every remote and
