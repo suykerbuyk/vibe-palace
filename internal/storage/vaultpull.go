@@ -157,11 +157,16 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 		}, err
 	}
 	res, err := pullCore(vaultPath, remotes)
+	if err != nil {
+		// A pre-flight refusal: nothing was fetched or merged, so there is
+		// nothing new to learn, and the tree may be someone else's.
+		return res, err
+	}
 	// A pull is how a host learns that a project moved to another vault, so it
 	// is where that project's host-local embed cache goes. It never fails the
 	// pull, runs no embedder, and holds no vault lock.
 	sweepDepartedAfterPull(vaultPath)
-	return res, err
+	return res, nil
 }
 
 // pullCore is Pull after its git_enabled gate. Storage-internal composition

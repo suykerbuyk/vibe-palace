@@ -620,3 +620,55 @@ func TestPull_AbortIsLoggedAndAFailedAbortSaysSo(t *testing.T) {
 		}
 	})
 }
+
+// The departed-cache sweep runs after a pull that ran, and not after a
+// pre-flight refusal, which fetched and merged nothing. Mutant: the sweep run
+// before the refusal check, at either site.
+func TestPull_RefusalSkipsTheDepartedSweep(t *testing.T) {
+	spy := func(t *testing.T) *int {
+		t.Helper()
+		n := 0
+		prev := sweepDepartedAfterPull
+		sweepDepartedAfterPull = func(string) { n++ }
+		t.Cleanup(func() { sweepDepartedAfterPull = prev })
+		return &n
+	}
+	refused := func(t *testing.T) string {
+		t.Helper()
+		dir, _ := syncSeedRemote(t)
+		if err := os.Mkdir(filepath.Join(dir, ".git", "rebase-merge"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	t.Run("Pull refused", func(t *testing.T) {
+		dir := refused(t)
+		calls := spy(t)
+		if _, err := Pull(dir, []string{"origin"}); err == nil {
+			t.Fatal("want the pull refused")
+		}
+		if *calls != 0 {
+			t.Errorf("the sweep ran %d times after a refused pull", *calls)
+		}
+	})
+	t.Run("SyncVault refused", func(t *testing.T) {
+		dir := refused(t)
+		calls := spy(t)
+		if _, err := SyncVault(dir, []string{"origin"}); err == nil {
+			t.Fatal("want the sync refused")
+		}
+		if *calls != 0 {
+			t.Errorf("the sweep ran %d times after a refused sync", *calls)
+		}
+	})
+	t.Run("Pull ran", func(t *testing.T) {
+		dir, _ := syncSeedRemote(t)
+		calls := spy(t)
+		if _, err := Pull(dir, []string{"origin"}); err != nil {
+			t.Fatal(err)
+		}
+		if *calls != 1 {
+			t.Errorf("the sweep ran %d times after a pull, want 1", *calls)
+		}
+	})
+}

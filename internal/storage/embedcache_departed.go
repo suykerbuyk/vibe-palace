@@ -291,8 +291,9 @@ func (v *Vault) gitOperationInProgress() string {
 
 // sweepDepartedAfterPull is the pull trigger: after a pull has merged, remove
 // the caches of slugs it (or an earlier pull) moved to another vault. It never
-// fails the pull; what it did or could not do is logged.
-func sweepDepartedAfterPull(vaultPath string) {
+// fails the pull; what it did or could not do is logged. A variable so a test
+// can tell whether a pull ran it.
+var sweepDepartedAfterPull = func(vaultPath string) {
 	res := NewVault(vaultPath).DepartedCaches(true)
 	if len(res.Removed) > 0 {
 		// kept: caches whose vectors went but whose directory stays, because it

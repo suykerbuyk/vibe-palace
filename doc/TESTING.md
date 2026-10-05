@@ -842,6 +842,7 @@ shim is `reconcileGitShim` (`vaultsync_merge_test.go`).
 | `TestPull_AbortIsLoggedAndAFailedAbortSaysSo` | Every pull abort logs at Warn with the remote and paths; a failed abort logs that the conflicted merge is still in the vault, never that it was aborted |
 | `TestPullSweepStops`, `TestPull_RefusedMergeMovesOn`, `TestPull_UntrackFailureMovesOn` | The per-error sweep rule: stop on a conflict, an unsafe tree, a departure or anything unrecognised; go on after a merge refused before it started or a failed untrack |
 | `TestPull_CleanMergeKeepsGitOutput` | `RemoteOutput` still carries git's merge output through the shared merge |
+| `TestPull_RefusalSkipsTheDepartedSweep` | The departed-cache sweep runs after a pull that ran, never after a pre-flight refusal by `Pull` or `SyncVault` |
 | `TestSyncVault_PullRefusalIsNotDropped` | `SyncVault` returns `pullCore`'s refusal and pushes nothing (it used to drop the error and push) |
 | `internal/tools`: `TestVaultSyncToolNamesTheAbortedConflict` | `vp_vault_sync` `pull` and `sync` errors name the aborted conflict's path and remedy |
 

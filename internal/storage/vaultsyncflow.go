@@ -223,13 +223,14 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// stops before we push.
 	pull, pullErr := pullCore(vaultPath, remotes)
 	result.Pull = pull
-	// Right after the merge and BEFORE the gates below, so a sync that merged
-	// a departure removes the moved project's embed cache even when a later
-	// remote fails. The pass skips itself while a merge is unfinished.
-	sweepDepartedAfterPull(vaultPath)
 	if pullErr != nil {
+		// A pre-flight refusal: nothing was pulled, so nothing to sweep.
 		return result, pullErr
 	}
+	// Right after the merge and BEFORE the verdict gate below, so a sync that
+	// merged a departure removes the moved project's embed cache even when a
+	// later remote fails. The pass skips itself while a merge is unfinished.
+	sweepDepartedAfterPull(vaultPath)
 	if v := RemoteVerdict(OpPull, pull.RemoteResults, ""); v != "" {
 		return result, errors.New(v)
 	}
