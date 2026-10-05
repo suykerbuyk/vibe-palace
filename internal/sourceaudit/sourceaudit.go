@@ -181,6 +181,11 @@ const (
 	// writer) the uninitialised-project gate does not sit on, or EnsureDir
 	// inside internal/storage. See creatingProjectOwner.
 	KindCreatingProjectOwner = "creating-project-owner"
+
+	// KindHermeticTestMain: a test package with no TestMain calling
+	// testutil.RunHermetic, whose tests therefore run on the host's git config
+	// and identity. See hermeticTestMain.
+	KindHermeticTestMain = "hermetic-test-main"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -275,6 +280,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, gitEnabledOwner(files)...)
 	findings = append(findings, literalPathspecOwner(files)...)
 	findings = append(findings, creatingProjectOwner(files)...)
+	findings = append(findings, hermeticTestMain(files)...)
 	findings = append(findings, departureRecordWriter(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
