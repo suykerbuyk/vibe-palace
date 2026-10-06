@@ -335,7 +335,6 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"migrate task-header-block": true,
 		// ONE-SHOT: deleted with cmd_migrate_project_slug.go. Renames and rewrites
 		// a whole project tree, task files included, and commits.
-		"migrate project-slug": true,
 	}
 
 	reg, _, _ := testRegistry()

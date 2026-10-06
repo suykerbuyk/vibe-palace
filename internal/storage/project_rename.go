@@ -19,13 +19,13 @@ package storage
 // + imports carry + rename-pending record) is increment 2; the `bind renamed`
 // mode is increment 3.
 //
-// It reuses the kept, K0-free helpers of the one-shot engine
-// (project_slug_migration.go): the rewrite classes (slugScanClasses), the
-// drawer-id re-hash (slugRehashRoom via slugScanClasses), the move primitive
-// (slugMove) and the count assertion (slugAssertClasses). It never invokes K0 /
-// make-room: a rename targets a FRESH slug, and a collision is refused up front.
-// The one-shot and all its tests are untouched (operator ruling: K0 deletion is
-// U12).
+// It reuses the kept, K0-free rewrite helpers in project_rename_rewrite.go: the
+// rewrite classes (slugScanClasses), the drawer-id re-hash (slugRehashRoom via
+// slugScanClasses), the move primitive (slugMove) and the count assertion
+// (slugAssertClasses). It never invokes K0 / make-room: a rename targets a
+// FRESH slug, and a collision is refused up front. Those helpers were reshaped
+// from the one-shot project-slug engine, which U12 retired along with its
+// K0/make-room machinery (see project_rename_rewrite.go).
 
 import (
 	"crypto/sha256"
@@ -445,7 +445,7 @@ func renameFreshTargetRefusals(vaultPath, to string) []string {
 // (ignored .bak) file likewise, and the rewrite class counts. A destination
 // that already exists is refused per path (SF2 :315-316 semantics).
 func buildRenameMovePlan(root, from, to string, src []string) (*SlugPlan, map[string]int, error) {
-	p := &SlugPlan{Root: root, From: from, To: to, strayStems: map[string]string{}, holds: map[string]string{}}
+	p := &SlugPlan{Root: root, From: from, To: to}
 	tracked := map[string]bool{}
 	for _, r := range src {
 		tracked[r] = true
@@ -506,12 +506,12 @@ func buildRenameMovePlan(root, from, to string, src []string) (*SlugPlan, map[st
 // the tracked files, then removes the now-empty old trees.
 func renameApplyMoves(root string, p *SlugPlan) error {
 	for _, mv := range p.bakMoves {
-		if err := slugMove(root, mv.Src, mv.Dst, nil); err != nil {
+		if err := slugMove(root, mv.Src, mv.Dst); err != nil {
 			return err
 		}
 	}
 	for _, mv := range p.k1Moves {
-		if err := slugMove(root, mv.Src, mv.Dst, nil); err != nil {
+		if err := slugMove(root, mv.Src, mv.Dst); err != nil {
 			return err
 		}
 	}
@@ -539,7 +539,7 @@ func renameRollback(root, from, to string, p *SlugPlan) error {
 		if !slugExists(root, mv.Dst) || slugExists(root, mv.Src) {
 			continue
 		}
-		if err := slugMove(root, mv.Dst, mv.Src, nil); err != nil {
+		if err := slugMove(root, mv.Dst, mv.Src); err != nil {
 			return fmt.Errorf("roll back %s: %w", mv.Dst, err)
 		}
 	}
@@ -622,13 +622,13 @@ func renameDigest(p *RenamePlan) string {
 // identifier still names the old slug (the zero-<old> scan; absorbs
 // rename-verify-action).
 //
-// NOTE (plan vs. real code): the plan named SlugPostCommitCheck for the
-// diff-scope check, but that check is R100-only and assumes K1 (pure rename)
-// and K2 (rewrite) are SEPARATE commits. This engine makes ONE commit, so a
-// moved-and-rewritten file is a rename-with-modification, which SlugPostCommitCheck
-// rejects. The diff-scope check here is instead the copy engine's shape
-// (`git diff --name-only --no-renames`, every path inside the footprint); the
-// rewrite is still asserted exactly by slugAssertClasses during apply.
+// NOTE (plan vs. real code): the plan named the one-shot engine's R100-only
+// post-commit check for the diff-scope check, but that check assumed K1 (pure
+// rename) and K2 (rewrite) landed as SEPARATE commits. This engine makes ONE
+// commit, so a moved-and-rewritten file is a rename-with-modification, which
+// that check rejected. The diff-scope check here is instead the copy engine's
+// shape (`git diff --name-only --no-renames`, every path inside the footprint);
+// the rewrite is still asserted exactly by slugAssertClasses during apply.
 func renamePostcheck(vaultPath, sha, from, to string, p *SlugPlan) error {
 	out, err := gitCmd(vaultPath, 30*time.Second, "diff", "--name-only", "--no-renames", sha+"~1", sha)
 	if err != nil {

@@ -40,7 +40,7 @@ func (v *Vault) writeDeparture() error {
 	_, err := vaultfs.WriteDepartureRecord(nil, "p", nil)
 	return err
 }
-func (v *Vault) RecordDeparture(slug string) error { return v.writeDeparture() }
+func (v *Vault) RecordDepartureForRename(slug string) error { return v.writeDeparture() }
 `
 
 // recordWriterFindings runs the rule over the three owner packages plus
@@ -93,7 +93,7 @@ import (
 
 func forgeRecord() { _, _ = vfs.WriteDepartureRecord(nil, "keep", nil) }
 func dropRecord()  { _ = vfs.RemoveDepartureRecord(nil, "p") }
-func viaMethod(v *storage.Vault) { f := v.RecordDeparture; _ = f("keep") }
+func viaMethod(v *storage.Vault) { f := v.RecordDepartureForRename; _ = f("keep") }
 `
 	got = recordWriterFindings(t, map[string]string{"internal/tools/rogue.go": rogue})
 	for _, w := range []string{"tools.forgeRecord", "tools.dropRecord", "tools.viaMethod"} {

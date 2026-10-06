@@ -1909,41 +1909,6 @@ var toolCoverageFixtures = map[string]toolFixture{
 	// Vault split / merge
 	// -----------------------------------------------------------------
 
-	"vp_vault_split": {
-		projects: []string{"cov-vaultsplit"},
-		build: func(t *testing.T, h *testHarness) any {
-			const project = "cov-vaultsplit"
-			h.callTool(t, "vp_vault_write", map[string]any{
-				"path": "Projects/" + project + "/note.md", "content": "splittable content",
-			})
-			// Split moves projects only from a migrated vault into an existing,
-			// migrated one; plan checks both markers.
-			covMarkMigrated(t, h.Vault.Root)
-			dest := t.TempDir()
-			covMarkMigrated(t, dest)
-			return map[string]any{
-				"action": "plan", "slugs": []string{project}, "destination": dest,
-			}
-		},
-		assert: func(t *testing.T, h *testHarness, payload string) {
-			var out struct {
-				Files          int    `json:"files"`
-				ManifestSHA256 string `json:"manifest_sha256"`
-				Complete       bool   `json:"complete"`
-			}
-			covUnmarshal(t, payload, &out)
-			if out.Files < 1 {
-				t.Errorf("files = %d, want >= 1", out.Files)
-			}
-			if out.ManifestSHA256 == "" {
-				t.Error("manifest_sha256 is empty")
-			}
-			if !out.Complete {
-				t.Error("complete is not true")
-			}
-		},
-	},
-
 	"vp_vault_project_delete": {
 		// plan only: the dry run writes nothing. It needs the bound vault to be
 		// a git repository in sync with a remote, and the project tracked.
@@ -2103,51 +2068,6 @@ var toolCoverageFixtures = map[string]toolFixture{
 			covUnmarshal(t, payload, &out)
 			if out.Plan.Digest == "" || !strings.Contains(out.Plan.Command, "--expect "+out.Plan.Digest) {
 				t.Errorf("digest %q, command %q", out.Plan.Digest, out.Plan.Command)
-			}
-			if !out.Complete {
-				t.Error("complete is not true")
-			}
-		},
-	},
-	"vp_vault_merge": {
-		build: func(t *testing.T, h *testHarness) any {
-			const project = "cov-vaultmerge"
-			// vaultMergePlan reports the DESTINATION's git remotes unconditionally
-			// (mergeDestinationRemotes), which is a hard refusal against a
-			// non-repository destination — so the bound vault itself must be a
-			// git repo here, even though plan writes nothing.
-			covGitVault(t, h)
-			// Merge moves projects only between migrated vaults.
-			covMarkMigrated(t, h.Vault.Root)
-			sourceRoot := t.TempDir()
-			covMarkMigrated(t, sourceRoot)
-			projDir := filepath.Join(sourceRoot, "Projects", project)
-			if err := os.MkdirAll(projDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(projDir, "note.md"), []byte("mergeable content"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			return map[string]any{
-				"action": "plan", "source": sourceRoot, "slugs": []string{project},
-			}
-		},
-		assert: func(t *testing.T, h *testHarness, payload string) {
-			var out struct {
-				Files          int    `json:"files"`
-				SourceFormat   int    `json:"source_format"`
-				ManifestSHA256 string `json:"manifest_sha256"`
-				Complete       bool   `json:"complete"`
-			}
-			covUnmarshal(t, payload, &out)
-			if out.Files < 1 {
-				t.Errorf("files = %d, want >= 1", out.Files)
-			}
-			if out.SourceFormat != surface.RequiredDataFormat {
-				t.Errorf("source_format = %d, want %d", out.SourceFormat, surface.RequiredDataFormat)
-			}
-			if out.ManifestSHA256 == "" {
-				t.Error("manifest_sha256 is empty")
 			}
 			if !out.Complete {
 				t.Error("complete is not true")

@@ -6,7 +6,8 @@ vaults, and bind a project to a vault on one host:
 | Command | Runs on | What it does |
 |---|---|---|
 | `vp vault init` | the host creating the vault | Creates a new, empty vault and publishes it to every remote |
-| `vp vault copy` | the **receiving** vault | Copies projects in from another vault's published remote |
+| `vp vault copy` | the **receiving** vault | Copies projects in from another vault's published remote (with `--as <newname>`, copies one project under a new slug) |
+| `vp vault rename` | the vault that holds the project | Renames a project from one slug to another in place, in one published commit that writes a `renamed` departure record |
 | `vp vault project delete` | the vault the projects **leave** | Deletes projects in one published commit that writes their departure records |
 | `vp config bind` | each host | Binds one or more projects to a vault in this host's global config |
 | `vp vault clone --bind` | each other host | Clones a published vault and binds projects to it in one step |
@@ -17,7 +18,7 @@ covers how a host resolves a project's vault, and
 [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md)
 covers the lifecycle commands and departure records. `vp <command> --help`
 is the authoritative flag reference. This guide describes behaviour as of
-v8.2.0.
+v10.2.0.
 
 ## How a host finds a project's vault
 
@@ -61,8 +62,9 @@ format tag `vp-departure/1`, the project slug, a `kind` (`moved-to-vault`,
 `renamed` or `deleted`), the destination label `to` (empty for `deleted`),
 and the date. When `vp vault project delete` writes it, it also carries the
 footprint digest of the trees it removed, a per-project `generation`
-counter and, for `--moved-to`, the verified `copy_commit`. A
-`vp_vault_split` purge record carries only the basic fields.
+counter and, for `--moved-to`, the verified `copy_commit`. A `vp vault
+rename` record (kind `renamed`, `to` = the new slug) carries the `generation`
+counter too.
 
 While a project's departure record exists, that project counts as
 **departed** in that vault, whatever `Projects/<project>/` holds:
@@ -79,10 +81,10 @@ While a project's departure record exists, that project counts as
   has **unpushed** work under the project, the pull refuses with "refusing to
   bring … onto this host's work", then prints the steps to carry that work
   across. See [If a host's pull refuses](#if-a-hosts-pull-refuses).
-- **Only two writers write records**: `vp vault project delete` and the
-  purge step of the MCP-only `vp_vault_split`. Ordinary writes (the raw
-  vault file tools and every storage writer) cannot create, edit or delete
-  anything under `Audits/departures/`.
+- **Only two writers write records**: `vp vault project delete` and
+  `vp vault rename`. Ordinary writes (the raw vault file tools and every
+  storage writer) cannot create, edit or delete anything under
+  `Audits/departures/`.
 
 Only a `git revert` of the delete commit restores a departed project. A
 `vp init` re-scaffold does not.
@@ -90,13 +92,14 @@ Only a `git revert` of the delete commit restores a departed project. A
 ## The common rules of the lifecycle commands
 
 - **Dry run first, then paste the printed line.** `vault copy`,
-  `vault project delete` and `vault clone` print a plan, a digest, and a line
-  under `To run it:`. That line carries `--expect <digest>`, so the real run
-  refuses if anything changed since the plan. Every printed line is
-  shell-quoted and can be pasted as printed. `vault init` and `config bind`
-  take `--dry-run` too, but print no digest.
+  `vault rename`, `vault project delete` and `vault clone` print a plan, a
+  digest, and a line under `To run it:`. That line carries `--expect
+  <digest>`, so the real run refuses if anything changed since the plan. Every
+  printed line is shell-quoted and can be pasted as printed. `vault init` and
+  `config bind` take `--dry-run` too, but print no digest.
 - **They publish one commit, unmodified, to every remote.** This applies to
-  `init`, `copy` and `delete`, and `copy` has no `--no-push`.
+  `init`, `copy`, `rename` and `delete`, and `copy` and `rename` have no
+  `--no-push`.
   - **If the first remote refuses** the commit, the run rolls back. `init`
     also removes the new directory if no remote took the commit.
   - **If a later remote fails** (unreachable, or a mirror that diverged), the
@@ -184,6 +187,51 @@ project ("a project cannot be copied back over its own departure in v1").
 `--at <sha>` pins the source commit; the dry run prints it. Undo is a
 `git revert` of the copy commit plus one push line per remote, and the run
 prints them.
+
+**`--as <newname>`** copies a **single** named project in under a new slug:
+`copy` brings it in, then renames it in this vault, so the project lands at
+`<newname>` without first colliding with any `<project>` the vault already
+holds. It requires exactly one project (you cannot copy a batch under one
+name). `--expect <digest>`, with `--as`, binds the copy half of the plan.
+
+### `vp vault rename`: rename a project in place
+
+It acts on the vault that holds the project — your default vault, or the one
+`--vault` names — and renames one project's slug without it leaving:
+
+```bash
+vp vault rename old-name new-name --dry-run
+# then paste the "To run it:" line
+```
+
+`rename` moves the project's footprint (`Projects/<old>/` to
+`Projects/<new>/` and `palace/<old>/` to `palace/<new>/`), rewrites every
+stored identifier that named the old slug, and writes a `renamed` departure
+record for the old slug. It makes **one** commit with `Vp-Rename-*` trailers,
+checks that nothing still names the old slug, and publishes exactly that
+commit to every remote — or refuses and rolls back. The target must be a
+**fresh** slug: a rename onto a project the vault already holds is refused up
+front. There is no `--no-push`; with a remote, the command refuses unless
+HEAD is already at every remote tip and then publishes immediately. With no
+remote it commits locally.
+
+After the tracked commit publishes, the rename runs its **host-local index
+step**: it renames this host's index store `index/<old>/` to `index/<new>/`
+and re-labels it. The embed cache is rebuilt, not carried (`<new>` re-embeds
+lazily); chunks, ledger and baseline survive. A crash in this window leaves a
+rename-pending marker that the next run clears.
+
+What `rename` deliberately does **not** touch:
+- the project checkout's `[project].name` and any host binding — the
+  departed-slug alert names those fixes;
+- the knowledge-graph defaults, which are unchanged;
+- cross-project links, which are not rewritten;
+- the `files_changed` history.
+
+Undo is a `git revert` of the rename commit plus a push; to also move this
+host's index store back, run `vp vault rename --undo` after the revert (old
+back, new gone). `--expect <digest>` refuses unless the plan still digests to
+the value the dry run printed.
 
 ### `vp vault project delete`: remove projects from the vault they leave
 

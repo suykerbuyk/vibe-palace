@@ -354,7 +354,7 @@ func TestCloneResumeBindsAgainstTheLiveTipNotAStaleHead(t *testing.T) {
 	f := newCloneFixture(t)
 	f.stopAfterRename(t, f.req("qa"))
 	rebindGit(t, f.B, "rm", "-rq", "Projects/qa")
-	if _, err := NewVault(f.B).RecordDeparture("qa", departure.MovedToVault, "git@elsewhere.example:q/v.git"); err != nil {
+	if _, _, err := NewVault(f.B).writeDeparture(nil, departure.Record{Slug: "qa", Kind: departure.MovedToVault, To: "git@elsewhere.example:q/v.git"}, true); err != nil {
 		t.Fatal(err)
 	}
 	rebindGit(t, f.B, "add", "-A")

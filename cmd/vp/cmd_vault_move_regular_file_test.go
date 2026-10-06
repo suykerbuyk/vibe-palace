@@ -26,7 +26,7 @@ func TestVaultCLIMoveRefusesADirectory(t *testing.T) {
 	if code != cli.ExitSystem {
 		t.Errorf("exit code = %d, want %d (refusal)", code, cli.ExitSystem)
 	}
-	for _, want := range []string{"is a directory", "vp_manage_task action=move", "vp migrate project-slug"} {
+	for _, want := range []string{"is a directory", "vp_manage_task action=move", "vp vault rename"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr must say %q, got %q", want, stderr)
 		}

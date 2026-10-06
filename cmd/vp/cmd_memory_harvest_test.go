@@ -163,9 +163,8 @@ func TestMemoryHarvestCLIRefusesARemovedSlug(t *testing.T) {
 }
 
 // TestMemoryHarvestCLIRefusesARecordedDeparture: the same stale checkout, on a
-// vault with NO git history to fall back on — only the departure record,
-// written by storage.RecordDeparture, can refuse, and the refusal must say
-// where the project went.
+// vault with NO git history to fall back on — only the departure record can
+// refuse, and the refusal must say where the project went.
 func TestMemoryHarvestCLIRefusesARecordedDeparture(t *testing.T) {
 	vault, _ := harvestCLIFixture(t, "git_enabled = true")
 	if err := os.RemoveAll(filepath.Join(vault, ".git")); err != nil {
@@ -174,7 +173,18 @@ func TestMemoryHarvestCLIRefusesARecordedDeparture(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(vault, "Projects", "harvp")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.NewVault(vault).RecordDeparture("harvp", departure.Renamed, "harvp-renamed"); err != nil {
+	// This vault has no .git, so the generation-deriving writers cannot run;
+	// write the `renamed` record directly, the shape the retired RecordDeparture
+	// produced, which is exactly what this no-git refusal path reads.
+	recBytes, err := departure.Record{Slug: "harvp", Kind: departure.Renamed, To: "harvp-renamed"}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recPath := filepath.Join(vault, departure.RelPath("harvp"))
+	if err := os.MkdirAll(filepath.Dir(recPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recPath, recBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cwd, err := os.Getwd()

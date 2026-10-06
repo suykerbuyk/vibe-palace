@@ -11,7 +11,6 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
-	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // T11. `vp archive create` writes Projects/<slug>/transcripts/, so for a
@@ -20,7 +19,19 @@ import (
 // the archive WOULD be written. The read subcommands stay admitted.
 func TestArchiveCreateRefusesADepartedProject(t *testing.T) {
 	vaultDir := setupTestVaultEnv(t)
-	if _, err := storage.NewVault(vaultDir).RecordDeparture("old", departure.Renamed, "new"); err != nil {
+	// The departed-project fixture: write the `renamed` record directly, the
+	// shape the retired RecordDeparture produced. The surviving writers derive
+	// the generation from git history, and setupTestVaultEnv's vault is not a
+	// git repo, so a direct departure.Record write is the faithful fixture here.
+	recBytes, err := departure.Record{Slug: "old", Kind: departure.Renamed, To: "new"}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recPath := filepath.Join(vaultDir, departure.RelPath("old"))
+	if err := os.MkdirAll(filepath.Dir(recPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recPath, recBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	src := filepath.Join(t.TempDir(), "session.jsonl")

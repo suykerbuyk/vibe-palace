@@ -266,8 +266,8 @@ func taskPathRefusal(relPath string) error {
 //
 //   - It cannot fold into IsRefusedWritePath. That predicate gates Delete
 //     (write.go's Delete call site), and gating Delete on this path would leave
-//     vaultSplitPurge — which walks regular files through vaultfs.Delete —
-//     unable to finish a verified purge.
+//     the project-delete purge (storage.RemovePurgeTree) — which walks regular
+//     files through vaultfs.Delete — unable to finish a verified purge.
 //   - It is not IsTaskFilePath's kind of match. That one matches a DIRECTORY
 //     SUBTREE (Projects/<slug>/tasks/, any depth); this matches ONE EXACT FILE,
 //     three segments. The difference is what makes the placement differ too:

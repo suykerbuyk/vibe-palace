@@ -21,7 +21,7 @@ import (
 )
 
 // The MCP sites that remove a gone project's host-local index store,
-// palace/.local/index/<p>/: vp_vault_sync's pull and sync, the split purge and
+// palace/.local/index/<p>/: vp_vault_sync's pull and sync, and
 // vp_vault_project_delete. Each runs after storage has released the vault lock;
 // that ordering is pinned in package indexstore, not here.
 
@@ -134,45 +134,6 @@ func TestVaultSyncToolPullRemovesGoneProjectsIndexStore(t *testing.T) {
 				t.Errorf("vp_vault_sync %s removed index/live/", action)
 			}
 		})
-	}
-}
-
-// The split purge removes each purged project's index store after the purge
-// commit, and keeps the store of the project that stays.
-func TestSplitPurgeRemovesPurgedProjectsIndexStores(t *testing.T) {
-	root := purgeVault(t)
-	v := storage.NewVault(root)
-	for _, s := range []string{"alpha", "orch", "keep"} {
-		removalSeedStore(t, v, s)
-	}
-	p := purgeReady(t, root)
-	for _, s := range []string{"alpha", "orch", "keep"} {
-		if !removalStoreExists(t, v, s) {
-			t.Fatalf("fixture: index/%s/ gone before the purge", s)
-		}
-	}
-	before, err := indexstore.ReadGeneration(v, "alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := callSplit(t, root, p); err != nil {
-		t.Fatalf("purge: %v", err)
-	}
-	for _, s := range []string{"alpha", "orch"} {
-		if removalStoreExists(t, v, s) {
-			t.Errorf("index/%s/ survived the purge", s)
-		}
-	}
-	if !removalStoreExists(t, v, "keep") {
-		t.Error("the purge removed index/keep/, the store of a project that stays")
-	}
-	after, err := indexstore.ReadGeneration(v, "alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Epoch == before.Epoch {
-		t.Errorf(".generation/alpha epoch unchanged (%x) by the removal", after.Epoch)
 	}
 }
 

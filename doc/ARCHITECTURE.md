@@ -827,9 +827,9 @@ This section maps the mechanism onto the code.
 |---|---|---|---|
 | `vp vault init <path> --remote name=url…` | — | `cmd/vp/cmd_vault_init.go`, `storage/vault_init.go` | New empty vault: records its remotes in the tracked `.vibe-palace/remotes.toml`, one commit on `main`, published to every remote (each must be reachable and empty) |
 | `vp vault clone <url> <path> [--bind <p>…]` | — | `cmd_vault_clone.go`, `storage/vault_clone.go` | Clone a published vault, adding and fetching every remote in `remotes.toml`; `--bind` makes it this host's vault for those projects. No commit, no push |
-| `vp vault copy <p>… --from <remote-url> [--at <sha>]` | `vp_vault_copy` | `cmd_vault_copy.go`, `storage/lifecycle_copy.go`, `tools/vault_copy.go` | Receiver-run copy from another vault's **published remote** (never a host path), through a private blobless snapshot; one commit with `Vp-Copy-*` trailers, footprint hash checked against the source |
+| `vp vault copy <p>… --from <remote-url> [--at <sha>] [--as <newname>]` | `vp_vault_copy` | `cmd_vault_copy.go`, `storage/lifecycle_copy.go`, `tools/vault_copy.go` | Receiver-run copy from another vault's **published remote** (never a host path), through a private blobless snapshot; one commit with `Vp-Copy-*` trailers, footprint hash checked against the source. `--as` copies one project under a new slug (copy, then rename in this vault) |
+| `vp vault rename <old> <new>` | `vp_vault_rename` | `cmd_vault_rename.go`, `storage/project_rename.go`, `storage/project_rename_rewrite.go`, `storage/commit_rename.go`, `indexstore/rename.go`, `tools/vault_rename.go` | In-vault rename to a **fresh** slug: moves the footprint, rewrites every stored identifier, one commit with `Vp-Rename-*` trailers and a `renamed` departure record, then a host-local index-store rename (embed cache rebuilt) |
 | `vp vault project delete <p>… (--moved-to <url> \| --discard)` | `vp_vault_project_delete` | `cmd_vault_project_delete.go`, `storage/lifecycle_delete.go`, `tools/vault_project_delete_tool.go` | One published commit that removes the projects and adds their departure records; `--moved-to` refuses unless the destination's remote holds a verified copy |
-| — | `vp_vault_split`, `vp_vault_merge` | `tools/vault_split.go`, `tools/vault_merge.go` | MCP-only (`plan` / `apply` / `verify`, plus `purge` for split) split of named slugs into an existing, migrated `vp vault init` vault, or merge of disjoint slugs from one; both refuse every pairing but migrated into migrated and leave derived residue (untracked, ignored drawers and ingest ledgers) behind |
 | `vp config bind <slug>… --vault <path>` | `vp_config_bind` | `cmd/vp/cmd_config_bind.go`, `storage/project_bind.go`, `tools/config_bind_tool.go` | Write `[project_vaults]` lines (below) |
 
 `vp_config_bind` and `vp_vault_project_delete` are registered on the stdio
@@ -896,7 +896,7 @@ storage's append writer and the commit backstop. At the MCP seam
 bootstrap reports it in its `departed` field. The records are protected in turn:
 an ordinary write, edit, delete or move under `Audits/departures/` is refused
 (`departedpath.ErrRecordPath`). Only `vp vault project delete` and
-`vp_vault_split`'s purge write or remove one (copy, init and clone write none;
+`vp vault rename` write or remove one (copy, init and clone write none;
 the `departure-record-writer` source-audit rule pins every caller), through
 `vaultfs.WriteDepartureRecord`/`RemoveDepartureRecord`, which pass
 `atomicfile.ForDepartureRecord` with the live root-lock token.
@@ -1015,7 +1015,7 @@ The table groups them by category.
 | Memory | `vp_memory_list`, `vp_memory_read`, `vp_memory_write`, `vp_memory_delete`, `vp_memory_harvest` | memory_tools.go | Host-agnostic AI memory (ADR-004) |
 | Vault files | `vp_vault_read`, `vp_vault_list`, `vp_vault_exists`, `vp_vault_sha256`, `vp_vault_write`, `vp_vault_edit`, `vp_vault_delete`, `vp_vault_move` | vault_file_tools.go | Vault-relative CRUD through `vaultfs` |
 | Vault git and freshness | `vp_vault_sync`, `vp_vault_tidy`, `vp_vault_status`, `vp_repo_freshness` | system_tools.go, repo_tools.go | Pull/push/tidy, sync state of the vault, and of the project checkout |
-| Vault lifecycle | `vp_vault_copy`, `vp_vault_project_delete`, `vp_vault_split`, `vp_vault_merge`, `vp_config_bind` | vault_copy.go, vault_project_delete_tool.go, vault_split.go, vault_merge.go, config_bind_tool.go | See *Vault lifecycle and departure records* |
+| Vault lifecycle | `vp_vault_copy`, `vp_vault_rename`, `vp_vault_project_delete`, `vp_config_bind` | vault_copy.go, vault_rename.go, vault_project_delete_tool.go, config_bind_tool.go | See *Vault lifecycle and departure records* |
 | Onboarding | `vp_init` | system_tools.go | Project onboarding over `internal/onboard` |
 | Wrap and commit | `vp_collect_wrap_state`, `vp_stamp_iter`, `vp_preflight_wrap`, `vp_ingest_commit_msg`, `vp_archive_commit_log` | wrapstate_tools.go, commit_msg_tools.go, commit_log_tools.go | `/wrap` mechanics |
 | Summarization | `vp_enqueue_iteration_summary`, `vp_check_summarization_queue`, `vp_trigger_summarization_drain` | summarize_tools.go | Host-local summarization queue |
@@ -2528,10 +2528,11 @@ directory.
 The sweep runs from a read-only `vp_search` too. Operator decision 2026-09-10
 rules it exempt from the read-only-serve contract: everything it touches is
 host-local, gitignored, regenerable derived state (`internal/tools/readonly_serve.go`).
-`vp_vault_split`'s purge removes the purged slug's cache at the new location,
-and does it first: a refusal there must land while the slug's real trees still
-exist, because once they are gone the manifest no longer binds and purge cannot
-be re-run.
+The same host-local, regenerable framing is why the lifecycle commands treat a
+slug's embed cache freely: `vp vault project delete` removes the gone slug's
+index store (the cache with it) after its publish, and `vp vault rename`
+rebuilds rather than carries the cache — it removes `embed-cache/<old>/` and
+lets `<new>` re-embed lazily (the M0 ruling).
 
 **Stale-MCP caveat.** A long-lived `vp mcp` from before the upgrade keeps
 reading and writing the legacy path until it is restarted: it cold-misses every

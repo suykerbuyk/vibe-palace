@@ -271,7 +271,7 @@ func TestBindRefusesATargetThatRecordsTheSlugDeparted(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(quantum, "Projects", "qa")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewVault(quantum).RecordDeparture("qa", departure.MovedToVault, ""); err != nil {
+	if _, _, err := NewVault(quantum).writeDeparture(nil, departure.Record{Slug: "qa", Kind: departure.MovedToVault, To: ""}, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := BindProjectVault(movedReq("qa")); err == nil || !strings.Contains(err.Error(), "holds a departure record for it") {

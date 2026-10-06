@@ -17,8 +17,9 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// The baseline add for incoming archives (task
-// split-and-merge-exclude-derived-palace-paths, Scope 5; ADR-014 decision 2).
+// The baseline add for incoming archives (ADR-014 decision 2). It is a lifecycle
+// step shared by the receiver-run copy; its only surviving caller is
+// vp vault copy's apply.
 
 var incomingSHAs = []string{
 	strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64),
@@ -42,7 +43,12 @@ func archiveManifests(slug string) map[string]string {
 func seedLedger(t *testing.T, vaultRoot, slug string) {
 	t.Helper()
 	dir := filepath.Join(vaultRoot, "Projects", slug)
-	writeSplitFile(t, vaultRoot, "Projects/"+slug+"/resume.md", "x\n")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "resume.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := indexstore.Lock(context.Background(), storage.NewVault(vaultRoot), slug, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -78,102 +84,6 @@ func baselineHolds(t *testing.T, vaultRoot, slug string) []string {
 		}
 	}
 	return in
-}
-
-// spyBaselineLock counts the index locks the baseline add takes.
-func spyBaselineLock(t *testing.T) *int {
-	t.Helper()
-	n := 0
-	prev := incomingBaselineLock
-	incomingBaselineLock = func(ctx context.Context, v *storage.Vault, p string, d time.Duration) (*indexstore.Tx, error) {
-		n++
-		return prev(ctx, v, p, d)
-	}
-	t.Cleanup(func() { incomingBaselineLock = prev })
-	return &n
-}
-
-// mergeWithArchives merges alpha, carrying three archives, from a migrated
-// source into dest.
-func mergeWithArchives(t *testing.T, dest string) *vaultMergeApplyResult {
-	t.Helper()
-	src := mergeSourceVault(t, "alpha")
-	for rel, body := range archiveManifests("alpha") {
-		writeSplitFile(t, src, rel, body)
-	}
-	p := mergePlanned(t, dest, src, "alpha")
-	res, err := vaultMergeApply(context.Background(), storage.NewVault(dest), p)
-	if err != nil {
-		t.Fatalf("merge apply: %v", err)
-	}
-	return res
-}
-
-// A merge adds exactly the incoming archives to an existing ledger's
-// baseline set, through one commit-lock acquisition. Mutant: no add, which
-// leaves the incoming history pending for automatic ingest.
-func TestBaselineAdd_MergeAddsTheIncomingArchives(t *testing.T) {
-	dest := mergeDestVault(t, "gamma")
-	seedLedger(t, dest, "alpha")
-	locks := spyBaselineLock(t)
-	res := mergeWithArchives(t, dest)
-	if len(res.BaselineWarnings) > 0 {
-		t.Fatalf("warnings: %v", res.BaselineWarnings)
-	}
-	if got := baselineHolds(t, dest, "alpha"); len(got) != len(incomingSHAs) {
-		t.Errorf("baseline holds %d of the %d incoming archives", len(got), len(incomingSHAs))
-	}
-	if *locks != 1 {
-		t.Errorf("the add took %d index locks for one project, want 1 (its commit lock)", *locks)
-	}
-}
-
-// With no ledger for the slug, nothing is written under the slug's index
-// store. Mutant: an add that creates a ledger (contrary to ADR lines 144-145).
-func TestBaselineAdd_NoLedgerWritesNothing(t *testing.T) {
-	dest := mergeDestVault(t, "gamma")
-	mergeWithArchives(t, dest)
-	if _, err := os.Stat(filepath.Join(dest, "palace", ".local", "index", "alpha")); !os.IsNotExist(err) {
-		t.Errorf("the add created palace/.local/index/alpha (stat err %v)", err)
-	}
-}
-
-// The add never fails the command: with the project's commit lock held and a
-// zero timeout, the merge succeeds, warns naming the project and `vp index
-// rebuild`, and the set is unchanged. Mutant: a merge that fails over a
-// host-local write.
-func TestBaselineAdd_NeverFailsTheCommand(t *testing.T) {
-	dest := mergeDestVault(t, "gamma")
-	seedLedger(t, dest, "alpha")
-	prevTimeout := incomingBaselineTimeout
-	incomingBaselineTimeout = 0
-	t.Cleanup(func() { incomingBaselineTimeout = prevTimeout })
-	// Hold alpha's commit lock across the merge. Lock checks that the project
-	// exists, so take it once the merge has put alpha's tree in place: from a
-	// lock seam that runs just before the add's own attempt.
-	var held *indexstore.Tx
-	prev := incomingBaselineLock
-	incomingBaselineLock = func(ctx context.Context, v *storage.Vault, p string, d time.Duration) (*indexstore.Tx, error) {
-		h, err := prev(ctx, v, p, time.Second)
-		if err != nil {
-			t.Fatalf("hold the lock: %v", err)
-		}
-		held = h
-		return prev(ctx, v, p, d)
-	}
-	t.Cleanup(func() { incomingBaselineLock = prev })
-	res := mergeWithArchives(t, dest)
-	if held != nil {
-		_ = held.Release()
-	}
-	if len(res.BaselineWarnings) != 1 || !strings.Contains(res.BaselineWarnings[0], "alpha") ||
-		!strings.Contains(res.BaselineWarnings[0], "vp index rebuild alpha") {
-		t.Fatalf("warnings = %q, want one naming alpha and `vp index rebuild alpha`", res.BaselineWarnings)
-	}
-	incomingBaselineLock = prev
-	if got := baselineHolds(t, dest, "alpha"); len(got) != 0 {
-		t.Errorf("the set changed though the add failed: %v", got)
-	}
 }
 
 // Copy adds the incoming archives after its publish; a refused copy adds

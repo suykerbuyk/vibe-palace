@@ -436,12 +436,12 @@ stateDiagram-v2
     [*] --> Undetected : no .vibe-palace.toml
     Undetected --> Detected : vp init / auto-detect
     Detected --> Initialized : creates toml + vault dir
-    [*] --> Arrived : vp vault copy / vp_vault_merge
+    [*] --> Arrived : vp vault copy
     Arrived --> Active : first session or task
     Initialized --> Active : first session or task
     Active --> Active : work continues
     Active --> Departed : vp vault project delete --moved-to / --discard
-    Active --> Departed : vp_vault_split (moved to another vault)
+    Active --> Departed : vp vault rename (old slug; renamed record)
     Departed --> [*] : departure record kept
     note right of Departed : git revert of the delete commit removes the record and restores the trees
 ```
@@ -449,7 +449,8 @@ stateDiagram-v2
 **State notes:**
 - **Detected:** Only `.vibe-palace.toml` is tracked in the source tree. Everything else is in the vault.
 - **Arrived:** The project came from another vault rather than from `vp init`: copied
-  (`vp vault copy <project>... --from <url>`) or merged (`vp_vault_merge`, MCP only).
+  (`vp vault copy <project>... --from <url>`, or `vp vault copy <project> --from <url>
+  --as <newname>` to land it under a new slug).
   When that vault is not the host's default, the host reaches it through its own
   `[project_vaults]` binding (`vp config bind`, ADR-012). Another host reaches an arrived
   project with `vp vault clone <url> <path> --bind <project>...` (pull the default vault
@@ -459,15 +460,16 @@ stateDiagram-v2
   host's search index must report its own coverage (§7.8).
 - **Departed:** The project's trees are gone from this vault and a tracked departure record
   remains at `Audits/departures/<slug>.json` (`format: vp-departure/1`; kind
-  `moved-to-vault` or `deleted`, and readers also honor `renamed`). Writes into a departed project are refused. Only
-  `vp vault project delete` / `vp_vault_project_delete` and the purge step of
-  `vp_vault_split` write departure records. A project cannot be copied back over its
+  `moved-to-vault` or `deleted`, and `renamed`). Writes into a departed project are refused. Only
+  `vp vault project delete` / `vp_vault_project_delete` and
+  `vp vault rename` / `vp_vault_rename` write departure records. A project cannot be copied back over its
   own departure record in v1, so Departed ends there unless a `git revert` of the delete
   commit, then a push, removes the record and restores the trees (ADR-013, Consequences). The supported way to remove a project is
   `vp vault project delete <project>... (--moved-to <url> | --discard)`, never `rm -rf`.
-- A slug renamed with `vp migrate project-slug` leaves the vault with no departure record.
-  `vp vault rename`, which would write a `renamed` record, is designed but not built
-  (ADR-013, Open questions).
+- `vp vault rename <old> <new>` / `vp_vault_rename` renames a project in place in one
+  published commit, writing a `renamed` departure record for the old slug (fresh target
+  only; it refuses a rename onto a slug the vault already holds). It supersedes the
+  one-shot `vp migrate project-slug`, which U12 retired.
 - There is no Dormant or Archived project state and no `vp unarchive`; `vp archive`
   archives session *transcripts* only (§3.2).
 
@@ -823,7 +825,7 @@ The v9.2.0 release notes must cover every contract change (ADR-014 decision 10):
   unmigrated one, and the next rebuild undoes a relabel;
 - `vp migrate mempalace` requires `--project` naming an existing project; its import is
   single-host, and is discarded by the first rebuild after a `chunks.fingerprint` change;
-- `vp_vault_split`, `vp_vault_merge` and `vp vault copy` refuse an unmigrated destination, and an
+- `vp vault copy` refuses an unmigrated destination, and an
   unmarked source into a marked destination;
 - surface 9 is mandatory and forward-only: a rollback restores the data, not the old
   binaries.
@@ -1124,18 +1126,16 @@ design**: learnings are authored out-of-band, so there is no create path here.
 
 ### 6.13 Vault Lifecycle Tools
 
-Moving whole projects into, out of, and between vaults, and binding a host to the
-vault a project lives in: `vp_vault_copy`, `vp_vault_project_delete`,
-`vp_vault_split`, `vp_vault_merge` and `vp_config_bind`. `vp_vault_copy` and
-`vp_vault_project_delete` exist so that a project's arrival and departure are each one
-recorded, published change rather than file operations an agent composes (ADR-013):
-every departure made by these tools (and by `vp_vault_split`'s purge) leaves a tracked
-record under `Audits/departures/`, and writes into a departed project are refused.
-`vp_vault_split` and `vp_vault_merge` are the older pair: multi-step
-plan/apply/verify(/purge) calls that write another vault by host path; whether copy +
-delete supersedes them is undecided (ADR-013, Open questions). The first two
-and `vp_config_bind` have CLI twins (`vp vault copy`, `vp vault project delete`,
-`vp config bind`); `vp_vault_split` and `vp_vault_merge` have no CLI verb. See
+Moving whole projects into, out of, and between vaults, renaming one in place, and
+binding a host to the vault a project lives in: `vp_vault_copy`,
+`vp_vault_rename`, `vp_vault_project_delete` and `vp_config_bind`. They exist so that a
+project's arrival, rename and departure are each one recorded, published change rather
+than file operations an agent composes (ADR-013): every departure made by these tools
+leaves a tracked record under `Audits/departures/` (`vp_vault_rename` writes a `renamed`
+record for the old slug), and writes into a departed project are refused. Each has a CLI
+twin (`vp vault copy`, `vp vault rename`, `vp vault project delete`, `vp config bind`).
+The earlier host-path pair `vp_vault_split` / `vp_vault_merge`, and the one-shot
+`vp migrate project-slug`, were retired in U12: copy + delete + rename supersede them. See
 [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md) for the decision
 and [VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md) for the copy / delete / bind / clone procedures.
 

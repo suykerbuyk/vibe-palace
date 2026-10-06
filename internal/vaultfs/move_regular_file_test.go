@@ -47,7 +47,7 @@ func TestMove_RefusesDirectorySource(t *testing.T) {
 	if !errors.Is(err, ErrNotRegularFile) {
 		t.Fatalf("want ErrNotRegularFile, got %v", err)
 	}
-	for _, want := range []string{"directory", "one at a time", "vp_manage_task action=move", "vp migrate project-slug"} {
+	for _, want := range []string{"directory", "one at a time", "vp_manage_task action=move", "vp vault rename"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal must say %q, got %q", want, err)
 		}

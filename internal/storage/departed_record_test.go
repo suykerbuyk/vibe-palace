@@ -117,8 +117,8 @@ func TestTheLifecycleCommandsStillWriteRecords(t *testing.T) {
 	}
 	_ = h.Release()
 	writeFile(t, dir, "Projects/gone/resume.md", "x\n")
-	if _, _, err := NewVault(dir).RecordDepartureForPurge("gone", departure.MovedToVault, "q"); err != nil {
-		t.Fatalf("the split purge's writer: %v", err)
+	if _, _, err := NewVault(dir).writeDeparture(nil, departure.Record{Slug: "gone", Kind: departure.MovedToVault, To: "q"}, false); err != nil {
+		t.Fatalf("the write-before-removal record writer: %v", err)
 	}
 }
 

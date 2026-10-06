@@ -1,5 +1,5 @@
 {
-  "surface_version": 9,
+  "surface_version": 10,
   "tools": [
     {
       "name": "vp_append_iteration",
@@ -357,11 +357,6 @@
       "schema_sha256": "3171358a30eb98615a436fa08794342aac594a13274a206b7c6e3a4fce3c5629"
     },
     {
-      "name": "vp_vault_merge",
-      "mutating": true,
-      "schema_sha256": "0de0c9a60564ad7d8b0d8b4d2907bdd31aec30538c5937bf4c4e2a96c7592f1c"
-    },
-    {
       "name": "vp_vault_move",
       "mutating": true,
       "schema_sha256": "1680621c5d8ce90bc633cc4da2def2b2fd6deb59fc6b53aad93f5fbf0db4cb93"
@@ -385,11 +380,6 @@
       "name": "vp_vault_sha256",
       "mutating": false,
       "schema_sha256": "05477dcd142bf592df01b874bc86994d561bd802cf6e77dce8b216a699fdbe3b"
-    },
-    {
-      "name": "vp_vault_split",
-      "mutating": true,
-      "schema_sha256": "ab2f3e9d552bf56d04724fc43e8c1d95e13bb90ee8287f406cae82cb1a9fd355"
     },
     {
       "name": "vp_vault_status",

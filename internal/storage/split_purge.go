@@ -221,7 +221,7 @@ func refuseOnPendingDeparturesFor(vaultPath string, caller *vaultlock.Held) erro
 
 // SplitPurgePreflight is everything the split purge must know before it
 // changes anything, and it changes nothing. It returns the HEAD the purge is
-// checked against; CommitSplitPurge refuses if HEAD has moved since.
+// checked against; CommitSplitPurgeLocked refuses if HEAD has moved since.
 //
 // collected holds every file the purge walked under the slugs' trees (a
 // vault-relative path per regular file).
@@ -244,7 +244,7 @@ func SplitPurgePreflight(vaultPath string, slugs []string, collected map[string]
 		return "", err
 	}
 	// 🔴 HEAD IS READ FIRST, and every check below is made against THAT
-	// commit. CommitSplitPurge refuses unless HEAD still equals it, so a
+	// commit. CommitSplitPurgeLocked refuses unless HEAD still equals it, so a
 	// commit landing after this read (tidy, a pull) is caught there; read
 	// last, a file committed between these checks would sit inside the
 	// recorded HEAD, pass the re-check, and be removed uncopied.
@@ -319,7 +319,7 @@ type SplitPurgeCommitResult struct {
 	TrackedRemoved int
 }
 
-// SplitPurgeHeadMovedError is CommitSplitPurge's refusal when HEAD moved
+// SplitPurgeHeadMovedError is CommitSplitPurgeLocked's refusal when HEAD moved
 // between the preflight and the lock. Nothing was removed.
 type SplitPurgeHeadMovedError struct{ From, To string }
 
@@ -327,9 +327,12 @@ func (e *SplitPurgeHeadMovedError) Error() string {
 	return fmt.Sprintf("refusing to purge: the vault's HEAD moved from %s to %s after this purge was checked (a pull or merge landed); nothing was removed. Re-run purge", short(e.From), short(e.To))
 }
 
-// CommitSplitPurge removes every TRACKED file under the purged slugs' trees
-// and commits that removal together with the departure records, in one local
-// commit, under the vault commit lock. It never pushes.
+// CommitSplitPurgeLocked removes every TRACKED file under the purged slugs'
+// trees and commits that removal together with the departure records, in one
+// local commit, under the vault commit lock. It never pushes. The caller
+// already holds the vault root commit lock: the vault is held.Root(), and the
+// lock is not taken again (vaultlock.Acquire is not reentrant). A token that is
+// not a live root lock refuses before any git runs.
 //
 // 🔴 THE LOCK IS HELD FROM THE HEAD CHECK TO THE ASSERTION, and nothing under
 // it takes a per-path vaultlock key: this runs git only (git rm, add, commit,
@@ -347,19 +350,6 @@ func (e *SplitPurgeHeadMovedError) Error() string {
 // files from HEAD (lossless) and returns the error; the caller then restores
 // or removes the records. After the commit lands, a failed assertion is an
 // error naming the commit.
-func CommitSplitPurge(vaultPath string, c SplitPurgeCommit) (*SplitPurgeCommitResult, error) {
-	held, err := vaultlock.AcquireHeld(vaultPath, vaultPath)
-	if err != nil {
-		return nil, fmt.Errorf("acquire vault commit lock: %w", err)
-	}
-	defer held.Release()
-	return CommitSplitPurgeLocked(held, c)
-}
-
-// CommitSplitPurgeLocked is CommitSplitPurge for a caller that already holds
-// the vault root commit lock: the vault is held.Root(), and the lock is not
-// taken again (vaultlock.Acquire is not reentrant). A token that is not a live
-// root lock refuses before any git runs.
 func CommitSplitPurgeLocked(held *vaultlock.Held, c SplitPurgeCommit) (*SplitPurgeCommitResult, error) {
 	if err := held.RequireRoot(); err != nil {
 		return nil, err

@@ -1508,8 +1508,9 @@ that owns it.
     committed and released the vault lock, beside the embed cache it purges today
     (`collectDeleteTrees`, `internal/storage/lifecycle_delete.go:436`) (*Rulings on children
     review round 3*);
-  - the lifecycle rename, done by `vp vault rename` (`rename-core-fresh-target-with-digest-bind`),
-    never by the one-shot `vp migrate project-slug`, which is not touched. It holds the index run
+  - the lifecycle rename, done by `vp vault rename` (`rename-core-fresh-target-with-digest-bind`);
+    the host-local index rename is part of that command, since U12 retired the one-shot
+    `vp migrate project-slug`. It holds the index run
     lock, with kind `lifecycle`, for the whole host-local step. It drains `<p>`'s index commit
     lock and changes `.generation/<p>`'s `epoch`. Then, holding only `<to>`'s index commit lock, it
     refuses if `palace/.local/index/<to>/` exists, renames `palace/.local/index/<p>/` to it,

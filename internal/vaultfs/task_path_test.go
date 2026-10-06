@@ -247,18 +247,18 @@ func TestNonTaskPathsStillMove(t *testing.T) {
 // The iteration-375 finding, resume.md and the 375 session note all record that
 // "Move and Delete are ungated by IsTaskFilePath" as though it were one hole. It
 // is two findings and only Move is a defect. Delete is ungated on a committed
-// decision whose rationale lives at internal/tools/vault_split_apply.go:753 —
-// the reason task paths refuse a generic WRITER is that every field has exactly
-// one typed writer, and removing the file entirely mutates no field.
+// decision whose rationale lives with the project-delete purge
+// (storage.RemovePurgeTree) — the reason task paths refuse a generic WRITER is
+// that every field has exactly one typed writer, and removing the file entirely
+// mutates no field.
 //
-// There is a concrete regression behind that argument: vaultSplitPurge walks
-// every regular file through vaultfs.Delete (vault_split_apply.go:884) to
-// inherit its .git refusal, containment, per-path lock and CAS. Gate Delete and
-// a purge cannot remove task files, so it cannot complete — with no sanctioned
-// alternative offered to the operator.
+// There is a concrete regression behind that argument: the purge walks every
+// regular file through vaultfs.Delete to inherit its .git refusal, containment,
+// per-path lock and CAS. Gate Delete and a purge cannot remove task files, so
+// it cannot complete — with no sanctioned alternative offered to the operator.
 //
 // If this test ever fails, someone has "completed" the 375 finding. Do not make
-// it pass by deleting it: answer vaultSplitPurge first.
+// it pass by deleting it: answer the purge's need to remove the file first.
 func TestDeleteStillRemovesTaskFiles(t *testing.T) {
 	root := taskGateVault(t)
 	for _, rel := range []string{

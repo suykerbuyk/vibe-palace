@@ -16,45 +16,11 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
-// RecordDeparture writes the tracked record that slug LEFT this vault —
-// renamed to another slug (kind departure.Renamed, to = the new slug) or moved
-// to another vault (departure.MovedToVault, to = an optional label, never a
-// host path) — at Audits/departures/<slug>.json, and returns that
-// vault-relative path.
-//
-// 🔴 IT DOES NOT COMMIT, AND THE CALLER MUST. The record belongs in the SAME
-// commit as the departure itself (a rename's move commit, a split purge's
-// deletions): committed alone it would claim a departure that another host
-// has not seen happen, and left uncommitted it is dirt that tidy reports
-// rather than sweeps. The returned path is for the caller's path list.
-//
-// It refuses while Projects/<slug>/ still exists: a departure is recorded
-// after the tree is gone, never before, so a record can never describe a
-// project that is still here. An existing record is overwritten — the slug was
-// re-created (vp init) and has now departed again; git keeps the history.
-//
-// THE WRITER OWNS THE CLOCK (clock.go): the date is this process's calendar
-// day, and base_commit is the vault's HEAD at the time of writing (the commit
-// the departure is made against — a commit cannot name its own SHA, and
-// `git log -- <path>` recovers the departing one). Neither is a parameter.
-func (v *Vault) RecordDeparture(slug string, kind departure.Kind, to string) (string, error) {
-	rel, _, err := v.writeDeparture(nil, departure.Record{Slug: slug, Kind: kind, To: to}, true)
-	return rel, err
-}
-
-// RecordDepartureForPurge is RecordDeparture for a split purge, the one writer
-// that records a departure BEFORE the trees are gone: the purge writes its
-// records, then removes the tracked files and commits both in one commit
-// (storage.CommitSplitPurge). Written first, an interrupted purge leaves an
-// uncommitted record behind, and the commit guard then refuses every other
-// vp commit until the purge is finished or undone — a record written last
-// would leave a crash's half-removal unguarded. created reports whether the
-// file did not exist before, which is what the purge's rollback needs: a
-// created record is removed, an overwritten (committed) one is restored from
-// HEAD.
-func (v *Vault) RecordDepartureForPurge(slug string, kind departure.Kind, to string) (rel string, created bool, err error) {
-	return v.writeDeparture(nil, departure.Record{Slug: slug, Kind: kind, To: to}, false)
-}
+// The generic record writers RecordDeparture (requireAbsent) and
+// RecordDepartureForPurge (write-before-removal) were retired in U12 with the
+// split/merge tools that were their only production callers. The surviving
+// writers are RecordDepartureForDelete and RecordDepartureForRename below, and
+// the lower-level writeDeparture they funnel through.
 
 // DepartureFacts are what a project delete verified and records beside the
 // departure: the destination's copy commit (moved-to-vault only, and

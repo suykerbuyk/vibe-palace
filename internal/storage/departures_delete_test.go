@@ -70,7 +70,7 @@ func TestRecordDepartureForDeleteWritesTheLifecycleFields(t *testing.T) {
 	}
 
 	// A committed record from before the field existed counts as generation 1.
-	if _, _, err := v.RecordDepartureForPurge("old", departure.MovedToVault, label); err != nil {
+	if _, _, err := v.writeDeparture(nil, departure.Record{Slug: "old", Kind: departure.MovedToVault, To: label}, false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(departure.RelPath("old"))))

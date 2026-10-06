@@ -335,21 +335,21 @@ func TestPullMergeWaitsForTheCommitLock(t *testing.T) {
 	}
 }
 
-// RecordDepartureForPurge writes with the tree still present, and reports
-// whether it created the record (a rollback removes it) or overwrote one (a
-// rollback restores it).
-func TestRecordDepartureForPurge(t *testing.T) {
+// writeDeparture with requireAbsent refuses while the tree is present; the
+// write-before-removal form (requireAbsent=false) reports whether it created
+// the record (a rollback removes it) or overwrote one (a rollback restores it).
+func TestWriteDepartureRequireAbsentAndCreated(t *testing.T) {
 	dir := initTestRepo(t)
 	v := NewVault(dir)
 	writeFile(t, dir, "Projects/alpha/resume.md", "still here\n")
-	if _, err := v.RecordDeparture("alpha", departure.MovedToVault, ""); err == nil {
-		t.Fatal("RecordDeparture must still refuse while the tree exists")
+	if _, _, err := v.writeDeparture(nil, departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: ""}, true); err == nil {
+		t.Fatal("a requireAbsent write must still refuse while the tree exists")
 	}
-	rel, created, err := v.RecordDepartureForPurge("alpha", departure.MovedToVault, "q")
+	rel, created, err := v.writeDeparture(nil, departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: "q"}, false)
 	if err != nil || !created || rel != departure.RelPath("alpha") {
 		t.Fatalf("first write = %q %v %v", rel, created, err)
 	}
-	if _, created, err := v.RecordDepartureForPurge("alpha", departure.MovedToVault, "q2"); err != nil || created {
+	if _, created, err := v.writeDeparture(nil, departure.Record{Slug: "alpha", Kind: departure.MovedToVault, To: "q2"}, false); err != nil || created {
 		t.Fatalf("an overwrite must report created=false: %v %v", created, err)
 	}
 }
@@ -455,7 +455,12 @@ func TestPurgePreflightPinsHEADBeforeItsChecks(t *testing.T) {
 	if err == nil {
 		b, _ := (departure.Record{Slug: "alpha", Kind: departure.MovedToVault}).Encode()
 		writeFile(t, dir, departure.RelPath("alpha"), string(b))
-		_, err = CommitSplitPurge(dir, SplitPurgeCommit{Slugs: []string{"alpha"}, Records: []string{departure.RelPath("alpha")}, Message: "purge", ExpectHead: head})
+		held, herr := vaultlock.AcquireHeld(dir, dir)
+		if herr != nil {
+			t.Fatal(herr)
+		}
+		_, err = CommitSplitPurgeLocked(held, SplitPurgeCommit{Slugs: []string{"alpha"}, Records: []string{departure.RelPath("alpha")}, Message: "purge", ExpectHead: head})
+		held.Release()
 	}
 	if err == nil {
 		t.Fatal("a commit in the preflight window must make the purge refuse")

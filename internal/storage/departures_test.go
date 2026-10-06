@@ -17,7 +17,7 @@ import (
 // Audits tree, derives its own date and base commit, refuses a project that is
 // still here or a record that is not a departure — and commits NOTHING: the
 // record belongs in the caller's own departure commit.
-func TestRecordDepartureWritesStampsAndRefusesALiveTree(t *testing.T) {
+func TestWriteDepartureStampsAndRefusesALiveTree(t *testing.T) {
 	root := t.TempDir()
 	gitRun(t, root, "init", "-q", "-b", "main")
 	gitRun(t, root, "config", "user.email", "t@t")
@@ -32,7 +32,7 @@ func TestRecordDepartureWritesStampsAndRefusesALiveTree(t *testing.T) {
 	gitRun(t, root, "commit", "-q", "-m", "seed")
 	v := NewVault(root)
 
-	if _, err := v.RecordDeparture("old", departure.Renamed, "new"); err == nil || !strings.Contains(err.Error(), "still exists") {
+	if _, _, err := v.writeDeparture(nil, departure.Record{Slug: "old", Kind: departure.Renamed, To: "new"}, true); err == nil || !strings.Contains(err.Error(), "still exists") {
 		t.Fatalf("a departure must not be recorded while Projects/old/ exists, got %v", err)
 	}
 	gitRun(t, root, "mv", "Projects/old", "Projects/new")
@@ -48,14 +48,14 @@ func TestRecordDepartureWritesStampsAndRefusesALiveTree(t *testing.T) {
 		{"old", "", "exploded"},
 		{"old", "/home/me/other-vault", departure.MovedToVault},
 	} {
-		if _, err := v.RecordDeparture(bad.slug, bad.kind, bad.to); err == nil {
-			t.Errorf("RecordDeparture(%q, %q, %q) must refuse", bad.slug, bad.kind, bad.to)
+		if _, _, err := v.writeDeparture(nil, departure.Record{Slug: bad.slug, Kind: bad.kind, To: bad.to}, true); err == nil {
+			t.Errorf("writeDeparture(%q, %q, %q) must refuse", bad.slug, bad.kind, bad.to)
 		}
 	}
 
-	rel, err := v.RecordDeparture("old", departure.Renamed, "new")
+	rel, _, err := v.writeDeparture(nil, departure.Record{Slug: "old", Kind: departure.Renamed, To: "new"}, true)
 	if err != nil {
-		t.Fatalf("RecordDeparture: %v", err)
+		t.Fatalf("writeDeparture: %v", err)
 	}
 	if rel != "Audits/departures/old.json" {
 		t.Errorf("rel = %q", rel)

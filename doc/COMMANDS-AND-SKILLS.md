@@ -124,13 +124,11 @@ inheritance or merging.
 
 **`Templates/` is per vault.** A project bound to another vault
 (`vp config bind`, ADR-012) sees that vault's `Templates/`, not the default
-vault's. `vp vault copy` (and the MCP-only `vp_vault_split` /
-`vp_vault_merge`) carry a project's footprint, `Projects/<slug>/` and
-`palace/<slug>/`, and never `Templates/`; split and merge also take
-`Knowledge/learnings/` and `Audits/`, but only when `include_learnings` /
-`include_audits` is set. So project-tier overrides travel with the project
-and vault-wide `Templates/` overrides do not: re-create any the project
-needs in the target vault. See
+vault's. `vp vault copy` carries a project's footprint, `Projects/<slug>/`
+and `palace/<slug>/`, and never `Templates/`; `vp vault rename` moves that
+same footprint within one vault and leaves `Templates/` untouched. So
+project-tier overrides travel with the project and vault-wide `Templates/`
+overrides do not: re-create any the project needs in the target vault. See
 [Vault lifecycle](VAULT-LIFECYCLE.md) and
 [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md).
 
@@ -517,11 +515,10 @@ parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
   prefer the typed writers below for files that have one.
 - **Vault git**: `vp_vault_status`, `vp_vault_sync`, `vp_vault_tidy` —
   sync state, pull/push and capture-artifact tidy for the vault.
-- **Vault lifecycle**: `vp_vault_copy`, `vp_vault_project_delete` and
-  `vp_config_bind` (see [Vault lifecycle](VAULT-LIFECYCLE.md)), plus the
-  MCP-only `vp_vault_split` / `vp_vault_merge`
-  ([ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md) leaves
-  open whether copy + delete supersede them). The full list is
+- **Vault lifecycle**: `vp_vault_copy`, `vp_vault_rename`,
+  `vp_vault_project_delete` and `vp_config_bind` (see
+  [Vault lifecycle](VAULT-LIFECYCLE.md)). The earlier MCP-only
+  `vp_vault_split` / `vp_vault_merge` were retired in U12. The full list is
   `internal/mcp/tool_surface.golden.json`.
 - **Commit lifecycle** (§6.9): `vp_ingest_commit_msg` reads
   `<project>/commit.msg` off disk and writes a stamped vault copy.

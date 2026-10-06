@@ -12,13 +12,14 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 const departedTo = "git@gitlab.example.com:q/vibe-palace-vault.git"
 
 // departedFixture is a vault in which project p was deleted by the delete's
-// own commit path (CommitSplitPurge: the record plus `git rm`, one commit).
-// That commit is itself the first "not refused" case.
+// own commit path (CommitSplitPurgeLocked: the record plus `git rm`, one
+// commit). That commit is itself the first "not refused" case.
 func departedFixture(t *testing.T) (dir string) {
 	t.Helper()
 	dir = initTestRepo(t)
@@ -27,11 +28,17 @@ func departedFixture(t *testing.T) (dir string) {
 	gitRun(t, dir, "add", "-A")
 	gitRun(t, dir, "commit", "-q", "-m", "projects")
 	head := gitRun(t, dir, "rev-parse", "HEAD")
-	rel, _, err := NewVault(dir).RecordDepartureForPurge("p", departure.MovedToVault, departedTo)
+	rel, _, err := NewVault(dir).writeDeparture(nil, departure.Record{Slug: "p", Kind: departure.MovedToVault, To: departedTo}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CommitSplitPurge(dir, SplitPurgeCommit{Slugs: []string{"p"}, Records: []string{rel}, Message: "vault project delete: p", ExpectHead: head}); err != nil {
+	held, err := vaultlock.AcquireHeld(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = CommitSplitPurgeLocked(held, SplitPurgeCommit{Slugs: []string{"p"}, Records: []string{rel}, Message: "vault project delete: p", ExpectHead: head})
+	held.Release()
+	if err != nil {
 		t.Fatalf("not refused (1): the delete's own git rm commit was refused: %v", err)
 	}
 	if out := gitRun(t, dir, "ls-files", "Projects/p"); out != "" {

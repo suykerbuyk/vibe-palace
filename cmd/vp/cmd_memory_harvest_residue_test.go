@@ -13,6 +13,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // residueDepartureFixture is harvestCLIFixture with "harvp" departed the way a
@@ -32,7 +33,16 @@ func residueDepartureFixture(t *testing.T) (vault string, commits string) {
 	if _, err := os.Lstat(filepath.Join(vault, "Projects", "harvp")); err == nil {
 		t.Fatal("fixture precondition: git rm must leave Projects/harvp/ absent before the record is written")
 	}
-	if _, err := storage.NewVault(vault).RecordDeparture("harvp", departure.MovedToVault, "work-vault"); err != nil {
+	// Record the moved-to-vault departure the way vp vault project delete does,
+	// under the vault's root-lock token (this vault is a git repo, so the
+	// surviving writer can derive the generation). The fixture then commits it.
+	held, err := vaultlock.AcquireHeld(vault, vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = storage.NewVault(vault).RecordDepartureForDelete(held, "harvp", departure.MovedToVault, "work-vault", storage.DepartureFacts{})
+	held.Release()
+	if err != nil {
 		t.Fatal(err)
 	}
 	gitInVault(t, vault, "add", "-A")

@@ -160,8 +160,9 @@ func TestMoveAllowsMovingTheVaultProjectConfigOut(t *testing.T) {
 }
 
 // TestDeleteAllowsTheVaultProjectConfig pins the other half of the departure.
-// vaultSplitPurge walks regular files through Delete; gating it would leave a
-// verified purge unable to complete, with no sanctioned alternative.
+// The project-delete purge (storage.RemovePurgeTree) walks regular files
+// through Delete; gating it would leave a verified purge unable to complete,
+// with no sanctioned alternative.
 func TestDeleteAllowsTheVaultProjectConfig(t *testing.T) {
 	root := taskGateVault(t)
 	seed(t, root, vaultProjCfg, "[palace.scoring]\n")

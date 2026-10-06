@@ -52,7 +52,7 @@ func newCloneFixture(t *testing.T) *cloneFixture {
 		rebindGit(t, f.B, "push", "-q", name, "main")
 	}
 	for _, s := range []string{"qa", "orch"} {
-		if _, err := NewVault(f.global).RecordDeparture(s, departure.MovedToVault, fileURL(f.origin)); err != nil {
+		if _, _, err := NewVault(f.global).writeDeparture(nil, departure.Record{Slug: s, Kind: departure.MovedToVault, To: fileURL(f.origin)}, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -372,7 +372,7 @@ func TestCloneRefusesAFormatMismatch(t *testing.T) {
 // bind target absent: the clone lacks the project; refuses, nothing written.
 func TestCloneRefusesABindTargetAbsentFromTheClone(t *testing.T) {
 	f := newCloneFixture(t)
-	if _, err := NewVault(f.global).RecordDeparture("gone", departure.MovedToVault, fileURL(f.origin)); err != nil {
+	if _, _, err := NewVault(f.global).writeDeparture(nil, departure.Record{Slug: "gone", Kind: departure.MovedToVault, To: fileURL(f.origin)}, true); err != nil {
 		t.Fatal(err)
 	}
 	pre := bindRead(t, f.cfg)

@@ -1485,7 +1485,7 @@ func refuseDepartedInCommit(vaultPath string, paths []string) error {
 }
 
 // commitPathspec is commitOnlyPaths without the commit guard. Its only other
-// caller is CommitSplitPurge, whose commit is the one that finishes the
+// caller is CommitSplitPurgeLocked, whose commit is the one that finishes the
 // pending departure records the guard refuses on.
 func commitPathspec(vaultPath string, limit time.Duration, message string, paths []string) error {
 	f, err := os.CreateTemp("", "vp-commit-pathspec-*")

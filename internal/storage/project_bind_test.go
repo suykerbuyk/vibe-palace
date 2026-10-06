@@ -26,7 +26,7 @@ func splitHost(t *testing.T, home, slug string) (global, quantum string) {
 	quantum = rebindVault(t, filepath.Join(home, "quantum-vault"), slug)
 	rebindGit(t, quantum, "init", "-q")
 	rebindGit(t, quantum, "remote", "add", "origin", splitLabel)
-	if _, err := NewVault(global).RecordDeparture(slug, departure.MovedToVault, splitLabel); err != nil {
+	if _, _, err := NewVault(global).writeDeparture(nil, departure.Record{Slug: slug, Kind: departure.MovedToVault, To: splitLabel}, true); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := VaultConfigFilePath()

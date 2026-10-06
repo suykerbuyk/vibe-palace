@@ -172,7 +172,7 @@ func HashFile(p string) (string, int64, error) {
 //
 // The content is hashed WHILE it streams, and the result is compared to the
 // manifest row. That costs nothing — the bytes are already passing through — and
-// it closes the last gap the digest bind cannot: buildSplitManifest hashed this
+// it closes the last gap the digest bind cannot: WalkProjectTree hashed this
 // file moments ago, and this is the read that proves the bytes landing in the
 // destination are those same bytes and not a racing rewrite.
 //

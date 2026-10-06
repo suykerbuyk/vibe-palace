@@ -33,14 +33,6 @@
       "reason": "NOT A VAULT PATH: the project checkout's git hooks directory. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
     {
-      "id": "creating-project-owner raw-sink storage.OpenSlugJournal",
-      "reason": "NOT A PROJECT TREE: the rename journal's auxiliary directory under host-local palace/.local/. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
-    },
-    {
-      "id": "creating-project-owner raw-sink storage.ReplaySlugJournal",
-      "reason": "NO PROJECT CREATED: the rename's crash recovery puts an existing project's moved files back between its from/to trees, with raw renames that stamp nothing. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
-    },
-    {
       "id": "creating-project-owner raw-sink storage.Vault.EnsureVaultDir",
       "reason": "THE GATED HELPER ITSELF: projectdir.RefuseUninitialisedAbs runs before its os.MkdirAll. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
@@ -81,16 +73,8 @@
       "reason": "NOT A VAULT PATH: anchors copied into the project checkout by checkout rebind. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
     {
-      "id": "creating-project-owner raw-sink storage.slugCacheStep",
-      "reason": "NOT A PROJECT TREE: the rename moves the host-local embed cache, palace/.local/embed-cache/<slug>. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
-    },
-    {
       "id": "creating-project-owner raw-sink storage.slugMove",
-      "reason": "PROJECT RENAME: vp migrate project-slug moves an existing project's tracked files from Projects|palace/<from>/ to <to>/ with raw MkdirAll + RenameNoLock; a rename stamps nothing and the migration commits it. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
-    },
-    {
-      "id": "creating-project-owner raw-sink storage.slugRemoveVec",
-      "reason": "NOT A PROJECT TREE: moves an embed-cache vector into the rename journal under host-local palace/.local/. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
+      "reason": "PROJECT RENAME: vp vault rename moves an existing project's tracked files from Projects|palace/<from>/ to <to>/ with raw MkdirAll + RenameNoLock; a rename stamps nothing and the rename's single commit commits it. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
     {
       "id": "creating-project-owner raw-sink storage.snapshotFormat",
@@ -105,8 +89,12 @@
       "reason": "THE MOVE PRIMITIVE ITSELF: its destination is checked by projectdir.RefuseUninitialisedAbs before its os.MkdirAll and RenameNoLock. Pinned by task untracked-project-stamps-from-writers-that-never-commit."
     },
     {
+      "id": "departure-record-writer storage.ApplyRename",
+      "reason": "vp vault rename (U9): records the renamed slug's departure with RecordDepartureForRename under the rename's own root-lock token, before the move's one commit carries the record with it. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Pinned here in U12 when the rule's enumerated entry set gained RecordDepartureForRename, 2026-10-06."
+    },
+    {
       "id": "departure-record-writer storage.Vault.writeDeparture",
-      "reason": "THE ONE RECORD WRITER in storage. RecordDeparture, RecordDepartureForPurge and RecordDepartureForDelete all funnel here; it validates and encodes the record, derives date and base commit, and writes it through vaultfs.WriteDepartureRecord under the caller's root-lock token (or one it takes when the caller holds none). Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
+      "reason": "THE ONE RECORD WRITER in storage. RecordDepartureForDelete and RecordDepartureForRename funnel here; it validates and encodes the record, derives date and base commit, and writes it through vaultfs.WriteDepartureRecord under the caller's root-lock token (or one it takes when the caller holds none). Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
     },
     {
       "id": "departure-record-writer storage.applyFullDelete",
@@ -115,18 +103,6 @@
     {
       "id": "departure-record-writer storage.deleteRollback",
       "reason": "vp vault project delete (U6) rollback: removes the record THIS run wrote (not in HEAD) through vaultfs.RemoveDepartureRecord under the delete's root-lock token; a committed record is restored from HEAD by git instead. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
-    },
-    {
-      "id": "departure-record-writer tools.removeOwnDepartureRecord",
-      "reason": "vp_vault_split purge rollback: removes a record the purge itself created, under a root-lock token it takes (CommitSplitPurge has released the lock by then). The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
-    },
-    {
-      "id": "departure-record-writer tools.splitPurgeCommitted",
-      "reason": "vp_vault_split purge on a vault that commits: records each purged slug with RecordDepartureForPurge before CommitSplitPurge commits the removal and the records together. The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
-    },
-    {
-      "id": "departure-record-writer tools.splitPurgeUncommitted",
-      "reason": "vp_vault_split purge on a vault that cannot commit (no repository of its own, or nested): records each purged slug with RecordDeparture after the trees are gone. The tool retires in U12. Pinned by the departure-record-writer rule (internal/sourceaudit/departure_record_writer.go; task lc-u15-vaultfs-refuses-writes-into-a-departed-project): a record decides where a project lives, so every caller of a record entry point is ruled on here. The raw sinks a hand-rolled record change would need (vaultfs.RemoveNoLock, vaultfs.RenameNoLock, os.*) stay covered by the vault-write funnel audit. Reviewed with the U15 round-3 send-back, 2026-09-28."
     },
     {
       "id": "departure-record-writer vaultfs.WriteDepartureRecord",

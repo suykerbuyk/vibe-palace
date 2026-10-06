@@ -328,7 +328,7 @@ import (
 // nothing. The data format does NOT move: nothing already on disk needs
 // migrating, record fields are optional (Parse accepts unknown fields), and an
 // older binary already reads kind `deleted` as malformed-but-departed. The
-// next release tag is therefore v9.2.0 (v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>,
+// next release tag is therefore v10.2.0 (v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>,
 // build restarting at 0 on a new surface/format pair).
 //
 // Rollout: `make install` on every host, then restart every AI harness on it,
@@ -343,7 +343,16 @@ import (
 // TESTED contract rather than a convenience — a stranded host has to be able to
 // read its way out. `vp check --check writer-identity` derives how many hosts
 // that is; do not record the number here.
-const MCPSurfaceVersion int = 9
+//
+// Bumped 8->9 (2026-10-05, U9) for the supported in-vault rename: `vp vault
+// rename` / vp_vault_rename and the `renamed` departure record join the gated
+// surface. Bumped 9->10 (2026-10-05, operator decision on U12) for the ROSTER
+// SHRINK: the one-shot `vp migrate project-slug` and the vp_vault_split /
+// vp_vault_merge tools are retired, so a v10 binary serves a strictly smaller
+// tool set. The data format does NOT move on either bump — no on-disk shape
+// changes, record fields stay optional — so RequiredDataFormat is unchanged and
+// the tag convention keeps its `.2` middle component.
+const MCPSurfaceVersion int = 10
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

@@ -969,9 +969,9 @@ binding that no longer matches what the vault holds.
 
 ### Vault lifecycle and departure tests
 
-The lifecycle commands (`vp vault init`, `vp vault copy`, `vp vault project
-delete`, `vp vault clone --bind`) and departure records, which only
-`vp vault project delete` and the `vp_vault_split` purge write. The
+The lifecycle commands (`vp vault init`, `vp vault copy`, `vp vault rename`,
+`vp vault project delete`, `vp vault clone --bind`) and departure records, which
+only `vp vault project delete` and `vp vault rename` write. The
 user guide is [doc/VAULT-LIFECYCLE.md](VAULT-LIFECYCLE.md); the decision record
 is [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md). Per-file
 counts drift; derive them with `grep -c '^func Test' <file>`.
@@ -1013,12 +1013,15 @@ CI `test` job runs them.
 - `internal/storage`: `vault_init_test.go`, `lifecycle_copy_test.go`,
   `lifecycle_delete_test.go`, `lifecycle_git_test.go`,
   `lifecycle_publish_test.go`, `vault_clone_test.go`,
-  `vault_clone_resume_test.go`.
+  `vault_clone_resume_test.go`, `project_rename_test.go` (the in-vault rename
+  engine: fresh-target refusals, the single commit + `renamed` record, the
+  zero-old-slug postcheck), `project_bind_renamed_test.go` (the bind rekey).
+- `internal/indexstore`: `rename_test.go` (the rename's host-local index step:
+  the store rename, imports carry, embed-cache rebuild and crash recovery).
 - `cmd/vp`: `cmd_vault_init_test.go`, `cmd_vault_copy_test.go`,
   `cmd_vault_project_delete_test.go`, `cmd_vault_clone_test.go`.
-- `internal/tools`: `vault_copy_test.go` (`vp_vault_copy` plan then apply),
-  `vault_split_departure_test.go` (a successful purge writes one departure
-  record per purged slug; a refused purge writes none).
+- `internal/tools`: `vault_copy_test.go` (`vp_vault_copy` plan then apply;
+  `vp_vault_rename` is covered through the storage engine and index-store step).
 
 **Departure records and the departed-write gate.**
 
@@ -2483,28 +2486,7 @@ creates its destination now assert the destination is unchanged instead.
 |---|---|
 | `internal/storage`: `TestDerivedResidue_TrackedDrawerIsNever`, `TestDerivedResidue_PathAndUntrackedAndIgnored`, `TestDerivedResidue_RechecksEveryLine`, `TestDerivedResidue_OneGitCall`, `TestDerivedResidue_GitFailureIsAnError`, `TestDerivedResidue_NotAGitVault` | The residue is untracked AND ignored AND derived (never a tracked drawer, never an ignored `*.bak`), every listed line is re-checked with `isDerivedPath`, one git call for all slugs, and a git failure is an error |
 | `internal/tools`: `TestVaultSplit_RefusesEveryPairingButMigratedIntoMigrated`, `TestVaultMerge_RefusesEveryPairingButMigratedIntoMigrated`; `internal/storage`: `TestCopy_RefusesEveryPairingButMigratedIntoMigrated`, `TestCopy_ReadsTheSourceMarkerAtTheTip` | Each command refuses every pairing but migrated into migrated, and an unreadable marker, before any write (plan, apply and verify for split and merge; the dry run lists copy's refusal); copy reads the source marker at the tip |
-| `TestVaultSplitApply_IntoAVaultInitDestination`, `TestVaultSplitApply_RefusesAnUnsafeExistingDestination`, `TestVaultSplitApply_RefusesADestinationInsideAnotherRepository` | Split copies into a `vp vault init` destination end to end (its remote and `Audits/.surface` pass verify, its `vault.toml` is never rewritten), and refuses a destination that already holds the slug, carries a pending lifecycle marker, has an unrecorded remote, or is nested in another repository |
-| `TestVaultSplitPlan_LeavesOutDerivedResidueOnly`, `TestVaultSplitPlan_KeepsAnUnignoredDerivedFile`, `TestVaultSplit_ResidueApplyVerifyPurge`, `TestVaultSplitVerify_InventoryUsesTheSourceResidue`, `TestVaultSplitPlan_GlobalWalksIgnoreTheResidueRule`, `TestVaultMergePlan_LeavesOutDerivedResidue` | Split and merge leave the source's residue out, keep the `*.bak` manifests and unignored files, verify's inventory uses the source's residue set, purge's unaccounted check skips the residue and its cleanup removes it; the global walks are untouched |
-| `TestBaselineAdd_MergeAddsTheIncomingArchives`, `TestBaselineAdd_NoLedgerWritesNothing`, `TestBaselineAdd_NeverFailsTheCommand`, `TestBaselineAdd_CopyAddsAfterThePublishOnly` | Copy and merge add the incoming archives to this host's baseline set under one commit lock, write nothing without a ledger, warn rather than fail on a lock timeout, and a refused copy adds nothing |
-
-### `internal/tools/vault_split_apply_test.go` — purge reaps the moved cache
-
-`TestVaultSplitPurge_RemovesSourceTreesAfterVerify` seeds each slug's cache at
-the new location and asserts purge removes the purged slug's
-`palace/.local/embed-cache/<slug>/` and leaves the other slug's in place.
-`TestVaultSplitPurge_CacheRefusalLeavesTheRealTrees` puts a symlink purge cannot
-classify in the cache and requires the refusal to leave `palace/alpha` and
-`Projects/alpha` intact: the cache is purged first, because once the real trees
-are gone the manifest no longer binds and purge cannot be re-run.
-
-### `internal/tools/vault_merge_test.go` — collision text for a non-store
-
-`TestVaultMergePlan_LocalOnlyCollisionSaysSo`: a destination whose
-`palace/<slug>/` holds only `.local/` state still refuses the colliding slug —
-membership is the rule — and the refusal now says the directory is host-local
-state and names `vp check --check palace-local-only`; a directory of empty
-subdirectories is described as that, not as machine-local state; a real store
-collision carries no such sentence.
+| `TestBaselineAdd_CopyAddsAfterThePublishOnly` | Copy adds the incoming archives to this host's baseline set after its publish, under one commit lock, and a refused copy adds nothing |
 
 ## Vault-Write-Concurrency Tests
 

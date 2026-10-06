@@ -123,7 +123,6 @@ var departureRecordEntries = map[string]bool{
 	"vaultfs.WriteDepartureRecord":           true,
 	"vaultfs.RemoveDepartureRecord":          true,
 	"atomicfile.ForDepartureRecord":          true,
-	"storage.Vault.RecordDeparture":          true,
-	"storage.Vault.RecordDepartureForPurge":  true,
 	"storage.Vault.RecordDepartureForDelete": true,
+	"storage.Vault.RecordDepartureForRename": true,
 }

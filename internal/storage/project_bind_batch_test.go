@@ -20,7 +20,7 @@ func splitHostMany(t *testing.T, home string, slugs ...string) (global, quantum,
 	global, quantum = splitHost(t, home, slugs[0])
 	for _, s := range slugs[1:] {
 		rebindWrite(t, filepath.Join(quantum, "Projects", s, "resume.md"), "# resume\n")
-		if _, err := NewVault(global).RecordDeparture(s, departure.MovedToVault, splitLabel); err != nil {
+		if _, _, err := NewVault(global).writeDeparture(nil, departure.Record{Slug: s, Kind: departure.MovedToVault, To: splitLabel}, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -95,7 +95,7 @@ func TestBindRefusesATargetWithARecordOverRealContent(t *testing.T) {
 	home := rebindEnv(t)
 	_, quantum, cfg := splitHostMany(t, home, "qa")
 	// Real content stays; the target also records qa as departed.
-	if _, _, err := NewVault(quantum).RecordDepartureForPurge("qa", departure.MovedToVault, "git@example.com:elsewhere/vault.git"); err != nil {
+	if _, _, err := NewVault(quantum).writeDeparture(nil, departure.Record{Slug: "qa", Kind: departure.MovedToVault, To: "git@example.com:elsewhere/vault.git"}, false); err != nil {
 		t.Fatal(err)
 	}
 	// Since the U15 ruling the record wins over the directory everywhere, so

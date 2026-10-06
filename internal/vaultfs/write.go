@@ -378,10 +378,10 @@ func Move(vaultPath, fromPath, toPath string) (MoveResult, error) {
 	// or — moving OUT of tasks/ — leaves the file freely writable by Write.
 	//
 	// 🔴 Delete is deliberately NOT gated, and this is a decision rather than an
-	// omission. See vaultSplitPurge (internal/tools/vault_split_apply.go:753)
-	// for the committed rationale: removing a file mutates no field, and purge
-	// walks regular files through Delete, so gating it would leave a verified
-	// purge unable to complete with no sanctioned alternative.
+	// omission. See the project-delete purge (storage.RemovePurgeTree) for the
+	// committed rationale: removing a file mutates no field, and purge walks
+	// regular files through Delete, so gating it would leave a verified purge
+	// unable to complete with no sanctioned alternative.
 	if IsTaskFilePath(fromPath) {
 		return MoveResult{}, taskPathRefusal(fromPath)
 	}
@@ -520,7 +520,7 @@ func moveSourceLeaf(vaultPath, fromPath string) (string, error) {
 	case mode.IsDir():
 		return "", apperr.Caller(fmt.Errorf("%w: %s is a directory. vault move renames one regular file: "+
 			"move files one at a time; to move a task use vp_manage_task action=move; "+
-			"to rename a project use `vp migrate project-slug`", ErrNotRegularFile, fromPath))
+			"to rename a project use `vp vault rename`", ErrNotRegularFile, fromPath))
 	case mode&fs.ModeSymlink != 0:
 		return "", apperr.Caller(fmt.Errorf("%w: %s is a symlink. vault move does not follow or move links; "+
 			"move the file it points at by its own path", ErrNotRegularFile, fromPath))
