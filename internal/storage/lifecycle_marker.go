@@ -85,6 +85,22 @@ func lifecycleMarkerPath(vaultPath string) (string, error) {
 	return p, nil
 }
 
+// PendingLifecycleCommand returns the command name of the vault's standing
+// lifecycle marker (e.g. CopyCommandName, RenameCommandName) and whether one
+// stands. It is a read-only accessor for a COMPOSER that must route a pending
+// run to its owning core's redo before it acts — `vp vault copy --as`, which
+// runs copy then rename and reads this to tell a pending copy from a pending
+// rename (the core redoes only its own run; a mis-routed call trips its marker
+// guard). A malformed marker is an error AND found=true, exactly as the commit
+// guard treats it.
+func PendingLifecycleCommand(vaultPath string) (command string, found bool, err error) {
+	m, found, err := readLifecycleMarker(vaultPath)
+	if err != nil || !found {
+		return "", found, err
+	}
+	return m.Command, true, nil
+}
+
 // readLifecycleMarker returns the marker and whether one exists. A marker that
 // exists but does not parse is an error AND found=true: callers refuse on it.
 func readLifecycleMarker(vaultPath string) (lifecycleMarker, bool, error) {

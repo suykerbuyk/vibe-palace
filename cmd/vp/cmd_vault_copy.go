@@ -21,7 +21,8 @@ var vaultCopyFlags = []cli.FlagDef{
 	{Name: "--at", Arg: "SHA", Help: "The source commit the dry run planned against (the dry run prints it)"},
 	vaultRootFlag,
 	{Name: "--dry-run", Help: "Plan only: print the file list, every refusal, the push targets, the digest and the real-run command line"},
-	{Name: "--expect", Arg: "DIGEST", Help: "Refuse unless the plan still digests to DIGEST (the dry run prints it)"},
+	{Name: "--expect", Arg: "DIGEST", Help: "Refuse unless the plan still digests to DIGEST (the dry run prints it); with --as it binds the copy half"},
+	{Name: "--as", Arg: "NEWNAME", Help: "Copy the single named project under a new slug: copy, then rename it in this vault (U11). Requires exactly one project"},
 	{Name: "--json", Help: "Print the plan or result as JSON"},
 }
 
@@ -71,6 +72,9 @@ func runVaultCopy(c *cli.Command, args []string, out, errOut io.Writer) int {
 		Vault: root, Projects: fv.Args(), From: fv.Get("--from"),
 		At: fv.Get("--at"), Expect: fv.Get("--expect"), DryRun: fv.Bool("--dry-run"),
 	}
+	if newName := fv.Get("--as"); newName != "" {
+		return runVaultCopyAs(root, req, newName, fv.Bool("--json"), fv.Bool("--dry-run"), out, errOut)
+	}
 	res, err := storage.ApplyCopy(req)
 	// After the exact publish, on this host only, and never failing the copy:
 	// the incoming archives join this host's baseline set.
@@ -99,6 +103,51 @@ func runVaultCopy(c *cli.Command, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "vp vault copy: %v\n", err)
 		var pending *storage.LifecyclePendingError
 		if errors.Is(err, storage.ErrCopyRefused) || errors.As(err, &pending) {
+			return cli.ExitUser
+		}
+		return cli.ExitSystem
+	}
+	return cli.ExitOK
+}
+
+// runVaultCopyAs drives the U11 copy-then-rename composition (tools.CopyProjectAs)
+// for `vp vault copy <project> --from <url> --as <newname>`.
+func runVaultCopyAs(root string, req storage.CopyRequest, newName string, asJSON, dryRun bool, out, errOut io.Writer) int {
+	if len(req.Projects) != 1 {
+		fmt.Fprintln(errOut, "vp vault copy --as: name exactly one project (you cannot copy a batch under one new name)")
+		return cli.ExitUser
+	}
+	car, err := tools.CopyProjectAs(context.Background(), storage.NewVault(root), req, newName)
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		payload := map[string]any{"copy_as": car}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = enc.Encode(payload)
+	} else if car != nil {
+		if dryRun {
+			fmt.Fprintln(out, "DRY RUN — nothing was written to the vault")
+		}
+		fmt.Fprintf(out, "copy --as: %s -> %s: %s\n", car.Project, car.NewName, car.Outcome)
+		if car.Copy != nil && car.Copy.Plan != nil && dryRun {
+			fmt.Fprintf(out, "copy digest: %s\n(the rename to %s runs after the copy and cannot be previewed)\n", car.Copy.Plan.Digest, car.NewName)
+		}
+		if car.Copy != nil && car.Copy.Commit != "" {
+			fmt.Fprintf(out, "copied commit:  %s\n", car.Copy.Commit)
+		}
+		if car.Rename != nil && car.Rename.Commit != "" {
+			fmt.Fprintf(out, "renamed commit: %s\n", car.Rename.Commit)
+		}
+		for _, w := range car.BaselineWarnings {
+			fmt.Fprintf(errOut, "vp vault copy --as: warning: %s\n", w)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "vp vault copy --as: %v\n", err)
+		var pending *storage.LifecyclePendingError
+		if errors.Is(err, storage.ErrCopyRefused) || errors.Is(err, storage.ErrRenameRefused) || errors.As(err, &pending) {
 			return cli.ExitUser
 		}
 		return cli.ExitSystem

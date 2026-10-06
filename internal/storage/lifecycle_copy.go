@@ -37,6 +37,10 @@ const vaultManifestRel = ".vibe-palace/vault.toml"
 // copyCommand is the lifecycle command name the pending marker records.
 const copyCommand = "vault copy"
 
+// CopyCommandName is copyCommand, exported so a composer (vp vault copy --as)
+// can match the vault's pending lifecycle marker (PendingLifecycleCommand).
+const CopyCommandName = copyCommand
+
 // copyDigestFormat tags the copy digest. A change to its inputs gets a new tag.
 const copyDigestFormat = "vp-vault-copy-digest/1"
 

@@ -27,6 +27,7 @@ type vaultCopyParams struct {
 	From   string   `json:"from"`
 	At     string   `json:"at"`
 	Expect string   `json:"expect"`
+	As     string   `json:"as"`
 }
 
 var vaultCopySchema = json.RawMessage(`{
@@ -36,7 +37,8 @@ var vaultCopySchema = json.RawMessage(`{
 		"slugs": {"type": "array", "items": {"type": "string"}, "description": "Project slugs to copy, under the same names. Each must be absent from the served vault and hold at least one content file at the source."},
 		"from": {"type": "string", "description": "The source vault's PUBLISHED git remote URL. Never a host path: copy reads another vault only through its remote."},
 		"at": {"type": "string", "description": "The full source commit the plan was made against (plan returns it). A source tip that moved past it is accepted only if it is an ancestor of the tip and no copied project changed."},
-		"expect": {"type": "string", "description": "The digest plan returned. apply refuses unless the plan still digests to it. The digest binds the projects, the served vault's identity, the source URL, each project's footprint hash and every file's blob id, never a HEAD, so an unrelated push to either vault does not change it."}
+		"expect": {"type": "string", "description": "The digest plan returned. apply refuses unless the plan still digests to it. The digest binds the projects, the served vault's identity, the source URL, each project's footprint hash and every file's blob id, never a HEAD, so an unrelated push to either vault does not change it. With \"as\" it binds the copy half only."},
+		"as": {"type": "string", "description": "Copy the single named project under this new slug: copy then rename it in the served vault (U11). Requires exactly one slug and a slug different from it. apply does the copy commit then the rename commit, each published separately; a re-run resumes. \"expect\" binds the copy half; a dry run previews the copy and declares the follow-on rename."}
 	},
 	"required": ["action", "slugs", "from"]
 }`)
@@ -79,6 +81,8 @@ type vaultCopyResult struct {
 	Commit string              `json:"commit,omitempty"`
 	Redo   storage.RedoOutcome `json:"redo,omitempty"`
 	Undo   []string            `json:"undo,omitempty"`
+	// CopyAs is set when the `as` param ran the copy-then-rename composition.
+	CopyAs *CopyAsResult `json:"copy_as,omitempty"`
 	// BaselineWarnings names each project whose incoming archives could not
 	// be added to this host's baseline set (AddIncomingArchivesToBaseline).
 	// The copy itself succeeded.
@@ -98,12 +102,29 @@ func vaultCopyHandler(vault *storage.Vault) mcp.HandlerFunc {
 		req := storage.CopyRequest{Vault: vault.Root, Projects: p.Slugs, From: p.From, At: p.At, Expect: p.Expect}
 		switch p.Action {
 		case "plan":
+			req.DryRun = true
+			if p.As != "" {
+				car, err := CopyProjectAs(ctx, vault, req, p.As)
+				if err != nil {
+					return nil, classifyCopyErr(err)
+				}
+				return &vaultCopyResult{Action: "plan", CopyAs: car, Complete: true}, nil
+			}
 			plan, err := storage.PlanCopy(req)
 			if err != nil {
 				return nil, classifyCopyErr(err)
 			}
 			return &vaultCopyResult{Action: "plan", Plan: plan, Complete: true}, nil
 		case "apply":
+			if p.As != "" {
+				car, err := CopyProjectAs(ctx, vault, req, p.As)
+				if err != nil {
+					return nil, classifyCopyErr(err)
+				}
+				// CopyProjectAs runs the baseline step in the shared core (SF2
+				// parity); surface its warnings.
+				return &vaultCopyResult{Action: "apply", CopyAs: car, BaselineWarnings: car.BaselineWarnings, Complete: true}, nil
+			}
 			res, err := storage.ApplyCopy(req)
 			if err != nil {
 				return nil, classifyCopyErr(err)
@@ -118,10 +139,11 @@ func vaultCopyHandler(vault *storage.Vault) mcp.HandlerFunc {
 	}
 }
 
-// classifyCopyErr marks refusals the caller must act on as caller errors.
+// classifyCopyErr marks refusals the caller must act on as caller errors —
+// copy's and (for the --as composition) rename's refusals and a pending marker.
 func classifyCopyErr(err error) error {
 	var pending *storage.LifecyclePendingError
-	if errors.Is(err, storage.ErrCopyRefused) || errors.As(err, &pending) {
+	if errors.Is(err, storage.ErrCopyRefused) || errors.Is(err, storage.ErrRenameRefused) || errors.As(err, &pending) {
 		return apperr.Caller(err)
 	}
 	return err

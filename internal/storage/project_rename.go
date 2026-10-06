@@ -49,6 +49,10 @@ import (
 // renameCommand is the lifecycle command name the pending marker records.
 const renameCommand = "vault rename"
 
+// RenameCommandName is renameCommand, exported for composer marker-routing
+// (see CopyCommandName).
+const RenameCommandName = renameCommand
+
 // renameDigestFormat tags the rename digest. A change to its inputs gets a new tag.
 const renameDigestFormat = "vp-vault-rename-digest/1"
 

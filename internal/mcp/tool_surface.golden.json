@@ -334,7 +334,7 @@
     {
       "name": "vp_vault_copy",
       "mutating": true,
-      "schema_sha256": "1df1c17acafa027df0086764adfef9995e6b59fc8afffa5664b2e5e662b5807c"
+      "schema_sha256": "54661f64ac85c0e0412252b696a193af28601a7b1c20882fc092081f8298c993"
     },
     {
       "name": "vp_vault_delete",
