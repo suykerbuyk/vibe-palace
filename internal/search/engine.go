@@ -900,6 +900,15 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		return stats, fmt.Errorf("embed cache dir: %w", err)
 	}
 
+	// The notes tier's decision-chunk writer, BEFORE the store read below: it
+	// makes the store hold exactly the decision chunks of the session notes on
+	// disk, so the read then loads them. The same writer the capture path uses,
+	// so a rebuilt decision matches a captured one (ADR-014; this child's Scope
+	// 2). It takes the commit lock in its own short Tx and skips on a busy lock.
+	if err := e.regenerateDecisionChunks(ctx, pl, timeout, &chain, project); err != nil {
+		return stats, fmt.Errorf("note corpus: regenerate decision chunks: %w", err)
+	}
+
 	var ids []string
 	var vecs [][]float32
 	var metas []drawerMeta

@@ -24,8 +24,8 @@ func TestRegisterAll(t *testing.T) {
 	RegisterAll(srv.Registry(), resolver, vault, eng)
 
 	tools := srv.Registry().List()
-	if len(tools) != 80 {
-		t.Fatalf("registered %d tools, want 80", len(tools))
+	if len(tools) != 79 {
+		t.Fatalf("registered %d tools, want 79", len(tools))
 	}
 
 	wantNames := map[string]bool{
@@ -41,7 +41,6 @@ func TestRegisterAll(t *testing.T) {
 		"vp_get_skill_section":           true,
 		"vp_palace_status":               true,
 		"vp_palace_query":                true,
-		"vp_palace_backfill_decisions":   true,
 		"vp_list_wings":                  true,
 		"vp_list_rooms":                  true,
 		"vp_traverse":                    true,
@@ -167,8 +166,8 @@ func TestRegisterAllZeroOptionsUnchanged(t *testing.T) {
 
 	RegisterAll(srv.Registry(), resolver, vault, eng)
 
-	if got := len(srv.Registry().List()); got != 80 {
-		t.Fatalf("registered %d tools with zero options, want 80 (unchanged)", got)
+	if got := len(srv.Registry().List()); got != 79 {
+		t.Fatalf("registered %d tools with zero options, want 79 (unchanged)", got)
 	}
 }
 
@@ -180,7 +179,7 @@ func TestRegisterAllNilEngine(t *testing.T) {
 	RegisterAll(srv.Registry(), resolver, vault, nil)
 
 	tools := srv.Registry().List()
-	if len(tools) != 71 {
-		t.Fatalf("registered %d tools with nil engine, want 71", len(tools))
+	if len(tools) != 70 {
+		t.Fatalf("registered %d tools with nil engine, want 70", len(tools))
 	}
 }

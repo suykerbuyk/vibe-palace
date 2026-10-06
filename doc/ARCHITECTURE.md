@@ -1009,7 +1009,7 @@ The table groups them by category.
 | Tasks | `vp_list_tasks`, `vp_get_task`, `vp_manage_task` | task_tools.go | Task queue, epics, lifecycle (see *Tasks and the board*) |
 | Sessions and analytics | `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`, `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends` | session_tools.go, session_query_tools.go, friction_tools.go | Capture and session history |
 | Search | `vp_search`, `vp_search_cross_project`, `vp_refresh_index` | search_tools.go, system_tools.go | Hybrid semantic search |
-| Palace | `vp_palace_status`, `vp_list_wings`, `vp_list_rooms`, `vp_traverse`, `vp_find_tunnels`, `vp_palace_query`, `vp_palace_backfill_decisions` | palace_tools.go, palace_query_tools.go, palace_backfill_tools.go | Wing/room navigation; decision drawers |
+| Palace | `vp_palace_status`, `vp_list_wings`, `vp_list_rooms`, `vp_traverse`, `vp_find_tunnels`, `vp_palace_query` | palace_tools.go, palace_query_tools.go | Wing/room navigation; decision drawers |
 | Knowledge graph | `vp_kg_query`, `vp_kg_add`, `vp_kg_invalidate`, `vp_kg_timeline`, `vp_kg_stats` | kg_tools.go | Entity/triple facts |
 | Learnings | `vp_list_learnings`, `vp_get_learning` | learning_tools.go | Cross-project learnings under `Knowledge/` |
 | Memory | `vp_memory_list`, `vp_memory_read`, `vp_memory_write`, `vp_memory_delete`, `vp_memory_harvest` | memory_tools.go | Host-agnostic AI memory (ADR-004) |
@@ -2947,8 +2947,6 @@ rooms appearing in 2+ wings — these are cross-domain connections.
 - `vp_find_tunnels` — cross-wing room connections
 - `vp_palace_query` — drawers filtered by hall / room / `source_type` /
   substring / date range, newest first; `source_type` defaults to `decision`
-- `vp_palace_backfill_decisions` — files the frontmatter `decisions:` of past
-  session notes as decision drawers (a dry run unless `apply=true`)
 
 ---
 

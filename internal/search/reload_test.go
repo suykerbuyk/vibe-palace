@@ -30,6 +30,10 @@ func TestGenerationReload(t *testing.T) {
 		t.Fatal("the warm engine missed an archive commit")
 	}
 
+	// A decision chunk written to the store by another process (its note backs
+	// it, so the rebuild's notes tier keeps it) bumps the counter, so the warm
+	// engine reloads and sees it although the ledger never records one.
+	writeDecisionNote(t, v.Root, "proj", "2026-05-14-aaaa0000-01", "2026-05-14", "a decision recorded elsewhere")
 	appendDecision(t, v, "proj", "a decision recorded elsewhere")
 	if !hasContent(search(t, a, "proj", "a decision recorded elsewhere"), "a decision recorded elsewhere") {
 		t.Fatal("the warm engine missed a decision chunk (the ledger never sees one)")

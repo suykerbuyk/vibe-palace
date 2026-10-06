@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,33 @@ func writeSessionNote(t *testing.T, vaultRoot, project, stem, date, title, body 
 // collectNoteCorpus. Kept as a separate helper (rather than widening
 // writeSessionNote's signature) so every pre-existing call site continues to
 // produce a note with no SearchSummary at all, exactly as before this change.
+// writeDecisionNote writes a session note carrying a `decisions:` frontmatter
+// list of one, with an empty body (so it contributes no note-corpus chunk). It
+// is how a test gives a project a decision chunk through the real path: the next
+// rebuild's notes tier regenerates the chunk from this note.
+func writeDecisionNote(t *testing.T, vaultRoot, project, stem, date, decision string) string {
+	t.Helper()
+	dir := filepath.Join(vaultRoot, "Projects", project, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"---",
+		"session_id: " + stem,
+		"project: " + project,
+		"date: " + date,
+		"decisions:",
+		"  - " + strconv.Quote(decision),
+		"---",
+		"",
+	}, "\n")
+	path := filepath.Join(dir, stem+".md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func writeSessionNoteWithSummary(t *testing.T, vaultRoot, project, stem, date, title, body, summary string) string {
 	t.Helper()
 	dir := filepath.Join(vaultRoot, "Projects", project, "sessions")

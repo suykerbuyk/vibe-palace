@@ -98,12 +98,4 @@ var MutatingToolNames = []string{
 	// publishes. plan writes nothing and is admitted per-invocation by
 	// vaultRenameReadOnly. See vault_rename.go.
 	"vp_vault_rename",
-	// vp_palace_backfill_decisions appends decision drawers recovered from
-	// historical session notes (AppendDrawers -> appendUnderLock, family F4).
-	// It is gated on the TOOL, dry run included, and deliberately carries NO
-	// ReadOnlyWhen refinement even though apply=false writes nothing: the dry
-	// run's product is the count an operator authorizes the write from, so a
-	// stale binary that mis-parses notes must not be allowed to produce it.
-	// See palace_backfill_tools.go.
-	"vp_palace_backfill_decisions",
 }

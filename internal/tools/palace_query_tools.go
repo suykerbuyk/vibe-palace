@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -202,7 +202,7 @@ func ResolvePalaceQuery(in PalaceQueryInput) (storage.DrawerQuery, error) {
 
 	// --- The default-room prune ---
 	//
-	// Prune to capture.DecisionRoom iff no room was named AND the RESOLVED
+	// Prune to search.DecisionRoom iff no room was named AND the RESOLVED
 	// source-type set is exactly {"decision"}. The predicate reads the
 	// resolver's OUTPUT, never the raw input, and both halves are load-bearing:
 	//
@@ -232,7 +232,7 @@ func ResolvePalaceQuery(in PalaceQueryInput) (storage.DrawerQuery, error) {
 	// chunks on every unqualified memory question, and the tool description
 	// states it so a caller can undo it.
 	if q.Room == "" && onlyDecisionSourceType(q.SourceTypes) {
-		q.Room = capture.DecisionRoom
+		q.Room = search.DecisionRoom
 	}
 
 	return q, nil

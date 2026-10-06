@@ -266,7 +266,9 @@ func TestDecisionChunksAreNotesTier(t *testing.T) {
 	for _, withTranscript := range []bool{true, false} {
 		t.Run(fmt.Sprintf("transcript=%v", withTranscript), func(t *testing.T) {
 			eng, v, emb := countingEngine(t, storage.Config{})
-			appendDecision(t, v, "proj", decision)
+			// A decision reaches the store through its session note: the rebuild's
+			// notes tier regenerates the chunk from the note's frontmatter.
+			writeDecisionNote(t, v.Root, "proj", "2026-05-14-aaaa0000-01", "2026-05-14", decision)
 			if withTranscript {
 				commitArchive(t, eng.cache, v, "proj", "sess-a", "sha-a", []string{transcript}, false)
 			}

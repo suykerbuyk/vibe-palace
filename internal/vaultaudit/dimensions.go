@@ -812,9 +812,8 @@ func auditKGTrackedExtracted(vault *storage.Vault) ([]Finding, []string, error) 
 // store with no Projects/ tree — there are no sessions to index — and read as an
 // instruction to index. This says where drawers come from and stops: which source, if
 // any, applies to a given store is the reader's call.
-const drawerSourcesNote = "Drawers are written by capture from transcripts, by vp_refresh_index's " +
-	"backfill from Projects/<slug>/transcripts/ archives, and by vp_palace_backfill_decisions " +
-	"from session-note decisions."
+const drawerSourcesNote = "Drawers are written by capture from transcripts and by vp_refresh_index's " +
+	"backfill from Projects/<slug>/transcripts/ archives."
 
 // storeContextNote spells out, for ONE project, what an empty drawer store does and
 // does not imply. It branches on p.InProjects because BOTH of the sentences it can

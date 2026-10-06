@@ -186,6 +186,13 @@ const (
 	// testutil.RunHermetic, whose tests therefore run on the host's git config
 	// and identity. See hermeticTestMain.
 	KindHermeticTestMain = "hermetic-test-main"
+
+	// KindDecisionTrackedReach: a note-time, ingest or import entry point whose
+	// call graph reaches a tracked-tree writer (storage.AppendDrawers and
+	// siblings). After decision-chunks-in-the-host-local-store these records
+	// belong in the host-local store, not the git-tracked tree. See
+	// decisionTrackedReach.
+	KindDecisionTrackedReach = "decision-tracked-reach"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately

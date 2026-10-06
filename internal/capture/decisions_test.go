@@ -14,75 +14,229 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-// listDecisionDrawers reads a project's decision room back through the vault
-// API. It goes through ListDrawers rather than os.ReadFile on a hand-built
-// path so the test asserts what a READER of the palace would actually see —
-// the same route the query tool takes — instead of re-deriving the storage
-// layout and passing while the layout the server uses has moved.
-func listDecisionDrawers(t *testing.T, vault *storage.Vault, project string) []storage.Drawer {
+// storedDecisions reads a project's decision chunks back from the HOST-LOCAL
+// store (decision-chunks-in-the-host-local-store), sorted by source_ref so an
+// assertion on the SET does not depend on write order. Decisions live in
+// palace/.local/index/<p>/chunks.jsonl now, never in a tracked drawers.jsonl.
+func storedDecisions(t *testing.T, vault *storage.Vault, project string) []indexstore.StoredChunk {
 	t.Helper()
-	ds, err := vault.ListDrawers(project, palace.DetectWing(project, ""), DecisionRoom)
+	st, err := indexstore.ReadStore(vault, project)
 	if err != nil {
-		t.Fatalf("ListDrawers(%s): %v", project, err)
+		t.Fatalf("ReadStore(%s): %v", project, err)
 	}
-	return ds
-}
-
-// sourceRefs returns the drawers' source refs, sorted, so an assertion on the
-// SET of refs does not depend on append order.
-func sourceRefs(ds []storage.Drawer) []string {
-	out := make([]string, 0, len(ds))
-	for _, d := range ds {
-		out = append(out, d.SourceRef)
+	var out []indexstore.StoredChunk
+	for _, c := range st.Chunks(false) {
+		if c.SourceType == storage.SourceTypeDecision {
+			out = append(out, c)
+		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].SourceRef < out[j].SourceRef })
 	return out
 }
 
-// breakDecisionRoom makes the decision room's drawers.jsonl unopenable as a
-// file by creating a DIRECTORY at exactly that path. AppendDrawers reads the
-// file before appending, and os.ReadFile on a directory fails with EISDIR,
-// which is not os.IsNotExist — so the append returns an error without any
-// mocking seam. Verified by TestFileDecisionDrawersReportsAppendFailure below,
-// which is the guard on this trick still working.
-func breakDecisionRoom(t *testing.T, vault *storage.Vault, project string) {
+// assertNoTrackedDecisionDrawers pins that decisions no longer touch the tracked
+// tree: the decision room holds nothing (Scope 1, "Never to the tracked tree").
+func assertNoTrackedDecisionDrawers(t *testing.T, vault *storage.Vault, project string) {
 	t.Helper()
-	path, err := vault.DrawerFile(project, palace.DetectWing(project, ""), DecisionRoom)
-	if err != nil {
-		t.Fatalf("DrawerFile: %v", err)
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir over drawers.jsonl: %v", err)
+	ds, err := vault.ListDrawers(project, palace.DetectWing(project, ""), search.DecisionRoom)
+	if err == nil && len(ds) != 0 {
+		t.Errorf("tracked decision drawers exist (%d); decisions must go to the store only: %+v", len(ds), ds)
 	}
 }
 
-// TestFileDecisionDrawersReportsAppendFailure pins the failure injection the
-// two accumulate-don't-return tests below rely on: with a directory sitting at
-// the drawers.jsonl path, the append really does error. If this ever stops
-// being true those tests would pass vacuously, asserting nothing.
-func TestFileDecisionDrawersReportsAppendFailure(t *testing.T) {
-	vault := testVault(t)
-	breakDecisionRoom(t, vault, "test-proj")
+// breakDecisionStore makes the project's chunks.jsonl unopenable by putting a
+// DIRECTORY at exactly that path, so the decision write errors (readLines on a
+// directory fails). It is the store-side successor to the old breakDecisionRoom,
+// and TestFileDecisionDrawersReportsStoreFailure guards that it still works.
+func breakDecisionStore(t *testing.T, vault *storage.Vault, project string) {
+	t.Helper()
+	dir, err := vault.IndexDir(project)
+	if err != nil {
+		t.Fatalf("IndexDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir index dir: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "chunks.jsonl"), 0o755); err != nil {
+		t.Fatalf("mkdir over chunks.jsonl: %v", err)
+	}
+}
 
-	n, err := fileDecisionDrawers(vault, "test-proj", "2026-06-21-abcd1234-01",
-		"2026-06-21", []string{"a decision"})
+// TestFileDecisionDrawersReportsStoreFailure pins the failure injection the
+// accumulate-don't-return tests rely on: with a directory at chunks.jsonl, the
+// store write really errors.
+func TestFileDecisionDrawersReportsStoreFailure(t *testing.T) {
+	vault := testVault(t)
+	// The project must exist for the commit lock's ProjectExists check.
+	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj", Summary: "seed",
+	}); err != nil {
+		t.Fatalf("seed WriteSession: %v", err)
+	}
+	breakDecisionStore(t, vault, "test-proj")
+
+	n, err := fileDecisionDrawers(context.Background(), vault, "test-proj", "2026-06-21-abcd1234-01",
+		"2026-06-21-abcd1234-01", "2026-06-21", []string{"a decision"})
 	if err == nil {
-		t.Fatalf("append over a directory returned nil error (n=%d); the failure injection no longer works", n)
+		t.Fatalf("store write over a directory returned nil error (n=%d); the failure injection no longer works", n)
+	}
+}
+
+// TestDecisionWriteSkippedWhenCommitLockBusy pins the timeout contract (Scope
+// 1): a busy commit lock makes the decision write skip — not fail — so a capture
+// is never lost behind an ingest. The next notes-tier build restores the
+// decision. The timeout is driven by a zero wait against a held lock, never by
+// wall-clock (X6).
+func TestDecisionWriteSkippedWhenCommitLockBusy(t *testing.T) {
+	vault := testVault(t)
+	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj", Summary: "seed",
+	}); err != nil {
+		t.Fatalf("seed WriteSession: %v", err)
+	}
+
+	// Hold the project's commit lock, then make the decision write try once.
+	held, err := indexstore.Lock(context.Background(), vault, "test-proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatalf("hold commit lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	restore := decisionWriteTimeout
+	decisionWriteTimeout = 0
+	defer func() { decisionWriteTimeout = restore }()
+
+	n, err := fileDecisionDrawers(context.Background(), vault, "test-proj", "2026-06-21-abcd1234-01",
+		"2026-06-21-abcd1234-01", "2026-06-21", []string{"a skipped decision"})
+	if err != nil {
+		t.Fatalf("a busy lock must SKIP, not fail: %v", err)
 	}
 	if n != 0 {
-		t.Errorf("appended = %d on error, want 0", n)
+		t.Errorf("wrote %d chunks while the lock was held, want 0 (skipped)", n)
+	}
+	// Nothing was written, so no decision chunk exists yet.
+	if ds := storedDecisions(t, vault, "test-proj"); len(ds) != 0 {
+		t.Errorf("a skipped write left %d decision chunks, want 0: %+v", len(ds), ds)
 	}
 }
 
-// TestWriteSessionFilesDecisionDrawersWithNilIndexer is the DEFAULT case, not
-// an edge case: internal/hook/hook.go calls WriteSession with a nil indexer on
-// every hook-driven capture, so an ingest that hid behind an indexer guard
-// would file nothing on the busiest path in the product.
-func TestWriteSessionFilesDecisionDrawersWithNilIndexer(t *testing.T) {
+// TestDecisionWriteWaitsForTheCommitLockThenWrites is the positive half of R1:
+// a capture whose decision write finds the commit lock HELD waits for it, then
+// writes once it is released. Contention is driven by holding the lock and
+// releasing it on the waiter's own CommitWait event (not by wall-clock, X6): the
+// release is triggered deterministically the moment the capture is known to be
+// about to wait.
+func TestDecisionWriteWaitsForTheCommitLockThenWrites(t *testing.T) {
+	vault := testVault(t)
+	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj", Summary: "seed",
+	}); err != nil {
+		t.Fatalf("seed WriteSession: %v", err)
+	}
+
+	held, err := indexstore.Lock(context.Background(), vault, "test-proj", indexstore.NoTimeout)
+	if err != nil {
+		t.Fatalf("hold commit lock: %v", err)
+	}
+
+	// Signal (once) when the capture is about to wait for the commit lock.
+	waiting := make(chan struct{}, 1)
+	restore := indexstore.ObserveCommitLocks(func(project string, ev indexstore.CommitLockEvent) {
+		if project == "test-proj" && ev == indexstore.CommitWait {
+			select {
+			case waiting <- struct{}{}:
+			default:
+			}
+		}
+	})
+	defer restore()
+
+	// A generous ceiling, never asserted on: the release below is what unblocks
+	// the wait, deterministically.
+	restoreTO := decisionWriteTimeout
+	decisionWriteTimeout = 10 * time.Second
+	defer func() { decisionWriteTimeout = restoreTO }()
+
+	type res struct {
+		n   int
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		n, err := fileDecisionDrawers(context.Background(), vault, "test-proj", "2026-06-21-abcd1234-01",
+			"2026-06-21-abcd1234-01", "2026-06-21", []string{"a decision that waited"})
+		done <- res{n, err}
+	}()
+
+	<-waiting          // the capture is now waiting on the held commit lock
+	_ = held.Release() // release it; the capture proceeds
+
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("capture that waited for the lock failed: %v", r.err)
+	}
+	if r.n != 1 {
+		t.Errorf("wrote %d chunks, want 1", r.n)
+	}
+	if ds := storedDecisions(t, vault, "test-proj"); len(ds) != 1 {
+		t.Fatalf("stored %d decision chunks, want 1 after the wait: %+v", len(ds), ds)
+	}
+}
+
+// TestDecisionWriteNotDelayedByTheRunLock is R1's other half: the decision write
+// takes the commit lock only, never the index run lock, so a held run lock does
+// not delay it. Driven by holding the run lock and a zero commit-lock timeout:
+// if the capture waited on the run lock at all it could not succeed here.
+func TestDecisionWriteNotDelayedByTheRunLock(t *testing.T) {
+	vault := testVault(t)
+	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj", Summary: "seed",
+	}); err != nil {
+		t.Fatalf("seed WriteSession: %v", err)
+	}
+
+	rl, ok, err := indexstore.TryRunLock(vault, indexstore.KindRebuild, "test-proj")
+	if err != nil || !ok {
+		t.Fatalf("hold run lock: ok=%v err=%v", ok, err)
+	}
+	defer func() { _ = rl.Release() }()
+
+	// Prove the capture never even tries the run lock.
+	triedRun := false
+	restore := indexstore.ObserveRunLocks(func(ev indexstore.RunLockEvent) {
+		if ev == indexstore.RunTry {
+			triedRun = true
+		}
+	})
+	defer restore()
+
+	restoreTO := decisionWriteTimeout
+	decisionWriteTimeout = 0 // the commit lock is free; a run-lock wait would still fail this
+	defer func() { decisionWriteTimeout = restoreTO }()
+
+	n, err := fileDecisionDrawers(context.Background(), vault, "test-proj", "2026-06-21-abcd1234-01",
+		"2026-06-21-abcd1234-01", "2026-06-21", []string{"a decision past the run lock"})
+	if err != nil {
+		t.Fatalf("a held run lock delayed/failed the capture: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("wrote %d chunks, want 1", n)
+	}
+	if triedRun {
+		t.Error("the decision write tried the index run lock; it must take the commit lock only")
+	}
+}
+
+// TestWriteSessionFilesDecisionsToStoreWithNilIndexer is the DEFAULT case:
+// internal/hook/hook.go calls WriteSession with a nil indexer on every
+// hook-driven capture, and decisions must reach the store on it.
+func TestWriteSessionFilesDecisionsToStoreWithNilIndexer(t *testing.T) {
 	vault := testVault(t)
 
 	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
@@ -97,40 +251,40 @@ func TestWriteSessionFilesDecisionDrawersWithNilIndexer(t *testing.T) {
 		t.Fatalf("unexpected failures: %+v", result.Failures)
 	}
 
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 1 {
-		t.Fatalf("filed %d decision drawers, want 1: %+v", len(ds), ds)
+		t.Fatalf("stored %d decision chunks, want 1: %+v", len(ds), ds)
 	}
-	d := ds[0]
-	if d.Content != "Use SetEscapeHTML(false)" {
-		t.Errorf("content = %q, want the decision verbatim", d.Content)
+	c := ds[0]
+	if c.Content != "Use SetEscapeHTML(false)" {
+		t.Errorf("content = %q, want the decision verbatim", c.Content)
 	}
-	if d.SourceType != storage.SourceTypeDecision {
-		t.Errorf("source_type = %q, want %q", d.SourceType, storage.SourceTypeDecision)
+	if c.SourceType != storage.SourceTypeDecision {
+		t.Errorf("source_type = %q, want %q", c.SourceType, storage.SourceTypeDecision)
 	}
-	if d.Hall != palace.HallDecisions {
-		t.Errorf("hall = %q, want %q", d.Hall, palace.HallDecisions)
+	if c.Hall != palace.HallDecisions {
+		t.Errorf("hall = %q, want %q", c.Hall, palace.HallDecisions)
 	}
+	if c.Room != search.DecisionRoom {
+		t.Errorf("room = %q, want %q", c.Room, search.DecisionRoom)
+	}
+	if c.AddedBy != "capture" {
+		t.Errorf("added_by = %q, want capture", c.AddedBy)
+	}
+	// The owner is the note, keyed by its file stem (the session id).
+	assertNoteOwner(t, c, result.SessionID)
+	// filed_at is the note's day (no archive ingested), a bare YYYY-MM-DD.
+	if want := result.SessionID[:10]; c.FiledAt != want {
+		t.Errorf("filed_at = %q, want %q (the note's day)", c.FiledAt, want)
+	}
+	// The store id is the content-only hash, not the 32-bit DrawerID.
 	assertRefShape(t, ds, result.SessionID, []int{0})
-	if d.AddedBy != "capture" {
-		t.Errorf("added_by = %q, want capture", d.AddedBy)
-	}
-	if want := result.SessionID[:10] + "T00:00:00Z"; d.FiledAt != want {
-		t.Errorf("filed_at = %q, want %q (the note's day)", d.FiledAt, want)
-	}
-	if _, perr := time.Parse(time.RFC3339, d.FiledAt); perr != nil {
-		t.Errorf("filed_at %q is not RFC3339: %v", d.FiledAt, perr)
-	}
-	if d.ID == "" {
-		t.Error("id is empty; AppendDrawers should have stamped the content hash")
-	}
+	assertNoTrackedDecisionDrawers(t, vault, "test-proj")
 }
 
-// TestWriteSessionNoDecisionsFilesNothing: a capture with no decisions must
-// leave the decision room empty AND still write its note. An ingest that
-// created an empty room, or that treated "nothing to file" as an error, would
-// make every summary-only capture look like a partial failure.
-func TestWriteSessionNoDecisionsFilesNothing(t *testing.T) {
+// TestWriteSessionNoDecisionsStoresNothing: a capture with no decisions stores
+// no decision chunk and still writes its note.
+func TestWriteSessionNoDecisionsStoresNothing(t *testing.T) {
 	vault := testVault(t)
 
 	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
@@ -143,21 +297,18 @@ func TestWriteSessionNoDecisionsFilesNothing(t *testing.T) {
 	if result.Failed() {
 		t.Fatalf("unexpected failures: %+v", result.Failures)
 	}
-	if ds := listDecisionDrawers(t, vault, "test-proj"); len(ds) != 0 {
-		t.Fatalf("filed %d drawers for a decision-less capture, want 0: %+v", len(ds), ds)
+	if ds := storedDecisions(t, vault, "test-proj"); len(ds) != 0 {
+		t.Fatalf("stored %d decision chunks for a decision-less capture, want 0: %+v", len(ds), ds)
 	}
-
-	// The note still landed.
 	if _, _, rerr := vault.ReadSession("test-proj", result.SessionID[:10],
 		ParseFingerprint(result.SessionID), result.Iteration); rerr != nil {
 		t.Fatalf("ReadSession: %v", rerr)
 	}
 }
 
-// TestDecisionSourceRefsAreUniquePerDecision is the search-visibility
-// regression. search.dedup keeps only the first result per exact SourceRef, so
-// a session-level ref would make a three-decision session return exactly one
-// vp_search hit and silently strand the other two.
+// TestDecisionSourceRefsAreUniquePerDecision: search.dedup keeps only the first
+// result per exact SourceRef, so a session-level ref would strand a note's other
+// decisions.
 func TestDecisionSourceRefsAreUniquePerDecision(t *testing.T) {
 	vault := testVault(t)
 
@@ -174,17 +325,15 @@ func TestDecisionSourceRefsAreUniquePerDecision(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 3 {
-		t.Fatalf("filed %d drawers, want 3: %+v", len(ds), ds)
+		t.Fatalf("stored %d decision chunks, want 3: %+v", len(ds), ds)
 	}
 	assertRefShape(t, ds, result.SessionID, []int{0, 1, 2})
 }
 
 // TestBlankDecisionsSkippedWithoutRenumbering: a blank entry is skipped and its
-// index is LEFT UNUSED, so a ref keeps pointing at the note's Nth decision.
-// Renumbering would compact ["first", "  ", "third"] to refs 0 and 1, which
-// makes "third" answer to the index of a decision it is not.
+// index LEFT UNUSED, so a ref keeps pointing at the note's Nth decision.
 func TestBlankDecisionsSkippedWithoutRenumbering(t *testing.T) {
 	vault := testVault(t)
 
@@ -197,39 +346,37 @@ func TestBlankDecisionsSkippedWithoutRenumbering(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 2 {
-		t.Fatalf("filed %d drawers, want 2: %+v", len(ds), ds)
+		t.Fatalf("stored %d decision chunks, want 2: %+v", len(ds), ds)
 	}
 	assertRefShape(t, ds, result.SessionID, []int{0, 2})
 }
 
-// TestWriteSessionDecisionAppendFailureIsAccumulated: the note is capture's one
-// irreplaceable output. A drawers.jsonl that cannot be written must cost a
-// Failures entry, never the session.
-func TestWriteSessionDecisionAppendFailureIsAccumulated(t *testing.T) {
+// TestWriteSessionDecisionStoreFailureIsAccumulated: the note is capture's one
+// irreplaceable output. A store that cannot be written costs a Failures entry,
+// never the session.
+func TestWriteSessionDecisionStoreFailureIsAccumulated(t *testing.T) {
 	vault := testVault(t)
-	breakDecisionRoom(t, vault, "test-proj")
+	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		Project: "test-proj", Summary: "seed",
+	}); err != nil {
+		t.Fatalf("seed WriteSession: %v", err)
+	}
+	breakDecisionStore(t, vault, "test-proj")
 
 	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
-		Project:   "test-proj",
-		Summary:   "Decisions cannot be filed",
-		Decisions: []string{"a decision"},
+		Project:    "test-proj",
+		Summary:    "Decisions cannot be filed",
+		Decisions:  []string{"a decision"},
+		SessionKey: "store-fail-key",
 	})
 	if err != nil {
-		t.Fatalf("WriteSession returned an error; the note must survive a drawer failure: %v", err)
+		t.Fatalf("WriteSession returned an error; the note must survive a store failure: %v", err)
 	}
-	if result == nil {
-		t.Fatal("nil result")
+	if result == nil || result.NotePath == "" {
+		t.Fatal("note_path is empty; the note should still have landed")
 	}
-	if result.NotePath == "" {
-		t.Error("note_path is empty; the note should still have landed")
-	}
-	if _, _, rerr := vault.ReadSession("test-proj", result.SessionID[:10],
-		ParseFingerprint(result.SessionID), result.Iteration); rerr != nil {
-		t.Fatalf("note is not readable: %v", rerr)
-	}
-
 	var found bool
 	for _, f := range result.Failures {
 		if f.Stage == StagePalaceDecisionIngest {
@@ -241,13 +388,10 @@ func TestWriteSessionDecisionAppendFailureIsAccumulated(t *testing.T) {
 	}
 }
 
-// TestDrainFilesDecisionDrawers is the HOOK path end to end. The hook passes no
-// Decisions at all, so its notes have decisions only once an enrichment
-// produces them — and when the inline enricher misses, that happens on the
-// drain. The inline enricher here therefore returns an all-empty result (a
-// miss that enqueues a job); a stubbed SUCCESSFUL inline enricher would file
-// its drawers at WriteSession time and never exercise the drain at all.
-func TestDrainFilesDecisionDrawers(t *testing.T) {
+// TestDrainStoresDecisions is the HOOK path end to end. The hook passes no
+// Decisions, so its notes have decisions only once an enrichment produces them —
+// and when the inline enricher misses, that happens on the drain.
+func TestDrainStoresDecisions(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
@@ -263,13 +407,8 @@ func TestDrainFilesDecisionDrawers(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	// Nothing filed yet: the inline enrichment produced no decisions.
-	if ds := listDecisionDrawers(t, vault, "test-proj"); len(ds) != 0 {
-		t.Fatalf("decision drawers exist before the drain: %+v", ds)
-	}
-	queue := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	if jobs, _ := filepath.Glob(filepath.Join(queue, "*.json")); len(jobs) != 1 {
-		t.Fatalf("expected 1 queued job, found %d", len(jobs))
+	if ds := storedDecisions(t, vault, "test-proj"); len(ds) != 0 {
+		t.Fatalf("decision chunks exist before the drain: %+v", ds)
 	}
 
 	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0)
@@ -280,90 +419,29 @@ func TestDrainFilesDecisionDrawers(t *testing.T) {
 		t.Fatalf("drained = %d, want 1", drained)
 	}
 
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 1 {
-		t.Fatalf("filed %d drawers after the drain, want 1: %+v", len(ds), ds)
+		t.Fatalf("stored %d decision chunks after the drain, want 1: %+v", len(ds), ds)
 	}
 	if ds[0].Content != "LLM decision one" {
 		t.Errorf("content = %q, want the drained LLM decision", ds[0].Content)
 	}
-	if ds[0].SourceType != storage.SourceTypeDecision {
-		t.Errorf("source_type = %q, want %q", ds[0].SourceType, storage.SourceTypeDecision)
-	}
 	assertRefShape(t, ds, result.SessionID, []int{0})
-
-	// The drain's stamp is the NOTE's day, not the day the drain happened to
-	// run — the whole reason a queued job cannot use wall-clock.
-	if want := result.SessionID[:10] + "T00:00:00Z"; ds[0].FiledAt != want {
+	// The drain's stamp is the NOTE's day, not the day the drain ran.
+	if want := result.SessionID[:10]; ds[0].FiledAt != want {
 		t.Errorf("filed_at = %q, want %q (the note's day)", ds[0].FiledAt, want)
 	}
+	assertNoTrackedDecisionDrawers(t, vault, "test-proj")
 }
 
-// TestDrainDecisionAppendFailureDoesNotRequeue: the note was already rewritten
-// when the drawer append fails. Requeueing would re-run enricher.Enrich — real
-// LLM work — and rewrite an already-correct note, to recover a retrieval loss.
-// The job must be consumed: not returned to the queue, not dead-lettered.
-func TestDrainDecisionAppendFailureDoesNotRequeue(t *testing.T) {
-	vault := testVault(t)
-	cwd := t.TempDir()
-	breakDecisionRoom(t, vault, "test-proj")
-
-	missing := enrichment.NewEnricher(mockCompleter{resp: emptyEnrichment}, "test-model", 5*time.Second, "")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
-		Project:    "test-proj",
-		Summary:    "plain heuristic summary",
-		Transcript: enrichTranscript,
-		Enricher:   missing,
-		CWD:        cwd,
-	})
-	if err != nil {
-		t.Fatalf("WriteSession: %v", err)
-	}
-
-	drained, err := DrainEnrichmentQueue(context.Background(), vault, cwd, workingEnricher(), 0)
-	if err != nil {
-		t.Fatalf("DrainEnrichmentQueue: %v", err)
-	}
-	if drained != 1 {
-		t.Fatalf("drained = %d, want 1 (a drawer failure must not un-drain the job)", drained)
-	}
-
-	queue := filepath.Join(cwd, ".vibe-palace", "enrichment-queue")
-	for _, pattern := range []string{"*.json", "*.processing", "*.failed"} {
-		leftovers, _ := filepath.Glob(filepath.Join(queue, pattern))
-		if len(leftovers) != 0 {
-			t.Errorf("queue still holds %s: %v", pattern, leftovers)
-		}
-	}
-
-	// The rewrite stands.
-	meta, _, rerr := vault.ReadSession("test-proj", result.SessionID[:10],
-		ParseFingerprint(result.SessionID), result.Iteration)
-	if rerr != nil {
-		t.Fatalf("ReadSession: %v", rerr)
-	}
-	if meta.EnrichedBy != "test-model" {
-		t.Errorf("enriched_by = %q, want test-model; the note must stay enriched", meta.EnrichedBy)
-	}
-	if len(meta.Decisions) != 1 || meta.Decisions[0] != "LLM decision one" {
-		t.Errorf("decisions = %v, want the drained LLM decision", meta.Decisions)
-	}
-}
-
-// TestWriteSessionFilesWhatLandedNotTheParams is the subtle one, and it is the
-// reason the ingest re-reads an UPDATED note instead of using the local meta.
-//
-// mergeCaptureMeta keeps the note's ENRICHED decisions when the re-capture did
-// not itself enrich, so on that branch the caller's Decisions are exactly what
-// was NOT written. Filing from the local meta would put a drawer in the palace
-// for a decision no note ever contained — invented memory. Written against
-// that naive implementation this test fails on the extra drawer.
-func TestWriteSessionFilesWhatLandedNotTheParams(t *testing.T) {
+// TestWriteSessionStoresWhatLandedNotTheParams is the reason the ingest re-reads
+// an UPDATED note instead of using the local meta: mergeCaptureMeta keeps the
+// note's ENRICHED decisions when the re-capture did not itself enrich, so the
+// caller's list is exactly what was NOT written.
+func TestWriteSessionStoresWhatLandedNotTheParams(t *testing.T) {
 	vault := testVault(t)
 	const key = "retry-key-1"
 
-	// First capture: enriched, so the note carries the LLM's decision and an
-	// enriched_by stamp.
 	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
@@ -375,9 +453,6 @@ func TestWriteSessionFilesWhatLandedNotTheParams(t *testing.T) {
 		t.Fatalf("WriteSession(first): %v", err)
 	}
 
-	// Second capture of the SAME attempt, with no enricher and a different
-	// decisions list. mergeCaptureMeta preserves the enriched narrative whole,
-	// so the caller's list never reaches disk.
 	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
@@ -388,53 +463,21 @@ func TestWriteSessionFilesWhatLandedNotTheParams(t *testing.T) {
 		t.Fatalf("WriteSession(second): %v", err)
 	}
 	if !second.Updated {
-		t.Fatalf("second capture minted a new note (%s vs %s); the merge path was not exercised",
-			second.SessionID, first.SessionID)
+		t.Fatalf("second capture minted a new note; the merge path was not exercised")
 	}
 
-	meta, _, err := vault.ReadSession("test-proj", second.SessionID[:10],
-		ParseFingerprint(second.SessionID), second.Iteration)
-	if err != nil {
-		t.Fatalf("ReadSession: %v", err)
-	}
-	if len(meta.Decisions) != 1 || meta.Decisions[0] != "LLM decision one" {
-		t.Fatalf("precondition failed: note on disk carries %v, expected the enriched decision", meta.Decisions)
-	}
-
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 1 {
-		t.Fatalf("filed %d drawers, want 1 (only what landed on the note): %+v", len(ds), ds)
+		t.Fatalf("stored %d decision chunks, want 1 (only what landed): %+v", len(ds), ds)
 	}
 	if ds[0].Content != "LLM decision one" {
 		t.Errorf("content = %q, want the note's own decision", ds[0].Content)
 	}
-	for _, d := range ds {
-		if d.Content == "a decision the note never carried" {
-			t.Errorf("filed a drawer for a decision no note ever contained: %+v", d)
-		}
-	}
+	_ = first
 }
 
-// TestDecisionRoomDoesNotDependOnContent pins the room as UNCONDITIONAL.
-//
-// The room a decision lands in is asserted by this writer, never inferred from
-// what the decision says. The two fixtures below are chosen to be exactly the
-// inputs that would move a classified drawer somewhere else:
-//
-//   - the decision text is dense with tier-3 room keywords ("kubernetes",
-//     "terraform", "deploy" all score the devops room in defaultRoomKeywords);
-//   - files_changed names a path the filename tier maps to a room outright
-//     (Dockerfile -> devops, foo_test.go -> testing).
-//
-// Both must be inert. A drawer that landed in devops here would be invisible
-// to the palace query's default, which prunes to DecisionRoom — and invisible
-// in the silent way, returning an empty result indistinguishable from a palace
-// that honestly holds no decisions.
-//
-// This is the regression test for re-introducing a classifier on this path. The
-// contract deletes the classification step rather than calling Classify with an
-// empty content string to defeat it, so there is no seam to assert against;
-// asserting the OUTCOME is what survives a future refactor.
+// TestDecisionRoomDoesNotDependOnContent pins the room as UNCONDITIONAL: never
+// classified from what the decision says.
 func TestDecisionRoomDoesNotDependOnContent(t *testing.T) {
 	vault := testVault(t)
 
@@ -448,46 +491,49 @@ func TestDecisionRoomDoesNotDependOnContent(t *testing.T) {
 		t.Fatalf("WriteSession: %v", err)
 	}
 
-	ds := listDecisionDrawers(t, vault, "test-proj")
+	ds := storedDecisions(t, vault, "test-proj")
 	if len(ds) != 1 {
-		t.Fatalf("filed %d drawers into %q, want 1 — a classifier would have "+
-			"routed this text to devops", len(ds), DecisionRoom)
+		t.Fatalf("stored %d decision chunks into %q, want 1", len(ds), search.DecisionRoom)
+	}
+	if ds[0].Room != search.DecisionRoom {
+		t.Errorf("room = %q, want %q — the room is hardcoded, never classified", ds[0].Room, search.DecisionRoom)
 	}
 	if ds[0].Hall != palace.HallDecisions {
-		t.Errorf("hall = %q, want %q — the hall is hardcoded, never DetectHall'd",
-			ds[0].Hall, palace.HallDecisions)
+		t.Errorf("hall = %q, want %q", ds[0].Hall, palace.HallDecisions)
 	}
 	assertRefShape(t, ds, res.SessionID, []int{0})
-
-	// And nothing was filed into the room the classifier would have chosen.
-	devops, err := vault.ListDrawers("test-proj", palace.DetectWing("test-proj", ""), "devops")
-	if err != nil {
-		t.Fatalf("ListDrawers(devops): %v", err)
-	}
-	if len(devops) != 0 {
-		t.Errorf("devops room holds %d drawers, want 0: %+v", len(devops), devops)
-	}
 }
 
-// assertRefShape checks the drawers' source refs against the ref contract:
-// "session/{id}#decision/{n}/{drawerID}", one per expected index, in index
-// order.
-//
-// The last segment is asserted to be the drawer's OWN id rather than a literal,
-// which is the point of that segment: decisionSourceRef derives it with the
-// same storage.DrawerID(wing, content) that AppendDrawers stamps onto the
-// drawer, so a search hit names the drawer it came from. Spelling the hash out
-// as a constant here would assert only that md5 is md5.
-func assertRefShape(t *testing.T, ds []storage.Drawer, sessionID string, wantIdx []int) {
+// assertNoteOwner checks the chunk is owned by the note with stem wantStem.
+func assertNoteOwner(t *testing.T, c indexstore.StoredChunk, wantStem string) {
+	t.Helper()
+	want := "sessions/" + wantStem + ".md"
+	for _, o := range c.Owners {
+		if o.Kind == indexstore.OwnerNote {
+			if o.ID != want {
+				t.Errorf("note owner id = %q, want the note path %q", o.ID, want)
+			}
+			return
+		}
+	}
+	t.Errorf("chunk has no note owner: %+v", c.Owners)
+}
+
+// assertRefShape checks the chunks' source refs against the ref contract
+// "session/{id}#decision/{n}/{drawerID}", one per expected index. The last
+// segment is the 32-bit storage.DrawerID of (wing, content) — the search
+// discriminator — NOT the store's content-only chunk id.
+func assertRefShape(t *testing.T, ds []indexstore.StoredChunk, sessionID string, wantIdx []int) {
 	t.Helper()
 	if len(ds) != len(wantIdx) {
-		t.Fatalf("got %d drawers, want %d: %+v", len(ds), len(wantIdx), ds)
+		t.Fatalf("got %d chunks, want %d: %+v", len(ds), len(wantIdx), ds)
 	}
-	byRef := make(map[string]storage.Drawer, len(ds))
-	for _, d := range ds {
-		byRef[d.SourceRef] = d
+	byRef := make(map[string]indexstore.StoredChunk, len(ds))
+	got := make([]string, 0, len(ds))
+	for _, c := range ds {
+		byRef[c.SourceRef] = c
+		got = append(got, c.SourceRef)
 	}
-	got := sourceRefs(ds)
 	sort.Strings(got)
 	for i, n := range wantIdx {
 		prefix := fmt.Sprintf("session/%s#decision/%d/", sessionID, n)
@@ -495,110 +541,9 @@ func assertRefShape(t *testing.T, ds []storage.Drawer, sessionID string, wantIdx
 			t.Errorf("source_ref[%d] = %q, want prefix %q", i, got[i], prefix)
 			continue
 		}
-		d := byRef[got[i]]
-		if suffix := strings.TrimPrefix(got[i], prefix); suffix != d.ID {
-			t.Errorf("source_ref[%d] discriminator = %q, want the drawer's own id %q",
-				i, suffix, d.ID)
-		}
-	}
-}
-
-// TestDecisionFiledAtIsTheNoteDayNotWallClock pins filed_at to the note's
-// calendar day. The stamp is what a date-bounded palace query filters on, and
-// the note's day is what the session id is built from, so the two must agree —
-// a drawer stamped with the moment it happened to be written is unreachable
-// through the obvious query for its own session.
-func TestDecisionFiledAtIsTheNoteDayNotWallClock(t *testing.T) {
-	vault := testVault(t)
-
-	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
-		Project:   "test-proj",
-		Summary:   "one decision",
-		Decisions: []string{"Stamp drawers with the note's day"},
-	})
-	if err != nil {
-		t.Fatalf("WriteSession: %v", err)
-	}
-
-	ds := listDecisionDrawers(t, vault, "test-proj")
-	if len(ds) != 1 {
-		t.Fatalf("filed %d drawers, want 1", len(ds))
-	}
-	// The session id opens with the note's calendar day; the drawer's stamp
-	// must be midnight UTC on exactly that day.
-	day := res.SessionID[:10]
-	if want := day + "T00:00:00Z"; ds[0].FiledAt != want {
-		t.Errorf("filed_at = %q, want %q (the note's day, not wall-clock)", ds[0].FiledAt, want)
-	}
-}
-
-// TestDecisionFiledAtRejectsAMalformedDay pins the refusal rather than a
-// fallback. Falling back to time.Now() on an unparseable day would reintroduce
-// the wall-clock stamp DecisionFiledAt exists to prevent, on the one input
-// nobody is watching.
-func TestDecisionFiledAtRejectsAMalformedDay(t *testing.T) {
-	for _, bad := range []string{"", "2026-6-1", "2026-06-21T00:00:00Z", "not-a-day"} {
-		if got, err := DecisionFiledAt(bad); err == nil {
-			t.Errorf("DecisionFiledAt(%q) = %q, want an error", bad, got)
-		}
-	}
-	got, err := DecisionFiledAt("2026-06-21")
-	if err != nil {
-		t.Fatalf("DecisionFiledAt(valid): %v", err)
-	}
-	if got != "2026-06-21T00:00:00Z" {
-		t.Errorf("DecisionFiledAt = %q, want 2026-06-21T00:00:00Z", got)
-	}
-}
-
-// TestRevisedDecisionAtSameIndexGetsItsOwnRef is the regression for the ref's
-// content discriminator. A recapture that REVISES the decision at position 0
-// files a second drawer — different content, so the append cannot dedup it —
-// and both are indexed by Engine.Rebuild. Sharing "#decision/0" would put them
-// in the same dedup bucket, where search hands back whichever scores higher:
-// possibly the superseded text, with the current decision missing entirely.
-func TestRevisedDecisionAtSameIndexGetsItsOwnRef(t *testing.T) {
-	vault := testVault(t)
-	const key = "revise-key-1"
-
-	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
-		Project:    "test-proj",
-		Summary:    "first pass",
-		Decisions:  []string{"Use the wall clock for filed_at"},
-		SessionKey: key,
-	})
-	if err != nil {
-		t.Fatalf("WriteSession(first): %v", err)
-	}
-
-	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
-		Project:    "test-proj",
-		Summary:    "revised pass",
-		Decisions:  []string{"Use the note's day for filed_at"},
-		SessionKey: key,
-	})
-	if err != nil {
-		t.Fatalf("WriteSession(second): %v", err)
-	}
-	if !second.Updated {
-		t.Fatalf("second capture minted a new note; the revision path was not exercised")
-	}
-
-	ds := listDecisionDrawers(t, vault, "test-proj")
-	if len(ds) != 2 {
-		t.Fatalf("filed %d drawers, want 2 (superseded + revised): %+v", len(ds), ds)
-	}
-	refs := map[string]bool{}
-	for _, d := range ds {
-		if refs[d.SourceRef] {
-			t.Fatalf("two drawers share source_ref %q; search dedup would hide one", d.SourceRef)
-		}
-		refs[d.SourceRef] = true
-		// Both are at index 0 of their own capture, so the index alone would
-		// have collided — the discriminator is what separates them.
-		prefix := fmt.Sprintf("session/%s#decision/0/", first.SessionID)
-		if !strings.HasPrefix(d.SourceRef, prefix) {
-			t.Errorf("source_ref %q lacks prefix %q", d.SourceRef, prefix)
+		c := byRef[got[i]]
+		if suffix, want := strings.TrimPrefix(got[i], prefix), storage.DrawerID(c.Wing, c.Content); suffix != want {
+			t.Errorf("source_ref[%d] discriminator = %q, want storage.DrawerID %q", i, suffix, want)
 		}
 	}
 }

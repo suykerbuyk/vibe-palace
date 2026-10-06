@@ -261,10 +261,6 @@
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The pending fold. Non-test callers: pending-archive-ingester-and-per-archive-commit-step (what to ingest) and index-coverage-instrument (the pending report). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
-      "id": "uninvoked indexstore.NoteOwner",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). The note owner of a decision chunk. Non-test caller: decision-chunks-in-the-host-local-store. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked indexstore.ObserveCommitLocks",
       "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetWriteObserver, declared in non-test code because a test in another package needs it: internal/search pins that the engine's index sweep (indexstore.ReapGoneProjects) never runs while the engine holds an index commit lock (the sweep would then hold two). A lock taken and released leaves no other trace, so without it the sweep could move after indexstore.Lock (into (*projectLock).Tx, or under reapLocked's held lock) and every test would pass. Production never sets it. Task index-fingerprints-project-lifecycle-and-migration-marker (code review S1)."
     },
@@ -279,10 +275,6 @@
     {
       "id": "uninvoked indexstore.Tx.DeleteGraph",
       "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (a corrupt or mismatched graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.ReplaceOwned",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: decision-chunks-in-the-host-local-store (a note's decision set). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked indexstore.Tx.WriteGraph",
@@ -323,6 +315,10 @@
     {
       "id": "uninvoked sourceaudit.RunModule",
       "reason": "TEST-ONLY BY CONSTRUCTION, exactly like its sibling sourceaudit.Run above: this gate IS a go test, so its entry point has no non-test caller. TestSourceAuditGate calls it. 🔴 AND IT MUST STAY THAT WAY — this is the one entry here where test-only is a REQUIREMENT rather than an accepted smell. RunModule pulls in golang.org/x/tools (go/packages, ssa, cha, vta) to build a type-checked call graph. internal/sourceaudit is not linked into cmd/vp — verified with `go list -deps ./cmd/vp`, which names neither sourceaudit nor golang.org/x/tools — so the dependency costs the shipped binary nothing, which is what ADR-010 §3 asserted and what makes deriving affordable at all. Wiring it into `vp check` to give it a 'real' caller would link an entire program-analysis toolkit into a CLI that must start in milliseconds. Do not wire a caller. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — declared here, enforced by the baseline ratchet."
+    },
+    {
+      "id": "uninvoked sourceaudit.decisionTrackedReach",
+      "reason": "TEST-ONLY BY CONSTRUCTION, the shape of sourceaudit.RunModule below: this rule RUNS ONLY WITHOUT -short (decision-chunks-in-the-host-local-store, Scope 5), so it is deliberately NOT wired into Run() — which TestSourceAuditGate executes under -short — and its only caller is its own gate test, TestDecisionTrackedWriterReachIsClean (skipUnlessFullSuite). Wiring it into Run() would make it run under `make test`'s -short pass, the very thing the plan keeps it out of. It is a syntactic reachability check over buildCallGraph: a note-time/ingest/import root that reaches a tracked-tree writer. ADR-006 verdict: DECLARE + ENFORCE — declared here, enforced by the baseline ratchet."
     },
     {
       "id": "uninvoked storage.RebindCheckout",

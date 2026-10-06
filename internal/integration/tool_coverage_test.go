@@ -56,6 +56,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/check"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
@@ -161,31 +162,29 @@ func covWriteKeyedNote(t *testing.T, vault *storage.Vault, project, name, key st
 	return "Projects/" + project + "/sessions/" + name
 }
 
-// covWriteDecisionNote writes a well-formed session note carrying a YAML
-// `decisions:` list, the shape vp_palace_backfill_decisions mines. Mirrors
-// internal/tools/palace_backfill_tools_test.go's pbNote (package tools,
-// not importable here).
-func covWriteDecisionNote(t *testing.T, vault *storage.Vault, project, sessionID, date, decision string) {
+// assertDecisionChunkStored checks that the host-local chunk store holds a
+// decision chunk carrying want, with source_type "decision" and a note owner
+// (decision-chunks-in-the-host-local-store, Scope 3). It is how the coverage
+// cases assert decision capture now that vp_palace_backfill_decisions is retired
+// and vp_palace_query still reads tracked drawers (child 9 repoints it).
+func assertDecisionChunkStored(t *testing.T, vault *storage.Vault, project, want string) {
 	t.Helper()
-	dir, err := vault.SessionDir(project)
+	st, err := indexstore.ReadStore(vault, project)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read store for %s: %v", project, err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, c := range st.Chunks(false) {
+		if c.SourceType != storage.SourceTypeDecision || !strings.Contains(c.Content, want) {
+			continue
+		}
+		for _, o := range c.Owners {
+			if o.Kind == indexstore.OwnerNote {
+				return
+			}
+		}
+		t.Fatalf("decision chunk %q has no note owner: %+v", want, c.Owners)
 	}
-	var b strings.Builder
-	b.WriteString("---\n")
-	fmt.Fprintf(&b, "session_id: %s\n", sessionID)
-	fmt.Fprintf(&b, "project: %s\n", project)
-	fmt.Fprintf(&b, "date: %s\n", date)
-	b.WriteString("iteration: 1\n")
-	b.WriteString("decisions:\n")
-	fmt.Fprintf(&b, "  - %q\n", decision)
-	b.WriteString("---\n\n## Notes\n\nprose the backfill must never mine.\n")
-	if err := os.WriteFile(filepath.Join(dir, sessionID+".md"), []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Fatalf("no decision chunk containing %q (source_type=decision) in the store of %s", want, project)
 }
 
 // covSeedTaskFile drops one file under Projects/<project>/tasks/ so a
@@ -713,55 +712,31 @@ var toolCoverageFixtures = map[string]toolFixture{
 
 	"vp_palace_query": {
 		build: func(t *testing.T, h *testHarness) any {
-			covWriteDecisionNote(t, h.Vault, "cov-palacequery", "2026-03-15-01", "2026-03-15",
-				"chose the flat sessions layout")
-			h.callTool(t, "vp_palace_backfill_decisions", map[string]any{
-				"project": "cov-palacequery", "apply": true,
+			h.seedProject(t, "cov-palacequery")
+			// File the decision through capture, which now writes it to the
+			// host-local store (not a tracked drawer). vp_palace_backfill_decisions
+			// is retired.
+			h.callTool(t, "vp_capture_session", map[string]any{
+				"project":    "cov-palacequery",
+				"summary":    "a palace-query coverage session",
+				"transcript": "## Human\nWhich layout?\n## Assistant\nFlat.\n",
+				"decisions":  []string{"chose the flat sessions layout"},
+				"enrich":     false,
 			})
 			return map[string]any{"project": "cov-palacequery"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
+			// The decision reached the store, note-owned (Scope 3). The default
+			// query's reachability assertion is NOT made here: vp_palace_query
+			// still reads tracked drawers until palace-navigation-over-the-host-
+			// local-chunk-store (child 9) repoints it, which restores that
+			// assertion. Here we assert the store directly and that the tool
+			// returns complete.
+			assertDecisionChunkStored(t, h.Vault, "cov-palacequery", "chose the flat sessions layout")
 			var out struct {
-				Drawers []struct {
-					Content string `json:"content"`
-				} `json:"drawers"`
 				Complete bool `json:"complete"`
 			}
 			covUnmarshal(t, payload, &out)
-			if len(out.Drawers) == 0 {
-				t.Fatal("expected the backfilled decision drawer to be reachable via the default query")
-			}
-			if !strings.Contains(out.Drawers[0].Content, "chose the flat sessions layout") {
-				t.Errorf("drawer content = %q", out.Drawers[0].Content)
-			}
-			if !out.Complete {
-				t.Error("complete is not true")
-			}
-		},
-	},
-
-	"vp_palace_backfill_decisions": {
-		build: func(t *testing.T, h *testHarness) any {
-			h.seedProject(t, "cov-backfill")
-			covWriteDecisionNote(t, h.Vault, "cov-backfill", "2026-03-15-01", "2026-03-15",
-				"chose sqlite for the embedded store")
-			return map[string]any{"project": "cov-backfill", "apply": true}
-		},
-		assert: func(t *testing.T, h *testHarness, payload string) {
-			var out struct {
-				Apply          bool `json:"apply"`
-				NotesScanned   int  `json:"notes_scanned"`
-				DecisionsFound int  `json:"decisions_found"`
-				Appended       int  `json:"appended"`
-				Complete       bool `json:"complete"`
-			}
-			covUnmarshal(t, payload, &out)
-			if !out.Apply {
-				t.Error("apply echoed false for an apply=true call")
-			}
-			if out.NotesScanned != 1 || out.DecisionsFound != 1 || out.Appended != 1 {
-				t.Errorf("counts = %+v, want scanned=1 found=1 appended=1", out)
-			}
 			if !out.Complete {
 				t.Error("complete is not true")
 			}

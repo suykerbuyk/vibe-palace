@@ -1194,7 +1194,7 @@ func TestPalaceStoreDrawers_KGOnlyStoreStillReported(t *testing.T) {
 			t.Errorf("detail must not say %q: %q", banned, d)
 		}
 	}
-	for _, source := range []string{"capture from transcripts", "vp_refresh_index", "vp_palace_backfill_decisions"} {
+	for _, source := range []string{"capture from transcripts", "vp_refresh_index"} {
 		if !strings.Contains(d, source) {
 			t.Errorf("detail must name the drawer source %q as fact: %q", source, d)
 		}
