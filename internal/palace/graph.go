@@ -48,54 +48,53 @@ func nodeKey(wing, room string) string {
 	return wing + "/" + room
 }
 
-// BuildGraph constructs a PalaceGraph from the vault's drawer filesystem.
+// BuildGraph constructs a PalaceGraph from the host-local chunk store (ADR-014:
+// wing and room are chunk-store metadata, not directory names), with the
+// tracked-drawer fallback before the migration marker. Both reach it through
+// visibleDrawers, the one navigation reader. A (wing, room) node exists only
+// while it holds at least one visible drawer.
+//
 // Adjacency rules:
 //   - Rooms within the same wing are adjacent to each other.
 //   - Rooms with the same slug across different wings are adjacent (tunnels).
 func BuildGraph(vault *storage.Vault, project string) (*PalaceGraph, error) {
-	wings, err := vault.ListWings(project)
+	hits, err := visibleDrawers(vault, project)
 	if err != nil {
-		return nil, fmt.Errorf("list wings: %w", err)
+		return nil, err
 	}
 
 	g := &PalaceGraph{
 		Nodes: make(map[string]*GraphNode),
 	}
 
-	// roomToKeys tracks which node keys belong to each room slug.
+	// roomToKeys tracks which node keys belong to each room slug; wingKeys the
+	// node keys of each wing (both in first-seen order, which is deterministic
+	// because visibleDrawers sorts its hits by wing, room, then id).
 	roomToKeys := make(map[string][]string)
+	wingKeys := make(map[string][]string)
 	wingSet := make(map[string]bool)
 	uniqueRooms := make(map[string]bool)
 	totalDrawers := 0
 
-	for _, wing := range wings {
-		wingSet[wing] = true
-		rooms, err := vault.ListRooms(project, wing)
-		if err != nil {
-			return nil, fmt.Errorf("list rooms for wing %q: %w", wing, err)
+	for _, h := range hits {
+		wingSet[h.Wing] = true
+		uniqueRooms[h.Room] = true
+		key := nodeKey(h.Wing, h.Room)
+		node, ok := g.Nodes[key]
+		if !ok {
+			node = &GraphNode{Wing: h.Wing, Room: h.Room}
+			g.Nodes[key] = node
+			wingKeys[h.Wing] = append(wingKeys[h.Wing], key)
+			roomToKeys[h.Room] = append(roomToKeys[h.Room], key)
 		}
+		node.Drawers++
+		totalDrawers++
+	}
 
-		var wingKeys []string
-		for _, room := range rooms {
-			uniqueRooms[room] = true
-			drawers, err := vault.ListDrawers(project, wing, room)
-			if err != nil {
-				return nil, fmt.Errorf("list drawers for %s/%s: %w", wing, room, err)
-			}
-			key := nodeKey(wing, room)
-			g.Nodes[key] = &GraphNode{
-				Wing:    wing,
-				Room:    room,
-				Drawers: len(drawers),
-			}
-			totalDrawers += len(drawers)
-			wingKeys = append(wingKeys, key)
-			roomToKeys[room] = append(roomToKeys[room], key)
-		}
-
-		// Intra-wing adjacency: all rooms in the same wing are adjacent.
-		for i, a := range wingKeys {
-			for _, b := range wingKeys[i+1:] {
+	// Intra-wing adjacency: all rooms in the same wing are adjacent.
+	for _, keys := range wingKeys {
+		for i, a := range keys {
+			for _, b := range keys[i+1:] {
 				g.Nodes[a].Adjacent = append(g.Nodes[a].Adjacent, b)
 				g.Nodes[b].Adjacent = append(g.Nodes[b].Adjacent, a)
 			}

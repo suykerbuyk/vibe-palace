@@ -4,7 +4,10 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -51,10 +54,15 @@ func TestIntegrationAuditDetectsMismatches(t *testing.T) {
 	}
 }
 
-func TestIntegrationAuditApplyFixes(t *testing.T) {
+// Before the migration marker, `vp audit rooms --apply` refuses and writes
+// nothing: room relabelling is a host-local-store write available only after
+// the migration (palace.Relabel). RunAudit still finds the candidate through
+// the tracked-drawer fallback. The post-marker relabel over the store is
+// covered by the palace-package unit tests (store_reader_test.go).
+func TestIntegrationAuditApplyRefusesBeforeMarker(t *testing.T) {
 	h := newHarness(t, false)
 
-	// Misclassified: kubernetes content in api room.
+	// Misclassified: kubernetes content in api room, tracked (no marker).
 	h.seedProject(t, "proj")
 	h.Seed(t, testinfra.WithDrawer("proj", "proj", "api",
 		"Set up the kubernetes cluster for deployment.",
@@ -71,30 +79,20 @@ func TestIntegrationAuditApplyFixes(t *testing.T) {
 		t.Fatalf("Candidates = %d, want 1", len(candidates))
 	}
 
-	// Apply the move.
-	for _, c := range candidates {
-		if err := h.Vault.MoveDrawer("proj", c.Wing, c.FromRoom, c.ToRoom, c.DrawerID); err != nil {
-			t.Fatalf("MoveDrawer: %v", err)
-		}
+	// Apply before the marker refuses, and writes nothing.
+	err = palace.Relabel(context.Background(), h.Vault, "proj", candidates, 5*time.Second)
+	if !errors.Is(err, palace.ErrRelabelBeforeMarker) {
+		t.Fatalf("Relabel before marker = %v, want ErrRelabelBeforeMarker", err)
 	}
 
-	// Verify drawer moved.
+	// The tracked drawers are untouched: nothing moved.
 	apiDrawers, _ := h.Vault.ListDrawers("proj", "proj", "api")
-	if len(apiDrawers) != 0 {
-		t.Errorf("api room should be empty after apply, got %d", len(apiDrawers))
+	if len(apiDrawers) != 1 {
+		t.Errorf("api room should still hold the drawer, got %d", len(apiDrawers))
 	}
 	devopsDrawers, _ := h.Vault.ListDrawers("proj", "proj", "devops")
-	if len(devopsDrawers) != 1 {
-		t.Errorf("devops room should have 1 drawer, got %d", len(devopsDrawers))
-	}
-
-	// Re-audit: should be zero mismatches.
-	report2, err := palace.RunAudit(h.Vault, rc, palace.AuditOptions{Project: "proj"})
-	if err != nil {
-		t.Fatalf("RunAudit (post-apply): %v", err)
-	}
-	if len(report2.Mismatches) != 0 {
-		t.Errorf("Mismatches after apply = %d, want 0", len(report2.Mismatches))
+	if len(devopsDrawers) != 0 {
+		t.Errorf("devops room should be empty (nothing relabelled), got %d", len(devopsDrawers))
 	}
 }
 

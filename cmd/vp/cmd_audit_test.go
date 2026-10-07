@@ -113,9 +113,14 @@ func TestRunAuditRooms_DryRun(t *testing.T) {
 	}
 }
 
-func TestRunAuditRooms_Apply(t *testing.T) {
+// --apply before the migration marker refuses and moves nothing: room
+// relabelling is a host-local-store write available only after the migration
+// (palace.Relabel). RunAudit still finds the mismatch through the tracked-drawer
+// fallback, but the apply refuses. The post-marker relabel-in-store path is
+// covered by the palace-package unit tests (internal/palace/store_reader_test.go).
+func TestRunAuditRooms_ApplyRefusesBeforeMarker(t *testing.T) {
 	v := testVault(t, "proj")
-	// kubernetes content in wrong room.
+	// kubernetes content in wrong room, tracked (no marker).
 	v.AppendDrawer("proj", "wing", "api", storage.Drawer{
 		Content: "Set up the kubernetes cluster for deployment.", Hall: "facts",
 		SourceType: "manual", FiledAt: "2026-04-10T10:00:00Z",
@@ -124,22 +129,21 @@ func TestRunAuditRooms_Apply(t *testing.T) {
 	cfg := storage.Config{}
 	var buf bytes.Buffer
 	code := runAuditRooms(v, "proj", cfg, true, false, false, "", false, &buf)
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (refused before the marker)", code)
 	}
-	out := buf.String()
-	if !strings.Contains(out, "MOVED") {
-		t.Errorf("expected MOVED in output: %s", out)
+	if !strings.Contains(buf.String(), "only after the vault migration") {
+		t.Errorf("expected the before-marker refusal message: %s", buf.String())
 	}
 
-	// Verify drawer was moved from api to devops.
+	// Nothing moved: the drawer stays in api.
 	apiDrawers, _ := v.ListDrawers("proj", "wing", "api")
-	if len(apiDrawers) != 0 {
-		t.Errorf("api room should be empty, got %d", len(apiDrawers))
+	if len(apiDrawers) != 1 {
+		t.Errorf("api room should still hold the drawer, got %d", len(apiDrawers))
 	}
 	devopsDrawers, _ := v.ListDrawers("proj", "wing", "devops")
-	if len(devopsDrawers) != 1 {
-		t.Errorf("devops room should have 1 drawer, got %d", len(devopsDrawers))
+	if len(devopsDrawers) != 0 {
+		t.Errorf("devops room should be empty (nothing relabelled), got %d", len(devopsDrawers))
 	}
 }
 

@@ -72,7 +72,7 @@ var palaceQuerySchema = json.RawMessage(fmt.Sprintf(`{
 		"hall": {
 			"type": "string",
 			"enum": %s,
-			"description": "Hall (TOPIC classification, assigned by keyword matching). It does NOT select a kind of memory: on live data 1,002 transcript chunks already carry hall=decisions from keyword detection. Use source_type to select the kind."
+			"description": "Hall (TOPIC classification, assigned by keyword matching). It does NOT select a kind of memory: transcript chunks can carry hall=decisions from keyword detection. Use source_type to select the kind."
 		},
 		"source_type": {
 			"type": ["array", "string"],
@@ -85,11 +85,11 @@ var palaceQuerySchema = json.RawMessage(fmt.Sprintf(`{
 		},
 		"date_from": {
 			"type": "string",
-			"description": "Inclusive lower bound on filed_at, YYYY-MM-DD."
+			"description": "Inclusive lower bound on filed_at, YYYY-MM-DD. filed_at is the session date, the UTC day the session started. For a decision, that is the start day of its session once that session's archive is indexed on this host, and otherwise the session note's own day, so a decision can move between days when its archive is indexed."
 		},
 		"date_to": {
 			"type": "string",
-			"description": "Inclusive upper bound on filed_at, YYYY-MM-DD. Compared against the day part only, so a drawer filed later that same day is still returned."
+			"description": "Inclusive upper bound on filed_at, YYYY-MM-DD. filed_at is the session date, the UTC day the session started. For a decision, that is the start day of its session once that session's archive is indexed on this host, and otherwise the session note's own day, so a decision can move between days when its archive is indexed. Compared against the day part only, so a drawer filed later that same day is still returned."
 		},
 		"limit": {
 			"type": "integer",
@@ -294,7 +294,8 @@ func PalaceQueryTool(vault *storage.Vault) mcp.Tool {
 			"An unqualified query is also PRUNED to the `decisions` room — the cost of that is real: a source_type=decision drawer filed outside room=decisions is only reachable by naming room= explicitly. Naming a room disables the prune. " +
 			"`wing` defaults to the project slug, where every capture-written drawer lands; drawers written by the mempalace migrator live in other wings and need an explicit wing=. " +
 			"`hall` is a TOPIC classification assigned by keyword matching, not a memory kind — source_type is the load-bearing key. " +
-			"The result ENDS with `complete`: if you do not see `complete: true`, your host truncated it and `drawers` is a PREFIX — do not read the missing drawers as decisions that were never made.",
+			"The result ENDS with `complete`: if you do not see `complete: true`, your host truncated it and `drawers` is a PREFIX — do not read the missing drawers as decisions that were never made. " +
+			"Drawers are read from this host's local chunk store; an empty answer can mean the project's index is simply not built on this host rather than that nothing was recorded — run vp_index_coverage to tell the two apart.",
 		Schema:  palaceQuerySchema,
 		Handler: palaceQueryHandler(vault),
 	}
@@ -322,7 +323,7 @@ func palaceQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("resolve palace query: %w", err)
 		}
 
-		hits, err := vault.ScanDrawers(q)
+		hits, err := palace.QueryDrawers(vault, q)
 		if err != nil {
 			return nil, fmt.Errorf("scan drawers: %w", err)
 		}

@@ -32,8 +32,10 @@ func ListProjectsTool(vault *storage.Vault) mcp.Tool {
 		Name: "vp_list_projects",
 		Description: "List every project in the vault — the union of the palace/ store and the " +
 			"Projects/ history tree. A project present in only one tree is reported in drift; " +
-			"drift is absent when the two trees agree. A palace/ directory holding no file " +
-			"outside machine-local .local/ is not a store.",
+			"drift is absent when the two trees agree. A file counts toward presence under " +
+			"palace/<p>/ when it is outside .local/ AND does not match a derived pattern " +
+			"(palace/*/drawers/, palace/*/ingested-archives.jsonl). On a migrated vault, it must " +
+			"also not be an untracked file under kg/: a stray extracted triple left ??.",
 		Schema:  listProjectsSchema,
 		Handler: listProjectsHandler(vault),
 	}

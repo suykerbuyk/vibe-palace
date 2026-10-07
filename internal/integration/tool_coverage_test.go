@@ -726,17 +726,25 @@ var toolCoverageFixtures = map[string]toolFixture{
 			return map[string]any{"project": "cov-palacequery"}
 		},
 		assert: func(t *testing.T, h *testHarness, payload string) {
-			// The decision reached the store, note-owned (Scope 3). The default
-			// query's reachability assertion is NOT made here: vp_palace_query
-			// still reads tracked drawers until palace-navigation-over-the-host-
-			// local-chunk-store (child 9) repoints it, which restores that
-			// assertion. Here we assert the store directly and that the tool
-			// returns complete.
+			// The decision reached the store, note-owned (Scope 3, 4b). Now that
+			// palace-navigation-over-the-host-local-chunk-store repoints
+			// vp_palace_query at the store, the default query (project only)
+			// REACHES that decision again — the restored reachability assertion
+			// (C10). 4b's direct store assertion stays beside it.
 			assertDecisionChunkStored(t, h.Vault, "cov-palacequery", "chose the flat sessions layout")
 			var out struct {
+				Drawers []struct {
+					Content string `json:"content"`
+				} `json:"drawers"`
 				Complete bool `json:"complete"`
 			}
 			covUnmarshal(t, payload, &out)
+			if len(out.Drawers) == 0 {
+				t.Fatalf("default palace query returned no drawers; want the decision")
+			}
+			if out.Drawers[0].Content != "chose the flat sessions layout" {
+				t.Errorf("first drawer content = %q, want %q", out.Drawers[0].Content, "chose the flat sessions layout")
+			}
 			if !out.Complete {
 				t.Error("complete is not true")
 			}
