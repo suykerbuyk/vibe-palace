@@ -375,6 +375,33 @@ files.
   — this is the one hygiene finding the wrap is allowed to fix, because
   the wrap is what writes the file.
 
+## Step 3b: Inbox Triage (route captured memory to its durable home)
+
+The memory store is a capture INBOX, not the durable home for knowledge (see this project's `workflow.md` Auto-memory section). This step drains it: each entry is classified by KIND, PROPOSED for routing to its durable home, and — on the human's confirmation — promoted and cleared. It sits here, right after the resume pass, because it edits the same load-bearing synced documents (`resume.md`, `workflow.md`) under the same surgical compare-and-set discipline, and it must run BEFORE the commit so every promotion and deletion is part of the reviewed diff.
+
+**This step PROPOSES; the human CONFIRMS each row.** Promotion edits a load-bearing, synced document and deletion destroys a capture — neither is an agent's call to make unreviewed, exactly as task retirement (Step 6) and plan sweeps (Step 6b) are not. Present a routing table and act only on the rows the human approves.
+
+### Inputs
+
+- `vp_memory_list` (this project) — the inbox inventory: `{name, description, type, rel}` per entry; fetch a body on demand with `vp_memory_read`.
+- The RAW bytes of `Projects/{{PROJECT}}/resume.md` and `Projects/{{PROJECT}}/workflow.md` via `vp_vault_read` — NOT `vp_get_resume`/`vp_get_workflow` (their bodies are placeholder-expanded), and never a filesystem grep (the vault is behind the accessors). You need these to count references and to perform the pointer rewrites below.
+
+### Classify each entry
+
+For every inbox entry, present:
+
+- its proposed KIND and destination HOME, per this project's route-by-kind table — durable behavioral rule → `workflow.md` (a generic, all-projects rule → the doctrine/cartridge); project state → `resume.md`; reference → `doc/`; genuinely cross-project lesson → `Knowledge/learnings/`; uncertain / not-yet-a-rule / transient → STAYS in the inbox; stale/obsolete → delete;
+- its REFERENCE COUNT — how many times `resume.md` and `workflow.md` cite it, by grepping their `vp_vault_read` bodies for the entry's name (the `` memory `<name>` `` form and the bare `<name>`);
+- DUPLICATE detection — whether the entry merely restates content already in the doctrine, a cartridge, or `workflow.md`. A dup collapses to a one-line POINTER at its home, never a re-pasted copy.
+
+### Act — only on confirmed rows, in this order
+
+1. **Promote** via the correct writer for the kind: a `workflow.md` or `resume.md` rule/state through a surgical `vp_vault_edit` (compare-and-set, re-chaining the sha between edits); a cross-project lesson through a raw `vp_vault_write` to `Knowledge/learnings/<slug>.md` with hand-authored, valid frontmatter (`name`, `description`, `type`) so the learnings readers parse it; a reference as a proposed `doc/` edit in the project repo.
+2. **Rewrite pointers BEFORE deleting.** If `resume.md` or `workflow.md` cite the entry, rewrite or drop those references FIRST (surgical `vp_vault_edit`, re-chaining the sha), and only THEN `vp_memory_delete` the entry. Deleting first strands a dangling reference; rewriting first means a compare-and-set conflict aborts the rewrite harmlessly, with the memory still intact to retry.
+3. **Delete** a stale/obsolete entry, or an entry whose content has been promoted out, with `vp_memory_delete`.
+
+Leave every uncertain / not-yet-a-rule / transient entry in the inbox for the next wrap. In the Step 11 report, say what you promoted, what you rewrote, what you deleted, and what you left.
+
 ## Step 4: Append Iteration Narrative
 
 Use `vp_append_iteration` to describe what changed this session and why
