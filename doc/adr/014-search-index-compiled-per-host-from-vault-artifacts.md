@@ -1386,6 +1386,26 @@ From the epic (2026-10-01), as amended by the operator rulings of 2026-10-02:
     by it.
 - **Unchanged.** Lifecycle copy and delete read the tracked tree. The departure guard still finds
   `.surface` and `Projects/<p>`. The embed-cache sweep is unaffected.
+- **The disk/inode watchdog and its reserve constants.** `vp index rebuild` and the routine ingester
+  guard the filesystem holding `palace/.local/` with a free-space **reserve** — an absolute floor of
+  free bytes and free inodes, never a consumption budget (`internal/ingest/freespace.go`). It refuses
+  at start (and on `--dry-run`) when the estimate (archive MiB × a per-MiB cost) would cross the
+  floor, and stops a run mid-flight at the same floor. The per-MiB cost and the floors were locked
+  from the 2026-10-07 `rusty-can` completed run on binary `0eeca35` (task
+  `explicit-resumable-index-rebuild-with-disk-watchdog`, section "Watchdog cost measurement
+  2026-10-07"): a completed rebuild wrote 3.68 MiB and 1,219 inodes per uncompressed archive MiB,
+  so the per-MiB costs carry ~2× headroom (`CostBytesPerMiB` 8 MiB, `CostInodesPerMiB` 2,500) and
+  the free-space floors are `DefaultReserveBytes` 4 GiB and `DefaultReserveInodes` 500,000 (a floor
+  kept below a standard ~1 M-inode tmpfs and below a full rebuild's own ~2.37 M-inode consumption).
+  - **Revisit (and re-measure)** when the embedder model or vector dim changes, the chunker or the
+    decision/knowledge-extraction tier changes (that tier roughly doubled chunk density in `0eeca35`),
+    the embed-cache dedup behaviour changes (currently ~0.48 inode/chunk), a materially denser or
+    larger project is embedded (`vibe-palace` itself is unmeasured and likely denser than
+    `rusty-can`), or the gate is deployed to constrained hardware where it actually fires.
+  - **How:** on a disposable remote-stripped vault copy (targeted by an untracked `.vibe-palace.toml`
+    `vault_path`, not `--vault-root`, which does not redirect), run one completed
+    `vp index rebuild <project>`, then recompute cost = (`index/<p>` + `embed-cache/<p>` bytes,
+    excluding the one-time `models/` ONNX cache) ÷ uncompressed archive MiB; inodes likewise.
 
 ### Implementation notes: sites owned by the code children
 

@@ -816,6 +816,12 @@ The v9.2.0 release notes must cover every contract change (ADR-014 decision 10):
 - the baseline set, the historical backlog it holds, and the per-host `vp index rebuild` that
   clears it;
 - the per-run budget, and the skip of an archive after N failures until a rebuild;
+- the disk/inode watchdog: a free-space RESERVE gate — an absolute floor of free bytes and inodes
+  on the filesystem holding `palace/.local/`, not a budget — that refuses a rebuild at start (and on
+  `--dry-run`) and stops it mid-run; its per-MiB cost and floors were locked from the 2026-10-07
+  `rusty-can` completed-run measurement, with the when/how-to-revisit guidance recorded alongside
+  (ADR-014 Consequences; task `explicit-resumable-index-rebuild-with-disk-watchdog`, section
+  "Watchdog cost measurement 2026-10-07");
 - background embedding after SessionEnd by the detached ingester, and the `vp mcp` startup
   backstop;
 - `palace-store-drawers` is skipped on a migrated vault, and `kg-tracked-extracted` reports;

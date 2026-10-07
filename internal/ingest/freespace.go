@@ -39,22 +39,40 @@ type Reserve struct {
 	Inodes uint64
 }
 
-// 🔶 PLACEHOLDER watchdog constants. The real reserve floors and the cost per
-// MiB of archive are MEASURED on the acceptance run (Scope 9, Acceptance) and
-// recorded in the task by the Chair; these stand in until then. They are
-// deliberately rough — do NOT read them as tuned numbers.
+// Watchdog constants: the per-MiB cost of a rebuild and the free-space reserve
+// floors. They feed the start/during-run estimate (archive MiB × Cost…) the
+// watchdog checks against an absolute floor of free bytes and free inodes on the
+// filesystem holding palace/.local/ — a RESERVE, never a consumption budget.
+//
+// Derived from the 2026-10-07 rusty-can completed-run measurement on binary
+// 0eeca35 (task explicit-resumable-index-rebuild-with-disk-watchdog, section
+// "Watchdog cost measurement 2026-10-07"): a completed rebuild wrote 3.68 MiB and
+// 1,219 inodes per uncompressed archive MiB; the values below carry ~2× headroom.
+//
+// 🔴 Revisit (and re-measure) when: the embedder model or vector dim changes; the
+// chunker or the decision/knowledge-extraction tier changes (that tier ~2×'d chunk
+// density in 0eeca35); the embed-cache dedup behaviour changes (currently ~0.48
+// inode/chunk); a materially denser or larger project is embedded (vibe-palace
+// itself is UNMEASURED and likely denser than rusty-can); or the gate is deployed
+// to constrained hardware where it actually fires.
+//
+// How to re-measure: on a disposable remote-stripped vault copy (targeted by an
+// untracked .vibe-palace.toml vault_path — NOT --vault-root, which does not
+// redirect), run one completed `vp index rebuild <project>`, then recompute
+// CostBytesPerMiB = (index/<p> + embed-cache/<p> bytes, EXCLUDING the one-time
+// models/ ONNX cache) / uncompressed-archive-MiB; CostInodesPerMiB likewise.
 const (
-	// DefaultReserveBytes is the free-byte floor (PLACEHOLDER: 2 GiB).
-	DefaultReserveBytes uint64 = 2 << 30
-	// DefaultReserveInodes is the free-inode floor (PLACEHOLDER).
+	// DefaultReserveBytes is the free-byte floor a run must leave.
+	DefaultReserveBytes uint64 = 4 << 30 // 4 GiB
+	// DefaultReserveInodes is the free-inode floor a run must leave.
 	DefaultReserveInodes uint64 = 500_000
 	// CostBytesPerMiB and CostInodesPerMiB estimate a run's consumption from
-	// the archive MiB it will read (PLACEHOLDER).
-	CostBytesPerMiB  uint64 = 12 << 20 // ~12 MiB of index per MiB of archive
-	CostInodesPerMiB uint64 = 4096
+	// the archive MiB it will read.
+	CostBytesPerMiB  uint64 = 8 << 20 // ~8 MiB of index per MiB of archive
+	CostInodesPerMiB uint64 = 2500
 )
 
-// orDefault fills a zero reserve with the placeholder floors.
+// orDefault fills a zero reserve with the default floors.
 func (r Reserve) orDefault() Reserve {
 	if r.Bytes == 0 {
 		r.Bytes = DefaultReserveBytes
@@ -77,7 +95,7 @@ type Estimate struct {
 }
 
 // EstimateFor computes the estimate from the archive MiB a run will read,
-// using the (placeholder) per-MiB cost.
+// using the measured per-MiB cost.
 func EstimateFor(archiveMiB uint64) Estimate {
 	return Estimate{Bytes: archiveMiB * CostBytesPerMiB, Inodes: archiveMiB * CostInodesPerMiB}
 }
@@ -93,7 +111,7 @@ type watchdog struct {
 
 // newWatchdog builds a watchdog over reader (nil means the platform reader),
 // guarding the filesystem that holds path, with reserve (zero means the
-// placeholder floors).
+// default floors).
 func newWatchdog(reader FreeSpaceReader, path string, reserve Reserve) *watchdog {
 	if reader == nil {
 		reader = newPlatformFreeSpace()
@@ -148,7 +166,7 @@ func (w *watchdog) checkpoint(int) error { return w.check() }
 // ReserveCheckpoint returns an IngestOptions.Checkpoint that stops a run before
 // it would cross the free-space reserve. The routine ingester (`vp drain
 // archives`) passes it so a background run cannot fill a disk either (Scope 7).
-// reader nil means the platform reader; a zero reserve means the placeholder
+// reader nil means the platform reader; a zero reserve means the default
 // floors.
 func ReserveCheckpoint(reader FreeSpaceReader, path string, reserve Reserve) func(int) error {
 	return newWatchdog(reader, path, reserve).checkpoint
