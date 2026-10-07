@@ -227,7 +227,14 @@ func TestIntegrationPulledDeletionLeavesNoHusk(t *testing.T) {
 	var stub storage.Drawer
 	ecPalaceOnlyDrawer(t, h, "stub", "stub drawer about pumps", "2026-09-09T10:00:00Z", &stub)
 	// A keeper, so the orphan reaper's zero-projects guard does not decline.
+	// It carries a session note (not just a resume.md) so it is not truly
+	// empty: ecSweepBySearch drives the once-per-engine index sweep through a
+	// vp_search on this project, and under the empty-corpus contract (ADR-014
+	// decision 8) a search of a truly empty project returns before the commit
+	// lock — and therefore before the sweep — so the keeper must have real
+	// indexable content for the search to reach lockProject and run the sweep.
 	ecWrite(t, root, "Projects/keep/resume.md", "# keep\n")
+	ecWrite(t, root, "Projects/keep/sessions/2026-09-09-keepkeep-01.md", "# keep session\n\nThe keeper project holds a session note so it is searchable.\n")
 	ecGit(t, root, "add", "-A")
 	ecGit(t, root, "commit", "-q", "-m", "seed")
 	bare := t.TempDir()

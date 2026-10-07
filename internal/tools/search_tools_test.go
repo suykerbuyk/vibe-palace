@@ -156,22 +156,30 @@ func TestCrossProjectToolValidation(t *testing.T) {
 // ListAllProjects to report it), or this would actually be exercising the
 // unknown-project path covered separately by
 // TestSearchToolUnknownProjectIsError below.
-func TestSearchToolEmptyResults(t *testing.T) {
+// TestSearchToolTrulyEmptyIsError pins the empty-corpus contract (ADR-014
+// decision 8): a project that exists but has nothing any tier could index is a
+// tool error naming `vp index rebuild`, never [] dressed as success — the same
+// shape TestSearchToolUnknownProjectIsError pins for an absent project. Before
+// this task a bare scaffold answered [] here, indistinguishable from a real
+// zero-hit search.
+func TestSearchToolTrulyEmptyIsError(t *testing.T) {
 	eng, vault := testSearchEngine(t)
 	if err := os.MkdirAll(filepath.Join(vault.Root, "Projects", "proj"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	tool := SearchTool(eng)
 
-	result, err := tool.Handler(context.Background(),
+	_, err := tool.Handler(context.Background(),
 		json.RawMessage(`{"query": "nothing", "project": "proj"}`))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected an error for a truly empty project, got nil")
 	}
-
-	results := result.([]search.SearchResult)
-	if len(results) != 0 {
-		t.Errorf("expected empty results, got %d", len(results))
+	var none *search.NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("error is not *search.NothingIndexableError: %v", err)
+	}
+	if !strings.Contains(err.Error(), "vp index rebuild proj") {
+		t.Errorf("error does not name `vp index rebuild proj`: %v", err)
 	}
 }
 

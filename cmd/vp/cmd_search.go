@@ -146,6 +146,20 @@ func requireSearchProject(vault *storage.Vault, proj string, detected bool) int 
 func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, includeRaw, asJSON bool, out io.Writer) int {
 	ctx := context.Background()
 
+	// A truly empty project has nothing any tier could index. Refuse it here,
+	// before the synchronous rebuild, so the CLI pays no model load and exits
+	// non-zero naming `vp index rebuild` (ADR-014 decision 8). This mirrors
+	// Engine.Search's own pre-build check, which the MCP surface relies on;
+	// doing it here too keeps the CLI from loading the embedder for an empty
+	// project via the explicit Rebuild below.
+	if empty, err := eng.TrulyEmpty(proj); err != nil {
+		fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
+		return cli.ExitSystem
+	} else if empty {
+		fmt.Fprintf(os.Stderr, "vp search: %v\n", &search.NothingIndexableError{Project: proj})
+		return cli.ExitUser
+	}
+
 	// Synchronous rebuild for the target project.
 	if _, err := eng.Rebuild(ctx, proj); err != nil {
 		fmt.Fprintf(os.Stderr, "vp search: rebuild index: %v\n", err)
@@ -169,6 +183,17 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 		// reordering can't silently regress the exit code.
 		var unk *search.UnknownProjectError
 		if errors.As(err, &unk) {
+			fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
+			return cli.ExitUser
+		}
+		// A truly empty project is a user-facing "nothing to search yet, run
+		// `vp index rebuild`" condition (ExitUser), not "I could not search"
+		// (ExitSystem). Normally unreachable here because runSearch refuses an
+		// empty project above, before the rebuild; kept as defense-in-depth so
+		// a reordering cannot silently regress the exit code, mirroring the
+		// UnknownProjectError case.
+		var none *search.NothingIndexableError
+		if errors.As(err, &none) {
 			fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 			return cli.ExitUser
 		}

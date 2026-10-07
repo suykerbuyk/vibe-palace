@@ -45,3 +45,26 @@ type UnknownProjectError struct {
 func (e *UnknownProjectError) Error() string {
 	return fmt.Sprintf("unknown project %q: no such project in the vault", e.Project)
 }
+
+// NothingIndexableError reports that Project exists but has nothing any search
+// tier could ever index — no session notes, no iterations, no tracked
+// transcript archives, no host-local chunks, and (while the vault carries no
+// migration marker) no tracked drawers: (*Engine).TrulyEmpty is true. A search
+// of such a project is an error that names `vp index rebuild`, never zero hits
+// dressed as success — the same silent-skip-as-success shape UnknownProjectError
+// refuses (ADR-014 decision 8). A project with tracked archives and nothing else
+// is NOT truly empty: it answers [] and is not skipped by cross-project search.
+//
+// An empty Project means a cross-project search found no project in the vault
+// with anything indexable; a non-empty Project names the single project asked
+// for.
+type NothingIndexableError struct {
+	Project string
+}
+
+func (e *NothingIndexableError) Error() string {
+	if e.Project == "" {
+		return "no project in the vault has anything to search yet; run `vp index rebuild <project>` once a project's content is ingested"
+	}
+	return fmt.Sprintf("project %q has nothing to search yet; run `vp index rebuild %s`", e.Project, e.Project)
+}

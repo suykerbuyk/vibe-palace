@@ -6,7 +6,10 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -275,6 +278,50 @@ func TestIntegration_ColdSearchBuildsIndexLazily(t *testing.T) {
 		}
 		if !sawAlpha {
 			t.Errorf("cross-project search only built one project; %q never appeared in %d results", "alpha", len(results))
+		}
+	})
+
+	t.Run("marked vault reads no tracked drawers", func(t *testing.T) {
+		// Same drawers-only fixture as "project-scoped search" above, but with
+		// the migration marker. On a migrated vault tracked drawers are no
+		// longer read, so a project whose only content is tracked drawers is
+		// truly empty: both vp_search and vp_search_cross_project refuse it
+		// with a tool error naming `vp index rebuild`, never the drawers'
+		// hits (ADR-014 decision 8). This is the marked-vault counterpart of
+		// the glide-path subtests above.
+		h := newHarness(t, false)
+		h.registerAllTools(t)
+		h.initMCP(t)
+
+		h.Seed(t,
+			testinfra.WithProject("proj"),
+			testinfra.WithDrawer("proj", "dev", "go", goContent, "facts", "2026-04-01T10:00:00Z"),
+			testinfra.WithDrawer("proj", "cooking", "italian", pastaContent, "facts", "2026-04-01T10:00:00Z"),
+		)
+		// Write the migration marker (.vibe-palace/vault.toml, authored_only
+		// set), which ends the glide path.
+		mdir := filepath.Join(h.Vault.Root, ".vibe-palace")
+		if err := os.MkdirAll(mdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(mdir, "vault.toml"), []byte("format = 2\nauthored_only = \"2026-10-03\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		text, isErr := h.callToolRaw(t, "vp_search", map[string]any{"project": "proj", "query": goContent})
+		if !isErr {
+			t.Fatalf("vp_search on a marked drawers-only project did not error; it served the drawers (raw: %s)", text)
+		}
+		if !strings.Contains(text, "vp index rebuild proj") {
+			t.Errorf("vp_search error does not name `vp index rebuild proj`: %s", text)
+		}
+
+		text, isErr = h.callToolRaw(t, "vp_search_cross_project", map[string]any{"query": goContent})
+		if !isErr {
+			t.Fatalf("vp_search_cross_project with only a marked drawers-only project did not error (raw: %s)", text)
+		}
+		if !strings.Contains(text, "vp index rebuild") {
+			t.Errorf("vp_search_cross_project error does not name `vp index rebuild`: %s", text)
 		}
 	})
 }

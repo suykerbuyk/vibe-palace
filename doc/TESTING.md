@@ -534,7 +534,7 @@ context resolver, and config into a single test fixture.
 | `MCPSearchEndToEnd` | MCP → tools → search | Yes | JSON-RPC `tools/call` for `vp_search` returns semantically correct results |
 | `MCPSearchValidation` | MCP → tools | No | Invalid parameters produce proper JSON-RPC error responses |
 | `HandshakeDoesNotConstructEmbedder` | MCP → tools → search → embedder | No | A real JSON-RPC `initialize` + `tools/list` against the production tool surface constructs the embedder **zero** times; the first `vp_search` constructs it exactly once, and a second search does not reconstruct it (see below) |
-| `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (see below) |
+| `ColdSearchBuildsIndexLazily` | MCP → tools → search → storage | No | **Without a migration marker**, `vp_search` and `vp_search_cross_project` return **real hits** on projects whose index has never been built — no `Rebuild`, no `IndexDrawer`, only drawers on disk (the glide path; see below). The `marked vault reads no tracked drawers` subtest adds the marker to the same drawers-only fixture: tracked drawers are then not read, the project is truly empty, and both tools refuse it with a tool error naming `vp index rebuild` rather than serving the drawers (ADR-014 decision 8) |
 | `SurfaceCheck` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_surface_check` returns `status:"pass"` with the binary's surface version on a compatible vault; the fail path carries the curated remediation `details` across the wire |
 | `Check` | MCP → tools → check | No | JSON-RPC `tools/call` for `vp_check` is reachable on `tools/list` (and `vp_check_resume_refs`, which it subsumed, is gone from it); the default run covers every producer in declared order and repeats identically; the `resume-refs` selector's rows match `check.RunSelected` verdict-for-verdict — name, summary and the `details` array — proving the tool and the CLI dispatch one registry; no `Embedder` row ever crosses the wire; an unknown selector is refused rather than silently reporting a clean bill of health |
 | `EmbedCacheLivesOutsideProjectTrees` | MCP → tools → search → storage → vaultaudit | No | `vp_search_cross_project` runs FIRST, on a harness engine that has never indexed the notes-only project (asserted), and must return a hit from it — reverting `ensureAllIndexes` to a palace-only enumeration turns it red; then `vp_search` on the notes-only project writes its vector at `palace/.local/embed-cache/notesonly/note.notesonly.<stem>.c0.vec` and creates no `palace/notesonly`; `project-tree-coherence` still reports the project; `palace-local-only` passes (`embed_cache_layout_test.go`) |
@@ -2821,6 +2821,21 @@ See the search-engine table above: `TestSearchLazyBuildsIndex`,
 `TestSearchPropagatesBuildError`, `TestRebuildBatchesEmbeddings`,
 `TestRebuildClearsStaleIndex`.
 
+The empty-corpus contract (task `search-first-build-and-empty-corpus-answer`;
+ADR-014 decision 8) is pinned by `TestEmptySearch` and
+`TestTrulyEmptyLoadsNoEmbedder` (a truly empty project is a
+`*NothingIndexableError` naming `vp index rebuild`, refused before the embedder
+is used — a counting embedder records zero embeds),
+`TestTrackedArchivesMakeProjectNonEmpty` (a project with only a tracked archive
+is **not** empty: it answers `[]`, and cross-project does not skip it),
+`TestZeroHitsOnNonEmptyCorpusReturnsEmpty` (a non-empty corpus with no match
+still returns `[]`, never the error), and the cross-project pair
+`TestCrossProjectSkipsTrulyEmptyScaffold` / `TestCrossProjectAllTrulyEmptyErrors`
+(a bare scaffold is skipped and the rest answer; an all-empty vault is the
+error with an empty `Project`). The MCP and CLI surfaces are pinned by
+`internal/tools`' `TestSearchToolTrulyEmptyIsError` and `cmd/vp`'s
+`TestRunSearchTrulyEmptyExitsNonZero`.
+
 ### `internal/integration/lazy_startup_test.go` — full-stack (no ONNX)
 
 The unit tests above prove `LazyEmbedder` defers and `Engine` builds on demand.
@@ -2832,7 +2847,7 @@ through real JSON-RPC dispatch against the production tool surface
 | Test | What it proves |
 |------|----------------|
 | `TestIntegration_HandshakeDoesNotConstructEmbedder` | Registering the surface, answering `initialize`, and answering `tools/list` construct the embedder **zero** times. The count — not wall-clock time — is the observable: timing assertions are unworkable under CI's `-race`. Non-vacuity: the first `vp_search` drives the count to exactly 1, and a second search leaves it at 1 |
-| `TestIntegration_ColdSearchBuildsIndexLazily` | `vp_search` (project-scoped) and `vp_search_cross_project` (all projects) return **real, correct hits** on projects that have never been rebuilt — drawers on disk and nothing else |
+| `TestIntegration_ColdSearchBuildsIndexLazily` | `vp_search` (project-scoped) and `vp_search_cross_project` (all projects) return **real, correct hits** on projects that have never been rebuilt — drawers on disk and nothing else. The `marked vault reads no tracked drawers` subtest adds the migration marker to the same fixture: tracked drawers are no longer read, the project is truly empty, and both tools refuse it with a tool error naming `vp index rebuild` (the empty-corpus contract, ADR-014 decision 8) |
 
 **Why the second test matters more than it looks.** With the eager reindex gone,
 a `Search` against a project with no index used to take a `return nil, nil`

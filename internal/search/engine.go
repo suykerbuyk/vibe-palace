@@ -245,6 +245,18 @@ func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, error) 
 	}
 	listed := make(map[string]bool, len(projects))
 	for _, p := range projects {
+		// A truly empty project (a bare Projects/<slug>/ scaffold, a project
+		// with only tracked archives, etc.) is skipped, never built: the skip
+		// is reported only through coverage (ADR-014 decision 8) and the result
+		// array shape is unchanged. Checked before ensureIndex so a skipped
+		// project constructs no embedder and pays no model load.
+		empty, err := e.TrulyEmpty(p.Slug)
+		if err != nil {
+			return nil, fmt.Errorf("check project emptiness for %s: %w", p.Slug, err)
+		}
+		if empty {
+			continue
+		}
 		if err := e.ensureIndex(ctx, p.Slug); err != nil {
 			return nil, fmt.Errorf("build index for %s: %w", p.Slug, err)
 		}
@@ -307,6 +319,21 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 		}
 	}
 
+	// A truly empty project — nothing any tier could ever index — is an error
+	// that names `vp index rebuild`, not zero hits (ADR-014 decision 8). This
+	// is checked before ensureIndex/Rebuild, so a truly empty search never
+	// constructs the embedder or pays a model load (search-N4). TrulyEmpty is
+	// child 2's predicate; the search path only consumes it.
+	if f.Project != "" {
+		empty, err := e.TrulyEmpty(f.Project)
+		if err != nil {
+			return nil, fmt.Errorf("check project emptiness: %w", err)
+		}
+		if empty {
+			return nil, &NothingIndexableError{Project: f.Project}
+		}
+	}
+
 	// Build the index(es) this search reads, on first use. Must happen before
 	// e.mu is taken — Rebuild acquires it for write.
 	if f.Project != "" {
@@ -318,6 +345,13 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 	listed, err := e.ensureAllIndexes(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// Cross-project search skips truly empty projects and still answers; it
+	// errors only when every project in the vault is truly empty (ADR-014
+	// decision 8). ensureAllIndexes has already dropped the empties from
+	// listed, so an empty set means nothing in the vault is indexable.
+	if len(listed) == 0 {
+		return nil, &NothingIndexableError{}
 	}
 	return e.searchReady(ctx, query, f, listed)
 }
