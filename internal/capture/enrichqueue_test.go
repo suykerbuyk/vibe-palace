@@ -164,7 +164,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 	// Session A: inline enrichment via a working Enricher.
 	vaultA := testVault(t)
 	testutil.InitProject(t, vaultA.Root, "proj")
-	resA, err := WriteSession(context.Background(), vaultA, nil, SessionParams{
+	resA, err := WriteSession(context.Background(), vaultA, SessionParams{
 		Project:      "proj",
 		Summary:      "plain heuristic summary",
 		Tag:          "implementation",
@@ -183,7 +183,7 @@ func TestDrainByteIdenticalBody(t *testing.T) {
 	vaultB := testVault(t)
 	testutil.InitProject(t, vaultB.Root, "proj")
 	cwd := t.TempDir()
-	resB, err := WriteSession(context.Background(), vaultB, nil, SessionParams{
+	resB, err := WriteSession(context.Background(), vaultB, SessionParams{
 		Project:      "proj",
 		Summary:      "plain heuristic summary",
 		Tag:          "implementation",
@@ -612,7 +612,7 @@ func TestWriteSessionEnqueueOnMiss(t *testing.T) {
 	testutil.InitProject(t, vault.Root, "proj")
 	cwd := t.TempDir()
 
-	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	res, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,
@@ -645,7 +645,7 @@ func TestWriteSessionNoEnqueueWithoutCWD(t *testing.T) {
 	testutil.InitProject(t, vault.Root, "proj")
 
 	// Failing enricher but no CWD: no queue, no panic.
-	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	res, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,

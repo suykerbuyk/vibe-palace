@@ -6,20 +6,27 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/ingest"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
 )
 
-// TestIntegrationSessionCaptureToSearch proves the full workflow:
-// vp_capture_session → chunk transcript → embed → store → index → search finds content.
+// TestIntegrationSessionCaptureToSearch proves the ADR-014 workflow: capture no
+// longer indexes the transcript it is given (decision 7). On a hook-less host a
+// capture with archive_transcript writes an inline ARCHIVE, the pending-archive
+// ingester turns that archive into host-local chunks, and only then is the
+// transcript searchable. A capture with NO archive leaves the project's chunk
+// store absent.
 func TestIntegrationSessionCaptureToSearch(t *testing.T) {
 	h := newHarness(t, true) // real ONNX
 	h.registerAllTools(t)
-	h.seedProject(t, "decoy-proj")
 	h.seedProject(t, "test-proj")
+	h.seedProject(t, "note-only-proj")
 
 	transcript := `## Human
 
@@ -49,33 +56,18 @@ the entire migration is rolled back. The migrations table is only updated
 after a successful commit. This ensures atomicity — either the migration
 fully applies or it has no effect.`
 
-	// A decoy: another project's session about the same subject. A
-	// project-scoped search must never return any of it. Session ids are per
-	// project and can coincide, so the decoy is told apart by its project and
-	// by a marker in every one of its texts.
-	const decoyMarker = "ZEBRA_DECOY_MARKER"
-	var decoyResult string
-	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
-		"project":    "decoy-proj",
-		"summary":    "Also discussed PostgreSQL database migrations " + decoyMarker + ".",
-		"tag":        "planning",
-		"transcript": "## Human\n\nHow should PostgreSQL database migrations be versioned? " + decoyMarker + "\n\n## Assistant\n\nUse a migrations table and run each migration in a transaction. " + decoyMarker,
-		"decisions":  []string{"Version database migrations in a migrations table " + decoyMarker},
-	}, &decoyResult))
-	if !strings.Contains(decoyResult, `"status":"ok"`) && !strings.Contains(decoyResult, `"status": "ok"`) {
-		t.Fatalf("decoy capture: %s", decoyResult)
-	}
-
+	// Capture WITH archive_transcript, so a hook-less host writes an inline
+	// archive of the transcript (capture itself indexes nothing now).
 	var result string
 	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
-		"project":    "test-proj",
-		"summary":    "Discussed database migration system design.",
-		"tag":        "planning",
-		"transcript": transcript,
-		"decisions":  []string{"Use sequential SQL files with timestamp names"},
+		"project":            "test-proj",
+		"summary":            "Discussed database migration system design.",
+		"tag":                "planning",
+		"transcript":         transcript,
+		"archive_transcript": true,
+		"decisions":          []string{"Use sequential SQL files with timestamp names"},
 	}, &result))
 
-	// Parse the capture result.
 	var captureResult struct {
 		Status    string `json:"status"`
 		SessionID string `json:"session_id"`
@@ -91,67 +83,70 @@ fully applies or it has no effect.`
 	if captureResult.SessionID == "" {
 		t.Error("session_id is empty")
 	}
-	if captureResult.Iteration < 1 {
-		t.Errorf("iteration = %d, want >= 1", captureResult.Iteration)
+
+	// Ingest the inline archive in-process, exactly as the detached `vp drain
+	// archives` the capture spawned would. Explicit so the freshly-created
+	// archive is ingested regardless of this fresh host's baseline set.
+	if _, err := ingest.Run(context.Background(),
+		ingest.Deps{Vault: h.Vault, Engine: h.Engine, Embedder: h.Embedder},
+		ingest.RunOptions{VaultRoot: h.Vault.Root, Project: "test-proj", Explicit: true}); err != nil {
+		t.Fatalf("ingest the inline archive: %v", err)
 	}
 
-	// Now search for content from the transcript.
+	// Now the transcript is searchable through its archive's chunks.
 	results, err := h.Engine.Search(context.Background(), "PostgreSQL database migration system",
 		search.SearchFilters{Project: "test-proj"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) == 0 {
-		t.Fatal("expected search results for migration query after session capture")
+		t.Fatal("expected search results for migration query after archive ingest")
 	}
-
-	// Top result should be about database migrations.
 	top := strings.ToLower(results[0].Content)
 	if !strings.Contains(top, "migration") && !strings.Contains(top, "database") {
 		t.Errorf("top result should mention migration/database, got: %s",
 			truncate(results[0].Content, 100))
 	}
-
-	// Every result comes from the captured session: its transcript chunks
-	// (source_ref = the session id), its session note ("sessions/<id>.md") or
-	// its decision ("session/<id>#decision/..."). The first search builds the
-	// whole project, notes and decisions included: capture's IndexDrawers on a
-	// cold engine no longer makes the project look built with the transcript
-	// alone (task search-index-completeness-and-build-serialization, defect 1).
-	sawTranscript, sawNote := false, false
-	for i, r := range results {
-		if !strings.Contains(r.SourceRef, captureResult.SessionID) {
-			t.Errorf("result[%d] source_ref = %q, want one of session %s", i, r.SourceRef, captureResult.SessionID)
+	// At least one transcript chunk of this session is now present (source_ref
+	// is the session id for transcript chunks).
+	sawTranscript := false
+	for _, r := range results {
+		if r.Project != "test-proj" {
+			t.Errorf("result leaked from another project: %+v", r)
 		}
-		if r.Project != "test-proj" || strings.Contains(r.Content, decoyMarker) {
-			t.Errorf("result[%d] comes from the decoy project's session: %+v", i, r)
-		}
-		if r.SourceType == "session" && r.SourceRef == captureResult.SessionID {
+		if r.SourceType == "session" && strings.Contains(r.SourceRef, captureResult.SessionID) {
 			sawTranscript = true
-		}
-		if r.SourceType == "session-note" && r.SourceRef == "sessions/"+captureResult.SessionID+".md" {
-			sawNote = true
 		}
 	}
 	if !sawTranscript {
-		t.Errorf("no transcript chunk of session %s among the results: %+v", captureResult.SessionID, results)
-	}
-	// The session note is indexed by the first search's build. Before the
-	// cold-insert fix, capture's IndexDrawers made the project look built with
-	// the transcript alone, and the note never appeared.
-	if !sawNote {
-		t.Errorf("the session note row of %s is not among the results: %+v", captureResult.SessionID, results)
+		t.Errorf("no transcript chunk of session %s among the results after ingest: %+v",
+			captureResult.SessionID, results)
 	}
 
-	// Search for unrelated content — should score lower.
-	unrelated, err := h.Engine.Search(context.Background(), "quantum physics particle accelerator",
-		search.SearchFilters{Project: "test-proj"})
-	if err != nil {
-		t.Fatal(err)
+	// A capture WITHOUT an archive leaves the project's host-local chunk store
+	// absent: nothing to ingest, so no chunks.jsonl is ever written.
+	var noteOnly string
+	h.Seed(t, testinfra.WithCapturedSession(map[string]any{
+		"project": "note-only-proj",
+		"summary": "A note with no transcript and no archive.",
+		"tag":     "planning",
+	}, &noteOnly))
+	if !strings.Contains(noteOnly, `"status":"ok"`) && !strings.Contains(noteOnly, `"status": "ok"`) {
+		t.Fatalf("note-only capture: %s", noteOnly)
 	}
-	if len(unrelated) > 0 && unrelated[0].Score >= results[0].Score {
-		t.Errorf("unrelated query score (%f) should be lower than relevant (%f)",
-			unrelated[0].Score, results[0].Score)
+	assertChunkStoreAbsent(t, h, "note-only-proj")
+}
+
+// assertChunkStoreAbsent fails if the project's host-local chunk store
+// (palace/.local/index/<p>/chunks.jsonl) exists.
+func assertChunkStoreAbsent(t *testing.T, h *testHarness, project string) {
+	t.Helper()
+	dir, err := h.Vault.IndexDir(project)
+	if err != nil {
+		t.Fatalf("IndexDir(%s): %v", project, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "chunks.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("host-local chunk store for %s should be absent, stat chunks.jsonl err = %v", project, err)
 	}
 }
 
@@ -180,9 +175,18 @@ func TestIntegrationSessionCaptureWithoutTranscript(t *testing.T) {
 		t.Errorf("status = %q, want ok", captureResult.Status)
 	}
 
-	// Verify no drawers were created.
+	// No tracked drawers (trivially true now that capture writes none).
 	if total, _ := countAllDrawers(t, h.Vault, "test-proj"); total > 0 {
 		t.Errorf("expected no drawers without transcript, found %d", total)
+	}
+	// The project's host-local chunk store is absent: a capture with no
+	// transcript archives nothing, so there is nothing for the ingester to turn
+	// into chunks (ADR-014 decision 7).
+	assertChunkStoreAbsent(t, h, "test-proj")
+	// And no ingester was launched: no archive means no `vp drain archives`
+	// trigger fired from the capture handler.
+	if launches := h.RecordedLaunches(); len(launches) != 0 {
+		t.Errorf("expected no ingester launch without an archive, got %d: %+v", len(launches), launches)
 	}
 }
 

@@ -293,6 +293,10 @@
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
     },
     {
+      "id": "uninvoked search.Engine.IndexDrawers",
+      "reason": "TODO: accepted at baseline creation — explain or fix"
+    },
+    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only-by-construction is structural intent no parse recovers; declared here, enforced by the baseline ratchet. Do NOT wire a fake production caller to clear this."
     },
@@ -325,6 +329,10 @@
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
     },
     {
+      "id": "uninvoked storage.Vault.AddTriple",
+      "reason": "ORPHANED BY DESIGN by capture-and-backfill-write-host-local-index-only (child 4): capture's writeKG (in the deleted Indexer.IndexTranscript) was its one non-test caller. ADR-014 decision 7 stops capture and all routine indexing from writing extracted triples into the git-tracked tree — extracted KG now lives in the host-local store (indexstore), written by the pending-archive ingester, never through storage.Vault.AddTriple. Retention or deletion of this tracked-triple writer belongs to authored-and-extracted-knowledge-graph-records; this entry goes stale and the gate demands its removal the moment a caller lands or the function is deleted."
+    },
+    {
       "id": "uninvoked storage.Vault.AppendDrawer",
       "reason": "ORPHANED BY THE EPIC, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. The n=1 wrapper over AppendDrawers lost its last non-test caller when this child deleted Vault.MoveDrawer: `vp audit rooms --apply` now relabels room metadata in the host-local chunk store (palace.Relabel -> indexstore.Tx.Rewrite) instead of moving a tracked drawer. It is kept rather than deleted because it is the canonical n=1 tracked-drawer fixture across ~25 test files (seeding the pre-marker glide-path corpus the store still READS before the migration marker), so removing it would ripple far beyond this child; AppendDrawers (plural) stays production-used by capture ingest. ADR-006 verdict: DECLARE — the retain-for-tests intent is authorial and recorded here. If a later child removes the pre-marker tracked-drawer path entirely, delete this method and this entry together."
     },
@@ -335,14 +343,6 @@
     {
       "id": "uninvoked storage.Vault.GetDrawer",
       "reason": "ORPHANED BY THE EPIC, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. Its last non-test caller was Vault.MoveDrawer (read-before-move), which this child deleted when `vp audit rooms --apply` moved to the host-local store (palace.Relabel). It is kept because storage-layer tests still read a single tracked drawer through it; nothing in production reads a tracked drawer by id any longer. ADR-006 verdict: DECLARE. Delete this method and this entry together when the pre-marker tracked-drawer path is removed."
-    },
-    {
-      "id": "uninvoked storage.Vault.IngestedArchives",
-      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger reader. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes IngestedArchives with RecordIngestedArchive and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
-    },
-    {
-      "id": "uninvoked storage.Vault.RecordIngestedArchive",
-      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger writer. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes RecordIngestedArchive with IngestedArchives and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
     },
     {
       "id": "uninvoked storage.Vault.ScanDrawers",

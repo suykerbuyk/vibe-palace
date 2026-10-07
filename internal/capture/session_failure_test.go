@@ -43,7 +43,7 @@ func stages(r *SessionResult) []string {
 func TestWriteSessionNoteLandsDespitePreWriteFailures(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "work that must survive a bad enricher and a missing archive",
 		Transcript: enrichTranscript,
@@ -122,7 +122,7 @@ func TestWriteSessionNoteLandsDespitePostWriteFailure(t *testing.T) {
 
 	// A failing enricher with a transcript sets enqueuePending, so the (doomed)
 	// enqueue is actually attempted.
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "post-write loss must not lose the note",
 		Transcript: enrichTranscript,
@@ -149,7 +149,7 @@ func TestWriteSessionNoteLandsDespitePostWriteFailure(t *testing.T) {
 func TestWriteSessionCleanCaptureReportsNoFailures(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "a clean capture",
 	})

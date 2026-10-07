@@ -40,7 +40,6 @@ type SessionParams struct {
 	ArchiveSessionIDSource string
 	ArchiveAdapter         string
 	CWD                    string // for claim sentinel (Phase 3 will use this)
-	NeedsIndexing          bool   // when true, skip indexing (deferred to later)
 
 	// Host is the MCP host application this capture is attributed to, and
 	// HostSource records how the caller established it (the storage.HostSource*
@@ -160,7 +159,6 @@ const (
 	// regardless of enrichment outcome.
 	StageSessionSummaryEnqueue = "session_summary_enqueue"
 	StageArchiveBacklink       = "archive_backlink"
-	StageTranscriptIndex       = "transcript_index"
 	StageClaimSentinel         = "claim_sentinel"
 	StageEnricherInit          = "enricher_init"
 	// StagePalaceDecisionIngest: the note's decisions were not filed into the
@@ -225,7 +223,7 @@ func (r *SessionResult) Failed() bool { return len(r.Failures) > 0 }
 // worth (the MCP path errors so the agent can retry; the hook path logs and
 // exits zero — it has no reader and its only hard-failure primitive, exit 2, is
 // Claude Code's blocking-error code on a hook that fires once per turn).
-func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p SessionParams) (*SessionResult, error) {
+func WriteSession(ctx context.Context, vault *storage.Vault, p SessionParams) (*SessionResult, error) {
 	if p.Project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
@@ -476,30 +474,16 @@ func WriteSession(ctx context.Context, vault *storage.Vault, indexer *Indexer, p
 		}
 	}
 
-	// Index transcript if provided, unless NeedsIndexing signals deferral.
-	// Per-call IndexStats are not surfaced through SessionResult today;
-	// discard with `_` and revisit if dogfood-log telemetry needs them.
+	// Capture no longer indexes the transcript it is given (ADR-014 decision
+	// 7): the search index is built from archives only, by the pending-archive
+	// ingester, never on the capture path. A session that never gets an archive
+	// is searchable through its note, not its transcript. The transcript param
+	// is kept only so a hook-less host can create an archive (archive_transcript).
 	//
-	// This used to early-return Status "partial". That tier is gone: a soft
-	// status is one agents learn to skim past, and it was the only status that
-	// ever reported a loss — every other loss on this path returned a flat "ok".
-	// An index failure is now exactly what it is, one accumulated failure among
-	// the rest, and the note it belongs to has already landed.
-	if p.Transcript != "" && indexer != nil && !p.NeedsIndexing {
-		if _, err := indexer.IndexTranscript(ctx, ref.ID, p.Project, p.Transcript); err != nil {
-			lose(StageTranscriptIndex, err, "capture: transcript indexing failed; this session will not be semantically searchable")
-		}
-	}
-
 	// File the note's decisions into the palace as one drawer each, so a
 	// deterministic palace query can retrieve them. Best-effort like everything
 	// past the write: an unwritable drawers.jsonl must not cost us a captured
 	// session, so this can only ever ADD to Failures.
-	//
-	// It runs with NO indexer guard on purpose. internal/hook/hook.go calls
-	// WriteSession(ctx, vault, nil, ...) — a nil indexer is the ordinary
-	// production path, not a degraded one — and decisions must be filed on it
-	// too. This ingest touches the indexer not at all.
 	//
 	// # Why it re-reads instead of using the local meta
 	//

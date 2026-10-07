@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -200,6 +201,11 @@ type RunOptions struct {
 	ProjectSlug string
 	VPVersion   string
 	ClaimDir    string // override for testing; default: <CWD>/.vibe-palace
+	// Launch starts the pending-archive ingester as a detached process after a
+	// SessionEnd/PreCompact archive is created. cmd/vp passes detachlaunch.Launch;
+	// a nil Launch (the library/test default) spawns nothing, so a hook library
+	// test never relaunches the test binary.
+	Launch detachlaunch.LaunchFunc
 }
 
 // Result reports what the hook run produced.
@@ -369,6 +375,33 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 			res.ArchivePath = archiveResult.ArchivePath
 			res.ArchiveSkipped = archiveResult.Skipped
 			archiveManifestPath = archiveResult.ManifestPath
+
+			// HOOK LAST-STEP INGESTER SPAWN (ADR-014 decision 7; this child's
+			// Scope 1). Registered as a DEFER here, inside the archive success
+			// branch, so it is the LAST action on EVERY return path after the
+			// archive — the claimed-session early return, the WriteSession
+			// failure return, and the success return alike — without a spawn
+			// call having to be threaded onto each. Deferred functions run LIFO,
+			// and this is registered before any later defer, so it runs last. A
+			// failed archive registers nothing (this is the success branch), and
+			// a Stop run never reaches here (it does not archive). The hook NEVER
+			// embeds: it only spawns the detached ingester and returns.
+			//
+			// --first carries the archive's source_sha256 (set on a freshly
+			// written archive AND on a deduped/Skipped one), a HASH never a path,
+			// so a ledger this trigger creates leaves its own archive out of the
+			// baseline set. A launch failure is a vp.log warning, never an error.
+			if opts.Launch != nil && archiveResult.Manifest != nil {
+				first := archiveResult.Manifest.SourceSHA256
+				defer func() {
+					args := []string{"drain", "archives", "--vault-root", opts.VaultRoot, "--project", opts.ProjectSlug, "--first", first}
+					logPath := filepath.Join(storage.NewVault(opts.VaultRoot).VaultLocalDir(), "ingester.log")
+					if _, lerr := opts.Launch("", args, logPath); lerr != nil {
+						slog.Warn("hook: could not launch the archive ingester (non-fatal)",
+							"project", opts.ProjectSlug, "error", lerr)
+					}
+				}()
+			}
 		}
 	}
 
@@ -545,14 +578,13 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 
 	// 9. Capture the session, reusing the vault + enricher built above.
 	host, hostSource, entrypoint := resolveHookHost(payload.Dialect, os.Getenv("CLAUDE_CODE_ENTRYPOINT"))
-	sessionResult, err := capture.WriteSession(ctx, vault, nil, capture.SessionParams{
+	sessionResult, err := capture.WriteSession(ctx, vault, capture.SessionParams{
 		Project:          opts.ProjectSlug,
 		Summary:          summary,
 		Tag:              storage.TagAutoCapture,
 		Model:            model,
 		Transcript:       transcript,
 		ArchiveSessionID: payload.SessionID,
-		NeedsIndexing:    true,
 		CWD:              payload.CWD,
 		Enricher:         enricher,
 		Host:             host,

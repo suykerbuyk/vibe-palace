@@ -297,7 +297,7 @@ func WithMemory(project string, files ...MemoryFileSpec) SeedOption {
 func WithSession(p capture.SessionParams) SeedOption {
 	return func(st *seedState, t *testing.T) {
 		t.Helper()
-		if _, err := capture.WriteSession(context.Background(), st.h.Vault, st.h.Indexer, p); err != nil {
+		if _, err := capture.WriteSession(context.Background(), st.h.Vault, p); err != nil {
 			t.Fatalf("seed session for %s: %v", p.Project, err)
 		}
 	}

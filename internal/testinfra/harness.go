@@ -38,7 +38,6 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -78,7 +77,6 @@ type TestHarness struct {
 	Vault    *storage.Vault
 	Engine   *search.Engine
 	Embedder embedder.Embedder
-	Indexer  *capture.Indexer
 	Server   *mcp.Server
 	Resolver *vpctx.Resolver
 	Config   storage.Config
@@ -178,7 +176,6 @@ func NewHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ..
 	eng := search.NewEngine(emb, vault, cfg)
 	t.Cleanup(func() { eng.Close() })
 
-	indexer := capture.NewIndexer(vault, eng, emb, cfg)
 	resolver := vpctx.NewResolver(root)
 	srv := mcp.NewServer(vault)
 
@@ -186,7 +183,6 @@ func NewHarnessWithEmbedder(t *testing.T, emb embedder.Embedder, cfgOverrides ..
 		Vault:    vault,
 		Engine:   eng,
 		Embedder: emb,
-		Indexer:  indexer,
 		Server:   srv,
 		Resolver: resolver,
 		Config:   cfg,

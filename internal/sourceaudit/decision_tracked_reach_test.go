@@ -30,44 +30,11 @@ func TestDecisionTrackedWriterReachIsClean(t *testing.T) {
 	}
 }
 
-// TestIndexTranscriptAllowIsPresentlyInert locks in the review finding that the
-// capture.IndexTranscript allow-list entry changes NOTHING on the real tree
-// today: buildCallGraph cannot see IndexTranscript's field-receiver write
-// (idx.vault.AppendDrawers, internal/capture/indexer.go:145 — a selector call
-// whose receiver is not a bare ident), so the rule is clean with or without the
-// entry. It is the runtime proof behind decisionTrackedWriterAllow's comment.
-//
-// 🔴 It will START FAILING the day sourceaudit-callgraph-blind-to-field-receiver-
-// method-calls fixes that blind spot — which is the SIGNAL that the entry has
-// become genuinely load-bearing (the rule would then fire for WriteSession et al.
-// without it). When that happens, this test documents the transition: delete it
-// and keep the entry, don't re-add a cut-removal.
-func TestIndexTranscriptAllowIsPresentlyInert(t *testing.T) {
-	skipUnlessFullSuite(t)
-
-	files, err := loadPackages(repoRoots...)
-	if err != nil {
-		t.Fatalf("load packages: %v", err)
-	}
-
-	orig := decisionTrackedWriterAllow["capture.IndexTranscript"]
-	delete(decisionTrackedWriterAllow, "capture.IndexTranscript")
-	defer func() {
-		if orig {
-			decisionTrackedWriterAllow["capture.IndexTranscript"] = true
-		}
-	}()
-
-	if findings := decisionTrackedReach(files); len(findings) != 0 {
-		var syms []string
-		for _, f := range findings {
-			syms = append(syms, f.Symbol)
-		}
-		t.Fatalf("removing capture.IndexTranscript from the allow-list changed the result: %v.\n"+
-			"The field-receiver blind spot is likely fixed, so the entry is now LOAD-BEARING — keep it, "+
-			"and update/remove this test to document the transition rather than treating it as a regression.", syms)
-	}
-}
+// capture.IndexTranscript used to carry a (presently inert) allow-list entry,
+// with a companion test proving the entry changed nothing on the real tree.
+// capture-and-backfill-write-host-local-index-only deleted IndexTranscript and
+// the entry with it, so that test is gone; the allow-list-cut MECHANISM it
+// stood behind is still covered by TestDecisionTrackedReachAllowListCutsADirectReach.
 
 // decisionReachSymbols runs the rule over a fixture tree and returns the symbols
 // it flagged.
@@ -171,20 +138,20 @@ func Rebuild() error { return storage.AddTriple() }
 	}
 }
 
-// TestDecisionTrackedReachIndexTranscriptAllowCutsADirectReach exercises the
-// capture.IndexTranscript allow-list entry on the DIRECT-CALL shape, as a proxy.
+// TestDecisionTrackedReachAllowListCutsADirectReach exercises the allow-list
+// cut on the DIRECT-CALL shape, with a SYNTHETIC cut it installs itself, so the
+// test proves the mechanism without depending on any particular real entry
+// surviving in decisionTrackedWriterAllow (the only real entries today belong to
+// a different, concurrently-evolving child).
 //
-// 🔴 HONEST SCOPE: the real capture.IndexTranscript reaches AppendDrawers only
-// through the field-receiver selector call idx.vault.AppendDrawers, which
-// buildCallGraph cannot see (it records a selector edge only for a bare-ident
-// receiver) — so on the real tree the entry is presently INERT and the rule
-// fires neither with nor without it (see decisionTrackedWriterAllow's comment
-// and sourceaudit-callgraph-blind-to-field-receiver-method-calls). This fixture
-// therefore uses a package-qualified DIRECT call, storage.AppendDrawers(), the
-// only shape the graph traverses today, to prove the cut works once the write is
-// visible: it is the shape the field-receiver case will take after that blind
-// spot is fixed. It does NOT claim the real pre-4 tree fires without the entry.
-func TestDecisionTrackedReachIndexTranscriptAllowCutsADirectReach(t *testing.T) {
+// 🔴 HONEST SCOPE: buildCallGraph records a selector edge only for a bare-ident
+// receiver, so a real field-receiver write (e.g. idx.vault.AppendDrawers) is
+// invisible to it today (sourceaudit-callgraph-blind-to-field-receiver-method-
+// calls). This fixture uses a package-qualified DIRECT call,
+// storage.AppendDrawers(), the only shape the graph traverses, so it proves the
+// cut works on a reach the graph can actually see; capture.WriteSession is a
+// real decisionTrackedWriterRoot, which is why the fixture uses that name.
+func TestDecisionTrackedReachAllowListCutsADirectReach(t *testing.T) {
 	src := map[string]string{
 		"storage": `package storage
 
@@ -194,27 +161,22 @@ func AppendDrawers() error { return nil }
 
 import "example.com/fixture/storage"
 
-// A DIRECT package-qualified call (proxy for the real field-receiver write,
-// which the call graph cannot yet see).
-func IndexTranscript() error { return storage.AppendDrawers() }
-func WriteSession() error    { return IndexTranscript() }
+// A DIRECT package-qualified call (the only shape the call graph traverses).
+func filesDrawers() error { return storage.AppendDrawers() }
+func WriteSession() error { return filesDrawers() }
 `,
 	}
 
-	// With the cut in place (the real allow-list), WriteSession is quiet.
-	if syms := decisionReachSymbols(t, src); len(syms) != 0 {
-		t.Errorf("rule fired despite the capture.IndexTranscript allow-list cut: %v", syms)
+	// No cut: WriteSession reaches the tracked writer and fires.
+	if syms := decisionReachSymbols(t, src); !containsStr(syms, "capture.WriteSession") {
+		t.Errorf("expected capture.WriteSession to fire without a cut; got %v", syms)
 	}
 
-	// Remove the cut: WriteSession now reaches the tracked writer and fires.
-	orig := decisionTrackedWriterAllow["capture.IndexTranscript"]
-	delete(decisionTrackedWriterAllow, "capture.IndexTranscript")
-	defer func() {
-		if orig {
-			decisionTrackedWriterAllow["capture.IndexTranscript"] = true
-		}
-	}()
-	if syms := decisionReachSymbols(t, src); !containsStr(syms, "capture.WriteSession") {
-		t.Errorf("removing the IndexTranscript allow-list entry did not make WriteSession fire; got %v", syms)
+	// Install a synthetic cut on the writer-reaching function; WriteSession goes quiet.
+	const cut = "capture.filesDrawers"
+	decisionTrackedWriterAllow[cut] = true
+	defer delete(decisionTrackedWriterAllow, cut)
+	if syms := decisionReachSymbols(t, src); len(syms) != 0 {
+		t.Errorf("rule fired despite the allow-list cut on %s: %v", cut, syms)
 	}
 }

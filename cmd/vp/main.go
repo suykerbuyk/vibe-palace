@@ -9,6 +9,8 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
@@ -25,6 +27,10 @@ var (
 func main() {
 	info := cli.BuildInfo{Version: version, Commit: commit, BuildDate: buildDate, Dirty: dirty}
 	check.BuildVersion = version
+	// Arm the pull/merge ingester trigger with the real detached launcher. A
+	// library build and every test leaves it unset, so they spawn nothing and
+	// never relaunch the test binary (ADR-014 decision 7).
+	storage.SetIncomingIngestLauncher(detachlaunch.Launch)
 	reg := cli.NewRegistry(info)
 	reg.SetPreRun(preRun)
 	registerAll(reg, info)
@@ -71,6 +77,14 @@ func initLogging() {
 // a resolved-but-unreachable root does NOT — CheckCompatible reports it, so a
 // mutating command fail-stops rather than writing into the void.
 func surfaceGate(cmd *cli.Command) int {
+	// The hook is exempt. surfaceGate resolves the CONFIGURED vault
+	// (vaultRoot()), but the hook writes to the vault it resolves from the hook
+	// payload's CWD — usually a different vault — so a warning here would name
+	// the wrong one. The hook runs its own surface.EnforceWarnOnly against the
+	// payload vault (see runHook), after it points logging there.
+	if cmd.Name == "hook" {
+		return cli.ExitOK
+	}
 	root, err := vaultRoot()
 	if err != nil {
 		return cli.ExitOK

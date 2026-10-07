@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -405,7 +406,7 @@ var captureSessionSchema = json.RawMessage(`{
 		},
 		"transcript": {
 			"type": "string",
-			"description": "Full session transcript (optional, will be chunked and indexed)."
+			"description": "Full session transcript (optional). It is NOT indexed: on a hook-less host it is archived (see archive_transcript) and the pending-archive ingester indexes it from the archive; on a hooked host the SessionEnd hook archives the authoritative transcript."
 		},
 		"archive_session_id": {
 			"type": "string",
@@ -435,20 +436,24 @@ var captureSessionSchema = json.RawMessage(`{
 	"required": ["project", "summary"]
 }`)
 
-// CaptureSessionTool returns the MCP tool for vp_capture_session.
-func CaptureSessionTool(vault *storage.Vault, indexer *capture.Indexer) mcp.Tool {
+// CaptureSessionTool returns the MCP tool for vp_capture_session. launch is the
+// detached-process launcher used to start the pending-archive ingester after a
+// hook-less inline archive is created; a nil launcher spawns nothing (the
+// library/test default), so a plain library call never relaunches a binary.
+func CaptureSessionTool(vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.Tool {
 	return mcp.Tool{
 		Name:     "vp_capture_session",
 		Mutating: true,
-		Description: "Capture a coding session: write session markdown to the vault, optionally chunk and index transcript for semantic search. " +
+		Description: "Capture a coding session: write session markdown to the vault, and on a hook-less host optionally archive the supplied transcript. " +
+			"The transcript is never indexed on this path — the search index is built from archives by the pending-archive ingester. " +
 			"Returns a session_key identifying this capture attempt. If the call fails with 'capture incomplete', the NOTE WAS STILL WRITTEN " +
 			"(the error payload carries note_path) — retry by calling again with the SAME session_key, which updates that note in place rather than duplicating it.",
 		Schema:  captureSessionSchema,
-		Handler: captureSessionHandler(vault, indexer),
+		Handler: captureSessionHandler(vault, launch),
 	}
 }
 
-func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.HandlerFunc {
+func captureSessionHandler(vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p captureSessionParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -542,6 +547,12 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		// deferred and still Debug.
 		var inlineArchiveFailure *capture.CaptureFailure
 		var archiveUnreachable *capture.CaptureFailure
+		// inlineArchiveSHA is the source_sha256 of an inline archive created on
+		// this call (empty on every path that creates none). It is what the
+		// hook-less ingester trigger below passes as --first, so a ledger that
+		// trigger creates leaves its own archive out of the baseline set
+		// (ADR-014 decision 7; this child's Scope 1). It is a HASH, never a path.
+		var inlineArchiveSHA string
 		if wantInlineTranscriptArchive(p.ArchiveTranscript, sp.ArchiveSessionID, p.Transcript, sp.Host, sp.HostSource) {
 			archiveID := p.SessionKey
 			if archiveID == "" {
@@ -559,14 +570,15 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			// can afford to wait on a contended manifest, exactly as every other
 			// vault writer reached from this surface does. Do not copy this
 			// omission onto a path with no timeout; see archive.LockPosture.
-			if _, aerr := archive.Create(archive.CreateOptions{
+			createRes, aerr := archive.Create(archive.CreateOptions{
 				Adapter:       archive.InlineAdapterName,
 				SessionID:     archiveID,
 				SourceContent: []byte(p.Transcript),
 				VaultRoot:     vault.Root,
 				ProjectSlug:   p.Project,
 				SourceCWD:     p.CWD,
-			}); aerr != nil {
+			})
+			if aerr != nil {
 				slog.Warn("vp_capture_session: inline transcript archive failed", "err", aerr)
 				inlineArchiveFailure = &capture.CaptureFailure{
 					Stage: capture.StageTranscriptArchive,
@@ -577,6 +589,11 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 				sp.ArchiveSessionID = archiveID
 				sp.ArchiveSessionIDSource = storage.ArchiveIDSourceInline
 				sp.ArchiveAdapter = archive.InlineAdapterName
+				// Keep the manifest hash (set on a freshly written archive AND on
+				// a dedup/Skipped one) for the ingester trigger's --first.
+				if createRes != nil && createRes.Manifest != nil {
+					inlineArchiveSHA = createRes.Manifest.SourceSHA256
+				}
 			}
 		} else if sp.HostSource == storage.HostSourceDerived &&
 			isHooklessClient(sp.Host) &&
@@ -613,7 +630,7 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 			}
 		}
 
-		result, err := capture.WriteSession(ctx, vault, indexer, sp)
+		result, err := capture.WriteSession(ctx, vault, sp)
 		if err != nil {
 			// The note itself was not written. Nothing landed, so there is nothing to
 			// tell the agent to preserve; this is a plain failure.
@@ -628,6 +645,25 @@ func captureSessionHandler(vault *storage.Vault, indexer *capture.Indexer) mcp.H
 		}
 		if archiveUnreachable != nil {
 			result.Failures = append(result.Failures, *archiveUnreachable)
+		}
+
+		// HOOK-LESS CAPTURE TRIGGER (ADR-014 decision 7; this child's Scope 1).
+		// The note has landed (WriteSession returned without error). If this call
+		// created an inline archive, start the pending-archive ingester as a
+		// DETACHED process so the session becomes searchable through that archive,
+		// then return at once — capture never embeds. --first carries the
+		// archive's source_sha256 (a hash, never a path) so a ledger this trigger
+		// creates leaves its own archive out of the baseline set. A launch failure
+		// is a warning, never an error: the note is safe, and the `vp mcp` startup
+		// backstop or the next trigger ingests the archive later. A nil launcher
+		// (the library/test default) spawns nothing.
+		if launch != nil && inlineArchiveSHA != "" {
+			args := []string{"drain", "archives", "--vault-root", vault.Root, "--project", p.Project, "--first", inlineArchiveSHA}
+			logPath := filepath.Join(vault.VaultLocalDir(), "ingester.log")
+			if _, lerr := launch("", args, logPath); lerr != nil {
+				slog.Warn("vp_capture_session: could not launch the archive ingester",
+					"project", p.Project, "error", lerr)
+			}
 		}
 
 		// Write claim sentinel so the SessionEnd hook skips this session.

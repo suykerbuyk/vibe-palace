@@ -4,7 +4,6 @@
 package tools
 
 import (
-	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
@@ -159,8 +158,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))
-		indexer := capture.NewIndexer(vault, engine, engine.Embedder(), o.cfg)
-		reg.MustRegister(CaptureSessionTool(vault, indexer))
+		reg.MustRegister(CaptureSessionTool(vault, o.launch))
 		reg.MustRegister(FrictionTrendsTool(vault))
 		reg.MustRegister(SearchSessionsTool(vault))
 		reg.MustRegister(GetSessionDetailTool(vault))

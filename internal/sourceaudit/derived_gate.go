@@ -427,10 +427,13 @@ func reachesSink(g *callgraph.Graph, allFns map[*ssa.Function]bool, sinkSet map[
 //
 // A derived verdict nobody can inspect is not evidence — it is an assertion
 // with a call graph behind it. The path is what lets a reviewer tell a real
-// reachability (vp_refresh_index -> backfillFromArchives -> IndexTranscript ->
-// AppendDrawers -> appendUnderLock) from an artifact of the analysis
-// (vp_collect_wrap_state, which reaches a remover only through a generic
-// instantiation shared with an unrelated caller).
+// reachability (a mutating tool whose call graph genuinely reaches a vault-write
+// sink such as AppendDrawers -> appendUnderLock) from an artifact of the
+// analysis (vp_collect_wrap_state, which reaches a remover only through a generic
+// instantiation shared with an unrelated caller). The old concrete example here
+// named vp_refresh_index -> backfillFromArchives -> IndexTranscript, a path that
+// no longer exists: the backfill and capture's IndexTranscript were both removed
+// under ADR-014 (the index is built from archives into the host-local store).
 func witnessPath(g *callgraph.Graph, allFns map[*ssa.Function]bool, root *ssa.Function, sinkSet map[string]bool) []string {
 	if root == nil {
 		return nil

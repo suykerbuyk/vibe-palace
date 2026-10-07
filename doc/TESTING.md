@@ -524,12 +524,9 @@ context resolver, and config into a single test fixture.
 | `StorageToSearch` | storage → search | Yes | Drawers written via storage become searchable after rebuild; semantic ranking, wing/hall/date filters all work |
 | `StorageSearchMetadataPreservation` | storage → search | Yes | All drawer metadata fields (wing, room, hall, source_type, source_ref, date) survive the full round-trip |
 | `ConfigBoostValues` | config → search | Yes | Non-zero boost values produce higher scores for matching filters; zero boosts produce equal scores |
-| `ConfigChunkSize` | config → capture | No | ChunkMaxChars config actually controls how many chunks a transcript produces |
 | `ConfigSearchLimit` | config → search | No | SearchDefaultLimit config constrains the number of results returned |
-| `KGEntityRoundTrip` | capture → storage (KG) | No | Entities extracted from a transcript are written to the KG with correct triples and queryable |
-| `KGEntityDeduplication` | capture → storage (KG) | No | Re-indexing the same transcript doesn't create duplicate entities |
-| `SessionCaptureToSearch` | tools → capture → search | Yes | `vp_capture_session` with transcript → chunks indexed → searchable with correct metadata |
-| `SessionCaptureWithoutTranscript` | tools → storage | No | Capture without transcript writes session file but creates no drawers |
+| `SessionCaptureToSearch` | tools → capture → archive → ingest → search | Yes | `vp_capture_session` with `archive_transcript` on a hook-less host → inline archive → `vp drain archives` (ingest) → searchable; a capture with no archive leaves the chunk store absent |
+| `SessionCaptureWithoutTranscript` | tools → storage | No | Capture without transcript writes the session note but creates no drawers and no host-local chunks, and launches no ingester |
 | `SessionIterationAcrossSessions` | tools → storage | No | Multiple captures auto-increment iteration numbers |
 | `MCPSearchEndToEnd` | MCP → tools → search | Yes | JSON-RPC `tools/call` for `vp_search` returns semantically correct results |
 | `MCPSearchValidation` | MCP → tools | No | Invalid parameters produce proper JSON-RPC error responses |

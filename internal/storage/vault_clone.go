@@ -531,6 +531,11 @@ func resumeClone(req CloneRequest, path string) (*CloneReport, error) {
 		if _, err := gitCmd(path, 30*time.Second, "merge", "--ff-only", "--quiet", live); err != nil {
 			return refuse(fmt.Sprintf("its HEAD %s does not fast-forward to %s's live tip %s: %v", shortSHA(head), redactURL(req.URL), shortSHA(live), err))
 		}
+		// The fast-forward brought the remote's commits in; if they carried
+		// transcript archives, start the pending-archive ingester (ADR-014
+		// decision 7). head is the pre-merge sha, live the new tip. No-op when
+		// nothing archive-shaped changed.
+		spawnIngestForIncoming(path, head, live)
 		forwarded = fmt.Sprintf("fast-forwarded %s from %s to %s's live tip %s", path, shortSHA(head), redactURL(req.URL), shortSHA(live))
 		head = live
 	}
