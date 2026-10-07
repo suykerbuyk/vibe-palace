@@ -871,7 +871,13 @@ func TestMarkerEndsTheGlidePath(t *testing.T) {
 	if st.Drawers != 0 {
 		t.Fatalf("Rebuild read %d tracked drawers on a migrated vault", st.Drawers)
 	}
-	if hasContent(search(t, eng, "proj", "drawer from the tracked tree"), "drawer from the tracked tree") {
-		t.Fatal("a tracked drawer was read on a migrated vault")
+	// On a migrated vault, tracked drawers are not read, so a project whose
+	// only content is tracked drawers is truly empty: the search refuses it
+	// with NothingIndexableError rather than serving the drawer (ADR-014
+	// decision 8). This is the search-path counterpart of st.Drawers == 0.
+	_, err = eng.Search(context.Background(), "drawer from the tracked tree", SearchFilters{Project: "proj", Limit: 20, IncludeRaw: true})
+	var none *NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("marked vault, drawers only: got err %v, want *NothingIndexableError", err)
 	}
 }

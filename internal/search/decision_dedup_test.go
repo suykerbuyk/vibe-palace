@@ -63,9 +63,13 @@ func TestDedupKeepsBothDecisionsAndTheTranscriptOfOneSession(t *testing.T) {
 		t.Fatalf("IndexDrawers: %v", err)
 	}
 
-	results, err := eng.Search(ctx, "brute-force search", SearchFilters{Project: "proj", Limit: 10})
+	// IndexDrawers has populated a loaded in-memory index with no disk content,
+	// so Search's pre-build truly-empty check would refuse this project. The
+	// dedup logic under test lives in searchReady (the post-build seam), which
+	// is called directly here.
+	results, err := eng.searchReady(ctx, "brute-force search", SearchFilters{Project: "proj", Limit: 10}, nil)
 	if err != nil {
-		t.Fatalf("Search: %v", err)
+		t.Fatalf("searchReady: %v", err)
 	}
 
 	got := make(map[string]int, len(results))
@@ -128,9 +132,11 @@ func TestDedupKeepsBothTheSupersededAndRevisedDecisionAtOneIndex(t *testing.T) {
 		t.Fatalf("IndexDrawers: %v", err)
 	}
 
-	results, err := eng.Search(ctx, "stamp decision drawers", SearchFilters{Project: "proj", Limit: 10})
+	// See the note above: searchReady is the post-build seam; the public
+	// Search would refuse this disk-empty, in-memory-only fixture.
+	results, err := eng.searchReady(ctx, "stamp decision drawers", SearchFilters{Project: "proj", Limit: 10}, nil)
 	if err != nil {
-		t.Fatalf("Search: %v", err)
+		t.Fatalf("searchReady: %v", err)
 	}
 
 	got := make(map[string]int, len(results))

@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,22 +34,37 @@ func testEngine(t *testing.T, slugs ...string) (*search.Engine, *storage.Vault) 
 	return eng, v
 }
 
-func TestRunSearchNoResults(t *testing.T) {
+func TestRunSearchTrulyEmptyExitsNonZero(t *testing.T) {
 	eng, v := testEngine(t)
-	// runSearch calls eng.Search directly, which now refuses an unknown
-	// project before anything else; make "test-proj" a real (empty) member of
-	// the vault so this pins the known-but-empty case runSearch's caller
-	// (cmdSearch, via requireSearchProject) is meant to actually reach.
+	// A bare scaffold (exists, but nothing any tier could index) is the
+	// known-but-empty case the CLI reaches. Under the empty-corpus contract
+	// (ADR-014 decision 8) it is no longer "No results found." with exit 0; it
+	// exits non-zero naming `vp index rebuild`, and must not load the model.
 	if err := os.MkdirAll(filepath.Join(v.Root, "Projects", "test-proj"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// runSearch writes its refusal to os.Stderr; capture it to assert the text.
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = wErr
 	var buf bytes.Buffer
 	code := runSearch(eng, "test-proj", "nonexistent query", "", "", 10, false, false, &buf)
-	if code != cli.ExitOK {
-		t.Errorf("exit code = %d", code)
+	wErr.Close()
+	os.Stderr = origStderr
+	var errOut bytes.Buffer
+	_, _ = io.Copy(&errOut, rErr)
+
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr: %s", code, cli.ExitUser, errOut.String())
 	}
-	if !strings.Contains(buf.String(), "No results found") {
-		t.Errorf("expected no results message: %s", buf.String())
+	if !strings.Contains(errOut.String(), "vp index rebuild test-proj") {
+		t.Errorf("stderr does not name `vp index rebuild test-proj`: %s", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "No results found") || strings.Contains(buf.String(), "No results found") {
+		t.Errorf("a truly empty project must not print the zero-hit message: stderr=%q stdout=%q", errOut.String(), buf.String())
 	}
 }
 

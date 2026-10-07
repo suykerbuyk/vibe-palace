@@ -276,7 +276,12 @@ func TestDeduplication(t *testing.T) {
 	eng.mu.Unlock()
 	markLoaded(t, eng, "proj")
 
-	results, err := eng.Search(ctx, "chunk of document", SearchFilters{Project: "proj"})
+	// This test hand-builds a loaded in-memory index (no disk content) to
+	// exercise result-assembly dedup, which lives in searchReady. The public
+	// Search now refuses a project that is truly empty on disk before any
+	// build (NothingIndexableError), so it calls searchReady directly — the
+	// post-build seam — rather than Search.
+	results, err := eng.searchReady(ctx, "chunk of document", SearchFilters{Project: "proj"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,12 +316,17 @@ func TestRebuild(t *testing.T) {
 func TestEmptySearch(t *testing.T) {
 	eng, v := testEngine(t)
 	mkProject(t, v, "proj")
-	results, err := eng.Search(context.Background(), "anything", SearchFilters{Project: "proj"})
-	if err != nil {
-		t.Fatal(err)
+	// A truly empty project (a bare scaffold: no notes, iterations, archives,
+	// chunks or — without a marker — tracked drawers) is an error naming
+	// `vp index rebuild`, never zero hits dressed as success (ADR-014
+	// decision 8).
+	_, err := eng.Search(context.Background(), "anything", SearchFilters{Project: "proj"})
+	var none *NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("empty project: got err %v, want *NothingIndexableError", err)
 	}
-	if results != nil {
-		t.Errorf("expected nil results from empty engine, got %v", results)
+	if none.Project != "proj" {
+		t.Errorf("NothingIndexableError.Project = %q, want %q", none.Project, "proj")
 	}
 }
 
@@ -980,12 +990,14 @@ func TestRebuildClearsStaleIndex(t *testing.T) {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
-	results, err = eng.Search(ctx, "doomed", SearchFilters{Project: "proj"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 0 {
-		t.Errorf("stale index still serving %d results after all drawers deleted", len(results))
+	// With every drawer deleted the project is now truly empty, so the search
+	// does not serve the stale "doomed content" — and under the empty-corpus
+	// contract it refuses with NothingIndexableError rather than an empty
+	// result (ADR-014 decision 8). Either way the stale hit is gone.
+	_, err = eng.Search(ctx, "doomed", SearchFilters{Project: "proj"})
+	var none *NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("after deleting all drawers: got err %v, want *NothingIndexableError (no stale hits)", err)
 	}
 }
 
@@ -1253,5 +1265,120 @@ func TestIndexDrawersMixedBatch(t *testing.T) {
 	}
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
+	}
+}
+
+// --- Empty-corpus answer (task search-first-build-and-empty-corpus-answer) ---
+
+// TestTrulyEmptyLoadsNoEmbedder pins search-N4: a truly empty project is
+// refused before the embedder is ever used, so a truly empty search pays no
+// model load. A counting embedder records zero embeds, and the error is a
+// *NothingIndexableError.
+func TestTrulyEmptyLoadsNoEmbedder(t *testing.T) {
+	eng, v, emb := countingEngine(t, storage.Config{})
+	mkProject(t, v, "proj")
+
+	_, err := eng.Search(context.Background(), "anything", SearchFilters{Project: "proj"})
+	var none *NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("got err %v, want *NothingIndexableError", err)
+	}
+	if ec, bc := emb.counts(); ec != 0 || bc != 0 {
+		t.Errorf("truly empty search used the embedder: Embed=%d EmbedBatch=%d, want 0/0", ec, bc)
+	}
+}
+
+// TestTrackedArchivesMakeProjectNonEmpty pins R5/ADR-014 decision 8: a project
+// whose only content is a tracked transcript archive (no notes, iterations,
+// chunks or ledger) is NOT truly empty. A project-scoped search answers [] (the
+// archive is not ingested on the search path), never NothingIndexableError, and
+// cross-project search does not skip it.
+func TestTrackedArchivesMakeProjectNonEmpty(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	pdir, err := v.ProjectDir("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(pdir, "transcripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "transcripts", "sess.jsonl.zst"), []byte("\x28\xb5\x2f\xfd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if empty, err := eng.TrulyEmpty("proj"); err != nil || empty {
+		t.Fatalf("TrulyEmpty = %v, %v; want false (a tracked archive is content)", empty, err)
+	}
+
+	results, err := eng.Search(ctx, "anything", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatalf("archive-only project: Search returned %v, want nil error and no hits", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("archive-only project: got %d hits, want 0 (archives are not ingested on the search path)", len(results))
+	}
+}
+
+// TestCrossProjectSkipsTrulyEmptyScaffold pins ADR-014 decision 8: cross-project
+// search skips a truly empty project (a bare Projects/<slug>/ scaffold) and
+// still answers from the rest, with the result array shape unchanged.
+func TestCrossProjectSkipsTrulyEmptyScaffold(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	d := addDrawer(t, v, "proj-a", "wing-1", "room-1", "alpha project content", "facts")
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj-a", Wing: "wing-1", Room: "room-1", Drawer: d}})
+	mkProject(t, v, "scaffold") // bare, truly empty
+
+	if empty, err := eng.TrulyEmpty("scaffold"); err != nil || !empty {
+		t.Fatalf("TrulyEmpty(scaffold) = %v, %v; want true", empty, err)
+	}
+
+	results, err := eng.Search(ctx, "content", SearchFilters{})
+	if err != nil {
+		t.Fatalf("cross-project with a stray scaffold errored: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("cross-project: got %d results, want 1 (scaffold skipped, not failed)", len(results))
+	}
+}
+
+// TestCrossProjectAllTrulyEmptyErrors pins ADR-014 decision 8: cross-project
+// search errors only when every project in the vault is truly empty, and the
+// error is a *NothingIndexableError with an empty Project.
+func TestCrossProjectAllTrulyEmptyErrors(t *testing.T) {
+	eng, v := testEngine(t)
+	mkProject(t, v, "scaffold-a")
+	mkProject(t, v, "scaffold-b")
+
+	_, err := eng.Search(context.Background(), "anything", SearchFilters{})
+	var none *NothingIndexableError
+	if !errors.As(err, &none) {
+		t.Fatalf("all-empty cross-project: got err %v, want *NothingIndexableError", err)
+	}
+	if none.Project != "" {
+		t.Errorf("cross-project NothingIndexableError.Project = %q, want \"\"", none.Project)
+	}
+}
+
+// TestZeroHitsOnNonEmptyCorpusReturnsEmpty pins Scope 6: a non-empty project
+// whose corpus simply has no match for the filtered query returns [], never
+// NothingIndexableError. Here a room filter no drawer satisfies yields zero
+// hits on a project that is plainly not empty.
+func TestZeroHitsOnNonEmptyCorpusReturnsEmpty(t *testing.T) {
+	eng, v := testEngine(t)
+	ctx := context.Background()
+
+	d := addDrawer(t, v, "proj", "wing-1", "room-1", "alpha project content", "facts")
+	_ = eng.IndexDrawers(ctx, []DrawerInput{{Project: "proj", Wing: "wing-1", Room: "room-1", Drawer: d}})
+
+	results, err := eng.Search(ctx, "content", SearchFilters{Project: "proj", Room: "no-such-room"})
+	if err != nil {
+		t.Fatalf("zero-hit search on a non-empty project errored: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("got %d results, want 0 (filtered out)", len(results))
 	}
 }

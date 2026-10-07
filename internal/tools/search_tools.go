@@ -101,7 +101,9 @@ func SearchTool(engine *search.Engine) mcp.Tool {
 		Name: "vp_search",
 		Description: "Semantic search within a project's knowledge base. Returns ranked results with " +
 			"text, metadata, and relevance scores. project must name a project already present in the " +
-			"vault; an unknown slug is a tool error, not an empty result.",
+			"vault; an unknown slug is a tool error, not an empty result. A project that exists but has " +
+			"nothing any tier could index is also a tool error naming `vp index rebuild`, never an empty " +
+			"result; a non-empty project with no matches returns an empty result normally.",
 		Schema:  searchSchema,
 		Handler: searchHandler(engine),
 	}
@@ -113,8 +115,10 @@ func SearchCrossProjectTool(engine *search.Engine) mcp.Tool {
 		Name: "vp_search_cross_project",
 		Description: "Cross-project semantic search across every project in the vault — the union of " +
 			"palace/ stores and Projects/ history, so a project captured as session notes only is " +
-			"covered. Builds any project's index on first use, and fails naming the project if one " +
-			"cannot be built. Writes only host-local embedding-cache state.",
+			"covered. Builds any project's index on first use. Projects with nothing indexable are " +
+			"skipped and the search still answers from the rest; it is a tool error naming `vp index " +
+			"rebuild` only when every project in the vault is empty. Writes only host-local " +
+			"embedding-cache state.",
 		Schema:  crossSearchSchema,
 		Handler: crossSearchHandler(engine),
 	}
@@ -150,6 +154,13 @@ func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 			if errors.As(err, &unk) {
 				return nil, fmt.Errorf("unknown project %q: no such project in the vault", unk.Project)
 			}
+			// A truly empty project is a tool error naming `vp index rebuild`,
+			// never an empty result (ADR-014 decision 8). The error's own text
+			// carries the remediation, so surface it unwrapped.
+			var none *search.NothingIndexableError
+			if errors.As(err, &none) {
+				return nil, none
+			}
 			return nil, fmt.Errorf("search: %w", err)
 		}
 		if results == nil {
@@ -177,6 +188,12 @@ func crossSearchHandler(engine *search.Engine) mcp.HandlerFunc {
 			IncludeRaw: p.IncludeRaw,
 		})
 		if err != nil {
+			// Every project in the vault is empty: a tool error naming
+			// `vp index rebuild`, never an empty result (ADR-014 decision 8).
+			var none *search.NothingIndexableError
+			if errors.As(err, &none) {
+				return nil, none
+			}
 			return nil, fmt.Errorf("search: %w", err)
 		}
 		if results == nil {
