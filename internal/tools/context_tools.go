@@ -106,6 +106,14 @@ type BootstrapResult struct {
 	// the rest lives.
 	ActiveTaskCount int `json:"active_task_count"`
 
+	// InboxCount is the true total number of entries in the memory capture inbox
+	// — never capped. It sits here, an instrument beside ActiveTaskCount and
+	// ahead of the bulk, for the same reason: it survives a prefix truncation and
+	// an empty inbox still reports a trace (0, serialized — no omitempty). The
+	// bootstrap deliberately surfaces only this COUNT; the entry names and bodies
+	// are fetched on demand via vp_memory_list / vp_memory_read, not pushed here.
+	InboxCount int `json:"inbox_count"`
+
 	// Ranking reports how the rows below were ordered and what they were ordered
 	// against. It is the one instrument that is NEVER silent — see RankingReport
 	// for why that exception is earned.
@@ -316,7 +324,6 @@ type BootstrapResult struct {
 	// optional lists a given project happens to populate.
 	HeadOfQueue    []headOfQueueRow `json:"head_of_queue"`
 	RecentSessions []sessionSummary `json:"recent_sessions,omitempty"`
-	Memory         []memorySnapshot `json:"memory,omitempty"`
 	KGSnapshot     *storage.KGStats `json:"kg_snapshot,omitempty"`
 
 	// KGUnreadable carries why the knowledge graph could not be read, when it
@@ -396,22 +403,6 @@ func computeVaultStaleness(age time.Duration, fetchedAt time.Time, known bool) V
 // skillSummary reuses the commandSummary shape; alias semantics differ
 // (vps-<name> vs vpc-<name>) but the fields are identical.
 type skillSummary = commandSummary
-
-// memoryRecallCap bounds how many memory index entries the bootstrap surfaces.
-// Recall is "index now, body on demand via vp_memory_read" — the cap keeps the
-// curated index small so it sheds cheaply under a tight token budget.
-const memoryRecallCap = 50
-
-// memorySnapshot is a lightweight view of storage.MemoryMeta for the bootstrap
-// response. It carries the index metadata only — never the body. Rel is
-// included because vp_memory_read is keyed by rel, so the agent needs it to
-// fetch a body on demand.
-type memorySnapshot struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Type        string `json:"type"`
-	Rel         string `json:"rel"`
-}
 
 // sessionSummary is one row of the session INDEX: enough to decide whether a
 // session is worth reading, plus the handle that reads it.
@@ -522,7 +513,7 @@ func bootstrapContextTool(resolver *vpctx.Resolver, vault *storage.Vault, engine
 	}
 	return mcp.Tool{
 		Name:        "vp_bootstrap_context",
-		Description: "Single-call context restoration, delivered as an INDEX: head of queue + session index + memory index + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. NO DOCUMENT BODY IS INLINED — `resume` and `workflow` are NOT in this payload and never arrive by waiting; FETCH them with vp_read_resource via `resume_uri` and `workflow_uri` on every restart, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. `head_of_queue` is what comes NEXT, derived from the task graph (unblocked, in-progress first, then priority, then dependency order), each row carrying the URI of its task body; `active_task_count` is the whole open backlog, so a count larger than the rows means more work exists — call vp_list_tasks for it. `recent_sessions` are index rows, not narratives: read one via its `uri`. `ranking` states which ranker ordered those rows (structural or semantic), the head-of-queue slug it ranked against, how many candidates it chose from, and fallback_reason when semantic could not run without blocking. The payload LEADS with its instruments (health, vault staleness, friction, ranking, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result.",
+		Description: "Single-call context restoration, delivered as an INDEX: head of queue + session index + inbox count + KG snapshot + available commands + available skills + post-bootstrap capability-announcement directive. NO DOCUMENT BODY IS INLINED — `resume` and `workflow` are NOT in this payload and never arrive by waiting; FETCH them with vp_read_resource via `resume_uri` and `workflow_uri` on every restart, and `resume_sha256` covers the FULL RAW resume so a caller can compare-and-set against disk. `head_of_queue` is what comes NEXT, derived from the task graph (unblocked, in-progress first, then priority, then dependency order), each row carrying the URI of its task body; `active_task_count` is the whole open backlog, so a count larger than the rows means more work exists — call vp_list_tasks for it. `inbox_count` is the true total of memory capture-inbox entries pending triage (never capped); the payload surfaces only this COUNT — fetch the entry names and bodies on demand with vp_memory_list / vp_memory_read. `recent_sessions` are index rows, not narratives: read one via its `uri`. `ranking` states which ranker ordered those rows (structural or semantic), the head-of-queue slug it ranked against, how many candidates it chose from, and fallback_reason when semantic could not run without blocking. The payload LEADS with its instruments (health, vault staleness, friction, ranking, alerts) because those are what a host preview keeps, and it ENDS with `complete: true`: if you do not see that field, your HOST truncated the result.",
 		Schema:      schema,
 		Handler:     bootstrapHandler(resolver, vault, engine, allowCwdDefault),
 	}
@@ -675,17 +666,13 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGUnreadable = err.Error()
 	}
 
-	// Memory index (capped) — bodies fetched on demand via vp_memory_read.
-	// Graceful: a missing dir or read error must never hard-fail bootstrap.
-	if mems, err := vault.ListMemories(project, memoryRecallCap); err == nil {
-		for _, m := range mems {
-			result.Memory = append(result.Memory, memorySnapshot{
-				Name:        m.Name,
-				Description: m.Description,
-				Type:        m.Type,
-				Rel:         m.Rel,
-			})
-		}
+	// Inbox COUNT — the true total of capture-inbox entries, never capped.
+	// ListMemories with a limit <= 0 returns every match, so len is the full
+	// count; bodies and names are fetched on demand via vp_memory_list /
+	// vp_memory_read. Graceful: a missing dir or read error must never hard-fail
+	// bootstrap, and leaves the count at its zero value.
+	if mems, err := vault.ListMemories(project, 0); err == nil {
+		result.InboxCount = len(mems)
 	}
 
 	// Available commands for discovery (palace-scoped when wing/room provided).

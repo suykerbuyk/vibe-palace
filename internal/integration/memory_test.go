@@ -21,7 +21,7 @@ import (
 // across its full stack: the MCP tools (vp_memory_write/read/list/harvest), the
 // storage layer (Projects/<slug>/memory + surface stamping), the one-way harvest
 // engine (Claude native dir -> vault -> git commit), and bootstrap recall (the
-// curated, body-less memory index returned by AssembleBootstrap).
+// inbox COUNT returned by AssembleBootstrap — names/bodies on demand).
 func TestIntegration_MemoryFeature(t *testing.T) {
 	// MCP write -> on-disk + surface stamp + bootstrap recall + read-back. This
 	// path is host-agnostic (no Claude native dir, no git) — every agent gets it.
@@ -54,26 +54,17 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 			t.Fatalf("expected surface stamp at %s: %v", surf, err)
 		}
 
-		// Bootstrap recall surfaces the index entry (meta only) — generous budget.
+		// Bootstrap surfaces an inbox COUNT, not the entry index — generous budget.
 		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, "", "")
-		var found bool
-		for _, m := range bs.Memory {
-			if m.Rel != rel {
-				continue
-			}
-			found = true
-			if m.Name != "Prefers tabs" || m.Type != "feedback" || m.Description != "Indentation preference." {
-				t.Errorf("bootstrap memory meta mismatch: %+v", m)
-			}
-		}
-		if !found {
-			t.Fatalf("bootstrap recall missing %q; got %d memory entries", rel, len(bs.Memory))
+		if bs.InboxCount != 1 {
+			t.Fatalf("bootstrap inbox_count = %d, want 1", bs.InboxCount)
 		}
 
-		// The recall index must NOT carry the body (index now, body on demand).
-		blob, _ := json.Marshal(bs.Memory)
-		if strings.Contains(string(blob), body) || strings.Contains(string(blob), "\"body\"") {
-			t.Errorf("bootstrap memory index leaked a body: %s", blob)
+		// The count never carries the entry name or body; those are fetched on
+		// demand via vp_memory_list / vp_memory_read.
+		blob, _ := json.Marshal(bs)
+		if strings.Contains(string(blob), body) || strings.Contains(string(blob), "Prefers tabs") {
+			t.Errorf("bootstrap payload leaked a memory name/body: %s", blob)
 		}
 
 		// vp_memory_read round-trips the body.
@@ -171,17 +162,11 @@ func TestIntegration_MemoryFeature(t *testing.T) {
 			t.Errorf("harvested memory should be committed (clean), still dirty:\n%s", porcelain)
 		}
 
-		// End to end: native -> vault -> bootstrap recall. The harvested names
-		// appear in the recall index.
+		// End to end: native -> vault -> bootstrap. The inbox count reflects the
+		// three harvested entries; names and bodies are fetched on demand.
 		bs := tools.AssembleBootstrap(h.Resolver, h.Vault, project, "", "")
-		names := map[string]bool{}
-		for _, m := range bs.Memory {
-			names[m.Name] = true
-		}
-		for _, want := range []string{"Prefers tabs", "Project layout", "Editor of choice"} {
-			if !names[want] {
-				t.Errorf("bootstrap recall missing harvested memory %q; have %v", want, names)
-			}
+		if bs.InboxCount != 3 {
+			t.Errorf("bootstrap inbox_count = %d, want 3 harvested entries", bs.InboxCount)
 		}
 
 		// Idempotency: a second harvest against the now-drained native dir routes

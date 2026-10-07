@@ -124,6 +124,7 @@ func TestBootstrapTruncatedPrefixIsDetectable(t *testing.T) {
 		`"workflow_uri"`,
 		`"resume_sha256"`,
 		`"active_task_count"`,
+		`"inbox_count"`,
 		`"ranking"`,
 		`"post_bootstrap_instructions"`,
 	} {
@@ -155,6 +156,7 @@ func TestBootstrapInstrumentsPrecedeBulk(t *testing.T) {
 		`"workflow_uri"`,
 		`"resume_sha256"`,
 		`"active_task_count"`,
+		`"inbox_count"`,
 		`"ranking"`,
 	} {
 		for _, bulk := range []string{firstBulkKey, `"recent_sessions":`} {

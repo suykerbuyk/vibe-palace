@@ -358,7 +358,7 @@ func TestBootstrapPostInstructionsPopulated(t *testing.T) {
 	}
 }
 
-func TestBootstrapSurfacesMemory(t *testing.T) {
+func TestBootstrapSurfacesInboxCount(t *testing.T) {
 	vault, resolver := testSetup(t)
 	testutil.InitProject(t, vault.Root, "test-proj")
 
@@ -385,28 +385,49 @@ func TestBootstrapSurfacesMemory(t *testing.T) {
 	}
 
 	br := result.(BootstrapResult)
-	if len(br.Memory) != 3 {
-		t.Fatalf("Memory = %d, want 3", len(br.Memory))
+	// The bootstrap surfaces a COUNT, not the entry index. Names and bodies are
+	// fetched on demand via vp_memory_list / vp_memory_read.
+	if br.InboxCount != 3 {
+		t.Fatalf("InboxCount = %d, want 3", br.InboxCount)
 	}
-	byName := map[string]memorySnapshot{}
-	for _, m := range br.Memory {
-		byName[m.Name] = m
-		if m.Rel == "" {
-			t.Errorf("memory %q has empty Rel", m.Name)
+
+	// The count never carries the entry metadata: the payload must not leak a
+	// name, description, body or rel.
+	blob, _ := json.Marshal(br)
+	for _, leak := range []string{"user preferences", "architecture notes", "style feedback", "body one", "prefs.md"} {
+		if strings.Contains(string(blob), leak) {
+			t.Errorf("bootstrap payload leaked memory detail %q: %s", leak, blob)
 		}
-	}
-	if got := byName["prefs"]; got.Description != "user preferences" || got.Type != "user" || got.Rel != "prefs.md" {
-		t.Errorf("prefs snapshot = %+v", got)
-	}
-	if got := byName["arch"]; got.Type != "project" {
-		t.Errorf("arch type = %q, want project", got.Type)
-	}
-	if got := byName["style"]; got.Type != "feedback" {
-		t.Errorf("style type = %q, want feedback", got.Type)
 	}
 }
 
-func TestBootstrapEmptyVaultNoMemory(t *testing.T) {
+// TestBootstrapInboxCountIsUncapped proves the count is the TRUE total, not the
+// old 50-entry index cap: a project with more than 50 inbox entries reports all
+// of them.
+func TestBootstrapInboxCountIsUncapped(t *testing.T) {
+	vault, resolver := testSetup(t)
+	testutil.InitProject(t, vault.Root, "test-proj")
+
+	const n = 73
+	for i := 0; i < n; i++ {
+		rel := fmt.Sprintf("note-%03d.md", i)
+		if err := vault.WriteMemory("test-proj", rel,
+			storage.MemoryMeta{Name: rel, Description: "d", Type: "project"}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := BootstrapContextTool(resolver, vault, nil)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"project":"test-proj","max_tokens":100000}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if br := result.(BootstrapResult); br.InboxCount != n {
+		t.Errorf("InboxCount = %d, want the full %d (count must not be capped)", br.InboxCount, n)
+	}
+}
+
+func TestBootstrapEmptyVaultZeroInboxCount(t *testing.T) {
 	vault, resolver := testSetup(t)
 	tool := BootstrapContextTool(resolver, vault, nil)
 
@@ -415,8 +436,8 @@ func TestBootstrapEmptyVaultNoMemory(t *testing.T) {
 		t.Fatalf("handler error: %v", err)
 	}
 	br := result.(BootstrapResult)
-	if len(br.Memory) != 0 {
-		t.Errorf("Memory = %d, want 0 for empty vault", len(br.Memory))
+	if br.InboxCount != 0 {
+		t.Errorf("InboxCount = %d, want 0 for empty vault", br.InboxCount)
 	}
 }
 

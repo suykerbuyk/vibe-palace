@@ -21,8 +21,8 @@ import (
 //
 // 🔴 IT IS A SHAPE CONSTANT, NOT A BUDGET, AND THE DIFFERENCE IS THE WHOLE OF
 // PRD §1.10. Nothing here measures, compares or compares against a payload
-// size; this bounds how many ROWS an index carries, the same way memoryRecallCap
-// does and the same way the old five-session recency trim did. A number that
+// size; this bounds how many ROWS an index carries, the same way the old
+// five-session recency trim did. A number that
 // answers "how long is this list" is a shape; a number that answers "how many
 // bytes may this payload be" is the apparatus Phase 2 deleted, and it must not
 // grow back under a new name.
