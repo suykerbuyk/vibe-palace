@@ -75,9 +75,9 @@ Never jump to coding short-term fixes without investigation.
 
 - After ANY correction from the user: save the pattern with `vp_memory_write`
   (`type: feedback`) — host-agnostic, lands in the project's memory store.
-  `vp_bootstrap_context` surfaces the memory **index** only (name,
-  description, type, rel) — never the bodies; read a body on demand with
-  `vp_memory_read`
+  `vp_bootstrap_context` surfaces an inbox **count** (`inbox_count`), not the
+  memory index — list the entries with `vp_memory_list` and read a body on
+  demand with `vp_memory_read`
 - Write rules that prevent the same mistake; for cross-project lessons, also
   record a vault-wide learning (read them back via `vp_list_learnings` /
   `vp_get_learning`)
