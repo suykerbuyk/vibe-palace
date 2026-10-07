@@ -33,7 +33,7 @@ func TestCaptureAndAuditStampTheSameCalendarDay(t *testing.T) {
 	}
 	evening := time.Date(2026, 8, 12, 22, 57, 0, 0, denver)
 
-	capRes, err := capture.WriteSession(context.Background(), vault, nil, capture.SessionParams{
+	capRes, err := capture.WriteSession(context.Background(), vault, capture.SessionParams{
 		Project: "test-proj",
 		Summary: "same instant as the audit",
 		Now:     evening,

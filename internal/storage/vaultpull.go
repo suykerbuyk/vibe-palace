@@ -156,6 +156,7 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 			RemoteOutput:  map[string]string{},
 		}, err
 	}
+	before := headForTrigger(vaultPath)
 	res, err := pullCore(vaultPath, remotes)
 	if err != nil {
 		// A pre-flight refusal: nothing was fetched or merged, so there is
@@ -166,6 +167,9 @@ func Pull(vaultPath string, remotes []string) (*PullResult, error) {
 	// is where that project's host-local embed cache goes. It never fails the
 	// pull, runs no embedder, and holds no vault lock.
 	sweepDepartedAfterPull(vaultPath)
+	// A pull that merged new transcript archives starts the pending-archive
+	// ingester (ADR-014 decision 7). No-op when nothing archive-shaped changed.
+	spawnIngestForIncoming(vaultPath, before, headForTrigger(vaultPath))
 	return res, nil
 }
 

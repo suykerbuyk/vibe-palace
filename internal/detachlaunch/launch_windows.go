@@ -26,6 +26,13 @@ import (
 // stdlib syscall for consistency — this project already depends on
 // golang.org/x/sys directly and already uses it this way in
 // internal/vaultlock/flock_windows.go.
+// markInheritedFDsCloseOnExec is a no-op on Windows: Go's syscall.StartProcess
+// passes the child an explicit PROC_THREAD_ATTRIBUTE_HANDLE_LIST, so only the
+// standard handles are inherited and there is no ambient-descriptor leak to
+// close. The POSIX build does the fd sweep; this keeps startDetached's call
+// site platform-agnostic.
+func markInheritedFDsCloseOnExec() {}
+
 func setDetached(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS | windows.CREATE_BREAKAWAY_FROM_JOB,

@@ -117,8 +117,7 @@ func TestCaptureSessionWithAllFields(t *testing.T) {
 func TestCaptureSessionWithTranscript(t *testing.T) {
 	vault := testSessionVault(t)
 	testutil.InitProject(t, vault.Root, "test-proj")
-	indexer := capture.NewIndexer(vault, nil, nil, storage.Config{}) // no engine = no embedding
-	tool := CaptureSessionTool(vault, indexer)
+	tool := CaptureSessionTool(vault, nil)
 
 	params := json.RawMessage(`{
 		"project": "test-proj",

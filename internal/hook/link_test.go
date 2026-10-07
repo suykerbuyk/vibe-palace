@@ -226,7 +226,7 @@ func TestRun_SessionEnd_ManifestPointsAtTheWrapNote_NotTheStub(t *testing.T) {
 	// reusing the host session id as the capture key would resolve the stub and
 	// REWRITE IT IN PLACE, collapsing two notes into one.
 	vault := storage.NewVault(f.vaultRoot)
-	if _, err := capture.WriteSession(context.Background(), vault, nil, capture.SessionParams{
+	if _, err := capture.WriteSession(context.Background(), vault, capture.SessionParams{
 		Project:          "test-project",
 		Summary:          "the real narrative of this session",
 		Tag:              "implementation",
@@ -298,7 +298,7 @@ func TestRun_SessionEnd_ScoresWrapNoteNotStub(t *testing.T) {
 	}
 
 	vault := storage.NewVault(f.vaultRoot)
-	if _, err := capture.WriteSession(context.Background(), vault, nil, capture.SessionParams{
+	if _, err := capture.WriteSession(context.Background(), vault, capture.SessionParams{
 		Project:          "test-project",
 		Summary:          "the wrap with no transcript",
 		Tag:              "implementation",

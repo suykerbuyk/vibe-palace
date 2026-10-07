@@ -19,7 +19,7 @@ import (
 func TestWriteSessionRecordsHostVerbatim(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "Session with derived host attribution.",
 		Host:       "Zed",
@@ -65,7 +65,7 @@ func TestWriteSessionRecordsHostVerbatim(t *testing.T) {
 func TestWriteSessionNoHostClaimOmitsKey(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "Hook-path capture with no host claim.",
 	})

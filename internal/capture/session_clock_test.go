@@ -29,7 +29,7 @@ func TestCaptureRetryDoesNotRestampAcrossMidnight(t *testing.T) {
 	vault := testVault(t)
 	evening := time.Date(2026, 8, 12, 22, 57, 0, 0, denverOrSkip(t))
 
-	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	first, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "mint",
 		Now:     evening,
@@ -39,7 +39,7 @@ func TestCaptureRetryDoesNotRestampAcrossMidnight(t *testing.T) {
 	}
 
 	nextDay := evening.Add(24 * time.Hour)
-	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	second, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "retry after midnight",
 		SessionKey: first.SessionKey,
@@ -68,7 +68,7 @@ func TestCaptureStampsProcessLocalCalendarDay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "os-local evening",
 		Now:     evening,

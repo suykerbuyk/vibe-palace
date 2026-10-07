@@ -52,7 +52,7 @@ const emptyEnrichment = `{"summary":"","decisions":[],"open_threads":[],"tag":"b
 func TestWriteSessionHappyPath(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "Implemented feature X",
 	})
@@ -93,7 +93,7 @@ func TestWriteSessionHappyPath(t *testing.T) {
 func TestWriteSessionNotePathNamesARealFile(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "Implemented feature X",
 	})
@@ -137,7 +137,7 @@ func TestWriteSessionTitleDefaulting(t *testing.T) {
 
 	// No title: should default to summary (truncated at 80).
 	long := "This is a very long summary that exceeds eighty characters and should be truncated by the title defaulting logic in WriteSession"
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: long,
 	})
@@ -159,7 +159,7 @@ func TestWriteSessionWithFriction(t *testing.T) {
 
 	// Transcript with friction signals: corrections and rework.
 	transcript := "wrong wrong wrong undo revert go back start over try again scratch that"
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "Session with friction",
 		Transcript: transcript,
@@ -179,7 +179,7 @@ func TestWriteSession_AutoCaptureSkipsFriction(t *testing.T) {
 	vault := testVault(t)
 	transcript := "wrong wrong wrong undo revert go back start over try again scratch that never mind"
 
-	stub, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	stub, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "Auto-captured session (no summary yet)",
 		Tag:        storage.TagAutoCapture,
@@ -202,7 +202,7 @@ func TestWriteSession_AutoCaptureSkipsFriction(t *testing.T) {
 		t.Fatalf("auto-capture FrictionScore = %d, want 0", got.FrictionScore)
 	}
 
-	real, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	real, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "Real capture",
 		Tag:        "review",
@@ -239,7 +239,7 @@ func TestWriteSessionWithArchiveLink(t *testing.T) {
 		t.Fatalf("seed archive: %v", err)
 	}
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:          "test-proj",
 		Summary:          "Session linked to archive",
 		ArchiveSessionID: "link-session",
@@ -268,49 +268,10 @@ func TestWriteSessionWithArchiveLink(t *testing.T) {
 	}
 }
 
-func TestWriteSessionNeedsIndexingTrue(t *testing.T) {
-	vault := testVault(t)
-	indexer := NewIndexer(vault, nil, nil, storage.Config{})
-
-	result, err := WriteSession(context.Background(), vault, indexer, SessionParams{
-		Project:       "test-proj",
-		Summary:       "Session with deferred indexing",
-		Transcript:    "Some transcript text that would normally be indexed.",
-		NeedsIndexing: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("status = %q, want %q", result.Status, "ok")
-	}
-	// With NeedsIndexing=true, no drawers should be created.
-	// (The indexer runs but writes no drawers only because embedder is nil;
-	// the key assertion is that WriteSession does not error and returns ok.)
-}
-
-func TestWriteSessionNeedsIndexingFalse(t *testing.T) {
-	vault := testVault(t)
-	indexer := NewIndexer(vault, nil, nil, storage.Config{})
-
-	result, err := WriteSession(context.Background(), vault, indexer, SessionParams{
-		Project:       "test-proj",
-		Summary:       "Session with immediate indexing",
-		Transcript:    "Some transcript text that should be indexed right away.",
-		NeedsIndexing: false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("status = %q, want %q", result.Status, "ok")
-	}
-}
-
 func TestWriteSessionMissingProject(t *testing.T) {
 	vault := testVault(t)
 
-	_, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	_, err := WriteSession(context.Background(), vault, SessionParams{
 		Summary: "No project specified",
 	})
 	if err == nil {
@@ -321,7 +282,7 @@ func TestWriteSessionMissingProject(t *testing.T) {
 func TestWriteSessionMissingSummary(t *testing.T) {
 	vault := testVault(t)
 
-	_, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	_, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 	})
 	if err == nil {
@@ -332,7 +293,7 @@ func TestWriteSessionMissingSummary(t *testing.T) {
 func TestWriteSessionAllFields(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:      "test-proj",
 		Summary:      "Full session with all metadata",
 		Title:        "Test Session",
@@ -378,7 +339,7 @@ func TestWriteSessionEnrichmentSuccess(t *testing.T) {
 	vault := testVault(t)
 
 	enr := enrichment.NewEnricher(mockCompleter{resp: cannedEnrichment}, "test-model", 5*time.Second, "")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Tag:        "implementation",
@@ -436,7 +397,7 @@ func TestWriteSessionEnrichmentFailureFallsBack(t *testing.T) {
 	vault := testVault(t)
 
 	enr := enrichment.NewEnricher(mockCompleter{err: fmt.Errorf("boom")}, "test-model", 5*time.Second, "")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,
@@ -471,7 +432,7 @@ func TestWriteSessionEmptyEnrichmentResultEnqueues(t *testing.T) {
 	cwd := t.TempDir()
 
 	enr := enrichment.NewEnricher(mockCompleter{resp: emptyEnrichment}, "test-model", 5*time.Second, "")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,
@@ -524,7 +485,7 @@ func TestWriteSessionEnqueuesSessionSummaryWhenCWDSet(t *testing.T) {
 	// happens for a note that qualifies, not exercising the length gate
 	// itself (see TestWriteSessionNoSessionSummaryEnqueueForShortBody /
 	// TestWriteSessionSessionSummaryEnqueueForLongBody for that).
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: strings.Repeat("plain heuristic summary ", 100),
 		CWD:     cwd,
@@ -581,7 +542,7 @@ func TestWriteSessionNoSessionSummaryEnqueueForAutoCapture(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "unattended crash-net snapshot",
 		CWD:     cwd,
@@ -615,7 +576,7 @@ func TestWriteSessionNoSessionSummaryEnqueueWithoutCWD(t *testing.T) {
 	realCwd := t.TempDir()
 	t.Chdir(realCwd)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "plain heuristic summary",
 		// CWD deliberately empty.
@@ -646,7 +607,7 @@ func TestWriteSessionNoSessionSummaryEnqueueForShortBody(t *testing.T) {
 	vault := testVault(t)
 	cwd := t.TempDir()
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "short",
 		CWD:     cwd,
@@ -683,7 +644,7 @@ func TestWriteSessionSessionSummaryEnqueueForLongBody(t *testing.T) {
 	cwd := t.TempDir()
 
 	longSummary := strings.Repeat("word ", 400) // well over the gate once rendered
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: longSummary,
 		CWD:     cwd,
@@ -721,7 +682,7 @@ func bodyOverheadForSummary(t *testing.T, summary string) int {
 	t.Helper()
 	vault := testVault(t)
 	testutil.InitProject(t, vault.Root, "overhead-probe")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "overhead-probe",
 		Summary: summary,
 	})
@@ -751,7 +712,7 @@ func TestWriteSessionNoSessionSummaryEnqueueAtExactGateBoundary(t *testing.T) {
 
 	vault := testVault(t)
 	cwd := t.TempDir()
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: summary,
 		CWD:     cwd,
@@ -791,7 +752,7 @@ func TestWriteSessionSessionSummaryEnqueueOneByteOverGateBoundary(t *testing.T) 
 
 	vault := testVault(t)
 	cwd := t.TempDir()
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: summary,
 		CWD:     cwd,
@@ -821,7 +782,7 @@ func TestWriteSessionSessionSummaryEnqueueOneByteOverGateBoundary(t *testing.T) 
 func TestWriteSessionNilEnricherUnchanged(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,

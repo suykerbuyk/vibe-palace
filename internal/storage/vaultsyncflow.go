@@ -221,6 +221,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// the sync; a per-remote failure lives in RemoteResults (FINDING A). Gate on
 	// both — a non-empty verdict (a failed fetch/merge or an aborted conflict)
 	// stops before we push.
+	beforePull := headForTrigger(vaultPath)
 	pull, pullErr := pullCore(vaultPath, remotes)
 	result.Pull = pull
 	if pullErr != nil {
@@ -231,6 +232,10 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	// merged a departure removes the moved project's embed cache even when a
 	// later remote fails. The pass skips itself while a merge is unfinished.
 	sweepDepartedAfterPull(vaultPath)
+	// Same placement for the ingester trigger: a merge that brought transcript
+	// archives starts the pending-archive ingester even if a later remote's push
+	// fails (ADR-014 decision 7). No-op when nothing archive-shaped changed.
+	spawnIngestForIncoming(vaultPath, beforePull, headForTrigger(vaultPath))
 	if v := RemoteVerdict(OpPull, pull.RemoteResults, ""); v != "" {
 		return result, errors.New(v)
 	}

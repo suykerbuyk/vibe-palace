@@ -66,28 +66,6 @@ var decisionTrackedWriterRoots = []string{
 // an allow-listed function is not a finding. Each entry is a reviewed, temporary
 // exception that a named later child removes.
 var decisionTrackedWriterAllow = map[string]bool{
-	// capture still indexes transcripts into tracked drawers through
-	// IndexTranscript until capture-and-backfill-write-host-local-index-only
-	// (child 4) deletes it; whichever of that child and this one lands second
-	// removes this entry.
-	//
-	// 🔴 PRESENTLY INERT, and honestly so: deleting this entry does not change
-	// what the rule reports today. IndexTranscript's only tracked write is the
-	// field-receiver selector call idx.vault.AppendDrawers
-	// (internal/capture/indexer.go:145), and buildCallGraph records a selector
-	// call's edge only when the receiver is a BARE ident — a field receiver
-	// (idx.vault) is not — so that write is invisible to the graph with or
-	// without this entry. The rule therefore cannot see WriteSession/the capture
-	// handler/the refresh handler reach AppendDrawers through IndexTranscript
-	// yet, and does not fire either way. The blind spot is a separate filed task,
-	// sourceaudit-callgraph-blind-to-field-receiver-method-calls; do NOT work
-	// around it here.
-	//
-	// The entry is KEPT because it becomes genuinely load-bearing the moment that
-	// blind spot is fixed: the graph will then see the AppendDrawers write, those
-	// roots will reach it through IndexTranscript, and only this cut keeps them
-	// from firing — until child 4 removes IndexTranscript and this entry with it.
-	"capture.IndexTranscript": true,
 	// `vp audit rooms --apply` moves tracked drawers through the rooms audit
 	// until palace-navigation-over-the-host-local-chunk-store repoints the
 	// palace at the store; whichever of that child and this one lands second

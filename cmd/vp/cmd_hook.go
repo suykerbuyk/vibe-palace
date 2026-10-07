@@ -15,9 +15,11 @@ import (
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // nonAlphanumericHook matches runs of characters that are not lowercase
@@ -133,8 +135,20 @@ func runHook(info cli.BuildInfo) int {
 		// Fallback: try the global vault.
 		vault, err = storage.OpenVaultGlobal()
 		if err != nil {
+			// Neither the payload's vault nor the global vault opens, so there is
+			// no vault log to reach: write the error to stderr, emit a result body
+			// that names it, and return ExitOK — never ExitSystem (2). 2 is Claude
+			// Code's reserved BLOCKING code; at Stop it would block the turn and
+			// feed stderr to the model on every turn of a deterministically-failing
+			// hook, and at SessionEnd it blocks nothing — obnoxious at one end,
+			// useless at the other. This mirrors the rejected-binding path above and
+			// the ruling in runHook's comment below. (ADR-014 implementation notes.)
 			fmt.Fprintf(os.Stderr, "vp hook: cannot open vault: %v\n", err)
-			return cli.ExitSystem
+			res := &hook.Result{Event: payload.HookEventName, Error: err.Error()}
+			if encErr := json.NewEncoder(os.Stdout).Encode(res); encErr != nil {
+				fmt.Fprintf(os.Stderr, "vp hook: encode result failed: %v\n", encErr)
+			}
+			return cli.ExitOK
 		}
 	}
 
@@ -146,10 +160,20 @@ func runHook(info cli.BuildInfo) int {
 	// case. Without this, the hook's warnings land in a different vault's log.
 	initLoggingForVault(vault)
 
+	// Surface check on the vault the hook actually writes to. preRun's
+	// surfaceGate exempts the hook (it resolves the CONFIGURED vault, usually a
+	// different one), so the hook runs its own warn-only check here, after
+	// logging is pointed at this vault. Warn-only: a stale binary must never
+	// block a capture — the whole hook stays warn-only, never fail-stop.
+	surface.EnforceWarnOnly(vault.Root)
+
 	opts := hook.RunOptions{
 		VaultRoot:   vault.Root,
 		ProjectSlug: proj,
 		VPVersion:   info.Version,
+		// The real detached launcher: the hook's last step spawns the
+		// pending-archive ingester after it archives (internal/hook).
+		Launch: detachlaunch.Launch,
 	}
 
 	// A hook failure is reported through the LOG and the result body — never

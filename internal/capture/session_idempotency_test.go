@@ -47,7 +47,7 @@ func readNote(t *testing.T, vault *storage.Vault, relPath string) (storage.Sessi
 func TestCaptureMintsAKeyAndReturnsIt(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "first attempt",
 	})
@@ -78,7 +78,7 @@ func TestCaptureMintsAKeyAndReturnsIt(t *testing.T) {
 func TestCaptureRetryWithSameKeyUpdatesInPlace(t *testing.T) {
 	vault := testVault(t)
 
-	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	first, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "first attempt",
 	})
@@ -89,7 +89,7 @@ func TestCaptureRetryWithSameKeyUpdatesInPlace(t *testing.T) {
 		t.Fatalf("after first capture: %d notes, want 1", n)
 	}
 
-	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	second, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "second attempt, better narrative",
 		SessionKey: first.SessionKey,
@@ -130,7 +130,7 @@ func TestCaptureWithoutKeyMintsANewNote(t *testing.T) {
 	vault := testVault(t)
 
 	for i := range 3 {
-		if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+		if _, err := WriteSession(context.Background(), vault, SessionParams{
 			Project: "test-proj",
 			Summary: "work unit",
 		}); err != nil {
@@ -159,7 +159,7 @@ func TestCaptureWithoutKeyMintsANewNote(t *testing.T) {
 func TestCaptureRetryPreservesEnrichmentArchiveAndFriction(t *testing.T) {
 	vault := testVault(t)
 
-	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	first, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic auto-summary",
 		Transcript: enrichTranscript, // gives the note a real friction breakdown
@@ -186,7 +186,7 @@ func TestCaptureRetryPreservesEnrichmentArchiveAndFriction(t *testing.T) {
 	}
 
 	// Now RE-CAPTURE with the same key and NO enricher — the plain heuristic path.
-	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	second, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic auto-summary",
 		SessionKey: first.SessionKey,
@@ -237,7 +237,7 @@ func TestConcurrentCapturesDoNotClobber(t *testing.T) {
 	errs := make(chan error, n)
 	for i := range n {
 		wg.Go(func() {
-			_, err := WriteSession(context.Background(), vault, nil, SessionParams{
+			_, err := WriteSession(context.Background(), vault, SessionParams{
 				Project: "test-proj",
 				Summary: fmt.Sprintf("concurrent capture %d", i),
 			})
@@ -266,7 +266,7 @@ func TestConcurrentCapturesDoNotClobber(t *testing.T) {
 func TestCaptureKeySourceOverrideIsRecordedVerbatim(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:          "test-proj",
 		Summary:          "inline capture with a pre-minted key",
 		SessionKey:       "pre-minted-key",
@@ -293,7 +293,7 @@ func TestCaptureKeySourceUnsetKeepsTodayBehavior(t *testing.T) {
 	vault := testVault(t)
 
 	// Supplied key, no override → "caller", exactly as before.
-	supplied, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	supplied, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "supplied key, no source override",
 		SessionKey: "caller-supplied-key",
@@ -310,7 +310,7 @@ func TestCaptureKeySourceUnsetKeepsTodayBehavior(t *testing.T) {
 	}
 
 	// Neither key nor override → key minted, source "minted", exactly as before.
-	minted, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	minted, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "no key, no source override",
 	})

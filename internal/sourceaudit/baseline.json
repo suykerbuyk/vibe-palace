@@ -254,7 +254,7 @@
     },
     {
       "id": "uninvoked indexstore.DeleteLegacyLedgerIfUntracked",
-      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), which was this function's one caller (the top of the backfill, before it read the legacy ledger). The ingester no longer reads the legacy ledger at all. Child 4 depends on this child and deletes DeleteLegacyLedgerIfUntracked with the legacy reader and writer (IngestedArchives, RecordIngestedArchive); this entry goes stale and the gate demands its removal the moment that child lands."
+      "reason": "STAGED CAPABILITY for ADR-014 decision 2 (a new binary deletes a legacy ingest ledger once the vault carries the migration marker or no tracked drawer remains). explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), this function's one historical caller. capture-and-backfill-write-host-local-index-only (child 4) deleted the legacy ledger READER and WRITER (storage.Vault.IngestedArchives, RecordIngestedArchive) but deliberately KEPT this deleter and its path accessor storage.Vault.IngestedArchivesFile (its sole user), because the legacy-ledger deletion is 1a's rule, not the capture redirect's (plan Scope 3, ADR lines 129-134). Its wiring belongs to the one-shot migration / tidy path; this entry goes stale and the gate demands its removal the moment a caller lands or the function is deleted."
     },
     {
       "id": "uninvoked indexstore.Ledger.Pending",
@@ -293,6 +293,10 @@
       "reason": "REAL FINDING, owned by task aaak-compression-subsystem-unreachable. It is the ONLY non-test caller of palace.Compress, so with it dead the ENTIRE AAAK compression subsystem is unreachable from production code (Compress, EntityRegistry, NewEntityRegistry, detectEntities, AAKResult, DrawerMetadata). AAAK is a named architectural pillar — package doc, doc/ARCHITECTURE.md, PRD Task 6.3 ('compact digests for context loading') — and nothing produces or consumes a digest. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the owning task's DECISION (205) was to PARK the subsystem: keep the code, stop the docs claiming it runs. That park is authorial intent no parse recovers; this entry declares it, and the baseline ratchet (Baseline.Diff + TestSourceAuditGate: the baseline may only SHRINK) enforces it mechanically — reaping AAAK makes this entry go stale and fails the build. Do not reap; do not remove this entry."
     },
     {
+      "id": "uninvoked search.Engine.IndexDrawers",
+      "reason": "ORPHANED BY DESIGN by capture-and-backfill-write-host-local-index-only (child 4): capture's Indexer.IndexTranscript was its one non-test caller, deleted under ADR-014 decision 7 (capture no longer indexes transcripts). The host-local search index is now built by the pending-archive ingester into indexstore.Tx, not through search.Engine.IndexDrawers. Deletion of this now-dead drawer-batch indexer is a change inside internal/search, which search-first-build-and-empty-corpus-answer is editing concurrently, so this child does not touch it; this entry goes stale and the gate demands its removal the moment a caller lands or the method is deleted."
+    },
+    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only-by-construction is structural intent no parse recovers; declared here, enforced by the baseline ratchet. Do NOT wire a fake production caller to clear this."
     },
@@ -325,12 +329,8 @@
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
     },
     {
-      "id": "uninvoked storage.Vault.IngestedArchives",
-      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger reader. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes IngestedArchives with RecordIngestedArchive and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
-    },
-    {
-      "id": "uninvoked storage.Vault.RecordIngestedArchive",
-      "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger writer. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes RecordIngestedArchive with IngestedArchives and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
+      "id": "uninvoked storage.Vault.AddTriple",
+      "reason": "ORPHANED BY DESIGN by capture-and-backfill-write-host-local-index-only (child 4): capture's writeKG (in the deleted Indexer.IndexTranscript) was its one non-test caller. ADR-014 decision 7 stops capture and all routine indexing from writing extracted triples into the git-tracked tree — extracted KG now lives in the host-local store (indexstore), written by the pending-archive ingester, never through storage.Vault.AddTriple. Retention or deletion of this tracked-triple writer belongs to authored-and-extracted-knowledge-graph-records; this entry goes stale and the gate demands its removal the moment a caller lands or the function is deleted."
     },
     {
       "id": "uninvoked storage.Vault.SetClock",
@@ -515,6 +515,10 @@
     {
       "id": "write-only-field skills.SkillFrontmatter.Paths",
       "reason": "FALSE POSITIVE (Unmarshal-populated), NOT the note_path shape — the original defect was FIXED under task skill-frontmatter-paths-and-triggers-are-never-set (DECISION 205). Paths is now genuinely produced from disk: the shipped template internal/templates/templates/skills/startup-analyst/SKILL.md declares a real `paths:` list, skills.Parse yaml.Unmarshals it (frontmatter.go), it flows SkillDir.Frontmatter -> reconcile.go -> SkillItem, and renderCursorRule emits it into the Cursor rule's `globs:` line (target.go). The residual flag is the known gate/charter gap tracked by the write-only-field charter thread (203): the static heuristic cannot see yaml.Unmarshal as a producer and trips on the partial composite literal in target.go GrokHubItem, which sets only Description. By the gate's own STATED charter (Unmarshal-populated structs are exempt) this should be suppressed. The sibling field Triggers was DELETED in the same change. Verified: integration/skill_shims_test.go TestEmbeddedSkillPathsReachCursorGlobs drives a shipped template end-to-end and proves the declared paths reach the rendered globs. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the residual flag is reported and suppressed here per the gate's own charter; the gate/charter fix is deferred to the write-only-field charter thread (203). Do not 'fix' the code to clear this."
+    },
+    {
+      "id": "write-only-field storage.Drawer.ChunkIndex",
+      "reason": "ORPHANED BY DESIGN by capture-and-backfill-write-host-local-index-only (child 4): capture's Indexer.IndexTranscript was the one non-test writer of this field on storage.Drawer (d := storage.Drawer{... ChunkIndex: pc.ChunkIndex}), deleted under ADR-014 decision 7 (capture no longer writes drawers). Legacy tracked drawers already on disk still carry chunk_index, and storage.Drawer is the glide-path legacy drawer type read from internal/search; dropping the serialized field is a storage.Drawer change in that glide-path domain, which search-first-build-and-empty-corpus-answer is editing concurrently, so this child keeps the field rather than removing it. This entry goes stale and the gate demands its removal the moment the field is written again or deleted."
     }
   ]
 }

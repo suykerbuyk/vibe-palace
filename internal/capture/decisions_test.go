@@ -74,7 +74,7 @@ func breakDecisionStore(t *testing.T, vault *storage.Vault, project string) {
 func TestFileDecisionDrawersReportsStoreFailure(t *testing.T) {
 	vault := testVault(t)
 	// The project must exist for the commit lock's ProjectExists check.
-	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	if _, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj", Summary: "seed",
 	}); err != nil {
 		t.Fatalf("seed WriteSession: %v", err)
@@ -95,7 +95,7 @@ func TestFileDecisionDrawersReportsStoreFailure(t *testing.T) {
 // wall-clock (X6).
 func TestDecisionWriteSkippedWhenCommitLockBusy(t *testing.T) {
 	vault := testVault(t)
-	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	if _, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj", Summary: "seed",
 	}); err != nil {
 		t.Fatalf("seed WriteSession: %v", err)
@@ -134,7 +134,7 @@ func TestDecisionWriteSkippedWhenCommitLockBusy(t *testing.T) {
 // about to wait.
 func TestDecisionWriteWaitsForTheCommitLockThenWrites(t *testing.T) {
 	vault := testVault(t)
-	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	if _, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj", Summary: "seed",
 	}); err != nil {
 		t.Fatalf("seed WriteSession: %v", err)
@@ -195,7 +195,7 @@ func TestDecisionWriteWaitsForTheCommitLockThenWrites(t *testing.T) {
 // if the capture waited on the run lock at all it could not succeed here.
 func TestDecisionWriteNotDelayedByTheRunLock(t *testing.T) {
 	vault := testVault(t)
-	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	if _, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj", Summary: "seed",
 	}); err != nil {
 		t.Fatalf("seed WriteSession: %v", err)
@@ -239,7 +239,7 @@ func TestDecisionWriteNotDelayedByTheRunLock(t *testing.T) {
 func TestWriteSessionFilesDecisionsToStoreWithNilIndexer(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:   "test-proj",
 		Summary:   "Stopped HTML-escaping baseline JSON",
 		Decisions: []string{"Use SetEscapeHTML(false)"},
@@ -287,7 +287,7 @@ func TestWriteSessionFilesDecisionsToStoreWithNilIndexer(t *testing.T) {
 func TestWriteSessionNoDecisionsStoresNothing(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "Read some code",
 	})
@@ -312,7 +312,7 @@ func TestWriteSessionNoDecisionsStoresNothing(t *testing.T) {
 func TestDecisionSourceRefsAreUniquePerDecision(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj",
 		Summary: "Three decisions",
 		Decisions: []string{
@@ -337,7 +337,7 @@ func TestDecisionSourceRefsAreUniquePerDecision(t *testing.T) {
 func TestBlankDecisionsSkippedWithoutRenumbering(t *testing.T) {
 	vault := testVault(t)
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:   "test-proj",
 		Summary:   "One blank in the middle",
 		Decisions: []string{"first", "   ", "third"},
@@ -358,14 +358,14 @@ func TestBlankDecisionsSkippedWithoutRenumbering(t *testing.T) {
 // never the session.
 func TestWriteSessionDecisionStoreFailureIsAccumulated(t *testing.T) {
 	vault := testVault(t)
-	if _, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	if _, err := WriteSession(context.Background(), vault, SessionParams{
 		Project: "test-proj", Summary: "seed",
 	}); err != nil {
 		t.Fatalf("seed WriteSession: %v", err)
 	}
 	breakDecisionStore(t, vault, "test-proj")
 
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "Decisions cannot be filed",
 		Decisions:  []string{"a decision"},
@@ -396,7 +396,7 @@ func TestDrainStoresDecisions(t *testing.T) {
 	cwd := t.TempDir()
 
 	missing := enrichment.NewEnricher(mockCompleter{resp: emptyEnrichment}, "test-model", 5*time.Second, "")
-	result, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	result, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,
@@ -442,7 +442,7 @@ func TestWriteSessionStoresWhatLandedNotTheParams(t *testing.T) {
 	vault := testVault(t)
 	const key = "retry-key-1"
 
-	first, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	first, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Transcript: enrichTranscript,
@@ -453,7 +453,7 @@ func TestWriteSessionStoresWhatLandedNotTheParams(t *testing.T) {
 		t.Fatalf("WriteSession(first): %v", err)
 	}
 
-	second, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	second, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:    "test-proj",
 		Summary:    "plain heuristic summary",
 		Decisions:  []string{"a decision the note never carried"},
@@ -481,7 +481,7 @@ func TestWriteSessionStoresWhatLandedNotTheParams(t *testing.T) {
 func TestDecisionRoomDoesNotDependOnContent(t *testing.T) {
 	vault := testVault(t)
 
-	res, err := WriteSession(context.Background(), vault, nil, SessionParams{
+	res, err := WriteSession(context.Background(), vault, SessionParams{
 		Project:      "test-proj",
 		Summary:      "a session that touches deployment plumbing",
 		Decisions:    []string{"Deploy the kubernetes cluster with terraform rather than by hand"},

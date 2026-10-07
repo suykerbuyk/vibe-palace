@@ -991,6 +991,7 @@ func downgradePush(vaultPath string, push bool) (effective, downgraded bool, err
 // unchanged beneath the merge, and the new commit will fast-forward. The
 // returned map is nil when nothing was recorded.
 func reconcileIfAhead(vaultPath string, remotes []string, branch string, rep *DerivedMergeReport) (map[string]error, error) {
+	beforeReconcile := headForTrigger(vaultPath)
 	var reconcileErrs map[string]error
 	for _, remote := range remotes {
 		ref := remote + "/" + branch
@@ -1032,6 +1033,12 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string, rep *De
 			reconcileErrs[remote] = reconcileFailure("reconcile against "+remote+" failed", mergeErr)
 		}
 	}
+	// A reconcile that merged a remote tip carrying new transcript archives
+	// starts the pending-archive ingester (ADR-014 decision 7). This runs at the
+	// function's successful exit, after any derived-conflict heal inside
+	// mergeFetchedTip has finished, and covers both callers (commit-and-push and
+	// the mirror prune). No-op when nothing archive-shaped changed.
+	spawnIngestForIncoming(vaultPath, beforeReconcile, headForTrigger(vaultPath))
 	return reconcileErrs, nil
 }
 
@@ -1827,6 +1834,7 @@ func reconcileFailure(what string, err error) error {
 // caller holds the vault commit lock across it. reconciled is false when the
 // push to this remote must be skipped (its RemoteResults entry is set).
 func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult) (reconciled bool) {
+	beforeReconcile := headForTrigger(vaultPath)
 	// Fetch failure surfaces directly — no merge/converge.
 	if _, fetchErr := gitCmd(vaultPath, 60*time.Second, "fetch", remote); fetchErr != nil {
 		result.RemoteResults[remote] = fmt.Errorf("fetch %s: %w", remote, fetchErr)
@@ -1841,6 +1849,9 @@ func reconcileRejectedPush(vaultPath, remote, branch string, result *PushResult)
 		result.RemoteResults[remote] = reconcileFailure("merge of "+remote+"/"+branch+" failed", mergeErr)
 		return false
 	}
+	// The merge brought the remote tip in; if it carried transcript archives,
+	// start the pending-archive ingester (ADR-014 decision 7). No-op otherwise.
+	spawnIngestForIncoming(vaultPath, beforeReconcile, headForTrigger(vaultPath))
 	return true
 }
 

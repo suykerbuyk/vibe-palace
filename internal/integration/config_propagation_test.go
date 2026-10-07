@@ -86,40 +86,13 @@ func TestIntegrationConfigBoostValues(t *testing.T) {
 	}
 }
 
-// TestIntegrationConfigChunkSize proves that the host config's [chunker]
-// max_chars actually controls how many chunks are produced from a transcript.
-func TestIntegrationConfigChunkSize(t *testing.T) {
-	// Build a ~2000-char transcript with many short paragraphs.
-	// Each paragraph is ~100 chars, separated by \n\n.
-	var transcript string
-	for i := 0; len(transcript) < 2000; i++ {
-		transcript += "This is paragraph number " + string(rune('A'+i%26)) +
-			" with enough content to form a meaningful semantic unit for chunking.\n\n"
-	}
-
-	// Small chunks: 200 chars → expect many chunks.
-	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 200\n", "")
-	h1 := newHarness(t, false)
-	h1.seedProject(t, "proj")
-	if _, err := h1.Indexer.IndexTranscript(context.Background(), "s1", "proj", transcript); err != nil {
-		t.Fatal(err)
-	}
-	smallDrawers, _ := countAllDrawers(t, h1.Vault, "proj")
-
-	// Large chunks: 1000 chars → expect fewer chunks.
-	writeHostConfig(t, "proj", "[chunker]\nmax_chars = 1000\n", "")
-	h2 := newHarness(t, false)
-	h2.seedProject(t, "proj")
-	if _, err := h2.Indexer.IndexTranscript(context.Background(), "s2", "proj", transcript); err != nil {
-		t.Fatal(err)
-	}
-	largeDrawers, _ := countAllDrawers(t, h2.Vault, "proj")
-
-	if smallDrawers <= largeDrawers {
-		t.Errorf("small chunks (%d drawers) should produce more drawers than large chunks (%d drawers)",
-			smallDrawers, largeDrawers)
-	}
-}
+// Per-project [chunker] config controlling chunk count end to end was covered
+// here through capture.IndexTranscript. Capture no longer indexes transcripts
+// (ADR-014 decision 7); the per-project chunker layer is now read by
+// palace.ProjectIndexing, covered by internal/palace's
+// TestProjectIndexingReadsThePerProjectLayer, and the archive-ingest path that
+// applies it is covered by internal/ingest. The former
+// TestIntegrationConfigChunkSize is therefore removed with the indexer.
 
 // TestIntegrationConfigSearchLimit proves the default search limit config
 // actually constrains result count.

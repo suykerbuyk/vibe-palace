@@ -96,7 +96,22 @@ func startDetached(binary string, args []string, logPath string, attrs func(*exe
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
+	// A detached child must not pin a working directory: left unset it would
+	// inherit the caller's cwd, which for the hook is the project checkout, so
+	// the long-lived ingester would hold that directory open for its whole run.
+	// The detached commands take the vault root by flag and need no cwd, so
+	// point it at a directory nothing cares about keeping.
+	cmd.Dir = os.TempDir()
 	attrs(cmd)
+
+	// Before the fork, mark every descriptor >= 3 the parent holds
+	// close-on-exec, so the child inherits only stdin/stdout/stderr. Without
+	// this a descriptor the caller inherited from its own host (an agent, an
+	// IDE), or a vault-lock descriptor the parent is holding, would pass to the
+	// child and stay open for the whole detached run. Go opens its own files
+	// close-on-exec already; this covers the ones it did not open. No-op on
+	// Windows, where the handle list is explicit (see the package comment).
+	markInheritedFDsCloseOnExec()
 
 	if startErr := cmd.Start(); startErr != nil {
 		_ = logFile.Close()
