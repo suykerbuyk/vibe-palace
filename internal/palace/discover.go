@@ -95,75 +95,62 @@ func CollectDiscoveryCandidates(
 		maxSamples = discoverDefaultMaxSamples
 	}
 
-	wings, err := vault.ListWings(opts.Project)
+	// Read drawers from the host-local store (with the pre-marker tracked-drawer
+	// fallback) through the one navigation reader (Scope 6).
+	hits, err := visibleDrawers(vault, opts.Project)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list wings: %w", err)
+		return nil, nil, err
 	}
 
 	var candidates []DiscoverySample
 	var allDrawers []drawerWithRoom
 	seen := make(map[string]bool)
 
-	for _, wing := range wings {
-		rooms, err := vault.ListRooms(opts.Project, wing)
-		if err != nil {
-			slog.Warn("discover: list rooms failed", "wing", wing, "err", err)
+	for _, h := range hits {
+		d := h.Drawer
+		wing, room := h.Wing, h.Room
+
+		// Skip before any accumulation, not merely before the re-score. A
+		// decision drawer's room was asserted by its writer, so it can never be
+		// a legitimate mismatch candidate — and allDrawers is the
+		// cross-validation corpus, where a decision drawer sitting in the fixed
+		// "decisions" room would count as a regression against every keyword
+		// proposed for every other room. Neither the LLM nor the validator has
+		// any business judging it.
+		if isDecisionDrawer(d) {
 			continue
 		}
 
-		for _, room := range rooms {
-			drawers, err := vault.ListDrawers(opts.Project, wing, room)
-			if err != nil {
-				slog.Warn("discover: list drawers failed",
-					"wing", wing, "room", room, "err", err)
-				continue
-			}
+		allDrawers = append(allDrawers, drawerWithRoom{
+			Drawer: d, Wing: wing, Room: room,
+		})
 
-			for _, d := range drawers {
-				// Skip before any accumulation, not merely before the
-				// re-score. A decision drawer's room was asserted by its
-				// writer, so it can never be a legitimate mismatch candidate —
-				// and allDrawers is the cross-validation corpus, where a
-				// decision drawer sitting in the fixed "decisions" room would
-				// count as a regression against every keyword proposed for
-				// every other room. Neither the LLM nor the validator has any
-				// business judging it.
-				if isDecisionDrawer(d) {
-					continue
-				}
+		// Primary: general drawers.
+		if room == "general" && !seen[d.ID] {
+			candidates = append(candidates, DiscoverySample{
+				DrawerID:    d.ID,
+				Wing:        wing,
+				CurrentRoom: room,
+				Content:     d.Content,
+				SourceRef:   d.SourceRef,
+			})
+			seen[d.ID] = true
+			continue
+		}
 
-				allDrawers = append(allDrawers, drawerWithRoom{
-					Drawer: d, Wing: wing, Room: room,
+		// Secondary: mismatches (re-score and check).
+		if room != "general" && !seen[d.ID] {
+			res := classifier.ClassifyWithScores(
+				d.Content, d.SourceRef, opts.Keywords)
+			if res.Room != room {
+				candidates = append(candidates, DiscoverySample{
+					DrawerID:    d.ID,
+					Wing:        wing,
+					CurrentRoom: room,
+					Content:     d.Content,
+					SourceRef:   d.SourceRef,
 				})
-
-				// Primary: general drawers.
-				if room == "general" && !seen[d.ID] {
-					candidates = append(candidates, DiscoverySample{
-						DrawerID:    d.ID,
-						Wing:        wing,
-						CurrentRoom: room,
-						Content:     d.Content,
-						SourceRef:   d.SourceRef,
-					})
-					seen[d.ID] = true
-					continue
-				}
-
-				// Secondary: mismatches (re-score and check).
-				if room != "general" && !seen[d.ID] {
-					res := classifier.ClassifyWithScores(
-						d.Content, d.SourceRef, opts.Keywords)
-					if res.Room != room {
-						candidates = append(candidates, DiscoverySample{
-							DrawerID:    d.ID,
-							Wing:        wing,
-							CurrentRoom: room,
-							Content:     d.Content,
-							SourceRef:   d.SourceRef,
-						})
-						seen[d.ID] = true
-					}
-				}
+				seen[d.ID] = true
 			}
 		}
 	}

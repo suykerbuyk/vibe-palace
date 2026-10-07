@@ -94,7 +94,7 @@ var findTunnelsSchema = json.RawMessage(`{
 func PalaceStatusTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_palace_status",
-		Description: "Overview of palace structure: wing/room/drawer counts, tunnels, and per-wing breakdown.",
+		Description: "Overview of palace structure: wing/room/drawer counts, tunnels, and per-wing breakdown. Built from this host's local chunk store; empty counts can mean the index is unbuilt on this host rather than that the palace is empty — run vp_index_coverage to tell them apart.",
 		Schema:      palaceStatusSchema,
 		Handler:     palaceStatusHandler(vault),
 	}
@@ -104,7 +104,7 @@ func PalaceStatusTool(vault *storage.Vault) mcp.Tool {
 func ListWingsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_list_wings",
-		Description: "List all wings in a project with room and drawer counts.",
+		Description: "List all wings in a project with room and drawer counts. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_coverage.",
 		Schema:      listWingsSchema,
 		Handler:     listWingsHandler(vault),
 	}
@@ -114,7 +114,7 @@ func ListWingsTool(vault *storage.Vault) mcp.Tool {
 func ListRoomsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_list_rooms",
-		Description: "List rooms in a wing with drawer counts and hall distribution.",
+		Description: "List rooms in a wing with drawer counts and hall distribution. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_coverage.",
 		Schema:      listRoomsSchema,
 		Handler:     listRoomsHandler(vault),
 	}
@@ -124,7 +124,7 @@ func ListRoomsTool(vault *storage.Vault) mcp.Tool {
 func TraverseTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_traverse",
-		Description: "BFS graph traversal from a starting room, returning reachable rooms with hop distances.",
+		Description: "BFS graph traversal from a starting room, returning reachable rooms with hop distances. The graph is built from this host's local chunk store; an empty or missing start can mean the index is unbuilt on this host — run vp_index_coverage.",
 		Schema:      traverseSchema,
 		Handler:     traverseHandler(vault),
 	}
@@ -134,7 +134,7 @@ func TraverseTool(vault *storage.Vault) mcp.Tool {
 func FindTunnelsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_find_tunnels",
-		Description: "Find rooms that span multiple wings (cross-wing connections).",
+		Description: "Find rooms that span multiple wings (cross-wing connections). Built from this host's local chunk store; an empty result can mean the index is unbuilt on this host — run vp_index_coverage.",
 		Schema:      findTunnelsSchema,
 		Handler:     findTunnelsHandler(vault),
 	}
@@ -278,35 +278,42 @@ func listRoomsHandler(vault *storage.Vault) mcp.HandlerFunc {
 			return nil, fmt.Errorf("wing is required")
 		}
 
-		rooms, err := vault.ListRooms(p.Project, p.Wing)
+		// Read the wing's rooms from the host-local chunk store (with the
+		// pre-marker tracked-drawer fallback) through the one navigation reader,
+		// so list_rooms cannot disagree with the graph about a room's drawers or
+		// hall distribution (Scope 1/2).
+		hits, err := palace.QueryDrawers(vault, storage.DrawerQuery{Project: p.Project, Wing: p.Wing})
 		if err != nil {
 			return nil, fmt.Errorf("list rooms: %w", err)
 		}
 
-		var details []roomDetail
-		for _, room := range rooms {
-			drawers, err := vault.ListDrawers(p.Project, p.Wing, room)
-			if err != nil {
-				return nil, fmt.Errorf("list drawers for %s: %w", room, err)
+		type roomAgg struct {
+			count int
+			halls map[string]int
+		}
+		byRoom := make(map[string]*roomAgg)
+		for _, h := range hits {
+			a := byRoom[h.Room]
+			if a == nil {
+				a = &roomAgg{halls: make(map[string]int)}
+				byRoom[h.Room] = a
 			}
-			halls := make(map[string]int)
-			for _, d := range drawers {
-				halls[d.Hall]++
-			}
+			a.count++
+			a.halls[h.Hall]++
+		}
+
+		details := make([]roomDetail, 0, len(byRoom))
+		for room, a := range byRoom {
 			details = append(details, roomDetail{
 				Room:             room,
-				Drawers:          len(drawers),
-				HallDistribution: halls,
+				Drawers:          a.count,
+				HallDistribution: a.halls,
 			})
 		}
 
 		sort.Slice(details, func(i, j int) bool {
 			return details[i].Room < details[j].Room
 		})
-
-		if details == nil {
-			details = []roomDetail{}
-		}
 		return details, nil
 	}
 }

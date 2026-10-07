@@ -4,18 +4,26 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
+
+// relabelLockTimeout bounds how long `vp audit rooms --apply` waits for a
+// project's index commit lock before failing. A relabel is an explicit command:
+// it fails, naming the busy lock, rather than waiting on a long ingest.
+const relabelLockTimeout = 30 * time.Second
 
 func cmdAudit() *cli.Command {
 	return &cli.Command{
@@ -38,7 +46,7 @@ func cmdAuditRooms() *cli.Command {
 	return &cli.Command{
 		Name:        "audit rooms",
 		Synopsis:    "vp audit rooms [--project P] [--export FILE] [--dry-run] [--apply] [--verbose]",
-		Description: "Scan all drawers and report on classification quality. Detects mismatches, borderline classifications, and dead keywords.",
+		Description: "Scan all drawers and report on classification quality. Detects mismatches, borderline classifications, and dead keywords. --apply relabels room metadata in the host-local chunk store (available only after the vault migration) and writes nothing tracked; a `vp index rebuild` re-runs the classifier and drops the relabel.",
 		Flags:       auditRoomsFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp audit rooms", Comment: "Audit current project"},
@@ -140,21 +148,7 @@ func runAuditRooms(vault *storage.Vault, proj string, cfg storage.Config, apply,
 
 	// Handle --apply.
 	if apply {
-		candidates := report.Candidates()
-		if len(candidates) == 0 {
-			fmt.Fprintln(out, "No reclassification candidates found.")
-			return cli.ExitOK
-		}
-		moved, errors := applyMoves(vault, proj, candidates, out)
-		fmt.Fprintf(out, "\nMoved %d drawers", moved)
-		if errors > 0 {
-			fmt.Fprintf(out, " (%d errors)", errors)
-		}
-		fmt.Fprintln(out, ".")
-		if errors > 0 {
-			return cli.ExitSystem
-		}
-		return cli.ExitOK
+		return applyRelabel(context.Background(), vault, proj, report.Candidates(), out)
 	}
 
 	// Default: human-readable report.
@@ -162,20 +156,35 @@ func runAuditRooms(vault *storage.Vault, proj string, cfg storage.Config, apply,
 	return cli.ExitOK
 }
 
-func applyMoves(vault *storage.Vault, proj string, candidates []palace.MoveCandidate, out io.Writer) (int, int) {
-	moved, errors := 0, 0
-	for _, c := range candidates {
-		if err := vault.MoveDrawer(proj, c.Wing, c.FromRoom, c.ToRoom, c.DrawerID); err != nil {
-			slog.Error("audit apply: move failed",
-				"drawer", c.DrawerID, "from", c.FromRoom, "to", c.ToRoom, "err", err)
-			fmt.Fprintf(out, "  ERROR %-8s %s → %s: %v\n", c.DrawerID, c.FromRoom, c.ToRoom, err)
-			errors++
-			continue
-		}
-		fmt.Fprintf(out, "  MOVED %-8s %s → %s\n", c.DrawerID, c.FromRoom, c.ToRoom)
-		moved++
+// applyRelabel relabels the room metadata of the mismatched drawers in the
+// host-local chunk store, in one commit step (palace.Relabel). It writes
+// nothing tracked. Before the migration marker it refuses with the message and
+// writes nothing; on a lock timeout it reports the busy lock and exits non-zero.
+// A rebuild re-runs the classifier and drops the relabel.
+func applyRelabel(ctx context.Context, vault *storage.Vault, proj string, candidates []palace.MoveCandidate, out io.Writer) int {
+	// Nothing to relabel is not a refusal: report it and exit OK regardless of
+	// the migration marker, since there is no write to gate.
+	if len(candidates) == 0 {
+		fmt.Fprintln(out, "No reclassification candidates found.")
+		return cli.ExitOK
 	}
-	return moved, errors
+
+	if err := palace.Relabel(ctx, vault, proj, candidates, relabelLockTimeout); err != nil {
+		if errors.Is(err, palace.ErrRelabelBeforeMarker) {
+			fmt.Fprintf(out, "%v\n", err)
+			return cli.ExitUser
+		}
+		slog.Error("audit apply: relabel failed", "project", proj, "err", err)
+		fmt.Fprintf(out, "Error: %v\n", err)
+		return cli.ExitSystem
+	}
+
+	for _, c := range candidates {
+		fmt.Fprintf(out, "  RELABEL %-8s %s → %s\n", c.DrawerID, c.FromRoom, c.ToRoom)
+	}
+	fmt.Fprintf(out, "\nRelabelled %d drawers in the host-local chunk store (nothing tracked was written).\n", len(candidates))
+	fmt.Fprintln(out, "Note: `vp index rebuild <project>` re-runs the classifier and DROPS this relabel — a room move is not preserved across a rebuild.")
+	return cli.ExitOK
 }
 
 func formatReport(report *palace.AuditReport, verbose bool, out io.Writer) {

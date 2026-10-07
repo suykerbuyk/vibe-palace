@@ -249,7 +249,7 @@
     {
       "name": "vp_palace_query",
       "mutating": false,
-      "schema_sha256": "ba1f2f31a24b977bc3b669ae33d1364cce5a1997b1d53fbf6592122d21ccd7e3"
+      "schema_sha256": "8dc98340862f4c3295e04740c6b824e8f062b651c0dccad53199d2e818749d47"
     },
     {
       "name": "vp_palace_status",

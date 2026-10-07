@@ -325,12 +325,28 @@
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
     },
     {
+      "id": "uninvoked storage.Vault.AppendDrawer",
+      "reason": "ORPHANED BY THE EPIC, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. The n=1 wrapper over AppendDrawers lost its last non-test caller when this child deleted Vault.MoveDrawer: `vp audit rooms --apply` now relabels room metadata in the host-local chunk store (palace.Relabel -> indexstore.Tx.Rewrite) instead of moving a tracked drawer. It is kept rather than deleted because it is the canonical n=1 tracked-drawer fixture across ~25 test files (seeding the pre-marker glide-path corpus the store still READS before the migration marker), so removing it would ripple far beyond this child; AppendDrawers (plural) stays production-used by capture ingest. ADR-006 verdict: DECLARE — the retain-for-tests intent is authorial and recorded here. If a later child removes the pre-marker tracked-drawer path entirely, delete this method and this entry together."
+    },
+    {
+      "id": "uninvoked storage.Vault.DeleteDrawer",
+      "reason": "ORPHANED BY THE EPIC, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. Its last non-test caller was Vault.MoveDrawer (append-before-delete), which this child deleted when `vp audit rooms --apply` moved to the host-local store (palace.Relabel). It is kept because storage-layer tests still exercise the tracked-drawer delete path (stamp_test, vaultlock_write_test); nothing in production mutates a tracked drawer any longer. ADR-006 verdict: DECLARE. Delete this method and this entry together when the pre-marker tracked-drawer path is removed."
+    },
+    {
+      "id": "uninvoked storage.Vault.GetDrawer",
+      "reason": "ORPHANED BY THE EPIC, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. Its last non-test caller was Vault.MoveDrawer (read-before-move), which this child deleted when `vp audit rooms --apply` moved to the host-local store (palace.Relabel). It is kept because storage-layer tests still read a single tracked drawer through it; nothing in production reads a tracked drawer by id any longer. ADR-006 verdict: DECLARE. Delete this method and this entry together when the pre-marker tracked-drawer path is removed."
+    },
+    {
       "id": "uninvoked storage.Vault.IngestedArchives",
       "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger reader. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes IngestedArchives with RecordIngestedArchive and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
     },
     {
       "id": "uninvoked storage.Vault.RecordIngestedArchive",
       "reason": "ORPHANED BY DESIGN, awaiting deletion by capture-and-backfill-write-host-local-index-only (child 4). The legacy ingest-ledger writer. explicit-resumable-index-rebuild-with-disk-watchdog deleted vp_refresh_index's in-process backfillFromArchives (Scope 11), its one non-test caller. Child 4 depends on this child and deletes RecordIngestedArchive with IngestedArchives and the legacy ledger helpers; this entry goes stale and the gate demands its removal the moment that child lands."
+    },
+    {
+      "id": "uninvoked storage.Vault.ScanDrawers",
+      "reason": "SUPERSEDED BY palace.QueryDrawers, RETAINED AS A TEST FIXTURE, owned by palace-navigation-over-the-host-local-chunk-store. vp_palace_query's only non-test caller moved from vault.ScanDrawers (tracked-drawer walk) to palace.QueryDrawers (the store twin: the host-local chunk store plus the pre-marker tracked-drawer fallback, same storage.DrawerQuery filter semantics). ScanDrawers is kept rather than deleted because its 13 TestScanDrawers* cases (internal/storage/drawer_query_test.go) pin the shared filter semantics that QueryDrawers mirrors (exact-match, case-insensitive substring, inclusive-day), and storage.DrawerQuery / matchesDateRange still live under it. ADR-006 verdict: DECLARE. A reviewer or follow-up may delete ScanDrawers together with its dedicated tests once QueryDrawers owns the filter outright; see this task's HOLD note on the dead tracked-drawer mutation/query cluster."
     },
     {
       "id": "uninvoked storage.Vault.SetClock",

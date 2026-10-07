@@ -30,9 +30,10 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// comment exists to keep from being copied.
 	reg.Register(mutates(cmdArchiveLink()))
 	reg.Register(cmdAudit())
-	// mutates(): `vp audit rooms --apply` calls vault.MoveDrawer, relocating a drawer
-	// between rooms, so it must FAIL-STOP against a vault written by a newer binary
-	// rather than take the warn-only path — same as any other local vault writer.
+	// mutates(): `vp audit rooms --apply` relabels room metadata in the host-local
+	// chunk store (palace.Relabel -> indexstore.Tx.Rewrite; it no longer moves a
+	// tracked drawer), so it must FAIL-STOP against a vault written by a newer binary
+	// rather than take the warn-only path — same as any other local writer.
 	reg.Register(mutates(cmdAuditRooms()))
 	// mutates(): `vp audit vault --write` writes a report and `--accept` writes the
 	// baseline, so it must FAIL-STOP against a vault written by a newer binary rather

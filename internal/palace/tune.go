@@ -152,69 +152,83 @@ func SelectSamples(vault *storage.Vault, classifier *RoomClassifier, opts TuneOp
 		candidates = candidates[:maxSamples]
 	}
 
-	// Fetch full drawer content for each candidate.
+	// Fetch full drawer content for each candidate from the host-local store
+	// (with the pre-marker tracked-drawer fallback), through the one navigation
+	// reader — the same source RunAudit walked, so the candidate's wing, room
+	// and id resolve to a drawer here (Scope 3).
+	hits, err := visibleDrawers(vault, opts.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read drawers: %w", err)
+	}
+	byKey := make(map[string]storage.DrawerHit, len(hits))
+	for _, h := range hits {
+		byKey[tuneDrawerKey(h.Wing, h.Room, h.ID)] = h
+	}
+
 	samples := make([]TuneSample, 0, len(candidates))
 	for _, c := range candidates {
-		drawers, err := vault.ListDrawers(opts.Project, c.da.Wing, c.da.CurrentRoom)
-		if err != nil {
-			slog.Warn("tune: list drawers failed", "wing", c.da.Wing, "room", c.da.CurrentRoom, "err", err)
+		h, ok := byKey[tuneDrawerKey(c.da.Wing, c.da.CurrentRoom, c.da.ID)]
+		if !ok {
 			continue
 		}
-		for _, d := range drawers {
-			if d.ID == c.da.ID {
-				samples = append(samples, TuneSample{
-					DrawerID:    d.ID,
-					Wing:        c.da.Wing,
-					CurrentRoom: c.da.CurrentRoom,
-					Content:     d.Content,
-					SourceRef:   d.SourceRef,
-					Reason:      c.reason,
-				})
-				break
-			}
-		}
+		samples = append(samples, TuneSample{
+			DrawerID:    h.ID,
+			Wing:        c.da.Wing,
+			CurrentRoom: c.da.CurrentRoom,
+			Content:     h.Content,
+			SourceRef:   h.SourceRef,
+			Reason:      c.reason,
+		})
 	}
 
 	return samples, nil
 }
 
-// collectGeneralDrawers returns DrawerAudit entries for drawers currently in "general".
+// tuneDrawerKey keys a drawer by wing, room and id, so a candidate resolves to
+// exactly the drawer the audit scored (a store chunk id and a legacy drawer id
+// never collide because they are never compared, but keying on all three keeps
+// a same-id drawer in two rooms distinct).
+func tuneDrawerKey(wing, room, id string) string {
+	return wing + "\x00" + room + "\x00" + id
+}
+
+// collectGeneralDrawers returns DrawerAudit entries for drawers currently in
+// "general". It reads the host-local store (with the pre-marker tracked-drawer
+// fallback) through the one navigation reader (Scope 3), filtered to the
+// "general" room.
 func collectGeneralDrawers(vault *storage.Vault, classifier *RoomClassifier, opts TuneOptions) ([]DrawerAudit, error) {
-	wings, err := vault.ListWings(opts.Project)
+	hits, err := visibleDrawers(vault, opts.Project)
 	if err != nil {
 		return nil, err
 	}
 
 	var results []DrawerAudit
-	for _, wing := range wings {
-		drawers, err := vault.ListDrawers(opts.Project, wing, "general")
-		if err != nil {
-			continue // general room may not exist
+	for _, h := range hits {
+		if h.Room != "general" {
+			continue
 		}
-		for _, d := range drawers {
-			// Defensive only — this is NOT the load-bearing skip. This
-			// function reads exactly one room, "general", and capture files
-			// every decision drawer into the fixed "decisions" room, so under
-			// that rule no decision drawer can reach this loop at all. The
-			// check is here so the invariant "a decision drawer is never
-			// re-scored" holds by construction rather than by the coincidence
-			// that two room names differ; it costs one field comparison. The
-			// skip that actually does work is in RunAudit.
-			if isDecisionDrawer(d) {
-				continue
-			}
+		d := h.Drawer
+		// Defensive only — this is NOT the load-bearing skip. This function
+		// reads exactly one room, "general", and capture files every decision
+		// drawer into the fixed "decisions" room, so under that rule no decision
+		// drawer can reach this loop at all. The check is here so the invariant
+		// "a decision drawer is never re-scored" holds by construction rather
+		// than by the coincidence that two room names differ; it costs one field
+		// comparison. The skip that actually does work is in RunAudit.
+		if isDecisionDrawer(d) {
+			continue
+		}
 
-			res := classifier.ClassifyWithScores(d.Content, d.SourceRef, opts.Keywords)
-			results = append(results, DrawerAudit{
-				ID:          d.ID,
-				Wing:        wing,
-				CurrentRoom: "general",
-				BestRoom:    res.Room,
-				BestScore:   res.Score,
-				Scores:      res.Scores,
-				Tier:        res.Tier,
-			})
-		}
+		res := classifier.ClassifyWithScores(d.Content, d.SourceRef, opts.Keywords)
+		results = append(results, DrawerAudit{
+			ID:          d.ID,
+			Wing:        h.Wing,
+			CurrentRoom: "general",
+			BestRoom:    res.Room,
+			BestScore:   res.Score,
+			Scores:      res.Scores,
+			Tier:        res.Tier,
+		})
 	}
 	return results, nil
 }

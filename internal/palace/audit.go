@@ -4,8 +4,6 @@
 package palace
 
 import (
-	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -90,12 +88,15 @@ func isDecisionDrawer(d storage.Drawer) bool {
 	return d.SourceType == storage.SourceTypeDecision
 }
 
-// RunAudit walks all wings/rooms/drawers and builds an AuditReport.
-// Per-drawer errors are logged and skipped (non-fatal).
+// RunAudit reads the project's drawers from the host-local chunk store (with
+// the tracked-drawer fallback before the migration marker) through
+// visibleDrawers — the one navigation reader — and builds an AuditReport. The
+// candidate walk no longer reads ListDrawers (palace-navigation..., Scope 1):
+// without this, --apply would have nothing to relabel after the marker.
 func RunAudit(vault *storage.Vault, classifier *RoomClassifier, opts AuditOptions) (*AuditReport, error) {
-	wings, err := vault.ListWings(opts.Project)
+	hits, err := visibleDrawers(vault, opts.Project)
 	if err != nil {
-		return nil, fmt.Errorf("list wings: %w", err)
+		return nil, err
 	}
 
 	report := &AuditReport{
@@ -109,71 +110,56 @@ func RunAudit(vault *storage.Vault, classifier *RoomClassifier, opts AuditOption
 	roomCounts := make(map[string]int)
 	var allContent []string
 
-	for _, wing := range wings {
-		rooms, err := vault.ListRooms(opts.Project, wing)
-		if err != nil {
-			slog.Warn("audit: list rooms failed", "wing", wing, "err", err)
+	for _, h := range hits {
+		d := h.Drawer
+		wing, room := h.Wing, h.Room
+
+		// This skip belongs HERE, at the top of the loop, and not further down
+		// next to the classify call. A decision drawer must be invisible to the
+		// audit's ARITHMETIC, not merely exempt from its moves:
+		//
+		//   - report.TotalDrawers is the DIVISOR for every room distribution
+		//     percent below and for GeneralPercent. Count decision drawers into
+		//     it and every reported percentage drifts downward as the decision
+		//     corpus grows, silently, while the numerators stay honest.
+		//   - roomCounts[room] would gain a "decisions" row that no classifier
+		//     proposal can ever act on — a permanent line in the distribution
+		//     report that nothing can change.
+		//   - allContent feeds KeywordCoverage at the end of this function,
+		//     which reports which keywords fire across the corpus. Decision
+		//     prose would be scored as if it were classifier training material
+		//     and skew that answer.
+		//
+		// Moving this below TotalDrawers++ still suppresses the move proposal,
+		// so the mismatch test keeps passing while all three of the above
+		// quietly break. Leave it at the top.
+		if isDecisionDrawer(d) {
 			continue
 		}
 
-		for _, room := range rooms {
-			drawers, err := vault.ListDrawers(opts.Project, wing, room)
-			if err != nil {
-				slog.Warn("audit: list drawers failed", "wing", wing, "room", room, "err", err)
-				continue
-			}
+		report.TotalDrawers++
+		roomCounts[room]++
+		allContent = append(allContent, d.Content)
 
-			for _, d := range drawers {
-				// This skip belongs HERE, at the top of the loop, and not
-				// further down next to the classify call. A decision drawer
-				// must be invisible to the audit's ARITHMETIC, not merely
-				// exempt from its moves:
-				//
-				//   - report.TotalDrawers is the DIVISOR for every room
-				//     distribution percent below and for GeneralPercent. Count
-				//     decision drawers into it and every reported percentage
-				//     drifts downward as the decision corpus grows, silently,
-				//     while the numerators stay honest.
-				//   - roomCounts[room] would gain a "decisions" row that no
-				//     classifier proposal can ever act on — a permanent line in
-				//     the distribution report that nothing can change.
-				//   - allContent feeds KeywordCoverage at the end of this
-				//     function, which reports which keywords fire across the
-				//     corpus. Decision prose would be scored as if it were
-				//     classifier training material and skew that answer.
-				//
-				// Moving this below TotalDrawers++ still suppresses the move
-				// proposal, so the mismatch test keeps passing while all three
-				// of the above quietly break. Leave it at the top.
-				if isDecisionDrawer(d) {
-					continue
-				}
+		res := classifier.ClassifyWithScores(d.Content, d.SourceRef, opts.Keywords)
+		da := DrawerAudit{
+			ID:           d.ID,
+			Wing:         wing,
+			CurrentRoom:  room,
+			BestRoom:     res.Room,
+			BestScore:    res.Score,
+			CurrentScore: res.Scores[room],
+			Scores:       res.Scores,
+			Borderline:   res.Borderline,
+			Tier:         res.Tier,
+		}
 
-				report.TotalDrawers++
-				roomCounts[room]++
-				allContent = append(allContent, d.Content)
-
-				res := classifier.ClassifyWithScores(d.Content, d.SourceRef, opts.Keywords)
-				da := DrawerAudit{
-					ID:           d.ID,
-					Wing:         wing,
-					CurrentRoom:  room,
-					BestRoom:     res.Room,
-					BestScore:    res.Score,
-					CurrentScore: res.Scores[room],
-					Scores:       res.Scores,
-					Borderline:   res.Borderline,
-					Tier:         res.Tier,
-				}
-
-				if res.Room != room {
-					da.Mismatch = true
-					report.Mismatches = append(report.Mismatches, da)
-				}
-				if res.Borderline {
-					report.Borderlines = append(report.Borderlines, da)
-				}
-			}
+		if res.Room != room {
+			da.Mismatch = true
+			report.Mismatches = append(report.Mismatches, da)
+		}
+		if res.Borderline {
+			report.Borderlines = append(report.Borderlines, da)
 		}
 	}
 

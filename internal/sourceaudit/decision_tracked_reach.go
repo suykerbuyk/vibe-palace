@@ -88,13 +88,11 @@ var decisionTrackedWriterAllow = map[string]bool{
 	// roots will reach it through IndexTranscript, and only this cut keeps them
 	// from firing — until child 4 removes IndexTranscript and this entry with it.
 	"capture.IndexTranscript": true,
-	// `vp audit rooms --apply` moves tracked drawers through the rooms audit
-	// until palace-navigation-over-the-host-local-chunk-store repoints the
-	// palace at the store; whichever of that child and this one lands second
-	// removes these. They are not reached by any root today, so they are a
-	// documented, inert cut.
-	"main.runAuditRooms": true,
-	"main.applyMoves":    true,
+	// (`main.runAuditRooms` / `main.applyMoves` were removed by
+	// palace-navigation-over-the-host-local-chunk-store, which repointed
+	// `vp audit rooms --apply` at the host-local store: it relabels through
+	// palace.Relabel → indexstore.Tx.Rewrite and no longer reaches a tracked
+	// writer, so no cut is needed.)
 }
 
 // decisionTrackedReach reports each root whose call graph reaches a tracked-tree
