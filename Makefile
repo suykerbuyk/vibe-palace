@@ -100,7 +100,10 @@ fmt-check: ## FAIL if any Go source is not gofmt-clean
 ##@ Test
 .PHONY: test
 test: build fmt-check vet ## Run unit tests — fast, no model download
-	go test -race -short -cover ./...
+	# -timeout 20m (not go test's 10m default): internal/storage's -race suite runs
+	# ~220s alone but is starved under ./... package-parallelism and can pass 600s,
+	# a parallelism-contention edge, not a hang. The ceiling still catches a real hang.
+	go test -race -short -cover -timeout 20m ./...
 	@$(MAKE) --no-print-directory live-canary
 
 # The live-vault canaries measure a vault that lives OUTSIDE this module, so `go
