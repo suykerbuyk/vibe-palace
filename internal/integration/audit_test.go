@@ -58,7 +58,7 @@ func TestIntegrationAuditDetectsMismatches(t *testing.T) {
 // nothing: room relabelling is a host-local-store write available only after
 // the migration (palace.Relabel). RunAudit still finds the candidate through
 // the tracked-drawer fallback. The post-marker relabel over the store is
-// covered by the palace-package unit tests (relabel_test.go).
+// covered by the palace-package unit tests (store_reader_test.go).
 func TestIntegrationAuditApplyRefusesBeforeMarker(t *testing.T) {
 	h := newHarness(t, false)
 

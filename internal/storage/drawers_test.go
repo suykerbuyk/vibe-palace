@@ -445,7 +445,7 @@ func TestListAllProjects_EmptyPalace(t *testing.T) {
 
 // MoveDrawer and its tests were deleted by
 // palace-navigation-over-the-host-local-chunk-store; room relabelling is now
-// palace.Relabel over the host-local store (internal/palace/relabel_test.go).
+// palace.Relabel over the host-local store (internal/palace/store_reader_test.go).
 
 // splitNonEmpty splits s by newline and returns non-empty lines.
 func splitNonEmpty(s string) []string {
