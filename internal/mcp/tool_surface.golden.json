@@ -142,6 +142,11 @@
       "schema_sha256": "2e4e7b4ab0dba8e1b2c0aa8245c563f1863782ad3d7e4745614bf7ce96d60261"
     },
     {
+      "name": "vp_index_status",
+      "mutating": false,
+      "schema_sha256": "e6bb4842aab417be857b871f1a3d5a5a2867ac63fa1450cd2d5627f542dd9dc4"
+    },
+    {
       "name": "vp_ingest_commit_msg",
       "mutating": true,
       "schema_sha256": "f0969697ce3c5c9d9e64b81dc9d2dd3d5a7de8d6d197a69796fdfaaad189b2e1"
