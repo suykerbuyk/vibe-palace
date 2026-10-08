@@ -94,7 +94,7 @@ var findTunnelsSchema = json.RawMessage(`{
 func PalaceStatusTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_palace_status",
-		Description: "Overview of palace structure: wing/room/drawer counts, tunnels, and per-wing breakdown. Built from this host's local chunk store; empty counts can mean the index is unbuilt on this host rather than that the palace is empty — run vp_index_coverage to tell them apart.",
+		Description: "Overview of palace structure: wing/room/drawer counts, tunnels, and per-wing breakdown. Built from this host's local chunk store; empty counts can mean the index is unbuilt on this host rather than that the palace is empty — run vp_index_status to tell them apart.",
 		Schema:      palaceStatusSchema,
 		Handler:     palaceStatusHandler(vault),
 	}
@@ -104,7 +104,7 @@ func PalaceStatusTool(vault *storage.Vault) mcp.Tool {
 func ListWingsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_list_wings",
-		Description: "List all wings in a project with room and drawer counts. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_coverage.",
+		Description: "List all wings in a project with room and drawer counts. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_status.",
 		Schema:      listWingsSchema,
 		Handler:     listWingsHandler(vault),
 	}
@@ -114,7 +114,7 @@ func ListWingsTool(vault *storage.Vault) mcp.Tool {
 func ListRoomsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_list_rooms",
-		Description: "List rooms in a wing with drawer counts and hall distribution. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_coverage.",
+		Description: "List rooms in a wing with drawer counts and hall distribution. Read from this host's local chunk store; an empty list can mean the index is unbuilt on this host — run vp_index_status.",
 		Schema:      listRoomsSchema,
 		Handler:     listRoomsHandler(vault),
 	}
@@ -124,7 +124,7 @@ func ListRoomsTool(vault *storage.Vault) mcp.Tool {
 func TraverseTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_traverse",
-		Description: "BFS graph traversal from a starting room, returning reachable rooms with hop distances. The graph is built from this host's local chunk store; an empty or missing start can mean the index is unbuilt on this host — run vp_index_coverage.",
+		Description: "BFS graph traversal from a starting room, returning reachable rooms with hop distances. The graph is built from this host's local chunk store; an empty or missing start can mean the index is unbuilt on this host — run vp_index_status.",
 		Schema:      traverseSchema,
 		Handler:     traverseHandler(vault),
 	}
@@ -134,7 +134,7 @@ func TraverseTool(vault *storage.Vault) mcp.Tool {
 func FindTunnelsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name:        "vp_find_tunnels",
-		Description: "Find rooms that span multiple wings (cross-wing connections). Built from this host's local chunk store; an empty result can mean the index is unbuilt on this host — run vp_index_coverage.",
+		Description: "Find rooms that span multiple wings (cross-wing connections). Built from this host's local chunk store; an empty result can mean the index is unbuilt on this host — run vp_index_status.",
 		Schema:      findTunnelsSchema,
 		Handler:     findTunnelsHandler(vault),
 	}

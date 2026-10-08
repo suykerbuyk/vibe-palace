@@ -126,6 +126,7 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// `vp drain archives` and `vp search`. Its derived-gate divergence is
 	// accepted in internal/sourceaudit/baseline.json.
 	reg.Register(cmdIndexRebuild())
+	reg.Register(cmdIndexStatus())
 	reg.Register(cmdInject())
 	reg.Register(cmdSearch())
 	reg.Register(cmdSessions())

@@ -97,6 +97,13 @@ var (
 	coverageRunAlive         = pidSignalAlive
 )
 
+// CoverageFailureLimit is the failure count at or above which the automatic
+// ingester stops retrying an archive (coverage then counts it as failing). It
+// is exported so a cross-package test can guard it against ingest's own
+// DefaultFailureLimit, which this package cannot import (ingest imports this
+// package).
+func CoverageFailureLimit() int { return coverageFailureLimit }
+
 // coverageFailureLimit mirrors ingest.DefaultFailureLimit (how many failures
 // make the automatic ingester skip an archive until `vp index rebuild`). It is
 // a local copy because internal/ingest imports this package, so this package

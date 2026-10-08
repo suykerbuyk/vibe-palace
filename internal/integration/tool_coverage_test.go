@@ -601,6 +601,31 @@ var toolCoverageFixtures = map[string]toolFixture{
 		},
 	},
 
+	"vp_index_status": {
+		projects: []string{"cov-indexstatus"},
+		build: func(t *testing.T, h *testHarness) any {
+			// A project with a drawer is not truly empty, so coverage lands in a
+			// real state with a reason (the exact state depends on the harness
+			// vault's marker; the assertion checks the struct shape, not it).
+			h.Seed(t, testinfra.WithDrawer("cov-indexstatus", "w1", "r1", "content", "facts", "2026-01-01T10:00:00Z"))
+			return map[string]any{"project": "cov-indexstatus"}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				Project string `json:"project"`
+				State   string `json:"state"`
+				Reason  string `json:"reason"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.Project != "cov-indexstatus" {
+				t.Errorf("project = %q, want cov-indexstatus", out.Project)
+			}
+			if out.State == "" || out.Reason == "" {
+				t.Errorf("coverage state/reason empty: state=%q reason=%q", out.State, out.Reason)
+			}
+		},
+	},
+
 	"vp_list_wings": {
 		projects: []string{"cov-listwings"},
 		build: func(t *testing.T, h *testHarness) any {

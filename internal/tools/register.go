@@ -155,6 +155,10 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(CheckTool(vault))
 	reg.MustRegister(ScanPlansTool(vault))
 	reg.MustRegister(RepoFreshnessTool())
+	// vp_index_status registers whether or not an engine exists: it never needs
+	// one (its handler builds a no-embedder engine on demand), so a host with no
+	// search engine still answers "why is search empty here?".
+	reg.MustRegister(IndexStatusTool(vault))
 	if engine != nil {
 		reg.MustRegister(SearchTool(engine))
 		reg.MustRegister(SearchCrossProjectTool(engine))

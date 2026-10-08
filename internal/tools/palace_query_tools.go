@@ -295,7 +295,7 @@ func PalaceQueryTool(vault *storage.Vault) mcp.Tool {
 			"`wing` defaults to the project slug, where every capture-written drawer lands; drawers written by the mempalace migrator live in other wings and need an explicit wing=. " +
 			"`hall` is a TOPIC classification assigned by keyword matching, not a memory kind — source_type is the load-bearing key. " +
 			"The result ENDS with `complete`: if you do not see `complete: true`, your host truncated it and `drawers` is a PREFIX — do not read the missing drawers as decisions that were never made. " +
-			"Drawers are read from this host's local chunk store; an empty answer can mean the project's index is simply not built on this host rather than that nothing was recorded — run vp_index_coverage to tell the two apart.",
+			"Drawers are read from this host's local chunk store; an empty answer can mean the project's index is simply not built on this host rather than that nothing was recorded — run vp_index_status to tell the two apart.",
 		Schema:  palaceQuerySchema,
 		Handler: palaceQueryHandler(vault),
 	}

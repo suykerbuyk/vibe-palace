@@ -51,11 +51,14 @@ git text (`[pull <remote>] …` lines, plus any `[heal] …` lines).
   designed cold-start path (`ranking.fallback_reason: "embedder_not_ready"`
   is expected, not a defect), and a pull from another machine is not a reason
   to pay that cost before the session has even started. If the human wants
-  semantic ranking, tell them in one line that search rebuilds lazily on the
-  first `vp_search` call — do not run it for them, and do not special-case
-  "only if this project's files changed": that still blocks on a large
-  corpus. Rebuilding on purpose is `vp_refresh_index` called explicitly,
-  outside restart, by an operator who chose to pay for it.
+  semantic ranking, read this host's `index_coverage` and its reason (or
+  `vp_index_status <project>`): for `stale`, `unbuilt`, or `partial` with a
+  backlog or failing archives, tell them in one line that `vp index rebuild
+  <project>` is the explicit path — do not run it for them, and do not
+  special-case "only if this project's files changed": a rebuild still blocks
+  on a large corpus. Rebuilding on purpose is `vp index rebuild` (or
+  `vp_refresh_index`) called explicitly, outside restart, by an operator who
+  chose to pay for it.
 - If `output` shows a merge conflict or files git flags for manual
   resolution (e.g. `CONFLICT`, "Automatic merge failed"), inform the
   user before proceeding.

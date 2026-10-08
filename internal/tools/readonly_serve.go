@@ -135,6 +135,7 @@ var ReadOnlyServeToolNames = []string{
 	"vp_get_task",
 	"vp_get_workflow",
 	"vp_health",
+	"vp_index_status",
 	"vp_kg_query",
 	"vp_kg_stats",
 	"vp_kg_timeline",
