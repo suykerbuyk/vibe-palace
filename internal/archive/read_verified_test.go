@@ -90,7 +90,7 @@ func TestReadVerifiedRefusesAHashMismatch(t *testing.T) {
 	if err := os.WriteFile(src, []byte(other), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := compressFile(vault, src, e.ArchivePath)
+	n, err := compressFile(vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestReadVerifiedTellsARewriteMidReadFromCorruption(t *testing.T) {
 	}
 	old := readArchiveFile
 	readArchiveFile = func(p string) ([]byte, error) {
-		n, err := compressFile(vault, src, e.ArchivePath)
+		n, err := compressFile(vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -6,6 +6,7 @@ package archive
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,6 +79,15 @@ type CreateOptions struct {
 	// the caller — an unsigned archive is usable but misses the
 	// anchoring guarantee, so silently skipping would be surprising.
 	Sign SignOptions
+
+	// MaxArchiveBytes caps the compressed *.jsonl.zst blob. When a session
+	// would compress to more than this, Create refuses with
+	// ErrArchiveTooLarge and writes nothing to the vault (no blob, no
+	// manifest, no .bak). A zero or negative value selects
+	// DefaultMaxArchiveBytes. This mirrors the Sign idiom: an unset field
+	// takes the package default, so every existing caller is protected with
+	// no caller change.
+	MaxArchiveBytes int64
 
 	// LockPosture selects how Create serializes on the MANIFEST PATH against a
 	// concurrent writer of the same manifest (ADR-003; see lock.go).
@@ -199,6 +209,12 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	defer release()
 
 	// Idempotency check: same (session_id, adapter, source hash)?
+	//
+	// When the source has CHANGED, the prior manifest must be preserved as a
+	// .bak before it is overwritten — but that preservation is DEFERRED until
+	// after compressFile succeeds (see the reorder note below). Capture the
+	// prior manifest here; act on it only once the new blob is durably in place.
+	var priorManifest *Manifest
 	if existing, err := ReadManifest(manifestPath); err == nil {
 		if existing.Adapter == opts.Adapter &&
 			existing.SessionID == opts.SessionID &&
@@ -210,36 +226,65 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 				Skipped:      true,
 			}, nil
 		}
-		// Source has changed. Preserve the prior manifest as a .bak
-		// before overwriting. See ADR-001 (idempotency section).
-		//
-		// Through the F2 sink: this is a RENAME of an existing vault file, not
-		// a content write, so it belongs to the removal/rename family and not
-		// to atomicfile. The Option E census originally filed archive.Create
-		// under F1 on the strength of the MkdirAll two dozen lines up; the
-		// MkdirAll is F3 and lands in a later phase, and this line is F2.
-		//
-		// SERIALIZED as of the per-manifest lock taken above (ADR-003). This
-		// rename used to be unserialized against a concurrent writer of the same
-		// manifest — recorded here rather than repaired, because a concurrency
-		// change did not belong in a routing phase. It has since been ruled on:
-		// Create holds the manifest's vaultlock across the whole
-		// ReadManifest -> compare -> rename -> write window, so exactly one
-		// writer can reach this arm per source change.
-		//
-		// The SINK still takes no lock, and that is unchanged and load-bearing
-		// (see internal/vaultfs/raw.go). The exclusion lives in this caller.
-		bakPath := fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(existing.SourceSHA256))
+		priorManifest = existing
+	}
+
+	// Resolve the blob ceiling. Mirrors the CreateOptions.Sign idiom: an unset
+	// field takes the package default, so all three callers are protected with
+	// no caller change.
+	ceiling := opts.MaxArchiveBytes
+	if ceiling <= 0 {
+		ceiling = DefaultMaxArchiveBytes
+	}
+
+	// Compress the source into place FIRST — REORDERED ahead of the prior
+	// manifest's .bak step below. Write to a tmp path then rename so a crash
+	// can't leave a torn .jsonl.zst next to the manifest.
+	//
+	// The order matters for crash-consistency under the new size refusal: a
+	// refusal (ErrArchiveTooLarge) or any other compress error returns here
+	// with NOTHING in the vault touched. atomicfile removes the temp on a fill
+	// error so no over-ceiling blob is renamed in, and the prior manifest is
+	// still live and still visible to readers — ListEntries matches only the
+	// *.manifest.json suffix (verify.go), so a manifest moved to .bak ahead of
+	// a refusal would have vanished from them while its blob was stranded.
+	//
+	// The success-case transient window (blob=NEW, manifest=OLD, before the
+	// .bak+WriteManifest below) self-heals on re-run via the hash-mismatch arm
+	// above: the OLD manifest's source hash no longer matches, so the re-run
+	// re-compresses (idempotent, atomic rename), .bak's the OLD manifest, and
+	// writes the NEW one. compressFile stays inside the manifest lock taken
+	// above, so concurrency behaviour is unchanged.
+	compressedBytes, err := compressFile(opts.VaultRoot, sourcePath, archivePath, ceiling)
+	if err != nil {
+		return nil, err
+	}
+
+	// The new blob is durably in place and the source changed: NOW preserve the
+	// prior manifest as a .bak before overwriting it. See ADR-001 (idempotency
+	// section).
+	//
+	// Through the F2 sink: this is a RENAME of an existing vault file, not
+	// a content write, so it belongs to the removal/rename family and not
+	// to atomicfile. The Option E census originally filed archive.Create
+	// under F1 on the strength of the MkdirAll two dozen lines up; the
+	// MkdirAll is F3 and lands in a later phase, and this line is F2.
+	//
+	// SERIALIZED as of the per-manifest lock taken above (ADR-003). This
+	// rename used to be unserialized against a concurrent writer of the same
+	// manifest — recorded here rather than repaired, because a concurrency
+	// change did not belong in a routing phase. It has since been ruled on:
+	// Create holds the manifest's vaultlock across the whole
+	// ReadManifest -> compare -> rename -> write window, so exactly one
+	// writer can reach this arm per source change.
+	//
+	// The SINK still takes no lock, and that is unchanged and load-bearing
+	// (see internal/vaultfs/raw.go). The exclusion lives in this caller.
+	if priorManifest != nil {
+		bakPath := fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(priorManifest.SourceSHA256))
 		if err := vaultfs.RenameNoLock(manifestPath, bakPath); err != nil {
 			return nil, fmt.Errorf("preserve prior manifest: %w", err)
 		}
-	}
-
-	// Compress the source into place. Write to a tmp path then rename
-	// so a crash can't leave a torn .jsonl.zst next to the manifest.
-	compressedBytes, err := compressFile(opts.VaultRoot, sourcePath, archivePath)
-	if err != nil {
-		return nil, err
 	}
 
 	// Inspection failures are non-fatal — the source hash still pins
@@ -305,7 +350,58 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
-// compressFile zstd-compresses src into dst and returns the compressed size.
+// DefaultMaxArchiveBytes is the ceiling on a single compressed transcript
+// archive (*.jsonl.zst) when a caller does not set CreateOptions.MaxArchiveBytes.
+//
+// It sits ~2 MiB under the 20 MiB (20,971,520 B) per-blob push limit that the
+// quantum vault's GitLab origin enforces, so a long or image-heavy session
+// cannot silently produce a blob that wedges the vault git push for every
+// project sharing that origin. The ~2 MiB of headroom is ~16x zstd's ~128 KiB
+// default-block single-write granularity, so the streaming refusal fires well
+// short of the hard limit even counting a final in-flight block.
+const DefaultMaxArchiveBytes = 18 * 1024 * 1024
+
+// ErrArchiveTooLarge is returned by Create (and compressFile) when the
+// compressed transcript would exceed the resolved ceiling. It is wrapped with
+// %w along the compressFile error path, so callers match it with
+// errors.Is(err, ErrArchiveTooLarge). On this error nothing is written to the
+// vault: no .jsonl.zst is renamed in, no manifest is written, and the prior
+// manifest (if any) is left untouched.
+var ErrArchiveTooLarge = errors.New("compressed transcript archive exceeds the size ceiling")
+
+// capWriter wraps the destination io.Writer that compressFile hands to the zstd
+// encoder and aborts the stream the instant the compressed output WOULD exceed
+// limit. It rejects the crossing write BEFORE forwarding it, so the bytes that
+// reach the underlying writer never exceed limit; combined with
+// atomicfile.WriteStream removing the temp on a fill error, no over-ceiling blob
+// is ever renamed into the vault.
+type capWriter struct {
+	w     io.Writer
+	limit int64
+	n     int64
+}
+
+// Write forwards p to the wrapped writer unless doing so would push the running
+// compressed total past limit, in which case it writes nothing and returns
+// ErrArchiveTooLarge. The zstd encoder surfaces this error verbatim through
+// io.Copy or its final Close (klauspost/compress returns the underlying writer
+// error unwrapped), and compressFile wraps it with %w.
+func (c *capWriter) Write(p []byte) (int, error) {
+	if c.n+int64(len(p)) > c.limit {
+		return 0, ErrArchiveTooLarge
+	}
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// compressFile zstd-compresses src into dst and returns the compressed size. It
+// refuses, without materializing dst, when the compressed output would exceed
+// maxBytes (see capWriter and ErrArchiveTooLarge).
+//
+// maxBytes must be > 0: Create is the single resolution point and maps a <= 0
+// ceiling to DefaultMaxArchiveBytes before calling, so compressFile adds no
+// second guard (a <= 0 maxBytes here would refuse everything).
 //
 // The temp-plus-rename it used to hand-roll now belongs to
 // atomicfile.WriteStream, which also stamps the surface. The streaming shape is
@@ -317,7 +413,7 @@ func hashFile(path string) (string, int64, error) {
 // the primitive's ".vp-atomic-*" in the destination directory rather than
 // dst+".tmp" — which is inherent in the primitive owning the rename, and
 // nothing reads that name.
-func compressFile(vaultRoot, src, dst string) (int64, error) {
+func compressFile(vaultRoot, src, dst string, maxBytes int64) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
@@ -325,15 +421,25 @@ func compressFile(vaultRoot, src, dst string) (int64, error) {
 	defer in.Close()
 
 	if err := atomicfile.WriteStream(vaultRoot, dst, func(w io.Writer) error {
-		enc, err := zstd.NewWriter(w)
+		// Wrap ONLY the writer handed to zstd, so the cap counts COMPRESSED
+		// bytes (what actually lands in the blob), not the source size.
+		cw := &capWriter{w: w, limit: maxBytes}
+		enc, err := zstd.NewWriter(cw)
 		if err != nil {
 			return fmt.Errorf("init zstd: %w", err)
 		}
 		if _, err := io.Copy(enc, in); err != nil {
+			// Both Close() calls are load-bearing: the default encoder runs
+			// one goroutine per GOMAXPROCS, and Close joins them and flushes
+			// the final frame. Dropping it here leaks those goroutines on a
+			// cap refusal; dropping it below corrupts every happy-path archive.
 			enc.Close()
 			return fmt.Errorf("compress: %w", err)
 		}
 		if err := enc.Close(); err != nil {
+			// For an input smaller than one zstd block the cap trips HERE, on
+			// the flush, not in io.Copy above — both paths wrap with %w so
+			// errors.Is(err, ErrArchiveTooLarge) holds either way.
 			return fmt.Errorf("close zstd writer: %w", err)
 		}
 		return nil

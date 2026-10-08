@@ -136,7 +136,7 @@ func TestVerify_DetectsTamperedArchive(t *testing.T) {
 	if err := os.WriteFile(otherSrc, other, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compressFile(vault, otherSrc, res.ArchivePath); err != nil {
+	if _, err := compressFile(vault, otherSrc, res.ArchivePath, DefaultMaxArchiveBytes); err != nil {
 		t.Fatal(err)
 	}
 
