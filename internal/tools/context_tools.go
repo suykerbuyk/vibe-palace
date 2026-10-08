@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -329,9 +330,19 @@ type BootstrapResult struct {
 	// KGUnreadable carries why the knowledge graph could not be read, when it
 	// could not. It is the discriminator that kg_snapshot alone cannot provide:
 	// an absent snapshot used to mean "no graph" and "graph unreadable" at once.
-	KGUnreadable      string           `json:"kg_unreadable,omitempty"`
-	AvailableCommands []commandSummary `json:"available_commands,omitempty"`
-	AvailableSkills   []skillSummary   `json:"available_skills,omitempty"`
+	KGUnreadable string `json:"kg_unreadable,omitempty"`
+
+	// IndexCoverage carries this host's search-index coverage for the
+	// bootstrapped project — its state and reason, the n-of-m session counts
+	// and the pending/backlog/failing split, a run in progress (read once per
+	// vault from the advisory holder record, no lock), and a count of the OTHER
+	// projects in each non-current state. It rides HERE, beside kg_snapshot, so
+	// a reader sees the authored counts and the coverage state together and a
+	// zero really means zero (index-coverage-instrument, Scope 6, Scope 8). It
+	// is computed over a NO-EMBEDDER engine: nothing on this path loads a model.
+	IndexCoverage     *indexCoverageReport `json:"index_coverage,omitempty"`
+	AvailableCommands []commandSummary     `json:"available_commands,omitempty"`
+	AvailableSkills   []skillSummary       `json:"available_skills,omitempty"`
 
 	// 🔴 THE TERMINAL SENTINEL. LAST FIELD, NO omitempty, ALWAYS true — all three
 	// properties are the mechanism, and each one is load-bearing.
@@ -552,6 +563,67 @@ func AssembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 // environment belongs to whoever started the server, days ago, possibly on
 // another machine. Sniffing os.Args or stdin's file type would be guessing at a
 // fact the caller already knows for certain, so the caller states it.
+// indexCoverageReport is the bootstrap payload's index-coverage instrument. It
+// embeds the bootstrapped project's search.Coverage (state, reason, n/m,
+// pending/backlog/failing and the run in progress) and adds Others: a count of
+// the OTHER projects in each non-current state (index-coverage-instrument,
+// Scope 6).
+type indexCoverageReport struct {
+	search.Coverage
+	Others map[string]int `json:"others,omitempty"`
+}
+
+// computeIndexCoverage derives coverage for the bootstrapped project and tallies
+// the other projects' states, over a NO-EMBEDDER engine: the lazy embedder's
+// constructor is never called on the coverage path (Stale()/TrulyEmpty() load
+// no model), so bootstrap loads no model. The run lock's holder record is read
+// once per vault (Scope 5, Scope 10). It is graceful: any error yields nil, so
+// a coverage read never fails bootstrap.
+func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageReport {
+	cfg, err := vault.LoadConfig(project)
+	if err != nil {
+		return nil
+	}
+	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
+		return nil, errors.New("bootstrap coverage loads no embedder")
+	})
+	eng := search.NewEngine(emb, vault, cfg)
+	defer eng.Close()
+
+	cov, err := eng.CoverageState(project)
+	if err != nil {
+		return nil
+	}
+	// The run in progress, read once for the whole vault.
+	if run, err := eng.RunInProgress(); err == nil {
+		cov.Run = run
+	}
+
+	rep := &indexCoverageReport{Coverage: cov}
+
+	// Tally the OTHER projects by state, excluding current. Graceful per project:
+	// one project that cannot be read is skipped, not fatal.
+	if others, err := vault.ListAllProjects(); err == nil {
+		counts := map[string]int{}
+		for _, p := range others {
+			if p.Slug == project {
+				continue
+			}
+			oc, err := eng.CoverageState(p.Slug)
+			if err != nil {
+				continue
+			}
+			if oc.State != search.CoverageCurrent {
+				counts[string(oc.State)]++
+			}
+		}
+		if len(counts) > 0 {
+			rep.Others = counts
+		}
+	}
+	return rep
+}
+
 func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, projectRepoPath string, engine *search.Engine, stdioMCP bool) BootstrapResult {
 
 	// The Herdr line is built ONCE, here, into a local that is threaded into
@@ -664,6 +736,17 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGSnapshot = &stats
 	} else {
 		result.KGUnreadable = err.Error()
+	}
+
+	// Index coverage — the bootstrapped project's state and reason, the run in
+	// progress (read once per vault, no lock) and a count of the other projects
+	// in each non-current state. Computed over a NO-EMBEDDER engine so nothing
+	// here loads a model; graceful on error, so a coverage read that fails never
+	// fails bootstrap. It rides beside kg_snapshot (Scope 6, Scope 8).
+	if project != "" {
+		if cov := computeIndexCoverage(vault, project); cov != nil {
+			result.IndexCoverage = cov
+		}
 	}
 
 	// Inbox COUNT — the true total of capture-inbox entries, never capped.
