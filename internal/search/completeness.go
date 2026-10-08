@@ -324,6 +324,16 @@ func dirHasSuffix(dir, suffix string) (bool, error) {
 	return false, nil
 }
 
+// HasTrackedDrawers reports whether the project has any tracked drawer. It is
+// the exported form of the glide-path presence test countTrackedDrawers that
+// TrulyEmpty and the tier table already use, so the coverage instrument reads
+// the same answer without re-deriving it (index-coverage-instrument, Design
+// "Data sources"). It loads no embedder.
+func (e *Engine) HasTrackedDrawers(project string) (bool, error) {
+	n, err := e.countTrackedDrawers(project)
+	return n > 0, err
+}
+
 func (e *Engine) countTrackedDrawers(project string) (int, error) {
 	n := 0
 	wings, err := e.vault.ListWings(project)
