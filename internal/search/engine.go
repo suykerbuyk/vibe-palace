@@ -111,7 +111,7 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		// Only an engine that can embed validates the cache's regime: one with
 		// no embedder (vp check's) must never invalidate vectors it cannot
 		// replace.
-		cache.fingerprint = embedder.Fingerprint(cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
+		cache.fingerprint = embedder.FingerprintBackend(embedder.ResolveBackend(cfg.EmbedderBackend), cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
 	}
 	return &Engine{
 		embedder:    emb,

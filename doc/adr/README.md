@@ -21,6 +21,7 @@ works today, see [doc/ARCHITECTURE.md](../ARCHITECTURE.md); the code is authorit
 | [012](012-vault-resolution-precedence-and-host-project-bindings.md) | Vault Resolution Precedence and Host-Local Project Bindings | Accepted 2026-09-27; amended 2026-09-28 (rule 7 corrected by ADR-013) |
 | [013](013-vault-project-lifecycle-and-departure-records.md) | Vault Project Lifecycle Commands and Departure Records | Accepted 2026-09-28 |
 | [014](014-search-index-compiled-per-host-from-vault-artifacts.md) | The Vault Holds Authored Artifacts; Each Host Compiles Its Search Index from Them | Accepted 2026-10-02 |
+| [015](015-optional-native-ort-embedder.md) | An Optional, Build-Tag-Gated Native ONNX-Runtime Embedder; the Default Stays Zero-CGO | **Proposed** 2026-10-08 |
 
 The Status column summarises each ADR's own **Status:** line; the ADR's line is authoritative.
 To list the status lines: `grep -n '^\*\*Status:\*\*' doc/adr/0*.md`.

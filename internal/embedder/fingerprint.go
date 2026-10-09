@@ -27,6 +27,32 @@ const BehaviourVersion = 2
 // BehaviourVersion). Two embedders with equal fingerprints produce the same
 // vector for the same input, so a cached vector written under one is valid
 // under the other.
+//
+// It is the pure-Go regime — byte-for-byte today's string — and is pinned by
+// TestFingerprintGoStringIsByteIdentical. Callers that know the backend use
+// FingerprintBackend; this is FingerprintBackend(BackendGo, …).
 func Fingerprint(model string, maxSeqLen int) string {
-	return fmt.Sprintf("vp-embed behaviour=%d model=%s max_seq_len=%d", BehaviourVersion, model, maxSeqLen)
+	return FingerprintBackend(BackendGo, model, maxSeqLen)
+}
+
+// FingerprintBackend is Fingerprint with the embedding backend folded in.
+//
+// 🔴 THE GO/DEFAULT REGIME KEEPS TODAY'S STRING BYTE-IDENTICAL (B2, ADR-014
+// decision 3 "Phase 11"). fingerprint.go compiles into BOTH binaries and the
+// embed cache marks a project stale on any fingerprint-string change, so
+// appending a `backend=go` token on the default path would mismatch every
+// existing production cache and force every host to re-embed once at the live
+// pure-Go rate — the multi-day re-embed this whole task exists to avoid,
+// triggered by a routine upgrade of the DEFAULT zero-CGO binary. So the go
+// regime omits the field entirely and ONLY the ORT regime appends ` backend=ort`,
+// giving ORT-produced vectors their own fingerprint namespace so they can never
+// be accepted into a Go cache (or vice versa). On a default binary ResolveBackend
+// never yields BackendORT, so a default host always produces the unchanged go
+// string regardless of config.
+func FingerprintBackend(backend, model string, maxSeqLen int) string {
+	base := fmt.Sprintf("vp-embed behaviour=%d model=%s max_seq_len=%d", BehaviourVersion, model, maxSeqLen)
+	if normalizeBackend(backend) == BackendORT {
+		return base + " backend=ort"
+	}
+	return base
 }

@@ -77,6 +77,7 @@ type Config struct {
 	EmbedderModel          string                         `json:"embedder_model"`
 	EmbedderMaxSeqLen      int                            `json:"embedder_max_seq_len"`
 	EmbedderBatchSize      int                            `json:"embedder_batch_size"`
+	EmbedderBackend        string                         `json:"embedder_backend"`
 	SearchDefaultLimit     int                            `json:"search_default_limit"`
 	BoostWing              float64                        `json:"boost_wing"`
 	BoostHall              float64                        `json:"boost_hall"`
@@ -174,6 +175,7 @@ type tomlConfig struct {
 		Model             string `toml:"model"`
 		MaxSequenceLength int    `toml:"max_sequence_length"`
 		BatchSize         int    `toml:"batch_size"`
+		Backend           string `toml:"backend"`
 	} `toml:"embedder"`
 	Search struct {
 		DefaultLimit        int     `toml:"default_limit"`
@@ -284,6 +286,7 @@ func (tc *tomlConfig) flatten() Config {
 		EmbedderModel:          tc.Embedder.Model,
 		EmbedderMaxSeqLen:      tc.Embedder.MaxSequenceLength,
 		EmbedderBatchSize:      tc.Embedder.BatchSize,
+		EmbedderBackend:        tc.Embedder.Backend,
 		SearchDefaultLimit:     tc.Search.DefaultLimit,
 		BoostWing:              tc.Search.StructuralBoostWing,
 		BoostHall:              tc.Search.StructuralBoostHall,

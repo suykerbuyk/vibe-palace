@@ -26,7 +26,13 @@ import (
 // Embedder row, whose check.CheckEmbedder is handed a closure over this
 // variable by gatherCheckResults.
 var newVaultEmbedder = func(v *storage.Vault, cfg storage.Config) (embedder.Embedder, error) {
-	e, err := embedder.NewONNX(
+	// RequestedBackend, not ResolveBackend: honor the operator's ask (config +
+	// VP_EMBEDDER_BACKEND) and let NewONNXBackend fail loud if "ort" is asked of
+	// a default binary. ResolveBackend would mask that to "go" — correct for the
+	// embed-cache fingerprint, wrong for construction, where silence would embed
+	// with a backend the operator did not choose.
+	e, err := embedder.NewONNXBackend(
+		embedder.RequestedBackend(cfg.EmbedderBackend),
 		cfg.EmbedderModel, v.VaultLocalDir()+"/models",
 		cfg.EmbedderMaxSeqLen, cfg.EmbedderBatchSize,
 	)

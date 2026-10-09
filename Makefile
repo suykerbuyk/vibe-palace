@@ -57,6 +57,22 @@ help: ## Show this help
 build: man ## Build all packages and generate man pages
 	go build ./...
 
+# ORT_LIB_DIR is the DIRECTORY holding libtokenizers.a (linked at build time) and
+# libonnxruntime.so (dlopen'd at runtime; the runtime dir is set separately by
+# VP_ONNX_LIBRARY_PATH). Point it at wherever you fetched the native libs — see
+# doc/ort-embedder.md. The Phase 0/1 spike placed them under ~/vp-ort-spike/libs.
+ORT_LIB_DIR ?= $(HOME)/vp-ort-spike/libs
+
+.PHONY: build-ort
+build-ort: ## Build the OPTIONAL native ONNX-Runtime embedder (CGO, -tags ORT, off by default; see ADR-015)
+	@test -f "$(ORT_LIB_DIR)/libtokenizers.a" || { \
+		echo "build-ort: libtokenizers.a not found in ORT_LIB_DIR=$(ORT_LIB_DIR)" >&2; \
+		echo "  Fetch the native libs (see doc/ort-embedder.md) and set ORT_LIB_DIR." >&2; \
+		exit 1; }
+	CGO_ENABLED=1 CGO_LDFLAGS="-L$(ORT_LIB_DIR)" \
+		go build -tags ORT -ldflags "$(LDFLAGS)" -o $(BINARY)-ort $(CMD)
+	@echo "Built ./$(BINARY)-ort — run with VP_EMBEDDER_BACKEND=ort VP_ONNX_LIBRARY_PATH=$(ORT_LIB_DIR)"
+
 .PHONY: vet
 vet: ## Run go vet
 	go vet ./...

@@ -12,6 +12,12 @@ kind = "global"
 model = "sentence-transformers/all-MiniLM-L6-v2"
 max_sequence_length = 256
 batch_size = 32
+# Embedding backend: "go" (the pure-Go, zero-CGO default, the only backend the
+# released binary ships) or "ort" (native ONNX-Runtime, a fast bulk re-embed
+# path reachable only in a binary built with `make build-ort` / `-tags ORT`).
+# Asking for "ort" on the default build fails loud. See ADR-015. Overridable at
+# runtime with VP_EMBEDDER_BACKEND; the ORT library dir is VP_ONNX_LIBRARY_PATH.
+backend = "go"
 
 [search]
 default_limit = 10

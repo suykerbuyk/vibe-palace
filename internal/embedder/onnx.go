@@ -10,10 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/gomlx/go-huggingface/tokenizers/api"
 	"github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
 
@@ -94,13 +92,19 @@ var modelDownloadTimeout = 10 * time.Minute
 // access.
 var downloadModel = hugot.DownloadModel
 
-// ONNXEmbedder implements Embedder using the hugot pure-Go ONNX backend.
+// ONNXEmbedder implements Embedder using a hugot ONNX backend. Which backend is
+// the pure-Go hugot session (the default, BackendGo) or the native ONNX-Runtime
+// session (BackendORT, only on an -tags ORT build) is chosen at construction;
+// the download/lock/Embed/EmbedBatch machinery below is backend-agnostic.
 type ONNXEmbedder struct {
-	session   *hugot.Session
-	pipeline  *pipelines.FeatureExtractionPipeline
-	mu        sync.Mutex
-	dims      int
-	batchSz   int
+	session  *hugot.Session
+	pipeline *pipelines.FeatureExtractionPipeline
+	mu       sync.Mutex
+	dims     int
+	batchSz  int
+	backend  string
+	// tokenizer is the Go-path truncation wrapper; nil on the ORT/rust path,
+	// where truncation lives in the rust tokenizer itself (see truncate_ort.go).
 	tokenizer *truncatingTokenizer
 }
 
@@ -178,6 +182,29 @@ func newFeatureExtractionPipeline(session *hugot.Session, config hugot.FeatureEx
 // holds it across the download, pipeline build, and dimension probe so a
 // second process never opens the file mid-write.
 func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEmbedder, error) {
+	return NewONNXBackend(BackendGo, modelName, modelCacheDir, maxSeqLen, batchSize)
+}
+
+// NewONNXBackend is NewONNX with an explicit backend. BackendGo is the pure-Go
+// hugot session (every default-build caller, via NewONNX). BackendORT selects
+// the native ONNX-Runtime session and is honored only on an -tags ORT binary:
+// on the default build it fails loud here, before any model-cache lock or
+// download, so a wrong backend is reported promptly rather than after a ~90 MB
+// fetch (ADR-009 ethos). The backend also flows into the embed-cache fingerprint
+// via the caller (search engine / newVaultEmbedder), never from inside here.
+func NewONNXBackend(backend, modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEmbedder, error) {
+	backend = normalizeBackend(backend)
+	switch backend {
+	case BackendGo:
+		// always available
+	case BackendORT:
+		if !ORTAvailable {
+			return nil, errBackendNeedsORTBuild(backend)
+		}
+	default:
+		return nil, fmt.Errorf("embedder: unknown backend %q (want %q or %q)", backend, BackendGo, BackendORT)
+	}
+
 	if maxSeqLen <= 0 {
 		maxSeqLen = defaultMaxSeqLen
 	}
@@ -257,9 +284,9 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		}
 	}
 
-	session, err := hugot.NewGoSession()
+	session, err := newHugotSession(backend)
 	if err != nil {
-		return nil, fmt.Errorf("create go session: %w", err)
+		return nil, fmt.Errorf("create %s session: %w", backend, err)
 	}
 
 	dlOpts := hugot.NewDownloadOptions()
@@ -334,26 +361,28 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		}
 	}
 
-	// Truncate by TOKENS: the go-huggingface tokenizer hugot uses ignores
-	// its MaxLen option, so nothing else stops an input from overflowing the
-	// position table. maxSeqLen counts [CLS] and [SEP], the sentence-
+	// Truncate by TOKENS: hugot's tokenizers do not, on their own, cap an input
+	// to vp's maxSeqLen, so nothing else stops an input from overflowing the
+	// model's position table. maxSeqLen counts [CLS] and [SEP], the sentence-
 	// transformers convention, and never exceeds the model's position table.
 	//
-	// COUPLING: this reaches into hugot internals (hugot@v0.7.0
-	// backends/tokenizer_go.go: tokenizeInputsGo calls
-	// GoTokenizer.Tokenizer.EncodeWithAnnotations). A hugot upgrade
-	// (evaluate-hugot-v0-7-8-upgrade) that renames the field or stops calling
-	// through it must fail here, never embed untruncated input silently: the
-	// probe below proves the wrapper was invoked.
-	if pipeline.Model == nil || pipeline.Model.Tokenizer == nil || pipeline.Model.Tokenizer.GoTokenizer == nil {
+	// The clamp is backend-agnostic; how truncation is installed is not (the Go
+	// path wraps the Go tokenizer; the ORT path enables the rust tokenizer's own
+	// truncation), so it lives behind the build-tagged installTruncation seam.
+	// verify() runs AFTER the probe and proves truncation is actually wired in —
+	// never embed untruncated input silently (see evaluate-hugot-v0-7-8-upgrade).
+	if pipeline.Model == nil {
 		session.Destroy()
-		return nil, fmt.Errorf("embedder: hugot pipeline has no Go tokenizer to truncate through")
+		return nil, fmt.Errorf("embedder: hugot pipeline has no model")
 	}
 	if pos := pipeline.Model.MaxPositionEmbeddings; pos > 0 && maxSeqLen > pos {
 		maxSeqLen = pos
 	}
-	tk := &truncatingTokenizer{Tokenizer: pipeline.Model.Tokenizer.GoTokenizer.Tokenizer, maxLen: maxSeqLen}
-	pipeline.Model.Tokenizer.GoTokenizer.Tokenizer = tk
+	verify, tk, err := installTruncation(pipeline, maxSeqLen, modelPath)
+	if err != nil {
+		session.Destroy()
+		return nil, err
+	}
 
 	// Probe dimensions with a test embedding.
 	probe, err := pipeline.RunPipeline([]string{"probe"})
@@ -365,9 +394,9 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		session.Destroy()
 		return nil, fmt.Errorf("probe returned empty embedding")
 	}
-	if tk.calls.Load() == 0 {
+	if err := verify(); err != nil {
 		session.Destroy()
-		return nil, fmt.Errorf("embedder: hugot did not tokenize through the truncating tokenizer; token truncation would be bypassed (see evaluate-hugot-v0-7-8-upgrade)")
+		return nil, err
 	}
 
 	return &ONNXEmbedder{
@@ -375,43 +404,9 @@ func NewONNX(modelName, modelCacheDir string, maxSeqLen, batchSize int) (*ONNXEm
 		pipeline:  pipeline,
 		dims:      len(probe.Embeddings[0]),
 		batchSz:   batchSize,
+		backend:   backend,
 		tokenizer: tk,
 	}, nil
-}
-
-// truncatingTokenizer truncates the token IDs hugot feeds the model to
-// maxLen, keeping the final [SEP]: [CLS] t1..t(maxLen-2) [SEP], which is
-// Hugging Face / sentence-transformers truncation. It works on IDs, never on
-// text, so the kept tokens are exactly the full encoding's prefix. Only
-// EncodeWithAnnotations is overridden: it is the one call hugot makes.
-type truncatingTokenizer struct {
-	api.Tokenizer
-	maxLen int
-	calls  atomic.Int64
-}
-
-func (t *truncatingTokenizer) EncodeWithAnnotations(text string) api.AnnotatedEncoding {
-	t.calls.Add(1)
-	enc := t.Tokenizer.EncodeWithAnnotations(text)
-	limit := max(t.maxLen, 2)
-	if len(enc.IDs) <= limit {
-		return enc
-	}
-	enc.IDs = keepHeadAndLast(enc.IDs, limit)
-	if len(enc.SpecialTokensMask) > limit {
-		enc.SpecialTokensMask = keepHeadAndLast(enc.SpecialTokensMask, limit)
-	}
-	if len(enc.Spans) > limit {
-		enc.Spans = keepHeadAndLast(enc.Spans, limit)
-	}
-	return enc
-}
-
-// keepHeadAndLast returns s[:n-1] followed by s's last element, as a new slice.
-func keepHeadAndLast[T any](s []T, n int) []T {
-	out := make([]T, 0, n)
-	out = append(out, s[:n-1]...)
-	return append(out, s[len(s)-1])
 }
 
 // Embed returns a normalized embedding vector for a single text.

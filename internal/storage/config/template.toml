@@ -47,6 +47,10 @@ version_minor = 2
 model = "sentence-transformers/all-MiniLM-L6-v2"
 max_sequence_length = 256
 batch_size = 32
+# "go" (pure-Go, zero-CGO default) or "ort" (native ONNX-Runtime, a fast bulk
+# re-embed path only in an `-tags ORT` build; see ADR-015). Env overrides:
+# VP_EMBEDDER_BACKEND, and VP_ONNX_LIBRARY_PATH for the ORT library directory.
+backend = "go"
 
 # Search defaults.
 [search]

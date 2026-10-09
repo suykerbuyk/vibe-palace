@@ -68,7 +68,7 @@ type fingerprintCheck struct {
 // embedFingerprint is this engine's embedding regime, a pure function of its
 // config: no model is loaded.
 func (e *Engine) embedFingerprint() string {
-	return embedder.Fingerprint(e.config.EmbedderModel, e.config.EmbedderMaxSeqLen)
+	return embedder.FingerprintBackend(embedder.ResolveBackend(e.config.EmbedderBackend), e.config.EmbedderModel, e.config.EmbedderMaxSeqLen)
 }
 
 // checkFingerprints compares the project's chunks.fingerprint and embed-cache
