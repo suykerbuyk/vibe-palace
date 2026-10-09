@@ -17,7 +17,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/commands"
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
-	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -284,6 +283,35 @@ type BootstrapResult struct {
 	// advisory whose cost is already sunk by the time the gate is reached.
 	FrictionTrend *capture.FrictionTrend `json:"friction_trend,omitempty"`
 
+	// IndexCoverage is the BOUNDED PREFIX instrument for this host's search-index
+	// coverage of the BOOTSTRAPPED project: the state alone, declared ahead of
+	// the directive so that "search answers nothing here, and in what way"
+	// SURVIVES a host preview cut — the silent-instrument failure on a fresh
+	// post-migration host (an `unbuilt` project) that D1 exists to kill.
+	//
+	// 🔴 IT CARRIES THE STATE ONLY, BY A MEASURED BYTE BUDGET, NOT BY CHOICE.
+	// The advisory prefix runs to 1,861 B with every other advisory firing, 139 B
+	// short of the 2,000 B host preview; the full report (reason, the n-of-m and
+	// pending/backlog/failing counts, the run in progress, the other-project
+	// tally) is ~1,300 B and does not fit there without shrinking an existing
+	// instrument or raising the ceiling, both forbidden. So the full report rides
+	// in IndexCoverageDetail beside kg_snapshot (behind the cut), and the one
+	// thing a truncating host must still see — the state, plus the stale/absent
+	// alert below — lives here. It is ADVISORY: suppressed when a stop-class field
+	// fires. Computed over a NO-EMBEDDER engine, per the project's own config.
+	IndexCoverage *indexCoverageBrief `json:"index_coverage,omitempty"`
+
+	// IndexCoverageAlert is the Scope 7 advisory alert: SILENT (empty) WHEN
+	// HEALTHY, and set only for the BOOTSTRAPPED project and only when it is
+	// `stale` or `absent` — the two states that mean search is broken or has
+	// nothing, not merely unbuilt-yet. legacy/unbuilt/notes/partial are expected
+	// after an install or migration and raise nothing. It is advisory, never
+	// stop-class, so it does not suppress the other advisories; its line is also
+	// appended to the alert slice, which leads the directive, so it survives a
+	// cut from either side. It is kept SHORT (indexCoverageAlertMax) so the
+	// prefix stays under the ceiling even at the longest project slug.
+	IndexCoverageAlert string `json:"index_coverage_alert,omitempty"`
+
 	// ── ADVISORY INSTRUMENTS END.
 
 	// The directive carries the alerts in prose for a reader that skims the
@@ -332,17 +360,19 @@ type BootstrapResult struct {
 	// an absent snapshot used to mean "no graph" and "graph unreadable" at once.
 	KGUnreadable string `json:"kg_unreadable,omitempty"`
 
-	// IndexCoverage carries this host's search-index coverage for the
-	// bootstrapped project — its state and reason, the n-of-m session counts
-	// and the pending/backlog/failing split, a run in progress (read once per
-	// vault from the advisory holder record, no lock), and a count of the OTHER
-	// projects in each non-current state. It rides HERE, beside kg_snapshot, so
-	// a reader sees the authored counts and the coverage state together and a
-	// zero really means zero (index-coverage-instrument, Scope 6, Scope 8). It
-	// is computed over a NO-EMBEDDER engine: nothing on this path loads a model.
-	IndexCoverage     *indexCoverageReport `json:"index_coverage,omitempty"`
-	AvailableCommands []commandSummary     `json:"available_commands,omitempty"`
-	AvailableSkills   []skillSummary       `json:"available_skills,omitempty"`
+	// IndexCoverageDetail is the FULL coverage report for the bootstrapped
+	// project — state, reason, the n-of-m session counts, the
+	// pending/backlog/failing split, the run in progress, and a count of the
+	// OTHER projects in each non-current state (index-coverage-instrument,
+	// Scope 6). It rides HERE, beside kg_snapshot, so a reader of the authored KG
+	// counts sees the coverage reason and counts in the same place and a zero
+	// really means zero (Scope 8). It is the bulk companion to the bounded
+	// IndexCoverage (state only) in the prefix above: the detail is too large for
+	// the prefix (see that field), so it lives behind the cut while the state and
+	// the alert survive it. Both come from the one derivation.
+	IndexCoverageDetail *indexCoverageReport `json:"index_coverage_detail,omitempty"`
+	AvailableCommands   []commandSummary     `json:"available_commands,omitempty"`
+	AvailableSkills     []skillSummary       `json:"available_skills,omitempty"`
 
 	// 🔴 THE TERMINAL SENTINEL. LAST FIELD, NO omitempty, ALWAYS true — all three
 	// properties are the mechanism, and each one is load-bearing.
@@ -573,43 +603,67 @@ type indexCoverageReport struct {
 	Others map[string]int `json:"others,omitempty"`
 }
 
+// indexCoverageBrief is the bounded prefix instrument: the bootstrapped
+// project's coverage STATE alone. It is all the prefix byte budget allows (see
+// BootstrapResult.IndexCoverage); the rest of the report is IndexCoverageDetail.
+type indexCoverageBrief struct {
+	State search.CoverageState `json:"state"`
+}
+
+// indexCoverageAlertMax caps the Scope 7 alert line so the bounded prefix stays
+// under the host-preview ceiling even for the longest project slug: the advisory
+// prefix has only ~139 B of headroom and the state brief takes part of it.
+const indexCoverageAlertMax = 96
+
+// coverageForProject derives one project's coverage over a no-embedder engine
+// (search.NewCoverageEngine) built from THAT PROJECT'S OWN config, so a project
+// whose embedder config differs from the bootstrapped one is not mis-derived as
+// stale by a fingerprint comparison against the wrong config (SF1). It loads no
+// model and opens no archive.
+func coverageForProject(vault *storage.Vault, project string) (search.Coverage, error) {
+	cfg, err := vault.LoadConfig(project)
+	if err != nil {
+		return search.Coverage{}, err
+	}
+	eng := search.NewCoverageEngine(vault, cfg)
+	defer eng.Close()
+	return eng.CoverageState(project)
+}
+
 // computeIndexCoverage derives coverage for the bootstrapped project and tallies
-// the other projects' states, over a NO-EMBEDDER engine: the lazy embedder's
-// constructor is never called on the coverage path (Stale()/TrulyEmpty() load
-// no model), so bootstrap loads no model. The run lock's holder record is read
-// once per vault (Scope 5, Scope 10). It is graceful: any error yields nil, so
-// a coverage read never fails bootstrap.
+// the other projects' states, each over a NO-EMBEDDER engine built from its OWN
+// config (SF1). The run lock's holder record is read once per vault (Scope 5,
+// Scope 10). It is graceful: any error yields nil, so a coverage read never
+// fails bootstrap.
 func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageReport {
 	cfg, err := vault.LoadConfig(project)
 	if err != nil {
 		return nil
 	}
-	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
-		return nil, errors.New("bootstrap coverage loads no embedder")
-	})
-	eng := search.NewEngine(emb, vault, cfg)
+	eng := search.NewCoverageEngine(vault, cfg)
 	defer eng.Close()
 
 	cov, err := eng.CoverageState(project)
 	if err != nil {
 		return nil
 	}
-	// The run in progress, read once for the whole vault.
+	// The run in progress, read ONCE for the whole vault (not per project).
 	if run, err := eng.RunInProgress(); err == nil {
 		cov.Run = run
 	}
 
 	rep := &indexCoverageReport{Coverage: cov}
 
-	// Tally the OTHER projects by state, excluding current. Graceful per project:
-	// one project that cannot be read is skipped, not fatal.
+	// Tally the OTHER projects by state, excluding current, each with its own
+	// config (SF1). Graceful per project: one project that cannot be read is
+	// skipped, not fatal.
 	if others, err := vault.ListAllProjects(); err == nil {
 		counts := map[string]int{}
 		for _, p := range others {
 			if p.Slug == project {
 				continue
 			}
-			oc, err := eng.CoverageState(p.Slug)
+			oc, err := coverageForProject(vault, p.Slug)
 			if err != nil {
 				continue
 			}
@@ -622,6 +676,42 @@ func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageRe
 		}
 	}
 	return rep
+}
+
+// indexCoverageAlert returns the Scope 7 advisory alert line for the
+// bootstrapped project's coverage, or "" when none fires. It fires ONLY on
+// `stale` or `absent`: the two states that mean search is broken or has nothing.
+// legacy/unbuilt/notes/partial are expected after an install or migration. The
+// line is TERSE and capped (indexCoverageAlertMax) so it fits the bounded prefix
+// even at the longest slug; the full reason rides in IndexCoverageDetail and in
+// `vp index status`.
+func indexCoverageAlert(cov search.Coverage) string {
+	// The project is named by the payload's top-level `project`, so the alert
+	// omits the slug and stays short regardless of how long the slug is.
+	var msg string
+	switch cov.State {
+	case search.CoverageStale:
+		msg = "⚠ index coverage STALE on this host — run `vp index rebuild`"
+	case search.CoverageAbsent:
+		msg = "ℹ index coverage: project is empty, nothing to index"
+	default:
+		return ""
+	}
+	return truncateRunes(msg, indexCoverageAlertMax)
+}
+
+// truncateRunes caps s to at most max runes, appending "…" when it cuts, so the
+// cap is on the rune count a reader sees, not a byte slice that could split a
+// multibyte rune.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 1 {
+		return string(r[:max])
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project string, wing, room string, projectRepoPath string, engine *search.Engine, stdioMCP bool) BootstrapResult {
@@ -736,17 +826,6 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGSnapshot = &stats
 	} else {
 		result.KGUnreadable = err.Error()
-	}
-
-	// Index coverage — the bootstrapped project's state and reason, the run in
-	// progress (read once per vault, no lock) and a count of the other projects
-	// in each non-current state. Computed over a NO-EMBEDDER engine so nothing
-	// here loads a model; graceful on error, so a coverage read that fails never
-	// fails bootstrap. It rides beside kg_snapshot (Scope 6, Scope 8).
-	if project != "" {
-		if cov := computeIndexCoverage(vault, project); cov != nil {
-			result.IndexCoverage = cov
-		}
 	}
 
 	// Inbox COUNT — the true total of capture-inbox entries, never capped.
@@ -960,6 +1039,28 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	result.VaultStaleness = &vs
 	if vs.Warn && vs.Message != "" {
 		alerts = append(alerts, vs.Message)
+	}
+
+	// Index coverage — ADVISORY, so it is computed HERE (below the gate), skipped
+	// on a stop-class payload like every advisory. The bounded report rides in the
+	// prefix (result.IndexCoverage, Scope 6) so "search answers nothing here, and
+	// why" survives a host preview cut; a copy of the state rides beside
+	// kg_snapshot in the bulk (result.IndexCoverageState, Scope 8). The alert fires
+	// only on stale/absent and is appended to the directive's alert slice so it
+	// leads the directive and survives a cut. Nothing here loads a model; each
+	// project is read over its own config (SF1).
+	if project != "" {
+		if cov := computeIndexCoverage(vault, project); cov != nil {
+			// The bounded prefix instrument: the state alone (survives a cut).
+			result.IndexCoverage = &indexCoverageBrief{State: cov.State}
+			// The full report beside kg_snapshot (behind the cut).
+			result.IndexCoverageDetail = cov
+			// The Scope 7 alert: prefix field AND a directive-leading line.
+			if msg := indexCoverageAlert(cov.Coverage); msg != "" {
+				result.IndexCoverageAlert = msg
+				alerts = append(alerts, msg)
+			}
+		}
 	}
 
 	// Health — PUSHED, not pulled, and SILENT WHEN HEALTHY.

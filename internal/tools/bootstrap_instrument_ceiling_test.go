@@ -17,7 +17,9 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
+	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultaudit"
@@ -270,8 +272,62 @@ func worstCaseAdvisory() BootstrapResult {
 	result.FrictionTrend = &friction
 	result.ProjectRepoFreshness = &repoFreshness
 
+	// Index coverage: the bounded prefix brief (state) and its alert, both in the
+	// advisory branch so the derived guard sees them and the ceiling measures
+	// them. The alert fires only on stale/absent, so the fixture is stale. The
+	// full report rides in IndexCoverageDetail, which is behind the directive and
+	// not part of the prefix measured here.
+	cov := worstCaseIndexCoverage()
+	result.IndexCoverage = &indexCoverageBrief{State: cov.State}
+	result.IndexCoverageDetail = cov
+	result.IndexCoverageAlert = indexCoverageAlert(cov.Coverage)
+
 	result.PostBootstrapInstructions = worstCaseDirective(worstCaseAdvisoryAlerts())
 	return result
+}
+
+// worstCaseIndexCoverage is the widest index-coverage instrument bootstrap can
+// emit: a stale project (the only alert-bearing state besides absent, and the
+// one whose report AND alert both carry a reason) with a reason rounded UP past
+// the longest any state really produces, three-digit session counts, a run in
+// progress with a 64-char project, and the OTHERS tally carrying every one of
+// the six non-current states at a three-digit count. Rounding up is this
+// fixture's rule: a fixture that understates the field reports a bound the tool
+// does not have.
+func worstCaseIndexCoverage() *indexCoverageReport {
+	slug := strings.Repeat("s", 64)
+	// A reason at least as long as the longest real reason (the legacy/partial
+	// progress line), carried on a stale state so the alert fires too.
+	reason := "chunk-recipe fingerprint mismatch — run `vp index rebuild " + slug + "`; " +
+		"embedder fingerprint mismatch — run `vp index rebuild " + slug + "`; " +
+		"999 missing vector(s) on ledgered archives — the ingester's repair pass or `vp index rebuild " + slug + "` clears it"
+	return &indexCoverageReport{
+		Coverage: search.Coverage{
+			Project: slug,
+			State:   search.CoverageStale,
+			Reason:  reason,
+			N:       0,
+			M:       999,
+			Pending: 999,
+			Backlog: 999,
+			Failing: 999,
+			Run: &search.CoverageRun{
+				PID:       999999,
+				Kind:      string(indexstore.KindRebuild),
+				Project:   slug,
+				StartTime: time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC),
+				Progress:  &indexstore.Progress{Done: 999, Total: 999},
+			},
+		},
+		Others: map[string]int{
+			string(search.CoverageAbsent):  999,
+			string(search.CoverageStale):   999,
+			string(search.CoverageLegacy):  999,
+			string(search.CoverageUnbuilt): 999,
+			string(search.CoverageNotes):   999,
+			string(search.CoveragePartial): 999,
+		},
+	}
 }
 
 // worstCaseProjectRepoFreshness is storage.CheckRepoFreshness's own shape for
@@ -491,6 +547,8 @@ func worstCaseAdvisoryAlerts() []string {
 		callerFrictionMessage(health),
 		worstCaseAdvisoryAudit().Message,
 		projectRepoFreshnessMessage(worstCaseProjectRepoFreshness()),
+		// The index-coverage alert, from its own producer so it cannot drift.
+		indexCoverageAlert(worstCaseIndexCoverage().Coverage),
 	}
 }
 
@@ -548,12 +606,15 @@ func TestAdvisoryFixtureLinesMatchTheirProducers(t *testing.T) {
 			"advisory branch would measure a payload with no project-repo-freshness alert on it")
 	}
 
-	// And the composed set is what assembleBootstrap would append: six lines,
+	// And the composed set is what assembleBootstrap would append: seven lines,
 	// none empty. A producer returning "" would shrink the directive silently.
 	alerts := worstCaseAdvisoryAlerts()
-	if len(alerts) != 6 {
-		t.Errorf("the advisory alert set is %d lines, want 6 — one per append site below the gate "+
-			"(friction, vault staleness, health, caller friction, audit staleness, project repo freshness)", len(alerts))
+	if len(alerts) != 7 {
+		t.Errorf("the advisory alert set is %d lines, want 7 — one per append site below the gate "+
+			"(friction, vault staleness, health, caller friction, audit staleness, project repo freshness, index coverage)", len(alerts))
+	}
+	if got := indexCoverageAlert(worstCaseIndexCoverage().Coverage); got == "" {
+		t.Error("the index-coverage alert producer went silent for the stale fixture")
 	}
 	for i, a := range alerts {
 		if strings.TrimSpace(a) == "" {
