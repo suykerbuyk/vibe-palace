@@ -1,6 +1,6 @@
 # Architecture: Vibe-Palace
 
-**Last updated:** 2026-09-28
+**Last updated:** 2026-10-02
 
 Vibe-palace is a compiled Go binary that serves as an MCP (Model Context
 Protocol) server for AI-assisted development. It provides context injection,
@@ -11,8 +11,9 @@ over stdio JSON-RPC 2.0.
 
 **Design principles:**
 - Single binary, zero-CGo, no external services
-- Filesystem-native storage (JSONL, markdown, JSON) — all data human-readable
-  and git-mergeable
+- Filesystem-native storage (JSONL, markdown, JSON) — all vault data
+  human-readable and git-mergeable; the search index is compiled per host from
+  vault artifacts and never enters git (ADR-014)
 - 5-tier precedence for commands/skills (embedded < vault < project < wing < room)
 - LLM-agnostic: works with any editor that speaks MCP
 
@@ -129,17 +130,19 @@ plus a few vault-global directories:
 
 ```
 {vault}/
-├── palace/                         # Knowledge (content, vectors, models)
+├── palace/                         # Authored knowledge, host-local index
 │   ├── .local/                     # Vault-wide machine-local state (gitignored)
 │   │   ├── models/                 # ONNX model cache
 │   │   ├── embed-cache/{project}/  # Embedding vectors, one .vec per chunk
+│   │   ├── index/{project}/        # Compiled search index (see Host-Local Index)
+│   │   ├── index/.generation/{project}  # Store change counter (v10.2.0, ADR-014)
+│   │   ├── locks/                  # Index run and commit locks, per host per vault (v10.2.0)
 │   │   └── vp.log                  # Structured log (see Structured Logging)
 │   └── {project}/
 │       ├── .surface                # MCP surface stamp (see Versioning)
-│       ├── drawers/{wing}/{room}/drawers.jsonl
 │       ├── kg/
-│       │   ├── entities.jsonl
-│       │   └── triples/{subj}--{pred}--{obj}.json
+│       │   ├── entities.jsonl      # Authored entity lines
+│       │   └── triples/{subj}--{pred}--{obj}.json  # Authored triples
 │       ├── iteration-summaries/{n}.json  # Per-iteration LLM summaries
 │       └── .local/                 # Machine-local: imported-sessions.jsonl only
 ├── Projects/                       # Workflow (sessions, tasks)
@@ -174,7 +177,7 @@ plus a few vault-global directories:
 │   ├── <date>-vault-audit.md       # Dated vault-audit reports
 │   └── departures/{project}.json   # Departure records (see Vault lifecycle)
 ├── .vibe-palace/
-│   ├── vault.toml                  # Data-format manifest (format = N)
+│   ├── vault.toml                  # Data-format manifest (format = N) and the ADR-014 migration marker
 │   └── remotes.toml                # The vault's own remotes (written by vp vault init)
 └── .vp-locks/                      # Host-local lock sidecars (gitignored)
 ```
@@ -188,9 +191,25 @@ one definition in code: `internal/storage/paths.go` for most per-project files
 `internal/storage/lifecycle_publish.go` (written by `vault_init.go`) for
 `remotes.toml`.
 
-**palace/** stores knowledge artifacts — content chunks in JSONL drawers,
-knowledge graph entities/triples, and machine-local caches. This data grows
-with captured sessions and can be rebuilt from source.
+**palace/** holds the tracked knowledge a search index is compiled from, and
+the host-local index itself. Tracked under `palace/<p>/`: `.surface`,
+`iteration-summaries/`, authored knowledge-graph facts (`vp_kg_add`,
+`vp_kg_invalidate`) (ADR-014 decisions 1, 5). On a migrated vault no derived
+drawer and no extracted triple or entity line is tracked, whether or not its
+source has a transcript archive: the migration drops them all from the tracked
+tree, after
+tagging its parent commit `pre-authored-only-<date>` and pushing the tag, so
+every dropped byte stays recoverable with `git show` — the loss is from search,
+not from history (ADR-014 decision 4). A session with no archive stays
+searchable through its note, not its transcript. Transcript and decision
+chunks, extracted triples and entities, and the ingest ledger are derived: each
+host compiles them into `palace/.local/index/<p>/` from the tracked notes,
+iterations and transcript archives, and git never carries them (ADR-014
+decisions 2, 7; see *Host-Local Index*). A vault that does not yet carry the
+migration marker, or whose migration was reverted, still tracks the drawers and
+extracted records written before the migration; search reads them through the
+glide path, together with the host-local chunks, deduplicated by a wide content
+hash (ADR-014 decisions 7, 11; see *Index Construction*).
 
 **What counts as a palace store.** A `palace/<slug>/` directory is a store only
 if it holds at least one regular file outside its top-level `.local/`. Every
@@ -218,10 +237,21 @@ and the retired `Projects/<slug>/config.toml` is read by nothing.
 
 ### Storage Formats
 
-- **Drawers**: JSONL (one JSON object per line) — append-only, deduped by ID
+- **Drawers** (content chunks): JSONL (one JSON object per line), deduped by ID.
+  Never tracked on a migrated vault: every chunk lives in the host-local
+  `chunks.jsonl` (ADR-014 decisions 2, 4). The importers (`vp migrate
+  vibevault`, `vp migrate mempalace`) write transcript archives or index into
+  the host-local store, never tracked derived files. A mempalace import indexes
+  only locally, so it is single-host and nothing can regenerate it: a
+  `chunks.fingerprint` mismatch marks the project `stale`, the next
+  `vp index rebuild` discards the import with the project's chunks, and the
+  remedy is to re-run the import after that rebuild (ADR-014 decision 4)
 - **Sessions**: Markdown with YAML frontmatter (date, tag, friction, decisions)
-- **KG Triples**: Individual JSON files keyed by `{subj}--{pred}--{obj}`
-- **KG Entities**: JSONL (append-only, name + type + properties)
+- **KG Triples**: Individual JSON files keyed by `{subj}--{pred}--{obj}`. On a
+  migrated vault, tracked under `palace/<p>/kg/triples/` only when authored;
+  extracted triples live in the host-local `kg/`. New records carry `origin`: `authored` or
+  `extracted` (ADR-014 decision 5)
+- **KG Entities**: JSONL (append-only, name + type + properties); same split as triples
 - **Config**: TOML at all three precedence levels
 
 ### Session Identity (host-qualified IDs)
@@ -553,11 +583,20 @@ should use the same map-based approach rather than reintroducing this bug.
 
 ### The problem: capture churn nobody commits
 
-The hook path (`vp hook` on SessionEnd/Stop) and the MCP capture tools write
-session summaries, transcript archives, knowledge-graph entities/triples, and
-drawer JSONL across **every** project. (Historically the hook also bumped a
-`.surface` provenance stamp on every write; stamps are now byte-stable per surface
-version and no longer churn per session — see "The `.surface` status gate" below.)
+The hook path (`vp hook` on SessionEnd, Stop and PreCompact) and the MCP capture tools write
+session summaries and transcript archives with their manifests across **every**
+project. The hook passes a nil indexer to `capture.WriteSession`
+(`internal/hook/hook.go:581`) and marks the note `needs_indexing`. Its last
+step spawns the pending-archive ingester as a detached background process and
+returns; the hook itself never embeds, and the ingester writes only the
+host-local index, never the tracked tree. `vp_capture_session` indexes no
+transcript text: its `transcript` parameter only creates an archive on a host
+without a hook, after which capture triggers the same ingester. The tracked KG
+changes only through authored facts (ADR-014 decisions 1, 7, 10; see
+*Host-Local Index*). (Historically the hook
+also bumped a `.surface` provenance stamp on every write; stamps are now
+byte-stable per surface version and no longer churn per session — see "The
+`.surface` status gate" below.)
 Nothing in the routine workflow ever commits this churn: `/wrap` only
 commits the *current* project's explicit narrative paths (resume, iterations,
 the active task, `commit.msg`). The machine-generated artifacts pile up
@@ -586,30 +625,134 @@ the user's behalf for anything it does not positively recognize.
 
 ### The data-driven classifier (`sweepRules`)
 
-The heart of tidy is `sweepRules` in `internal/storage/vaulttidy.go` — a table
+The heart of tidy is `sweepRules` in `internal/storage/vaulttidy.go:69` — a table
 that is the single source of truth for what gets committed:
 
 | Category | Shape (vault-relative) |
 |----------|------------------------|
 | Session summaries | `Projects/*/sessions/*.md` |
 | Transcript archives | `Projects/*/transcripts/*.{manifest.json,jsonl.zst}` |
-| Knowledge-graph entities | `palace/*/kg/entities.jsonl` |
-| Knowledge-graph triples | `palace/*/kg/triples/**/*.json` (deep) |
-| Drawers | `palace/*/drawers/**/*.jsonl` (deep) |
-| Surface stamps | `{Projects/*,palace/*,Templates}/.surface` (status-gated) |
+| Knowledge-graph entities | `palace/*/kg/entities.jsonl` (marker-gated: on a migrated vault, only when every line added since HEAD is `origin: authored`) |
+| Knowledge-graph triples | `palace/*/kg/triples/**/*.json` (deep; marker-gated: on a migrated vault, authored records only) |
+| Drawers | marker-gated: on a migrated vault, none; without the marker, `palace/*/drawers/**/*.jsonl` |
+| Audit reports | `Audits/*.md` (flat only) |
+| Audit baseline | `Audits/baseline.json` |
+| Surface stamps | `{Projects/*,palace/*,Templates,Audits}/.surface` (status-gated) |
 
-The real vault layout requires deep (`**`) matching: drawers nest as
-`palace/<p>/drawers/<p>/<room>/drawers.jsonl` and triples nest arbitrarily under
-a source-derived subpath (e.g.
-`palace/<p>/kg/triples/.claude/plans/<name>--mentioned_in--<uuid>.json` — triple
-paths legitimately contain `.claude/` segments, so the classifier must **never**
-exclude them). Go's stdlib `filepath.Match` has no `**`, and `doublestar` is not
-a dependency. Rather than add one for ~5 stable rules (decision M1, option B),
-each `SweepRule` carries an explicit segment-matcher func over
-`parts = strings.Split(vaultRelPath, "/")`. The `Pattern` string on each rule is
-documentation only — the human-readable shape the `Match` func implements, kept
-for the test table and audit trail. `matchRule` returns the first rule whose
-`Match` accepts a path; the rules are mutually exclusive in practice.
+**On a migrated vault** tidy sweeps no drawers. It stages a triple file only
+when that file is `origin: authored`, and reports a tracked extracted, or
+unstamped, triple as unexpected dirt; extracted records belong to the
+host-local index. `kg/entities.jsonl` is one file, so tidy diffs it against
+HEAD: it stages the file only when every added line carries `origin: authored`,
+and otherwise reports the whole file; a line with no `origin` counts as not
+authored (ADR-014 decision 11). These rules are keyed on the migration marker,
+never on the binary's version.
+
+**The migration marker** is an explicit key in the tracked
+`.vibe-palace/vault.toml`, `authored_only = "<date>"`, read through a
+`VaultManifest` field. Every writer of `vault.toml` round-trips all of its
+fields: `WriteFormat` is read-modify-write, so a later format migration keeps
+the marker (at `a32a2d4` it re-encodes `VaultManifest{Format: n}` alone,
+`internal/surface/format.go:160-166`). The marker is **not** inferred from the
+ignore lines, because a hand-edited `.gitignore` does not switch on behaviour
+(ADR-014 decision 11).
+
+**The derived-path ignore lines** (`palace/*/drawers/` and
+`palace/*/ingested-archives.jsonl`) are **not** unconditional canonical lines
+(ADR-014 decision 11). The reconciler appends every canonical line a vault
+lacks, on two paths, and an ordinary `vp config sync` reaches both: **create**,
+when `.gitignore` is absent (`ReconcileVaultGitignore`,
+`internal/storage/git.go:141`, `:161`, applied at
+`internal/reconcile/vault.go:304`); and **top-up**, on an existing vault
+(`planVaultGitignore` → `MissingVaultGitignorePatterns`,
+`internal/reconcile/vault.go:230-240`, `internal/storage/git.go:222` →
+`TopUpVaultGitignore`, `internal/reconcile/vault.go:353`,
+`internal/storage/git.go:197`). Both paths emit the two derived lines only on a
+vault whose `vault.toml` carries the marker, so unconditional lines never reach
+an unmigrated vault before the marker. `vp config sync` never writes the
+marker itself. Three writers put the marker and the lines in place: the
+migration commit; the migration's empty-vault path; and `vp vault init` on a
+fresh vault, which is born migrated and also writes the vault-level stamp
+`Audits/.surface` at `MCPSurfaceVersion` (`internal/surface/version.go:355`),
+never a literal 10: the gate takes the maximum stamp, so a literal 10 written
+while the constant was still lower would make the vault refuse the binary that
+created it. From v10.2.0 the constant is 10. Only `vp vault init` (`InitVault`,
+`internal/storage/vault_init.go:108`) creates a vault born migrated, and it
+writes the marker in `InitVault` itself, never in the shared scaffold.
+`reconcile.ScaffoldNewVault` is that shared scaffold; on main its only caller is
+`vp vault init`, which passes it into `storage.InitVault`
+(`cmd/vp/cmd_vault_init.go`, `internal/storage/vault_init.go`). The
+split-destination caller it had before U12 is gone with the split tool. The
+marker never goes in the shared scaffold, so a destination scaffolded straight
+through it starts unmigrated — and copy refuses an unmigrated destination (the
+two-marker rule, below).
+`vp init`, `vp config sync` and onboarding use the vault reconciler directly,
+and a vault they create also starts unmigrated, without marker or lines (ADR-014
+decision 11). A reverted vault loses the marker with the revert, so the
+reconciler never gives the lines back to it. Every marker-gated behaviour keys
+on the marker alone; the lines follow from the marker, never the other way
+round. Because `.vibe-palace/` can be ignored on an existing vault, the marker
+write force-adds `vault.toml`, as `vp migrate kg-filenames` does
+(`cmd/vp/cmd_migrate_kg.go:142`, through `GitAddForce`,
+`internal/storage/git.go:617`).
+
+**Which v10.2.0 behaviour waits for the marker** (ADR-014 decision 11):
+
+- *Marker-gated* — the tidy rules above (no drawer sweep, authored-only KG
+  staging); the pull self-heal below; and two audit changes:
+  `palace-store-drawers` is skipped, and the new `kg-tracked-extracted`
+  dimension reports tracked extracted records (see *Vault Audit*). Without the
+  marker these behave as at `a32a2d4`, and the derived-path ignore lines are
+  absent, since only a marked vault receives them. So before the migration a v8
+  binary's drawer appends stay what they are at `a32a2d4`: tracked, unignored
+  capture artifacts that tidy commits. They become neither non-artifact dirt,
+  which `vp vault sync` refuses (`internal/storage/vaultsyncflow.go:82-99`), nor
+  tracked files under an ignored path, which would make tidy fail. The same
+  fallback keeps a v9 binary correct on a vault whose migration was reverted.
+- *Unconditional, from install on* — capture, decision filing, the
+  pending-archive ingester and the backfill write nothing derived into tracked
+  paths; explicit staging never re-tracks a derived path (below); the presence
+  predicate ignores derived-pattern files, so ignored residue never makes a
+  project present on one host only; the rewritten `project-tree-coherence`,
+  which uses that predicate; and the glide-path rule itself (decision 7; see
+  *Index Construction*).
+
+Two further rules keep a derived path out of git once it is ignored (ADR-014
+decision 11). **Self-heal on pull** (marker-gated): a binary that finds an
+unmerged `UD`, `DU` or `DD` entry on a now-ignored derived path reads the
+incoming marker (from `MERGE_HEAD`, or the rebase's onto commit), resolves the
+entry with `git rm --cached` and **deletes the file**, concludes the merge or
+continues the rebase, drops an autostash only when it holds nothing but derived
+paths, and reports each path it deleted. It runs at every pull path that can
+leave an unmerged entry: the merge in `pullCore`
+(`internal/storage/vaultpull.go:179`, the merge via `mergeFetchedTip` at `:300`); the rebase in
+`reconcileIfAhead` (`internal/storage/vaultsync.go:993`), reached from a
+commit-and-push (`:306`) and from the mirror prune
+(`internal/storage/vaultsync_verify.go:250`), where the heal runs before the
+path's abort on conflict and the abort stays for any non-derived conflict; and
+the push-rejection reconcile's rebase (`reconcileRejectedPush`,
+`vaultsync.go:1836`). The resumed clone's merge is `--ff-only`
+(`internal/storage/vault_clone.go:531`), so it never leaves an unmerged entry
+and needs no heal. `UU` on `kg/entities.jsonl` — the migrator rewrote the file
+and a lagging host appended to it — is reported by name and never resolved;
+only the operator attestation (every writer host synced, pushed and left clean)
+prevents it. The heal deletes rather than moves the bytes (ADR-014 decision 11,
+*Delete, not move*): every host rebuilds its index from archives, and the
+`pre-authored-only-<date>` tag holds the pre-migration tree.
+**Explicit staging never re-tracks a derived path** (unconditional):
+`stageInBatches` (`internal/storage/vaultsync.go:1171`) never names one,
+because `git add -- <path>` on a tracked, ignored file stages it (and exits 1).
+
+The real vault layout requires deep (`**`) matching: triples nest arbitrarily under a source-derived
+subpath (e.g. `palace/<p>/kg/triples/.claude/plans/<name>--mentioned_in--<uuid>.json`, an extracted
+triple that on a migrated vault lives in the host-local index instead; triple paths legitimately
+contain `.claude/` segments, so the classifier **never** excludes them). Go's stdlib
+`filepath.Match` has no `**`, and `doublestar` is not a dependency. Rather than add one for ~5
+stable rules (decision M1, option B), each `SweepRule` carries an explicit segment-matcher func over
+`parts = strings.Split(vaultRelPath, "/")`. The `Pattern` string on each rule is documentation only
+— the human-readable shape the `Match` func implements, kept for the test table and audit trail.
+`matchRule` returns the first rule whose `Match` accepts a path; the rules are mutually exclusive in
+practice.
 
 Everything that matches no rule — `resume.md`, task files, `Knowledge/` notes,
 hand-edited content — falls through to Reported and is left untouched.
@@ -781,6 +924,41 @@ The heal clears a **dirty-tree obstruction only**; it is not a committed-conflic
 resolver. A template that has genuinely diverged at the commit level on two hosts
 still produces a merge conflict, which the pull aborts and names.
 
+### The pending-archive ingest trigger
+
+**Shipped in v10.2.0 (ADR-014 decision 7); the ingester lives in `internal/ingest/`.**
+
+A pull is one of the four triggers of the pending-archive ingester. The others are the hook's
+last step, hook-less capture and `vp mcp` startup; see *Host-Local Index*.
+
+- **When it fires.** After any pull that brings in new transcript archives, the puller starts the
+  ingester for the vault it pulled, passing the vault root and the one project slug it resolved; a
+  pull names no archive. The run processes that triggering project first, then every other project
+  of that vault with pending archives, within the per-run budget.
+- **Which code paths count as a pull.** Every path that merges or rebases remote commits into the
+  vault:
+  - `storage.Pull` (`internal/storage/vaultpull.go:152`), behind both `pullAll` and `gitPull`;
+  - the rebase inside a commit-and-push (`internal/storage/vaultsync.go:993`, in
+    `reconcileIfAhead`), and its second caller, the mirror prune
+    (`internal/storage/vaultsync_verify.go:250`);
+  - the push-rejection reconcile (`internal/storage/vaultsync.go:1836`);
+  - the fast-forward merge in a resumed `vp vault clone` (`internal/storage/vault_clone.go:531`).
+- **The pull never ingests in-line.** It starts the ingester as a detached process through
+  `internal/detachlaunch` and returns at once:
+  - setsid on POSIX (`internal/detachlaunch/launch_unix.go:20`);
+  - stdout and stderr go to a log file, never the puller's pipes (`launch.go:96-97`);
+  - on Windows, a new process group with job breakaway (`launch_windows.go:38`). Breakaway is
+    dropped on a fallback retry when the job forbids it (`launch.go:72-77`), and then the child
+    can die with the job.
+
+  A pull, and the `vp vault sync` or MCP call that contains it, is never delayed by embedding.
+- **When the ingester is already running.** If another ingest or rebuild holds the index run lock,
+  the spawned ingester exits at once. The holder's rescan before release, or its recheck after
+  release, picks up the pulled archives.
+- **What a pull-triggered run ingests.** Every pending archive that is not in the host's baseline
+  set, newest first, within the per-run budget. The baseline set, the historical backlog, waits
+  for an explicit `vp index rebuild`.
+
 ---
 
 ## Vault Sync
@@ -836,9 +1014,38 @@ This section maps the mechanism onto the code.
 transport only, never on `vp mcp serve`, because they write the host the
 process runs on (`StdioOnlyToolNames`, `internal/tools/register.go`).
 
+### In-vault rename, and copy-as
+
+**`vp vault rename <old> <new>`** (`vp_vault_rename`, U9) renames a project
+within one vault. The mechanism is `storage.PlanRename` / `storage.ApplyRename`
+(`internal/storage/project_rename.go`): the plan action writes nothing and
+returns the move set, the rewrite-class counts and a **digest**
+(`renameDigestFormat`, `project_rename.go`); `--expect <digest>` binds it, and
+apply refuses on a mismatch. The digest binds the slugs, the served vault's
+identity, the move set and the rewrite counts — never a HEAD — so an unrelated
+push does not invalidate it. Apply makes **one** commit carrying
+`Vp-Rename-From` / `Vp-Rename-To` trailers (`project_rename.go`) plus a departure
+record for the old slug, checks that nothing still names it, and publishes
+exactly that commit to every remote. It refuses a `<new>` the vault already holds
+or records a departure for, and a vault not clean at every remote tip. The
+**host-local index store moves with it**, off the published commit:
+`internal/indexstore/rename.go` (`AdoptRenamedStore` / `AdoptRenamedProject`)
+moves `palace/.local/index/<old>/` to `<new>/` under the index run lock, rewrites
+each chunk's `wing`, and bumps the change counter's epoch rather than deleting it
+(`internal/indexstore/lifecycle.go`); the embed cache is **not** carried — it is
+removed and the new slug re-embeds lazily (operator M0 ruling 2026-10-05). `--undo`
+reverses that host-local step after you have git-reverted the rename commit.
+
+**`vp vault copy <p> --from <url> --as <new>`** (U11) composes the two:
+`internal/tools/vault_copy_as.go` (`CopyProjectAs`) copies the single project
+from a published source vault, then renames it in the receiver to `<new>`, in one
+operation. It is resumable — if the copy already landed, only the rename runs
+(`CopyAsResumed`) — and the copied archives join this host's baseline set under
+the new name.
+
 ### Dry run, digest, `--expect`
 
-Copy, clone and project delete share one protocol. `--dry-run` (MCP: the plan
+Copy, clone, project delete and rename share one protocol. `--dry-run` (MCP: the plan
 action, which the tool's `ReadOnlyWhen` predicate classifies as a read) runs
 every check, writes nothing, and prints the plan, its **digest** and the exact
 real-run command line. That printed line carries `--expect <digest>`. Given
@@ -958,8 +1165,12 @@ initialize timeout, leaving the session alive with zero tools:
   a model-load failure now surfaces at first search, not at startup.
 - **The full-vault reindex.** Bootstrap used to spawn a goroutine that called
   `Engine.Rebuild` for every project in the vault. Most of that work was for
-  projects the session never searched. It is gone; indexes are built lazily
-  (below).
+  projects the session never searched. It is gone. A search builds the one
+  project it touches from its notes, decision chunks, iterations and local
+  chunks (embed-cache hits only) — plus, while the vault has no migration
+  marker, its tracked drawers; archived transcripts enter the index only
+  through the pending-archive ingester or the explicit `vp index rebuild`
+  (ADR-014 decision 7; see *Index Construction* below).
 
 Because `Dimensions()` is a property of the loaded model, it returns
 `(int, error)` — the dimensionality cannot be known before the model exists.
@@ -998,7 +1209,10 @@ jq -r '.tools[].name' internal/mcp/tool_surface.golden.json               # ever
 jq -r '.tools[] | select(.mutating) | .name' internal/mcp/tool_surface.golden.json   # the mutating subset
 ```
 
-It held **81 tools as of v8.2.0 (surface 8)**. Source files are under
+It holds **80 tools as of v10.2.0 (surface 10)**: relative to v8.2.0 (surface 8),
+surface 10 adds `vp_index_status` and `vp_vault_rename`, and removes
+`vp_palace_backfill_decisions` (ADR-014 decision 10) and the retired
+`vp_vault_split` / `vp_vault_merge` (U12). Source files are under
 `internal/tools/`; `grep -l 'Name: *"vp_<tool>"' internal/tools/*.go` finds any one.
 The table groups them by category.
 
@@ -1008,24 +1222,25 @@ The table groups them by category.
 | Workflow documents | `vp_get_workflow`, `vp_get_resume`, `vp_update_resume`, `vp_get_knowledge`, `vp_list_projects`, `vp_append_iteration`, `vp_get_iteration` | context_query_tools.go, project_tools.go, get_iteration_tool.go | resume / workflow / iterations read and write |
 | Tasks | `vp_list_tasks`, `vp_get_task`, `vp_manage_task` | task_tools.go | Task queue, epics, lifecycle (see *Tasks and the board*) |
 | Sessions and analytics | `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`, `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends` | session_tools.go, session_query_tools.go, friction_tools.go | Capture and session history |
-| Search | `vp_search`, `vp_search_cross_project`, `vp_refresh_index` | search_tools.go, system_tools.go | Hybrid semantic search |
-| Palace | `vp_palace_status`, `vp_list_wings`, `vp_list_rooms`, `vp_traverse`, `vp_find_tunnels`, `vp_palace_query` | palace_tools.go, palace_query_tools.go | Wing/room navigation; decision drawers |
+| Search | `vp_search`, `vp_search_cross_project`, `vp_refresh_index`, `vp_index_status` | search_tools.go, system_tools.go | Hybrid semantic search; explicit index rebuild; read-only `index_coverage` report |
+| Palace | `vp_palace_status`, `vp_list_wings`, `vp_list_rooms`, `vp_traverse`, `vp_find_tunnels`, `vp_palace_query` | palace_tools.go, palace_query_tools.go | Wing/room navigation over the host-local chunk store |
 | Knowledge graph | `vp_kg_query`, `vp_kg_add`, `vp_kg_invalidate`, `vp_kg_timeline`, `vp_kg_stats` | kg_tools.go | Entity/triple facts |
 | Learnings | `vp_list_learnings`, `vp_get_learning` | learning_tools.go | Cross-project learnings under `Knowledge/` |
 | Memory | `vp_memory_list`, `vp_memory_read`, `vp_memory_write`, `vp_memory_delete`, `vp_memory_harvest` | memory_tools.go | Host-agnostic AI memory (ADR-004) |
 | Vault files | `vp_vault_read`, `vp_vault_list`, `vp_vault_exists`, `vp_vault_sha256`, `vp_vault_write`, `vp_vault_edit`, `vp_vault_delete`, `vp_vault_move` | vault_file_tools.go | Vault-relative CRUD through `vaultfs` |
 | Vault git and freshness | `vp_vault_sync`, `vp_vault_tidy`, `vp_vault_status`, `vp_repo_freshness` | system_tools.go, repo_tools.go | Pull/push/tidy, sync state of the vault, and of the project checkout |
-| Vault lifecycle | `vp_vault_copy`, `vp_vault_rename`, `vp_vault_project_delete`, `vp_config_bind` | vault_copy.go, vault_rename.go, vault_project_delete_tool.go, config_bind_tool.go | See *Vault lifecycle and departure records* |
+| Vault lifecycle | `vp_vault_copy`, `vp_vault_rename`, `vp_vault_project_delete`, `vp_config_bind` | vault_copy.go, vault_copy_as.go, vault_rename.go, vault_project_delete_tool.go, config_bind_tool.go | See *Vault lifecycle and departure records* (`vp_vault_split` / `vp_vault_merge` retired, U12) |
 | Onboarding | `vp_init` | system_tools.go | Project onboarding over `internal/onboard` |
 | Wrap and commit | `vp_collect_wrap_state`, `vp_stamp_iter`, `vp_preflight_wrap`, `vp_ingest_commit_msg`, `vp_archive_commit_log` | wrapstate_tools.go, commit_msg_tools.go, commit_log_tools.go | `/wrap` mechanics |
 | Summarization | `vp_enqueue_iteration_summary`, `vp_check_summarization_queue`, `vp_trigger_summarization_drain` | summarize_tools.go | Host-local summarization queue |
 | Diagnostics and integrity | `vp_health`, `vp_check`, `vp_surface_check`, `vp_audit_vault`, `vp_archive_link`, `vp_scan_plans` | health_tools.go, check_tool.go, surface_tools.go, audit_tools.go, archive_tools.go, scan_plans_tool.go | Runtime health, checks, audits, repair |
 
-All tools except the search-dependent ones are always registered. The nine
-search-gated tools — `vp_search`, `vp_search_cross_project`,
+All tools except the search-dependent ones are always registered. The
+search-gated tools — among them `vp_search`, `vp_search_cross_project`,
 `vp_capture_session`, `vp_get_project_context`, `vp_search_sessions`,
 `vp_get_session_detail`, `vp_get_effectiveness`, `vp_get_friction_trends`, and
-`vp_refresh_index` — require a search *engine* (`engine != nil`). They do **not**
+`vp_refresh_index` — require a search *engine* (`engine != nil`,
+`internal/tools/register.go:162`). They do **not**
 require a loaded model: the engine holds a lazy embedder, so registration never
 touches ONNX and a model that fails to load fails the first search rather than
 the tool surface. The vault-CRUD, commit, wrap-state, and surface-check tools are
@@ -1147,14 +1362,22 @@ version rises. `surface.CheckCompatible` scans every stamp root and takes the
 raises the floor for every host. `vp check --check surface` and
 `vp_surface_check` report the verdict.
 
-**Data format.** `vault.toml` is written only by a scaffold (a fresh vault is
-born current) or by the migration that advances it, never as a side effect of
-a write. `EnforceFormatFailStop` guards the KG-storage reads
-(`internal/storage/format_gate.go`). Format 2 exists because `vp board` needs
-task creation/modification times and the widened status vocabulary to be
-trustworthy vault-wide (`vp migrate task-board-fields` backfills them). The
-lifecycle commands check the data format of the vaults they read (clone
-refuses a vault that is not at this binary's format).
+**Data format.** `vault.toml` is written only by a scaffold (a fresh vault is born current; in
+v10.2.0 a vault made by `vp vault init` is also born migrated, with the migration marker, the
+derived-path ignore lines and the vault-level stamp `Audits/.surface` at `MCPSurfaceVersion`, 10 from
+v10.2.0, which `InitVault` writes itself, never the shared scaffold `reconcile.ScaffoldNewVault`; a
+vault made by `vp init`, `vp config sync` or onboarding, which use the vault reconciler directly,
+starts unmigrated, and copy refuses an unmigrated destination, ADR-014
+decision 11), by
+a migration that advances its format, or by the ADR-014 migration and its empty-vault path, which
+add the migration marker key without changing the format (ADR-014 decision 11) — never as a side
+effect of a write. Every one of these writers round-trips every field of `vault.toml`, so a format
+migration keeps the marker. The KG-storage reads call `checkFormatGate`
+(`internal/storage/format_gate.go:29`), which applies `surface.EnforceFormatFailStop`
+(`internal/surface/format.go:342`). Format 2 exists because `vp board` needs task
+creation/modification times and the widened status vocabulary to be trustworthy vault-wide
+(`vp migrate task-board-fields` backfills them). The lifecycle commands check the data format of the
+vaults they read (clone refuses a vault that is not at this binary's format).
 
 **Release tags** are `v<MCPSurfaceVersion>.<RequiredDataFormat>.<build>`
 (ADR-011). `.github/workflows/release.yml` enforces the scheme on a pushed
@@ -1255,8 +1478,8 @@ dispatches the same map. Registered names:
 The table is ordered as `check.ProducerOrder` declares, which is the order a
 default (unfiltered) run emits. Re-derive it from that slice rather than trusting
 this table (`awk '/ProducerOrder *=/,/}/' internal/check/selector.go`): it has
-gone stale three times as producers joined without a row here. It was last
-regenerated for v8.2.0.
+gone stale three times as producers joined without a row here. The rows
+match the slice in v10.2.0.
 
 This table enumerates only the **vault-rooted, selector-registry** checks —
 the ones `check.Producers` can dispatch by name, because their signature takes
@@ -1780,7 +2003,7 @@ prune commit is reported with the commit, the paths and the rule — a
 remote's copy of these paths is operator content, keep it — and the
 command exits non-zero. `pruned=N` counts only files this run removed.
 
-The commit lock serialises against every vp committer; `storage.Pull`
+The vault commit lock serialises against every vp committer; `storage.Pull`
 does not take it, which is safe because a concurrent merge fails on
 git's own index guards rather than losing anything. The remaining
 unlocked windows are named, not closed: a symlink swapped into a path
@@ -1976,7 +2199,8 @@ What the payload carries instead:
   `SearchReady` hits with `source_type=session` (iteration and session-note
   chunks densify the corpus for `vp_search` but do not become bootstrap index
   rows). Bootstrap
-  never calls `ensureIndex` or forces a lazy ONNX construct — cold paths stay
+  never builds an index or forces a lazy ONNX construct — it asks only
+  `HasIndex` (`internal/tools/bootstrap_rank.go:249`), so cold paths stay
   `structural` and set `fallback_reason`. Rows carry date, iteration, title, tag
   and a session URI, and no summary body.
 - **`ranking`**, the one instrument that is never silent: which ranker ran, the
@@ -1985,6 +2209,11 @@ What the payload carries instead:
   list that does not say what ordered it is indistinguishable from recency order.
 - The memory index, KG snapshot, and the command and skill lists, all of which
   were already indexes rather than bodies.
+- **`index_coverage`** per project — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `partial` or
+  `current`, tested in that order, over notes, iterations and the transcript archives (see
+  *Host-Local Index*) — so an incomplete search index says so before anyone searches, and a KG
+  snapshot for a project whose graph is absent on this host is not a silent zero (ADR-014 decision
+  8; see *Host-Local Index*).
 
 The transport contract is unchanged, because the remaining risk is not vp's:
 
@@ -2340,31 +2569,670 @@ Properties:
 - ~90MB model, downloaded on first use, cached at `{vault}/palace/.local/models/`
 - Single embed: ~66ms; batch of 32: ~290ms; 17MB binary contribution
 
-### Vector Index: Brute-Force Cosine
+### Host-Local Index
+
+The search index is compiled on each host from tracked vault artifacts — session notes,
+`iterations.md` and transcript archives — the way a build compiles a binary from source. It lives
+under the already-ignored `palace/.local/` (`internal/storage/git.go:31`) and git never carries it
+(ADR-014 decisions 1, 2):
+
+```
+palace/.local/index/{project}/
+├── hnsw.idx            # HNSW graph and its graph fingerprint (library version,
+│                       #   dims, M, EfSearch), in one envelope (once HNSW lands)
+├── chunks.jsonl        # chunk text and metadata (wing, room, hall, source)
+├── kg/                 # extracted triples and entities
+├── ledger.jsonl        # per session or import batch: live source, chunk count,
+│                       #   UTC start day, failures, generation; the baseline set
+├── chunks.fingerprint  # indexer version, chunker, room-keyword hash, extractor
+└── completeness.json   # what is built, and the persistent stale flag
+palace/.local/index/.generation/{project}
+                        # the store's change counter; outside {project}/, so a
+                        #   discard never resets it
+```
+
+In v10.2.0 the directory holds no `hnsw.idx`: the runtime index is brute force,
+built in memory from the chunk store, and the graph file arrives with the HNSW
+children (see *Vector Index*). The graph fingerprint has no file of its own: it
+lives inside `hnsw.idx`'s checksummed envelope, so the graph and the record of
+how it was built are always replaced together.
+
+Wings, halls and rooms are classification metadata on chunks, not directories
+git has to carry. The ingest ledger lives here, no longer at
+`palace/<p>/ingested-archives.jsonl` (`internal/storage/ingested_archives.go:21-25`).
+A new binary deletes a legacy ledger when no tracked drawer is left under
+`palace/<p>/drawers/`, or when the vault carries the migration marker, so a
+surviving ledger cannot make the rebuild skip archives it never indexed. The
+deletion is never keyed on the host-local store being absent, which would
+delete every host's ledger before capture is redirected (ADR-014 decision 2).
+
+**The ledger's baseline is a set, not a time.** When a host's ledger is created, it records the
+`source_sha256` of every tracked archive present at that moment, leaving out the archive named by
+the trigger that created the ledger (the one the hook or `vp_capture_session` just created). That
+set is the historical backlog: automatic triggers ingest every pending archive that is not in the
+set, and no clock or date is involved. Copy (including `copy --as`) and import add the archives they bring in to the
+set explicitly, on the host that runs the command, and only when that host already has a ledger for
+the project; a ledger created later records those archives anyway. Other hosts receive them by pull,
+outside their own sets, and ingest them automatically within each run's budget. Copy adds
+them after the copy is published (`AddIncomingArchivesToBaseline`), and a failed addition warns and
+never fails the command; import adds the archives a
+vibevault import writes (`importers-write-the-frozen-tracked-corpus`). A completed
+`vp index rebuild` empties the set. The set lives in the ledger file and survives every rewrite of
+it; a discard of the ledger recreates it with a fresh set; deleting a legacy ledger does not touch
+the new one. The set and its API belong to `host-local-index-store-ledger-and-fingerprint`
+(ADR-014 decisions 2, 7).
+
+**`completeness.json`** records, per project, each tier that has been built
+with the count of sources it was built from; the `chunks.fingerprint` and
+embed-cache fingerprint it was built under; and the `stale` flag with its
+reason. The graph fingerprint is not recorded there: its one copy is inside
+`hnsw.idx`. "Built" means recorded there, never
+inferred from an in-memory index or from a file being present, so a fresh
+process reads the same coverage as the process that built the tiers (ADR-014
+decision 2).
+
+**Two fingerprints** (ADR-014 decision 3), on the embed cache's pattern. `chunks.fingerprint`
+records *what* is indexed. The graph fingerprint (once HNSW lands) records *how*, inside
+`hnsw.idx`'s envelope: a mismatch rebuilds only the graph, with no embedding. The next run of the
+ingester or of `vp index rebuild` replaces `hnsw.idx`, built from the cached vectors and the local
+chunks, so changing `EfSearch` discards no chunks and embeds nothing. The ingester and the rebuild
+driver reach the graph through a seam, since both are upstream of
+`hnsw-graph-file-envelope-and-warm-start`: `pending-archive-ingester-and-per-archive-commit-step`
+declares `ingest.GraphHealer`, which returns `ingest.HealResult{Rebuilt, Deleted, Reason}`; the
+HNSW child implements it; the ingester and `explicit-resumable-index-rebuild-with-disk-watchdog`
+call it at the end of a run. In v10.2.0 it is nil, and they skip the call. A corrupt `hnsw.idx` (a
+bad checksum, or a structure that fails the load-time walk) is deleted under the index commit lock
+(`Tx.DeleteGraph`), and the project answers from brute force until a converting process writes a
+new file; that is not a store discard and sets no `stale`. A graph fingerprint mismatch
+is not a `stale` reason: `stale` is set only when vectors are missing, and then for the
+missing-vector reason. Neither stamps a tracked file, gates a vault write, or appears in a tool's
+input. A mismatch means "present and different": a **missing** fingerprint means "not built"
+(coverage `unbuilt`), never a mismatch and never `stale`. At `a32a2d4` the embed cache treats a
+missing sidecar as a mismatch (`internal/search/cache.go:184-202`); the index does not. An
+embed-cache directory with no sidecar and no vectors is not built, and the first build writes the
+sidecar. One with vectors but no sidecar cannot be attributed to a regime, so it counts as a
+mismatch: the project is marked `stale` for a fingerprint reason, its cache reads as all misses, and
+the next `vp index rebuild` removes those vectors and writes the sidecar. A `chunks.fingerprint` or
+embed-cache mismatch found on the search path or by the ingester sets the persistent `stale` flag
+with a fingerprint reason (decision 8); a graph fingerprint mismatch does not. The search path then
+embeds only what the tier table below allows: notes and iterations and, on a vault without the
+marker, the tracked drawers. It never re-embeds a chunk-store vector or an archive, and until the
+rebuild search keeps answering from what is there. The pending-archive ingester does not run on a
+project that is `stale` for a fingerprint reason: it exits for that project, and the coverage reason
+names `vp index rebuild`. Only `vp index rebuild` discards, and only what the mismatched fingerprint
+covers: a `chunks.fingerprint` mismatch discards that project's chunks, extracted KG, ledger and
+(once HNSW lands) graph; a graph fingerprint mismatch replaces only the graph, from cached vectors,
+and the ingester may do it too; an embed-cache mismatch, or vectors with no sidecar, leaves chunks
+and ledger alone, and the rebuild removes the old vectors and re-embeds. The rebuild takes the index
+commit lock once for the discard, then once for each archive's commit step, like the ingester; it
+embeds outside the lock, and on completion clears `stale`. The flag's other reason, missing vectors
+for chunks of ledgered sources, is also cleared by the ingester's repair pass once no such miss
+remains (ADR-014 decision 3).
+
+**An embedder change** is caught by a third fingerprint, the embed cache's own
+(`internal/search/cache.go:183-235`). At `a32a2d4` a mismatch there removes
+every vector of the old regime at once (`:203-218`); in v10.2.0 the cache never
+discards on its own. A mismatch sets `stale`, and until `vp index rebuild`
+discards the old vectors the project's cache reads as all misses and refuses
+`Put`. The fingerprint records the model, the behaviour version and
+`max_seq_len` (`internal/embedder/fingerprint.go`). The **default** released
+binary is zero-CGO pure-Go (`BackendGo`, hugot), and its fingerprint **omits**
+the backend field, so a routine upgrade of the default binary never invalidates a
+cache. v10.2.0 also ships an **optional** native ONNX-Runtime backend
+(`BackendORT`), off by default and reachable only in a binary built with
+`-tags ORT` (`CGO_ENABLED=1`; `internal/embedder/backend.go`); only that regime
+appends ` backend=ort` to the fingerprint (`FingerprintBackend`), giving
+ORT-produced vectors their own namespace so a Go cache never accepts them, and
+vice versa. The embed-cache fingerprint is not part of `chunks.fingerprint`, so
+after an embedder change the chunk store survives with no vectors. On the search path a changed
+(present and different) embed-cache fingerprint marks the project `stale` like
+a `chunks.fingerprint` mismatch: notes and iterations are
+re-embedded, and the host-local chunks drop out of answers until
+`vp index rebuild`. On an unmigrated or reverted vault the glide tier is the
+exception: the first search after the change re-embeds every tracked drawer the
+cache misses, which on a large project can take hours (decision 7; see *Index
+Construction*). An index therefore never mixes vectors from two embedding
+regimes; an embedder change without a rebuild gives a narrower answer and a
+`stale` reading, never wrong results (ADR-014 decision 3).
+
+**The index is built from archives only** (ADR-014 decision 7).
+`vp_capture_session` indexes none of the transcript text it is given: its
+`transcript` parameter only creates an archive on a host without a hook
+(`archive_transcript`), and a session that never gets an archive is searchable
+through its note, not its transcript.
+
+**One pending-archive ingester** brings archives into this store (ADR-014 decision 7). Each run is
+one idempotent, ledger-driven pass over the **pending** archives — chunking, classifying, embedding
+and extracting their triples. An archive is pending when its session is absent from the ledger, or
+the ledger records a different `source_sha256` for that session; a pending re-archive of a ledgered
+session is a supersede (below). This matters because a PreCompact archive and the SessionEnd archive
+of the same session on the same day share one path, and the second overwrites the first
+(`internal/archive/archive.go:181-184`). That one pass covers the hook's archives (SessionEnd and
+PreCompact), archives pulled from other hosts, and inline archives from hook-less hosts.
+
+- **Scope of an automatic run.** An automatic trigger ingests every pending
+  archive that is not in the host's baseline set. No clock or date is involved,
+  so clock skew, offline hosts and same-day archives cannot cause a skip. The
+  baseline set is the historical backlog, which only an explicit
+  `vp index rebuild` clears; on a host with an empty ledger it is the whole
+  history. While the backlog is not empty, coverage reads `partial` and names it.
+- **The per-run budget** is counted in archives per run, with a wall-clock cap
+  as a backstop; both defaults are set by measurement in
+  `pending-archive-ingester-and-per-archive-commit-step`.
+  Archives are taken newest first, and the repair of missing vectors counts
+  against the same budget. Coverage's reason names separately the pending
+  archives (outside the baseline set, beyond this run's budget) and the backlog
+  (the baseline set).
+- **Arguments.** The trigger passes the vault root and the one project slug it resolved (the hook
+  from its own vault resolution, the pull from the vault it pulled), and, from the hook and
+  `vp_capture_session`, the `source_sha256` of the archive just created; a pull, a clone and
+  `vp mcp` startup name none. When `vp mcp` starts with no project it can resolve, it passes the
+  vault's first project in slug order; the run then reaches every other project with pending
+  archives as usual. The ingester resolves nothing on its own. One run processes the
+  triggering project first, then every other project of that vault with pending archives, within the
+  budget.
+- **Unmigrated vaults.** The ingester runs whether or not the vault carries the
+  marker: from install on, v9 capture writes no drawers, so on an unmigrated
+  vault a new session's transcript is searchable only through the host-local
+  store. Search on a vault without the marker reads both the tracked drawers
+  (the glide path) and the host-local chunks, deduplicated by a wide content
+  hash: a host-local chunk id is that hash, and the legacy 32-bit drawer id
+  (`internal/storage/drawers.go:62-67`) is never used to match. The coverage
+  reason under `legacy` carries the ingester's progress.
+- **Reading an archive.** The ingester reads the whole archive file, verifies
+  its hash against the manifest and closes it before embedding, so it never
+  records one version's bytes under another's hash, and on Windows never holds
+  the file open while the hook renames a newer archive into place. A hash
+  mismatch counts as a failure for that archive (below).
+- **Embedding happens outside the index commit lock.** The ingester reads the
+  archive, chunks, classifies, extracts and embeds without any lock, and takes
+  the index commit lock only to write what it has already computed.
+- **Write order for each archive.** Each step is durable before the next: (1) the vectors, each
+  written atomically (temp file, fsync, rename); (2) then the chunks, appended and fsynced; (3) then
+  the local KG records, appended and fsynced; (4) then the ledger entry, which records the archive's
+  `source_sha256` and its chunk count (the number of distinct chunk ids the archive owns). A killed
+  run leaves that archive out of the ledger and the next run resumes it; chunks are deduplicated by
+  id, so a resumed run leaves no duplicates.
+- **Visibility.** Search loads only chunks, and KG readers load only KG
+  records, whose source is in the ledger: an archive, or an import batch. A
+  mempalace import has no archive, so the importer ledgers each batch under its
+  import batch id with its chunk count, and the batch's chunks and KG records
+  record that id as their owner. A batch's start day is the earliest drawer
+  `filed_at` in the export, else `2000-01-01`, and the ledger's batch record
+  marks it `start_day_source: "import"`. A batch id never equals a session id:
+  the store refuses to commit a batch whose id does. A batch is not a session,
+  so coverage's session counts ignore it. Decision chunks belong to the notes
+  tier: each is owned by
+  its session note, never by an archive or a batch, and is visible whenever its
+  note is. A miss on a chunk whose source is not yet ledgered never sets
+  `stale`; a resumed run deduplicates the KG records it rewrites.
+- **Repair.** Within the per-run budget, the ingester repairs ledgered archives:
+  it re-embeds missing vectors (after a crash on a host whose filesystem lost
+  unsynced writes, say, or after an embed-cache wipe), and it compares the
+  ledger's chunk count with the number of chunks that record this archive as
+  an owner and re-ingests the archive on a shortfall. It re-embeds an import
+  batch's missing vectors too, but only reports a batch's chunk-count
+  shortfall, because only re-running the import restores the chunks. That
+  repair clears a `stale` flag whose reason is missing vectors
+  once no such miss remains.
+- **Torn lines.** Readers tolerate a torn trailing JSONL line, and a writer
+  truncates a torn trailing line, under the index commit lock, before it
+  appends.
+- **Failure.** A failure is non-fatal: the ingester logs a warning to `vp.log`, records a failure
+  count for that archive's `source_sha256` in the ledger, and moves on. A failure record is not an
+  ingest: it never makes a session ledgered for visibility, pending or coverage. Automatic runs skip
+  an archive after N failures (N set by `pending-archive-ingester-and-per-archive-commit-step`)
+  until an explicit rebuild.
+- **When a run ends.** A run ends when its budget (archive count or wall-clock
+  cap) is spent, or when a rescan finds no pending archive that this run has
+  not already attempted. A failing archive is retried by the next run, never by
+  the same one, so the index run lock is never held indefinitely.
+- **Re-archived sessions: supersede.** When a session is archived again (at PreCompact and then at
+  SessionEnd, say), the newer archive supersedes the older one. Each chunk, and each KG record,
+  records the archives that own it, keyed by each archive's `source_sha256`, never by its path, and
+  superseding removes the older archive's ownership rather than deleting by id. A chunk is deleted
+  only when no archive owns it any more, and the older archive's KG records go the same way. The
+  ledger is keyed by session and records the live archive and a generation number. The supersede
+  runs as commit steps under the index commit lock, in this order: (1) mark the session's ledger
+  entry as superseding; (2) add the newer archive's vectors, chunks, KG records and ownership, then
+  remove the older archive's ownership, deleting every chunk and KG record that no archive owns any
+  more, each file rewritten atomically; (3) record the new live archive and bump the generation. A
+  crash leaves the session pending, never "done with half its chunks", and readers detect the
+  rewrite through the generation. A supersede that races an ingest of the older archive in another
+  run waits for the index commit lock and re-checks ownership there. An older archive met after the
+  newer one is recorded as superseded and never ingested. Coverage counts sessions with a live
+  archive, not archive files.
+- **Chunk ids are wide content hashes.** A chunk id in the host-local store is a hash of the chunk
+  content alone (wing and room excluded), at least 128 bits, not the 32-bit drawer id
+  (`internal/storage/drawers.go:62-67`, `md5(wing+content)[:8]`), so equal ids mean equal content.
+  Legacy tracked drawers keep their ids. The change is covered by `chunks.fingerprint`.
+- **Two locks.** Both are `internal/vaultlock` locks on a named file, flock on
+  POSIX and `LockFileEx` on Windows. At `a32a2d4` only `TryAcquireFile`
+  (`internal/vaultlock/vaultlock.go:157`) locks a named path; `Acquire` and
+  `AcquireWithTimeout` (`:184`) lock a hashed sidecar under `.vp-locks/`
+  (`:215-237`). The timed form on a named path is
+  `vaultlock.AcquireFileWithTimeout(lockPath, timeout)`: it runs
+  `AcquireWithTimeout`'s poll loop over `TryAcquireFile`'s named-file open and
+  returns `ErrLockWaitTimeout` (`:44`) at the deadline. A context form,
+  `AcquireFileContext`, serves the ingester and the rebuild. Both belong to
+  `host-local-index-store-ledger-and-fingerprint`, and the caller creates
+  `palace/.local/locks/`. Both locks
+  live under the host-local `palace/.local/locks/` of the vault they guard, so
+  both are per host, per vault. The OS releases a lock when its holder dies (on
+  Windows, possibly only after the system frees the handle); neither is a
+  pidfile, and neither lives inside `index/<p>/`, which a discard deletes.
+  - The **index run lock**, one per host per vault, is non-blocking and held for
+    a whole ingest run or a whole `vp index rebuild` run. A second ingest
+    trigger that finds it held exits at once; `vp index rebuild` that finds it
+    held also exits at once, with a message naming the holder. Lock files are
+    empty, so after acquiring the lock the holder writes
+    `palace/.local/locks/index-run.holder` (pid, kind — ingest, rebuild or lifecycle —
+    project and start time). It is advisory, since after a kill or a pid reuse
+    it can be stale; a failed try-lock reads it to name the holder, and the
+    holder removes it just before it releases the lock. A status probe —
+    `vp index status`, `vp_index_status` and bootstrap's coverage — never takes
+    the run lock: it reads the holder record and reports a run in progress only
+    while the pid it names is alive. A try-lock there would hold the run lock
+    for a moment, and a trigger that collided with it would exit and be lost,
+    since the no-lost-trigger rule below covers only a real holder's rescan. The
+    probe's answer is advisory, as the record is; only a run takes a try-lock.
+    `vp_refresh_index` checks the index run lock before it spawns the way a
+    status probe does: it reads the holder record and checks that the pid it
+    names is alive, never taking the lock, and if a run is in progress it
+    returns a refusal to its caller. A stale record can let a spawn through; the
+    spawned rebuild then takes the lock itself, or exits naming the holder.
+    Holding the lock bounds embedding to one process, and
+    one loaded model, per vault on the host; a host serving two vaults may run
+    two. Before releasing the lock the holder rescans for archives that arrived
+    during the run; after releasing it, the holder checks once more for pending
+    archives its last rescan did not see and, only if one exists, tries the lock
+    again (an archive left over by the budget, or a failing one, waits for the
+    next trigger), so a trigger that exited while the lock was held is not
+    lost.
+  - The **index commit lock**, one per project per vault per host, is short and
+    blocking, and is held only to write already-computed data. Each of these
+    is a commit step under it: one archive's commit step (vectors, chunks, KG
+    records, ledger entry); one supersede step; a discard; a reaper pass, and
+    the sweep, departed-project cleanup, index reap and lifecycle rename of `index/<p>/`; a
+    `completeness.json` write, including the `stale` flag; an embed-cache write
+    (the notes embed, the glide-path lazy embed and the fingerprint sidecar); a
+    torn-line truncation; a decision-chunk write; the palace relabel by
+    `vp audit rooms --apply`; one mempalace import batch; a baseline-set
+    addition by copy or import; and writing or deleting `hnsw.idx`, which
+    lives inside `index/<p>/` and so needs the same protection from a
+    concurrent discard.
+  - **Lock order.** The index commit lock is a leaf: no process holds two at
+    once. The index run lock is taken before an index commit lock, never the
+    reverse.
+  - Searches, the MCP server and the note-time writers take only the index
+    commit lock, with a timeout (`AcquireFileWithTimeout`), and only for their
+    own writes: the `stale` flag, the notes embed into the cache, the
+    glide-path lazy embed, and decision chunks, written by capture, the hook and
+    the enrichment drain. They embed outside the lock and commit in batches. On
+    a timeout the caller skips its own write: a search does not set the flag
+    this time and does not commit the batch, and a skipped decision-chunk write
+    is restored by the next notes-tier build or rebuild. None of them waits on
+    the index run lock, so a long ingest never stalls a search or a capture.
+  - The embed cache is written under the index commit lock, atomically. At
+    `a32a2d4` `Put` writes in place (`internal/search/cache.go:121`) and the
+    fingerprint sidecar uses one fixed `.tmp` name (`:220`); both become temp
+    file, fsync, rename.
+- **Triggers, all Go code, never an LLM.** Every trigger starts the ingester as
+  a **detached process** through `internal/detachlaunch` and returns at once:
+  setsid on POSIX (`internal/detachlaunch/launch_unix.go:20`), stdout and
+  stderr to a log file, never the parent's pipes (`launch.go:96-97`), and on
+  Windows a new process group with job breakaway (`launch_windows.go:38`).
+  Breakaway is dropped on a fallback retry when the job forbids it
+  (`launch.go:72-77`), and then the child can die with the job. The child's
+  working directory is set away from any checkout, and inherited descriptors,
+  including any vault-lock descriptor, are closed; `detachlaunch` sets no
+  working directory at `a32a2d4`, so that part is new work for
+  `capture-and-backfill-write-host-local-index-only`. A cgroup kill
+  (teleport, systemd) can still reach the child; the write order above makes
+  that harmless. (1) The hook's last step: after `WriteSession`
+  (`internal/hook/hook.go:581`), and so after the archive, the harvest and the
+  note link, the hook spawns the ingester and returns. The spawn is the last
+  step on every return path that ran the archive step, including the
+  claimed-session early return (`hook.go:554-555`), which returns before
+  `WriteSession`. The hook never embeds: the host kills it at 30 s
+  (`HookTimeout`, `internal/hook/settings.go:20`, registered for SessionEnd,
+  Stop and PreCompact at `:23`), and embedding runs at about 46–48 s per MiB of
+  archive, so session exit is never delayed by indexing. (2) A vault pull that
+  brings in new archives — every code path that merges or rebases remote
+  commits into the vault: `storage.Pull` (`internal/storage/vaultpull.go:152`),
+  the rebase inside a commit-and-push (`internal/storage/vaultsync.go:993`) and
+  its second caller, the mirror prune (`internal/storage/vaultsync_verify.go:250`),
+  the push-rejection reconcile (`internal/storage/vaultsync.go:1836`), and the
+  fast-forward merge in a resumed `vp vault clone`
+  (`internal/storage/vault_clone.go:531`). (3) `vp_capture_session`, after it
+  creates an inline archive on a hook-less host. (4) `vp mcp` startup, as a
+  backstop for a spawn lost when the host kills the hook before its last step.
+  So an archive is ingested by the next session start or pull at the latest,
+  if it is outside the baseline set and within that run's budget.
+- **Freshness in a running server.** Another process can write the store, so
+  before each search a running engine reads the store's change counter,
+  `palace/.local/index/.generation/<p>`, owned by
+  `host-local-index-store-ledger-and-fingerprint`. It is
+  read without a lock, and every commit that wrote anything writes it
+  atomically. It holds two numbers: `gen`, which every such commit bumps, and
+  `epoch`, which changes on every commit that did more than append — a
+  supersede, a discard, a delete, a relabel, a torn-line truncation and a
+  reap. A graph write or delete (`hnsw.idx` replaced or removed) bumps `gen`
+  only, since another engine's in-memory graph stays valid after a save; a
+  discard that deletes the graph changes `epoch` as a discard. It lives outside `index/<p>/`, so a
+  discard never resets it, and a missing counter is created with a random
+  `epoch`, so a recreated file never matches an engine's remembered value. The
+  ledger alone would not do: the counter moves on writes the ledger never sees
+  (decision chunks, mempalace batches, relabels and `completeness.json`). When
+  only `gen` grew, the engine loads what was appended; any other change forces
+  a full reload of that project. The ledger's per-session generation stays, for
+  per-session readers such as coverage and the repair pass. A project removed
+  mid-ingest is detected under the index commit lock, and the ingester stops
+  for it without recreating `index/<p>/`.
+
+Routine index work never depends on an LLM: chunking, classification,
+embedding, entity extraction and ingest are deterministic Go code, and
+iteration summaries, the one LLM-derived input, are tracked and only read.
+**`vp index rebuild [project]`** stays the explicit, full, resumable rebuild;
+`vp_refresh_index` is its MCP twin, and both call one driver, which shares the
+ingester's per-archive commit step. `vp_refresh_index` starts the rebuild
+detached, through the same launcher, and returns at once, so an MCP client
+never times out; progress is read through `vp_index_status`. The rebuild
+embeds outside the index commit lock, and takes the lock once for a discard and
+once per archive's commit step. It ingests the baseline set as well as pending
+archives, and on completion empties the baseline set and clears `stale`. A
+completed rebuild is a run in which every live archive of the project, the
+baseline set included, was attempted; each is either ledgered with its live
+`source_sha256` or carries a failure record from this run; no local-tier miss
+remains among ledgered chunks; and embedding ran. An archive that keeps failing
+therefore cannot block completion for ever, and it stays visible: its session is
+not ledgered, the project reads `partial`, and coverage names it as failed.
+`--no-embed`, `--max-archives` and `--dry-run` never complete a rebuild, so they
+leave `stale` set. The proof is defined by
+`search-index-completeness-and-build-serialization`. A rebuild holder's rescan
+before release also covers other projects of the vault with pending archives.
+The driver writes
+the ledger after each archive is durable, so a stopped run resumes; checks free
+bytes and free inodes before and during the run and stops resumably when either
+crosses its floor (set by measurement in
+`explicit-resumable-index-rebuild-with-disk-watchdog`); and reports progress
+per archive. Until the quantum split lands, every per-host `vp index rebuild`
+that the release and the live migration run prescribe names its projects, and it
+and the scripted rehearsal in `one-shot-migration-to-authored-only-vault`, which
+the live migration run re-runs, leave out both quantum projects,
+`qa-metabuild-system` and `orchestrator`; on
+those hosts the two keep their backlog, and their coverage reads `partial`,
+until the split. Completeness comes from `completeness.json`, the ledger and the
+fingerprints, never from a file being present. Decision filing is redirected,
+not removed: `fileDecisionDrawers` (`internal/capture/decisions.go:42`) and
+the other decision writers, the hook's enrichment drain
+(`internal/capture/enrichqueue.go:304`) among them, stop writing tracked
+drawers and write decision chunks to the host-local store, under the index
+commit lock with a timeout. Every build also rebuilds decision chunks from the
+session notes' `decisions:` frontmatter, so no tracked decision drawer is
+needed and `vp_palace_backfill_decisions` is removed in v10.2.0. The writers and
+the tool's retirement belong to `decision-chunks-in-the-host-local-store`
+(ADR-014 decisions 7, 10, 11).
+
+**The tier table** (ADR-014 decision 7), owned by
+`search-index-completeness-and-build-serialization` and cited by every child
+that builds or reads the index, says what the search path builds:
+
+| tier | built on the search path? |
+|---|---|
+| session notes (with decision chunks from their frontmatter, persisted in the store) and iterations | yes |
+| host-local chunks of ledgered sources (archives and import batches) | yes, **embed-cache hits only**; a miss marks the project `stale` (missing-vector reason) and waits for the ingester's repair or an explicit rebuild |
+| the glide-path lazy embed and the notes embed | embedded outside the index commit lock, committed in batches under it |
+| tracked drawers (the glide path) | yes, only while the vault carries no migration marker (decision 11) |
+| transcript archives not yet in the ledger | no: the pending-archive ingester or an explicit `vp index rebuild` only |
+
+The orphan reaper never destroys what the search path skipped. At `a32a2d4` it
+deletes every `.vec` outside the build's live set
+(`internal/search/engine.go:697-725`); in v10.2.0 its live set is the union of
+every tier an explicit rebuild would build, and it runs under the index commit
+lock and re-reads the store's id set there (ADR-014 decision 7).
+
+**Coverage and the empty search** (ADR-014 decision 8). `index_coverage` is
+reported per project by `vp_bootstrap_context`, `vp index status` and the
+read-only `vp_index_status`:
+
+| state | meaning |
+|---|---|
+| `absent` | the project is **truly empty** (below), and nothing else |
+| `stale` | the persistent `stale` flag is set, with its reason: a `chunks.fingerprint` or embed-cache mismatch (decision 3; "present and different"), which only a completed `vp index rebuild` clears; or an embed-cache miss on a chunk of a ledgered source (decision 7), which the ingester's repair pass or a rebuild clears |
+| `legacy` | the vault carries no migration marker, and tracked drawers exist |
+| `unbuilt` | the project has content, but `completeness.json` records no built tier on this host, for example a fresh clone before its first search. A missing fingerprint lands here, never in `stale` |
+| `notes` | notes and iterations are built, and the project has no archive with a live session (decision 7) |
+| `partial` | the project has archives with live sessions, and n of the m sessions are in the ledger with their live archive's `source_sha256`, with n < m. This includes n = 0, a pending supersede, and a live baseline archive not yet ingested |
+| `current` | the project has archives, and every live session is in the ledger with its live archive's `source_sha256` |
+
+The states are tested in table order, and the first that matches wins. So `stale` always surfaces; a
+glide-path project reads `legacy`, not `notes`; a notes-only project reads `notes`, never `current`;
+and a project with archives not yet ingested reads `partial`, never `notes`. `legacy` outranks
+`unbuilt` deliberately: on a vault without the marker search answers from the tracked drawers, which
+need no local build, so a fresh clone of an unmigrated vault reads `legacy`, and its reason carries
+"not built yet on this host" and the ingester's progress. Every state carries a reason; for
+`partial` it names, separately, the pending archives (outside the baseline set, not yet reached
+within the budget), the backlog (the baseline set, which only `vp index rebuild` clears), and the
+failed archives (those automatic runs skip after N failures, which only `vp index rebuild` retries).
+`m` counts sessions with a live archive, not archive files, so a session archived on two days counts
+once. `absent` means truly empty only, while "not built yet on this host" is `unbuilt`.
+`search-index-completeness-and-build-serialization` owns the two shared predicates: the persistent
+`stale` flag in `completeness.json`, with its reason, which the search path or the ingester sets on
+a `chunks.fingerprint` or embed-cache mismatch or on an embed-cache miss on a chunk of a ledgered
+source, which a completed rebuild clears for either reason and the ingester's repair pass clears for
+the second; and the "truly empty" predicate, which the search error and `absent` both read (ADR-014
+decision 8).
+
+A project is *truly empty* when it has no session notes, no iterations, no
+tracked transcript archives, no local chunks and, on a vault without the
+marker, no tracked drawers. `vp_search` keeps its result-array shape. A search of a
+truly empty project is an **error that names `vp index rebuild`**, from the MCP
+tool and from `vp search` alike; a non-empty project with zero hits still
+returns an empty list, because that answer is true. Cross-project search skips
+truly empty projects instead of failing as a whole, and reports them only
+through the coverage instrument, where a skipped project reads `absent`; the
+result array carries no skip marker, so its shape is unchanged. Palace
+navigation reads the host-local chunk store and, with no local index, returns
+empty while `index_coverage` says why. A `kg_snapshot` for a project whose graph
+is absent on this host is not a silent zero.
+
+The change ships as MCP surface 10 (v10.2.0) with the data format still at 2,
+because a v8 binary's capture and tidy would otherwise write extracted records
+back into the tracked tree (ADR-014 decision 10). Each vault converts in one
+revertible migration commit (decision 11). The command:
+
+1. tags the parent commit `pre-authored-only-<date>` and pushes the tag
+   (decision 4);
+2. classifies each triple and entity line as authored or extracted, and stamps
+   the authored ones (decision 5);
+3. **deletes** every derived drawer and every extracted triple and entity line —
+   the no-archive classes included — removing each from the index
+   (`git rm --cached`) **and** from the working tree;
+4. writes the migration marker;
+5. adds the derived-path ignore lines through the gated reconciler, which emits
+   them only on a vault that carries the marker; steps 4 and 5 land in the one
+   commit of step 7;
+6. writes the surface-10 stamp;
+7. commits once.
+
+It deletes the derived bytes rather than moving them into the host-local store
+(ADR-014 decision 11, *Delete, not move*): every derived byte is either
+regenerable from a tracked archive or deliberately dropped, and either way it
+is recoverable from the tagged parent commit. Removing the files from the
+working tree too means the migrator's next tidy cannot commit them again
+(`internal/storage/vaulttidy.go:214-216`) and its disk matches every pulling
+host's. Nothing is lost from history: the tag holds the bytes, and every host
+rebuilds its index from archives (decision 4).
+
+**The empty-vault path** (ADR-014 decision 11) applies only when, at HEAD
+**and** at every remote tip, there is no tracked `palace/` content and no
+`.surface` stamp in any stamp directory; the quantum vault has two remotes, so
+the local tree alone is not enough. A v8-era stamp anywhere makes the vault
+not empty, and it takes the normal path. The empty-vault path skips the
+surface floor check, which cannot pass on a vault with no stamps, but keeps the
+ancestor check: every remote tip must still be an ancestor of HEAD, or a remote
+commit that adds a drawer would merge in tracked. It skips steps 2 and 3. It
+writes the marker, the ignore lines and a vault-level surface-10 stamp,
+`Audits/.surface`, one of the stamp directories the gate reads
+(`CheckCompatible`, `internal/surface/version.go:807-812`). The empty quantum vault
+(`~/quantum-vibe-palace-vault`) takes this path; it is not re-initialised.
+Without it, a stampless destination would pass the gate for every binary, and
+v8 would not be gated there at all.
+
+**Migration preconditions** (ADR-014 decision 11). The command refuses unless
+all of these hold (the empty-vault path skips the surface-10 half of the first,
+never its ancestor half):
+
+- every remote tip carries a surface-10 `.surface` stamp, and every remote tip
+  is an ancestor of HEAD, as in the 6→7 precedent
+  (`internal/storage/project_config_retirement.go:254-256`). Each remote is
+  fetched once, at the start, and its remote-tracking ref is read immediately,
+  with nothing run in between, as the precedent does (`:244-254`); path
+  selection and every check read those same tips. Without the
+  ancestor check a remote commit that adds a drawer would merge in tracked,
+  because ignore rules do not apply to merges;
+- the local vault is clean and pushed, with no `MERGE_HEAD`, no rebase in
+  progress, no unmerged index entry and no stash entry touching `palace/`;
+- the vault's data format is not behind the binary;
+- the migration marker is absent, so a second run refuses;
+- the operator attests, in the commit message, that every writer host has
+  synced, pushed and been left clean and runs v10.2.0 or later, and that the
+  quantum-ng migration's per-host rows are closed. Code cannot verify either:
+  `vp check --check writer-identity` records `sha256(hostname + vaultPath)[:8]`,
+  not a version (`internal/check/writer_identity.go:25`), and the quantum-ng
+  census counts tracked drawer rows.
+
+Surface 10 is forward-only: rollback is `git revert` of the migration commit,
+which restores the tracked data, not v8. The revert re-tracks the derived files
+from history and removes the marker and the ignore lines; host-local stores are
+left alone. Surface 10 survives it: the precondition put a surface-10 stamp at
+every remote tip before the migration commit, and those stamps stay, while a
+stamp the migration commit itself raised (step 6) reverts. v8 stays gated for
+writes because the gate reads the vault's maximum stamp. The empty-vault path
+is the exception: there the migration commit wrote the vault's only stamp,
+`Audits/.surface`, so a revert removes it and v8 is no longer gated. A revert
+there re-stamps `Audits/.surface` at `MCPSurfaceVersion` in the same push; the
+migration command's printed rollback text says so, and
+`live-migration-run-on-the-personal-and-quantum-vaults` re-stamps if it ever
+reverts the quantum vault's migration. A v9 binary on a reverted vault — one
+without the marker — falls back to the tracked drawers for search and to the
+pre-migration tidy and pull rules, while capture still writes nothing derived
+into tracked paths. The end-to-end migrate, revert and keep-running-v9 test
+lives only in `one-shot-migration-to-authored-only-vault`;
+`tidy-pull-and-audit-behaviour-keyed-on-the-migration-marker` tests its own
+code against hand-built fixture trees, migrated and migrated then reverted
+(ADR-014 decision 11).
+
+**Dates come from the session, not the clock** (ADR-014 decision 4). Ingest and rebuild derive the
+one timestamp that feeds every drawer's `filed_at`, every extracted triple's `extracted_at`, the
+`valid_from` of temporal relationship triples and each extracted entity's `created_at` from the
+source session's date: the **UTC** day of the session's start, for transcript chunks and decision
+chunks alike. The start comes from the transcript itself: the timestamp of the first transcript
+record that carries one, as the archive's adapter reads it, taken as a UTC day so that hosts in
+different time zones date the same archive identically. For a transcript with no timestamped record
+the fallback is the manifest's `captured_at` (`internal/archive/manifest.go:42`). For a transcript
+chunk only immutable archive content is used, so its date never depends on a later step.
+`captured_at` alone is not the session date: it is when the archive was made, and
+`vp archive create` passes no time (`cmd/vp/cmd_archive.go:93-102`), so an old transcript archived
+today would be dated today. The linked session note (`vault_rel_session_note`, `:41`) is not used:
+the hook makes that link after archiving (`internal/hook/hook.go:495`, `:516`), and the link can
+fail. The archive filename's `<date>-` prefix is not used either: it is the archiving day, as a
+local calendar day (`internal/archive/archive.go:181-182`). An importer that writes an archive for
+an old session writes the session's original record timestamps when the source has them. Otherwise —
+the vibevault importer, whose notes carry a session-level `date:` and no per-record timestamps — it
+passes the session's day at **12:00 UTC** as `archive.CreateOptions.Now`, never the clock
+(`sessionNoon`, `internal/migrate/vibevault_archive.go:246-253`), so `captured_at` is `<day>T12:00:00Z` and the fallback
+reads that day on every host. Noon, not midnight, because `archive.Create` takes the filename's day
+from the same `Now` in the process-local zone (`archive.go:181-182`, through `CalendarDay`,
+`internal/storage/clock.go:43-45`): at midnight UTC every host west of UTC would name the file for
+the previous day, and a re-import on another host would miss `Create`'s idempotence skip
+(`archive.go:211-228`) and add a second tracked archive of the session. Noon keeps the filename day
+equal to the session day in every zone within ±11 h of UTC. One helper, `index.SessionDate`, owned
+by `importers-write-the-frozen-tracked-corpus` so that it sits upstream of every caller, serves the
+ingester and the rebuild driver; the decision-chunk writer does not call it. A rebuild of the same
+archive therefore reproduces every field. A chunk or KG record owned by several sources takes its
+date **and its `source_ref`** from the live owner with the **earliest** UTC start day; a tie goes to
+the owner with the smallest owner key (an archive's `source_sha256`, or a batch id). The result does
+not depend on the order in which the owners were ingested, so a rebuild reproduces it; whenever
+ownership changes, for example when a supersede removes an owner, both are recomputed from the
+owners that remain. Decision chunks take the session start day that the ledger records for the
+session named by the note's `archive_session_id` (each ledger entry records its session's UTC start
+day); they never read an archive. Until that session is ledgered on this host, or when the note
+names no session, they take the note's own day (`internal/storage/sessions.go:50`); when the session
+is ledgered later, the next build re-dates them, so a decision chunk's date is fixed only once its
+session is ledgered. At `a32a2d4` decision chunks always take the note's local day
+(`internal/capture/decisions.go:157`). Search derives a result's date from `filed_at`
+(`internal/search/engine.go:1236`), shows it (`:1247`) and filters on it (`:1546-1549`), so date
+filters over transcript and decision chunks match the session date, the UTC day of the session's
+start, not the day it was indexed, and `as_of` and timeline order on regenerated temporal triples
+follow the session date too.
+
+### Vector Index
 
 ```
 internal/search/vector_index.go
 ```
 
-Search uses brute-force nearest-neighbor with cosine distance. Every query
-compares against all stored vectors and returns top-N.
+Each project is answered by exactly one index, chosen by its chunk count: brute force below a
+threshold, HNSW at or above it, with no dual query (ADR-014 decision 6). At `36cab60` HNSW ties
+brute force at about 20k vectors and loses below that, while its builds take minutes against
+seconds; most projects hold fewer than 15k chunks. The threshold is set by measurement in
+`hnsw-parameters-from-real-vector-recall-and-production-wiring`, alongside `M` and `EfSearch`. The
+threshold has hysteresis: a project switches to HNSW at the threshold, and back to brute force only
+below a lower bound, which the same child measures, so a project near the threshold does not flip
+from one process to the next and rebuild a graph each time. The switch loses no write: writes made
+while a project converts from brute force to HNSW are caught up by the ledger-driven incremental
+pass before the switch completes (`hnsw-graph-file-envelope-and-warm-start`). In v10.2.0 the index is
+a brute-force `VectorIndex` implementation — an exact cosine scan behind a `sync.RWMutex`
+(`internal/search/vector_index.go:187`), built in memory from the host-local chunk store; v10.2.0
+ships brute force for every project and persists no graph. HNSW is decoupled from v10.2.0 (ADR-014
+decision 6): the release is the git-health release, and the HNSW children
+(`vector-index-interface-and-coder-hnsw-wrapper`,
+`hnsw-parameters-from-real-vector-recall-and-production-wiring`,
+`hnsw-graph-file-envelope-and-warm-start`) land when they are ready, with no release version tied to
+them. HNSW is off the critical path to the quantum split: git health needs the host-local store, not
+the graph.
 
-- **100% recall** — guaranteed correct results
-- **~1-5ms** at 10K vectors — sufficient for personal knowledge management
-- **Thread-safe** — `sync.RWMutex` for concurrent reads
+When those children land, a project that has reached the threshold, and not since fallen below the
+lower bound, is answered by HNSW: `github.com/coder/hnsw` pinned at `36cab6028fed` (pseudo-version
+`v0.6.2-0.20260622133054-36cab6028fed`, the first commit with all three upstream recall fixes),
+behind a thin wrapper persisted as `hnsw.idx`. The wrapper answers the library's behaviour at that
+commit: one `sync.RWMutex` around every call; tombstones instead of `Delete`, with a rebuild above a
+tombstone threshold; upsert as a tombstone plus a new internal key; validation of dimensions, `k`,
+zero or NaN vectors and in-batch duplicate ids before every call; import only into a fresh graph
+from its own checksummed envelope, re-applying `EfSearch`; temp-file, fsync, rename and
+directory-fsync writes; and cosine distance with a NaN guard. The library has no `efConstruction` —
+`Add` uses `EfSearch`. `M` and `EfSearch` are chosen from recall@10 measured on real MiniLM vectors
+from a real project at ≥ 50k chunks; until the quantum split lands, that measurement reads neither
+quantum project, `qa-metabuild-system` nor `orchestrator`. At `36cab60` the library does not build
+for windows/amd64, a release target (`.goreleaser.yml:10-14`): its
+`coder/hnsw@36cab60 encode.go:304` calls `renameio.TempFile`, which is `!windows`, and only
+`SavedGraph` uses it, which vp never calls. A small upstream PR fixes that use; until it merges, a
+`go.mod` `replace` points at a minimal vendored copy without `SavedGraph`, removed once upstream
+merges. A `CGO_ENABLED=0` cross-build of every goreleaser target is part of the wrapper child's
+acceptance (ADR-014 decision 6).
 
-The exactness claim is guarded by an in-repo recall harness
-(`internal/search/recall_test.go`) that loads a constitution corpus embedded
-with synthetic TF-IDF vectors and asserts every returned distance stays within
-the exhaustive ground-truth bound.
-
-The PRD specified HNSW (Hierarchical Navigable Small World), but `coder/hnsw`
-had critical recall bugs (Heap.Max/PopLast returning wrong elements, 0–2/10
-recall). The three core recall bugs were fixed in our fork and merged upstream
-into `coder/hnsw@main` (2026-06-22), then validated against our in-repo recall
-harness (recall@10 0.96). Brute-force remains the exact, zero-dependency default
-at current scale; HNSW is parked behind the same index boundary for a future
-scale trigger.
+Search over an HNSW project is approximate, and the exact brute-force index is
+also the exactness oracle in tests; a project is never queried through both.
+The recall
+test HNSW brings uses a seeded, clustered 384-dim corpus of at least 50k
+vectors (or a committed fixture of real exported vectors) with an asserted
+recall bar and a delete-and-upsert churn phase, and a persistence test asserts
+that loading a graph ran no graph build and no `Add`; each test is broken once
+on purpose to prove it can fail (ADR-014 decision 6). The ≥ 50k test does not
+run in `make test`, which is `go test -race -short` (`Makefile:122`): a 50k
+build takes minutes, and `-race` makes it about four times slower. It runs in
+`make hnsw-measure`, behind a build tag, and in CI through
+`.github/workflows/hnsw-measure.yml`, with dispatch and nightly triggers,
+because `ci.yml` has neither (`.github/workflows/ci.yml:3-6`); `make test` keeps a
+5k regression floor. Both belong to
+`hnsw-parameters-from-real-vector-recall-and-production-wiring`. In v10.2.0 the in-repo
+recall harness (`TestConstitutionRecall`, `internal/search/recall_test.go:274`)
+runs five self-queries over a constitution corpus embedded with synthetic
+TF-IDF vectors (`:290`); it asserts an exactness bound — no returned distance
+exceeds the brute-force ground-truth threshold (`:300-307`) — and only logs
+set-overlap recall (`:319`).
 
 ### Hybrid Search Engine
 
@@ -2376,7 +3244,16 @@ The search pipeline combines vector similarity with structural metadata:
 
 ```
 1. Embed query text → query vector          (forces the lazy model load, once)
-2. Ensure index    → build this project's index if it has never been built
+2. Ensure index    → read the store's change counter (.generation/<p>): if
+                     only gen grew, load what was appended; any other change
+                     forces a full reload; if the project has no in-memory
+                     index, build the brute-force index from notes, decision
+                     chunks, iterations, local chunks of ledgered sources
+                     (archives and import batches; embed-cache hits only)
+                     and (no marker) tracked drawers, deduplicated by wide
+                     content hash; truly empty is an error.
+                     v10.2.0 persists no graph; HNSW persistence comes with
+                     the HNSW children
 3. Vector search → top limit×3 candidates (over-fetch for filtering)
 4. Metadata filter → remove non-matching wing/room/hall/date
 5. Score conversion → 1 / (1 + cosine_distance)
@@ -2385,40 +3262,72 @@ The search pipeline combines vector similarity with structural metadata:
 8. Return top-N
 ```
 
-### Lazy Index Construction
+### Index Construction
 
-There is **no reindex on spawn**. A project's `VectorIndex` is built by
-`ensureIndex` on the first search that touches it, and the result is memoized:
-subsequent searches for that project reuse it. Concurrent searches for the same
-project join one in-flight build (`projectBuild`) rather than each running their
-own `Rebuild`; builds for *different* projects run concurrently, because the
-build mutex is never held across a `Rebuild`. A project whose index was already
-populated incrementally (`IndexDrawers`, from the capture pipeline) is marked
-built and never rebuilt from disk.
+There is **no reindex on spawn**. A project's index is materialized by
+`ensureIndex` (`internal/search/engine.go:156`) on the first search that touches
+it, and the result is memoized. Concurrent searches for the same project join
+one in-flight build (`projectBuild`, `engine.go:102`) rather than each running
+their own `Rebuild`; builds for *different* projects run concurrently, because
+the build mutex is never held across a `Rebuild`.
 
-A cross-project search — one with no `Project` filter — iterates every index in
-the engine, so it calls `ensureAllIndexes`, which builds every project the vault
-knows about: the union of both trees (`Vault.ListAllProjects`), because two of
-`Rebuild`'s three corpora live under `Projects/` and a project captured as notes
-only has no `palace/` store at all. That is the expensive case, and it is paid
-only by callers who actually ask for it. One project that fails to build fails
-the whole search, naming the project — a result that silently dropped it would
-present itself as complete.
+That first build reads session notes, the decision chunks rebuilt from their `decisions:`
+frontmatter, iterations and the chunks already in the host-local store whose source (an archive or
+an import batch) is in the ledger (embed-cache hits only), and — while the vault carries no
+migration marker — the tracked drawers, read as before the migration and deduplicated against the
+local chunks by a wide content hash, never by the 32-bit drawer id (ADR-014 decision 7). That
+tracked-drawer read is the glide path: it serves every v9 host between install and the migration,
+and every v9 host on a vault whose migration was reverted, so transcript search does not regress on
+a host that upgrades first. The glide path keeps the lazy embed of tracked drawers that search has
+at `a32a2d4`, on any vault without the migration marker: a project's first search embeds every
+tracked drawer the embed cache misses (`internal/search/engine.go:504-560`, embedding in
+`embedMisses` at `:600`), transcript drawers included, and so does the first search after an
+embedder change, which on a large project can take hours. This is a stated, temporary exception to
+operator decision 4 (no lazy full-transcript embed on search), and it applies to any vault without
+the marker, before the migration or after a revert. On the glide path coverage reads `legacy`
+(ADR-014 decisions 7, 8). The first build never embeds a transcript archive: nothing embeds one
+because somebody searched, and archives arrive through the pending-archive ingester and
+`vp index rebuild` only. Per-project builds and inserts are serialised within a process and, through
+the per-project index commit lock, across processes; a search never waits on the ingester's index
+run lock. An index populated incrementally by an ingest does not count as complete: completeness
+comes from `completeness.json`, the ledger and the fingerprints, never from an index being present
+in memory or a file being present on disk.
+
+A cross-project search — one with no `Project` filter — calls
+`ensureAllIndexes` (`engine.go:241`) over every project the vault knows
+about: the union of both trees (`Vault.ListAllProjects`,
+`internal/storage/projects.go:81`), because notes and iterations live under
+`Projects/` and a project captured as notes only has no `palace/` chunks at all.
+It is the expensive case, paid only by callers who ask for it. Truly empty
+projects are skipped, and reported only through the coverage instrument, where
+they read `absent`; the result array is unchanged. Any other project that fails
+to build fails the search, naming the project — a result that silently dropped
+it would present itself as complete (ADR-014 decision 8).
 
 A build **failure is returned to the caller**, never swallowed. This is
 load-bearing: before `ensureIndex` existed, a search against a project with no
 index took a `return nil, nil` branch — an empty result and a nil error. With no
 eager rebuild left to hide it, every agent on every fresh session would have been
-told, plausibly and silently, that the vault contains nothing.
+told, plausibly and silently, that the vault contains nothing. The same reasoning
+makes a truly empty project an error naming `vp index rebuild`, never `[]`.
 `internal/integration/lazy_startup_test.go` pins the positive case: a
 never-rebuilt project returns real hits through a real JSON-RPC `vp_search`.
 
-`Rebuild` walks three corpus sources: palace `drawers.jsonl`;
+The corpus has these kinds of source. **Chunks** from the host-local
+`chunks.jsonl`: transcript chunks written from archives by the
+pending-archive ingester and by `vp index rebuild`, and the batches a mempalace
+import ledgers (ADR-014 decision 7). **Decision chunks**, persisted in the
+host-local store by `fileDecisionDrawers` and the other decision writers
+instead of as tracked drawers, and rebuilt from the session notes' `decisions:`
+frontmatter on every build (ADR-014 decisions 7, 10, 11). **Tracked drawers**,
+read only while the vault has no migration marker (decision 7). **Iterations**:
 `Projects/<project>/iterations.md` split on `wrapstate.ParseEntries` (H2
-iteration headers); and the **bodies** of `Projects/<project>/sessions/*.md`
-split with `storage.ParseFrontmatter`. The two non-drawer sources are
-sub-chunked at the capture defaults (800/100). Iteration
-rows use `source_type=iteration` and a per-entry `source_ref`
+iteration headers; `collectIterationCorpus`,
+`internal/search/iterations.go:105`). **Session
+notes**: the bodies of `Projects/<project>/sessions/*.md` split with
+`storage.ParseFrontmatter` (`collectNoteCorpus`, `internal/search/notes.go:141`).
+The iteration and note sources are sub-chunked at the capture defaults
+(800/100). Iteration rows use `source_type=iteration` and a per-entry `source_ref`
 (`iteration/{n}/m/{matchIndex}`); session-note rows use
 `source_type=session-note` — deliberately distinct from the transcript corpus's
 `source_type=session` — at the synthetic location `wing=history`,
@@ -2427,24 +3336,23 @@ rows use `source_type=iteration` and a per-entry `source_ref`
 ref, so search dedup keeps one hit per entry. No synthetic drawers are written
 by either.
 
-The note source is what makes a project captured as **notes only** — no
-transcript, no archive, no drawer store — reachable from `vp search`; capture
-indexes the transcript and never the note (`internal/capture/indexer.go`), so
-those projects previously had nothing the index could ingest. Its reach is
-wider than that: any project with session notes gains note rows, whether or not
-it also has drawers. Note IDs are `note.{project}.{stem}.c{i}` — keyed on
-IDENTITY, not on content like `storage.DrawerID` — so a note chunk can never
-share a key with a transcript chunk, and equally, two notes carrying identical
-text produce two separate rows. The note corpus is **additive** and does not
-dedup against transcripts. Because nothing routes through
-`capture.IndexTranscript`, the note pass extracts **no knowledge-graph facts**
-from wrap prose; that is structural, not a flag.
+The note source is what makes a project captured as **notes only** — no transcript, no archive, no
+chunks — reachable from `vp search`; the pending-archive ingester indexes the transcript and never
+the note, so those projects would otherwise have nothing the index could ingest. Its reach is wider
+than that: any project with session notes gains note rows, whether or not it also has transcript
+chunks. Note and iteration chunk ids are keyed on the entry's identity — for a note, project, stem
+and chunk index — and carry a content hash (ADR-014 decision 7). Identity keeps a note chunk from
+ever sharing a key with a transcript chunk, and two notes carrying identical text produce two
+separate rows; the content hash gives an edited note a new id, and so a new vector. The note corpus
+is **additive** and does not dedup against transcripts. Because nothing routes through
+`capture.IndexTranscript`, the note pass extracts **no knowledge-graph facts** from wrap prose; that
+is structural, not a flag.
 
 Cache-miss vectors are embedded with `EmbedBatch` in chunks of
-`EmbedderBatchSize` (default 32), writing each vector to the embed cache as it
-lands, so a rebuild killed partway through leaves durable progress behind.
-Per-item embedding — the old behavior — is roughly 7x slower on the ONNX
-backend.
+`EmbedderBatchSize` (default 32; `engine.go:1447`), writing each vector to the
+embed cache as it lands, so a rebuild killed partway through leaves durable
+progress behind. Per-item embedding — the old behavior — is roughly 7x slower
+on the ONNX backend.
 
 Structural boosts (configurable):
 
@@ -2528,11 +3436,45 @@ directory.
 The sweep runs from a read-only `vp_search` too. Operator decision 2026-09-10
 rules it exempt from the read-only-serve contract: everything it touches is
 host-local, gitignored, regenerable derived state (`internal/tools/readonly_serve.go`).
-The same host-local, regenerable framing is why the lifecycle commands treat a
-slug's embed cache freely: `vp vault project delete` removes the gone slug's
-index store (the cache with it) after its publish, and `vp vault rename`
-rebuilds rather than carries the cache — it removes `embed-cache/<old>/` and
-lets `<new>` re-embed lazily (the M0 ruling).
+
+**The index directory gets the same treatment** (ADR-014, implementation notes to
+decision 2). `palace/.local/index/<p>/` is host-local, gitignored, regenerable
+derived state like the cache beside it, so it has a counterpart for each of the
+cache's mechanisms: the embed-cache sweep (`SweepEmbedCaches`,
+`internal/storage/embedcache_sweep.go`), departed-project cleanup (`DepartedCaches`,
+`internal/storage/embedcache_departed.go`), the index reap for projects that no
+longer exist (`ReapGoneProjects` / `RemoveProject`,
+`internal/indexstore/lifecycle.go`) and the read-only-serve exemption. Each runs
+under the index commit lock, and the reap renames `index/<p>/` to a dot-named
+tombstone `.tomb-<p>-<epoch>` in one step before deleting, so a crash never leaves
+a half-deleted store. `vp vault project delete` purges `palace/.local/index/<p>/`
+with the project's trees, beside the embed cache it purges (`collectDeleteTrees` /
+`deleteIndexStores`, `internal/storage/lifecycle_delete.go`, through
+`indexstore.RemoveGoneProject`). A **lifecycle rename** moves the index store but
+**rebuilds** the embed cache: `internal/indexstore/rename.go` (`AdoptRenamedStore` /
+`AdoptRenamedProject`) renames `palace/.local/index/<old>/` to the new slug under the
+index run lock, rewrites each chunk's `wing` label and the ledger's `archive_path`,
+then **removes** `embed-cache/<old>/` rather than carrying it — the new slug
+re-embeds lazily on first search (operator **M0 ruling 2026-10-05 = REBUILD**; the
+cache is never renamed). It refuses rather than clobber when `index/<to>/` already
+exists or the target's embed cache already holds vectors (`vp index rebuild <to>`
+is the escape). Host-local chunk ids exclude the wing, so no id changes; the change
+counter `.generation/<p>` is never deleted — its `epoch` changes, as for a reap.
+
+**Copy and the two-marker refusal.** `vp vault copy` (and its `--as` composition)
+carries only the source's **tracked** files, through a private blobless footprint
+snapshot that `walkCopyScratch` proves holds exactly the paths the source tree
+lists — so an untracked, ignored derived file (a stray drawer, a
+`*.manifest.json.<hash>.bak`) never travels into the destination. Copy moves
+projects only from a **migrated source into a migrated destination**: the
+two-marker refusal (`copyMarkerRefusals`, `internal/storage/lifecycle_copy.go`)
+reads the source's marker from the snapshot's `vault.toml` bytes and the
+destination's from the served vault, and refuses every other pairing — an
+unmigrated destination, an unmarked source, or a marker it cannot read — before
+the lock and before any write. Copy never writes a marker; a born-migrated
+`vp vault init` destination satisfies the rule from creation. (The retired
+`vp_vault_split` / `vp_vault_merge` tools once carried this derived-path exclusion
+and two-marker refusal; both now live on copy — U12.)
 
 **Stale-MCP caveat.** A long-lived `vp mcp` from before the upgrade keeps
 reading and writing the legacy path until it is restarted: it cold-misses every
@@ -2547,8 +3489,6 @@ after installing; `vp check --check stale-mcp` names them.
   `palace/*/.local/`, so on a vault reconciled only by vp an
   `imported-sessions.jsonl` marker is still Reported dirt that blocks sync.
   Out of scope here; the embed cache no longer contributes to it.
-- Note and iteration cache IDs are positional, so an edited note keeps its old
-  vector. This predates the move.
 - Three narrow races, documented in `embedcache_sweep.go`, none of which loses
   content: a sweep landing between the vibe-vault migrator's
   `EnsureDir(.local)` and its marker write makes that write fail (the command is
@@ -2577,45 +3517,103 @@ after installing; `vp check --check stale-mcp` names them.
 Sessions are captured via two paths, both using the shared pipeline
 `capture.WriteSession`:
 
-- **MCP path**: `vp_capture_session` tool — AI-generated summary, full
-  transcript indexing (chunking + embedding + KG extraction). When the host
+- **MCP path**: `vp_capture_session` tool — AI-generated summary. It indexes
+  no transcript text: its `transcript` parameter only creates an archive on a
+  host without a hook (`archive_transcript`; ADR-014 decision 7). When the host
   session id was **derived**, writes a claim sentinel so the hook path skips
   this session (a minted inline id gets no claim — no hook will ever query it).
 - **Hook path**: `vp hook` CLI — Claude Code invokes this on SessionEnd,
   Stop, and PreCompact events. Writes an honest crash-net placeholder
   (`Auto-captured session (no summary yet)`), does **not** friction-score
-  `tag:auto-capture` notes, and defers transcript indexing
-  (`needs_indexing: true` in frontmatter). Skips if a claim sentinel exists.
+  `tag:auto-capture` notes, and marks the note `needs_indexing: true` in
+  frontmatter. Skips the note if a claim sentinel exists. Its last step spawns
+  the pending-archive ingester as a detached background process and returns;
+  the hook never embeds (ADR-014 decision 7; see *Host-Local Index*).
 
 `vp hook` auto-capture requires a `.vibe-palace.toml` (run `vp init`); sessions
 in un-init'd directories are intentionally skipped.
 
+`WriteSession` writes the note and indexes nothing; archiving and ingest happen
+around it:
+
 ```
-1. Write session markdown to {vault}/Projects/{project}/sessions/
+WriteSession (both paths):
+1. Resolve the archive the note links to, if one already exists
+2. Compute friction score (0–100) from the transcript (never for
+   tag:auto-capture notes)
+3. Write session markdown to {vault}/Projects/{project}/sessions/
    - YAML frontmatter: date, tag, friction, decisions, files_changed
    - Auto-increments iteration number per day
-2. If transcript provided:
-   a. Detect format (plain text, markdown transcript, JSON-RPC chat)
-   b. Chunk transcript (sliding window, sentence-boundary aware)
-   c. Classify each chunk: wing (project), room (keyword), hall (memory type)
-   d. Batch embed all chunks (one EmbedBatch call)
-   e. Store each chunk as a Drawer in JSONL
-   f. Index each chunk+vector in the search engine
-   g. Extract entities (file paths, URLs) → knowledge graph
-3. Compute friction score (0–100) from transcript
-4. Archive transcript to {vault}/Projects/{project}/transcripts/ (hook path,
-   or the MCP path's inline archive — default for derived hook-less hosts;
-   see below)
-5. Cross-link archive manifest ↔ session note (bidirectional): the note is
-   stamped with `archive_session_id` and linked to the manifest at SessionEnd,
-   after `archive.Create`; the manifest back-links the canonical note. A link
-   that never closes leaves a *stranded* transcript — detected by the vault
-   audit's `archive-roundtrip` dimension and recovered by `vp archive backfill`
-   / `vp archive link` (see ADR-007). The inline path never strands: its
-   archive is created *before* the note, so both link directions exist at birth.
-6. Write claim sentinel to {cwd}/.vibe-palace/ (idempotency; derived host
-   session ids only)
+4. Link note → manifest when the archive already exists (the inline path)
+
+Hook path (vp hook), in order:
+1. Archive transcript to {vault}/Projects/{project}/transcripts/ at SessionEnd
+   and PreCompact, never at Stop (internal/hook/hook.go:351; archive.Create
+   at :331)
+2. Memory harvest (SessionEnd) and the enrichment-queue drain
+3. Cross-link archive manifest ↔ session note (bidirectional, :438, :459)
+4. Claim check: a session already captured over MCP skips the note and goes
+   straight to step 7
+5. WriteSession (:524) with a nil indexer: the crash-net note
+6. Write claim sentinel to {cwd}/.vibe-palace/
+7. Last step: spawn the pending-archive ingester, detached, and return
+
+MCP path (vp_capture_session):
+1. On a hook-less host, create the inline archive first
+2. WriteSession: the note is born linked in both directions
+3. Write claim sentinel (derived host session ids only)
+4. After creating an inline archive, spawn the pending-archive ingester,
+   detached, and return
+
+Pull paths (storage.Pull, the rebase inside commit-and-push and its second
+caller the mirror prune, the push-rejection reconcile, the fast-forward in a
+resumed vp vault clone) and vp mcp startup spawn the same ingester, detached.
+
+Pending-archive ingester (detached; under the vault's index run lock on this
+host, which a second trigger finding held exits on at once), given the vault
+root and the triggering project: for each pending archive (session absent from
+the ledger, or a different source_sha256) not in the host's baseline set,
+newest first, within the per-run budget; the triggering project first, then the
+vault's other projects (ADR-014 decisions 4, 7):
+   a. Read the whole archive, verify its hash against the manifest, close it
+   b. Date it: UTC day of the first timestamped transcript record, as the
+      adapter reads it; fallback, the manifest's captured_at. A chunk or KG
+      record several sources own takes its date and source_ref from the
+      live owner with the earliest start day (a tie goes to the smallest
+      owner key), recomputed whenever ownership changes
+   c. Detect format (plain text, markdown transcript, JSON-RPC chat)
+   d. Chunk transcript (sliding window, sentence-boundary aware)
+   e. Classify each chunk: wing (project), room (keyword), hall (memory type)
+   f. Extract entities (file paths, URLs) and triples
+   g. Batch embed all chunks (EmbedBatch), outside any lock
+   Then one commit step under the project's index commit lock, writing only
+   computed data, each step durable before the next:
+   h. Write the vectors, each atomically (temp file, fsync, rename)
+   i. Append the chunks to the host-local chunks.jsonl, ids a wide content
+      hash, recording this archive's source_sha256 as an owner (a supersede
+      drops an older archive's ownership instead), and fsync
+   j. Append the KG records to the host-local KG, and fsync
+   k. Record the archive in the ledger, keyed by session, with its
+      source_sha256 and chunk count
+   Within the same budget: re-embed missing vectors of ledgered archives, and
+   re-ingest one whose chunks fall short of its ledgered count. The run ends
+   when the budget (archives or wall-clock cap) is spent, or a rescan finds no
+   pending archive this run has not attempted; a failure is counted in the
+   ledger and retried by the next run. After releasing the index run lock,
+   check once more for pending archives the last rescan did not see and, only
+   if one exists, try the lock again.
+   The only tracked writes on any capture path are the session note, the
+   archive and its manifest.
 ```
+
+The cross-link closes when the hook links the note to the manifest after
+`archive.Create`, and the manifest back-links the canonical note. A link that
+never closes leaves a *stranded* transcript — detected by the vault audit's
+`archive-roundtrip` dimension and recovered by `vp archive backfill` /
+`vp archive link` (see ADR-007). The inline path never strands: its archive is
+created *before* the note, so both link directions exist at birth. The claim
+sentinel is idempotency for derived host session ids only; a minted inline id
+gets none.
 
 ### Host attribution from the client handshake
 
@@ -2643,7 +3641,9 @@ neither is a Grok install whose hook wiring is present; `vp hook` reads Grok's
 own wire dialect. Durability for those hosts is **MCP capture + inline archive** — not
 an alternate "shim path." Shims (`.grok/plugins/...`, `/vpc-wrap`) are UX onto
 `vp_cmd` / `vp_capture_session`; the archive is created inside the capture
-handler.
+handler. Capture indexes none of the transcript text itself: after it creates
+the inline archive, it triggers the pending-archive ingester, which brings that
+archive into this host's index (ADR-014 decision 7; see *Host-Local Index*).
 
 **Default (auto-on).** When all of the following hold, `vp_capture_session`
 creates an inline archive pair even if the caller omits `archive_transcript`:
@@ -2725,7 +3725,10 @@ archives does not include automatic enrichment-queue recovery.
 `vp hook install` manages entries in `~/.claude/settings.json`, replacing
 legacy `vv hook` (vibe-vault) with `vp hook`. `vp init` calls this
 automatically. The hook fires on three Claude Code events (SessionEnd,
-Stop, PreCompact) with a 30-second timeout.
+Stop, PreCompact) with a 30-second timeout (`HookTimeout`,
+`internal/hook/settings.go:20`; events at `:23`). That bound is why the hook
+never embeds: its last step spawns the pending-archive ingester as a detached
+process and returns (ADR-014 decision 7).
 
 ### Session Enrichment (LLM synthesis)
 
@@ -2872,7 +3875,9 @@ Content is organized using a spatial metaphor:
 - **Wing** — project-level dimension (defaults to project slug)
 - **Room** — functional area (testing, api, devops, debugging, etc.)
 - **Hall** — memory type (facts, decisions, discoveries, preferences, advice, events)
-- **Drawer** — individual content chunk (the atomic storage unit)
+- **Drawer** — individual content chunk (the atomic unit), held in the
+  host-local chunk store. Wing, room and hall are classification metadata on
+  the chunk, not directories git carries (ADR-014 decision 2)
 
 ### Classification
 
@@ -2929,7 +3934,8 @@ entity-relevant sentence), weight (density score), emotion/flag detection.
 internal/palace/graph.go
 ```
 
-`BuildGraph` constructs an in-memory graph from vault drawers:
+`BuildGraph` (`internal/palace/graph.go:60`) constructs an in-memory graph from
+the host-local chunk store (ADR-014 decision 8):
 - **Nodes**: each unique wing/room combination
 - **Intra-wing edges**: all rooms in the same wing are adjacent
 - **Cross-wing edges** (tunnels): same room slug across different wings
@@ -2940,13 +3946,22 @@ rooms appearing in 2+ wings — these are cross-domain connections.
 
 ### Palace Tools
 
+Every palace tool reads the host-local chunk store, so its counts and results
+depend on this host's `index_coverage`; with no local index they are empty, and
+coverage says why (ADR-014 decision 8).
+
 - `vp_palace_status` — overview: wing/room/drawer counts, tunnel count
 - `vp_list_wings` — all wings with room and drawer counts
 - `vp_list_rooms` — rooms in a wing with drawer counts and hall distribution
 - `vp_traverse` — BFS graph walk from a starting room
 - `vp_find_tunnels` — cross-wing room connections
 - `vp_palace_query` — drawers filtered by hall / room / `source_type` /
-  substring / date range, newest first; `source_type` defaults to `decision`
+  substring / date range (session dates, ADR-014 decision 4), newest first;
+  `source_type` defaults to `decision`
+
+`vp_palace_backfill_decisions` is removed in v10.2.0: every build rebuilds
+decision chunks from the session notes' `decisions:` frontmatter, so the tool
+has nothing left to do (ADR-014 decision 10).
 
 ---
 
@@ -2971,8 +3986,8 @@ rooms appearing in 2+ wings — these are cross-domain connections.
        └──────┬───────┘ └───┬────┘ └──────┬──────┘
               │             │             │
        ┌──────▼──────┐ ┌───▼────────┐ ┌──▼───────┐
-       │   Indexer    │ │  Search    │ │ Context  │
-       │  (capture)   │ │  Engine    │ │ Resolver │
+       │   Ingester   │ │  Search    │ │ Context  │
+       │  (archives)  │ │  Engine    │ │ Resolver │
        └──┬───┬───┬──┘ └───┬────────┘ └──────────┘
           │   │   │        │
    chunk  │   │   │ embed  │ vector search
@@ -2984,13 +3999,13 @@ rooms appearing in 2+ wings — these are cross-domain connections.
        │ t │ │
        │ e │ │ store
        │ c │ │
-       │ t │ ┌▼──────────┐
-       │   │ │  Storage   │
-       └───┘ │  (vault)   │
-             │  drawers   │
-             │  sessions  │
-             │  KG        │
-             └────────────┘
+       │ t │ ┌▼──────────────┐ ┌───────────────┐
+       │   │ │ Vault (git)   │ │ Host-local    │
+       └───┘ │ sessions      │ │ index         │
+             │ transcripts   │ │ chunks        │
+             │ authored KG   │ │ vector index  │
+             │               │ │ extracted KG  │
+             └───────────────┘ └───────────────┘
 ```
 
 ---
@@ -3040,6 +4055,38 @@ CRUD: `AddEntities`, `AddEntity`, `GetEntity`, `ListEntities`, `AddTriple`,
 `QueryEntity`, `InvalidateTriple`, `Timeline`, `KGStats`. Entities are stored
 in JSONL, triples as individual JSON files keyed by `{subj}--{pred}--{obj}`.
 
+Two record classes share that format (ADR-014 decision 5). **Authored** facts
+(`vp_kg_add`, `vp_kg_invalidate`) stay tracked under `palace/<p>/kg/`, which
+after the migration holds authored records only; **extracted** triples and
+entities live in the host-local `palace/.local/index/<p>/kg/`. New records
+carry an explicit `origin`, `authored` or `extracted`; at migration each
+existing record is classified once by the `source_session` plus `extracted_at`
+convention, the authored ones are stamped and kept, and the extracted ones are
+dropped (ADR-014 decisions 4, 5). The one exception: an extracted triple whose
+`valid_to` is set is a pre-migration invalidation edit, so it classifies as
+authored and stays tracked, a mempalace triple included. Mempalace triples are
+otherwise extracted: the mempalace importer writes its triples and entities only
+to the host-local KG, with `origin: extracted` and its import batch as owner,
+never to `kg/triples/`, and a mempalace triple is never classified as authored
+except through a pre-migration invalidation edit (ADR-014 decision 5).
+`AddTriple` is create-once on its S/P/O path
+(`internal/storage/knowledge_graph.go:296`, path at
+`internal/storage/paths.go:67`): `vp_kg_add` refuses with "already exists"
+when the path holds a tracked **authored** record; when it holds a tracked
+**extracted** record (possible only before the migration), it overwrites it as
+authored; and a host-local extracted copy never blocks it (ADR-014 decision
+5). Invalidating an **authored** triple sets `valid_to` on its
+tracked file. Invalidating an **extracted** triple writes a tracked authored
+overlay at the triple's path, with `origin: authored` and `valid_to` set;
+where a tracked and a local record share a key, the tracked one wins.
+`QueryEntity`, `Timeline`, `KGStats` and `ListTriples` answer from the
+union of tracked and host-local records, behind the data-format read gate that
+guards those reads (`checkFormatGate`, `internal/storage/format_gate.go:29`,
+called at `internal/storage/knowledge_graph.go:334` and `:420`, and for
+`ListTriples` at `internal/storage/project_dirs.go:175`). A v8 binary reads
+triples with plain `json.Unmarshal` (`knowledge_graph.go:478`), which ignores
+the new field, so the data format stays at 2.
+
 `AddEntities(project, []Entity)` is the entity write path: it takes the
 per-path lock, reads and scans `entities.jsonl` **once** to build the dedup
 set, and appends only the new lines through `appendUnderLock` (family F4) — so
@@ -3084,9 +4131,12 @@ Dedup by (subject, predicate, object), keep highest confidence.
 
 ### Capture Pipeline Integration
 
-`IndexTranscript` runs entity detection and triple extraction after chunking.
-Detected entities get `mentioned_in` triples linking them to the source
-session. All KG operations are best-effort with slog logging.
+The write-free prepare step, `palace.Prepare` (`internal/palace/prepare.go`), runs entity detection
+and triple extraction after chunking, in the pending-archive ingester and in `vp index rebuild`. It
+replaced the old capture-time `IndexTranscript` indexer (now removed). Detected entities get `mentioned_in`
+triples linking them to the source session. The output is extracted records in the host-local KG,
+never the tracked tree (ADR-014 decisions 1, 7). All KG operations are best-effort with slog
+logging.
 
 ### 5 KG MCP Tools
 
@@ -3131,11 +4181,13 @@ Phase 12 adds a self-improving classification system built on the
 
 ### Room Audit (`internal/palace/audit.go`)
 
-`vp audit rooms` re-scores every drawer against the current weight table,
-flags mismatches and borderline classifications, and reports keyword coverage.
-`--apply` uses `MoveDrawer` (atomic temp-file + rename) to reclassify and
-rebuild the search index. This audits a *project's drawer classification* and
-takes `--project`; it is a different thing from the vault audit below.
+`vp audit rooms` re-scores every chunk in the host-local store against the current weight table,
+flags mismatches and borderline classifications, and reports keyword coverage. On a migrated vault
+`--apply` relabels the room on the chunk's metadata in the host-local chunk store and writes nothing
+tracked; on an unmigrated vault it refuses. A relabel is not preserved: the next rebuild re-runs the
+classifier and undoes it, and the command's help and output say so, so curation lives in the room
+keywords (ADR-014 decision 9). This audits a *project's chunk classification* and takes `--project`;
+it is a different thing from the vault audit below.
 
 ### Vault Audit (`internal/vaultaudit`)
 
@@ -3148,19 +4200,19 @@ in ADR-007; the mechanics:
   ADR-007 is exactly about not storing a value the registry already holds): `archive-roundtrip` (every transcript manifest
   back-links to a session note that exists), `project-tree-coherence` (every project
   appears in both `palace/` and `Projects/`, where a `palace/` directory counts only
-  if it is a store), `kg-portability` (KG triple filenames are
-  NTFS/exFAT-safe), `resume-discipline` (no `resume.md` over the size cap),
+  if it is a store, `internal/vaultaudit/dimensions.go:626`; in v10.2.0 it is
+  rewritten, unconditionally, on the derived-aware presence predicate, so the
+  migrating host and every pulling host answer alike, although a pulled
+  migration removes `palace/<p>/` for a project whose only tracked content there
+  was derived — ADR-014 decision 11), `kg-tracked-extracted` (new in v10.2.0: on
+  a migrated vault it reports tracked extracted KG records — ADR-014 decision
+  11), `kg-portability` (unchanged; the filenames of the tracked authored
+  KG triples are NTFS/exFAT-safe; ADR-014 decision 5), `resume-discipline`
+  (no `resume.md` over the size cap),
   `iteration-headings` (canonical H2 so the iteration counter derives correctly),
   `memory-portability` (no memory filename is unrepresentable on NTFS/exFAT, and none
   collide case-insensitively in one directory), `task-heading-markers` (no H2 in an
   active task file carries an unresolved-status marker `amend` can never revise),
-  `palace-store-drawers` (a project with a `palace/` store actually holds drawer
-  records — the INVERSE of `project-tree-coherence`, which sees only whether the two
-  trees agree a project exists, so a store present in both trees with an absent or
-  empty `drawers/` passes it while `vp search` walks nothing there; its population
-  is real stores only, so a `palace/<slug>/` holding nothing outside machine-local
-  `.local/` — a host-local husk — is reported by neither dimension, and the
-  `palace-local-only` check row owns it instead),
   `task-preamble` (no active task file carries text between its header block and its
   first H2 — the region `vp_manage_task action: overwrite` exists to repair, disjoint
   by construction from `task-heading-markers`, which reads heading TEXT; the predicate
@@ -3171,6 +4223,14 @@ in ADR-007; the mechanics:
   `cancelled/`, and no terminal status in `tasks/`, the signature of a
   rewrite-then-rename crash), `task-file-validity` (every archived task file
   passes the whole-file task validator `storage.ValidateWholeTaskFile`).
+  `palace-store-drawers` (registered at `internal/vaultaudit/audit.go:157`;
+  it flags a palace store whose drawer store is empty,
+  `internal/vaultaudit/dimensions.go:714`) is skipped on a migrated vault in
+  v10.2.0: after the migration the tracked tree holds no drawers, and the
+  dimension would answer differently on the migrating host and on the pulling
+  hosts. The skip is marker-gated, as is `kg-tracked-extracted`; the
+  `project-tree-coherence` rewrite is unconditional (ADR-014 decision 11; see
+  *Vault Housekeeping*).
 - **Advisory — a FAIL exits 0.** It reports; it never blocks. An audit that
   failed the build is an audit people learn to disable.
 - **Vault-global — no `project` parameter.** Scoping it per-project is how a
@@ -3213,17 +4273,18 @@ an exact **derivation**, not a guess. The candidate predicate lives once in
 
 ### LLM-Assisted Tuning (`internal/palace/tune.go`)
 
-`vp tune rooms` samples borderline/mismatched/"general" drawers, sends them
+`vp tune rooms` samples borderline/mismatched/"general" chunks from the
+host-local chunk store, sends them
 to an LLM for classification judgment, and proposes keyword weight adjustments
 via heuristic rules. Output is a TOML diff. `--estimate` reports token cost
 without calling the LLM.
 
 ### Keyword Discovery (`internal/palace/discover.go`)
 
-`vp discover rooms` uses an LLM to identify new keywords from unclassified
-content, then cross-validates each proposal by scanning all drawers
-(O(proposals × drawers), pure keyword matching). Proposals with negative
-scores (regressions outweigh captures) are filtered out.
+`vp discover rooms` uses an LLM to identify new keywords from unclassified content, then
+cross-validates each proposal by scanning every chunk in the host-local chunk store (O(proposals ×
+chunks), pure keyword matching). Proposals with negative scores (regressions outweigh captures) are
+filtered out.
 
 ### LLM Client (`internal/llm`)
 
