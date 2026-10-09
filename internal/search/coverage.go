@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -111,6 +112,21 @@ func CoverageFailureLimit() int { return coverageFailureLimit }
 // imports both) guards the two against drift. It is a var so a test can set a
 // smaller limit.
 var coverageFailureLimit = 3
+
+// NewCoverageEngine builds an engine for the read-only coverage path whose
+// embedder is NEVER constructed: the lazy factory returns an error, so any
+// attempt to embed on this path fails loud instead of silently loading a model
+// (index-coverage-instrument, R2). CoverageState, Stale and TrulyEmpty load no
+// model, so the factory is never called. It is the ONE guard the CLI
+// (`vp index status`), the MCP tool (vp_index_status) and bootstrap all share,
+// so the "no embedder on the coverage path" invariant holds, and fails loud,
+// uniformly.
+func NewCoverageEngine(vault *storage.Vault, cfg storage.Config) *Engine {
+	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
+		return nil, errors.New("index coverage path loads no embedder")
+	})
+	return NewEngine(emb, vault, cfg)
+}
 
 // IndexCoverage is the shared single-project derivation: state, reason, the
 // session counts, and the run in progress. `vp index status` and
@@ -259,8 +275,14 @@ func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing
 	if err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
-	// One live archive per session: the latest captured_at. ListEntries sorts
-	// oldest first, so the last entry for a session_id wins.
+	// One live archive per session: the latest captured_at, with source_sha256
+	// as a deterministic tie-break. archive.ListEntries sorts on captured_at
+	// alone with a non-stable sort, so two archives of one session captured at
+	// the same instant (or both with an empty captured_at) could otherwise flip
+	// the chosen live sha — and with it n — between runs. The selection here does
+	// not depend on the input order (N1): it takes the max of (captured_at,
+	// source_sha256) per session, so it is stable without changing the shared
+	// lister's blast radius.
 	live := map[string]*archive.Entry{}
 	order := make([]string, 0)
 	for _, en := range entries {
@@ -268,10 +290,15 @@ func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing
 			continue
 		}
 		sid := en.Manifest.SessionID
-		if _, seen := live[sid]; !seen {
+		cur, seen := live[sid]
+		if !seen {
 			order = append(order, sid)
+			live[sid] = en
+			continue
 		}
-		live[sid] = en
+		if coverageEntryNewer(en, cur) {
+			live[sid] = en
+		}
 	}
 	m = len(live)
 	if m == 0 {
@@ -319,6 +346,18 @@ func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing
 		}
 	}
 	return n, m, pending, backlog, failing, nil
+}
+
+// coverageEntryNewer reports whether a is the live archive over b: a later
+// captured_at wins, and an equal (or empty) captured_at breaks the tie on the
+// larger source_sha256, so the choice is deterministic regardless of the order
+// archive.ListEntries returned them in (N1).
+func coverageEntryNewer(a, b *archive.Entry) bool {
+	ca, cb := a.Manifest.CapturedAt, b.Manifest.CapturedAt
+	if ca != cb {
+		return ca > cb
+	}
+	return a.Manifest.SourceSHA256 > b.Manifest.SourceSHA256
 }
 
 // samePath reports whether the ledger's recorded (vault-relative or absolute)

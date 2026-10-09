@@ -399,6 +399,130 @@ func TestCoverageCurrent(t *testing.T) {
 	}
 }
 
+// Equal captured_at is broken deterministically by source_sha256 (N1): the live
+// archive is the larger sha regardless of the order archive.ListEntries returned
+// the two in.
+func TestCoverageEqualCapturedAtDeterministic(t *testing.T) {
+	eng, v := testEngine(t)
+	markMigrated(t, v)
+	setBuiltTier(t, v, "proj")
+	setBuiltTier(t, v, "proj2")
+	// Two archives of one session, SAME captured_at, different sha. The live one
+	// is deterministically "sha-bbb" (the larger).
+	const same = "2026-05-13T00:00:00Z"
+	writeArchive(t, v, "proj", "a", "sess", "sha-aaa", same)
+	writeArchive(t, v, "proj", "b", "sess", "sha-bbb", same)
+	// Ledgering the LARGER sha (the live one) -> current.
+	ledgerLive(t, eng, v, "proj", "sess", "sha-bbb")
+	if cov := mustCoverage(t, eng, "proj"); cov.N != 1 || cov.State != CoverageCurrent {
+		t.Fatalf("ledgering the larger-sha archive: n=%d state=%q, want 1 current", cov.N, cov.State)
+	}
+
+	// Ledgering the SMALLER sha leaves the live archive (larger) unmatched -> n=0.
+	writeArchive(t, v, "proj2", "a", "sess", "sha-aaa", same)
+	writeArchive(t, v, "proj2", "b", "sess", "sha-bbb", same)
+	ledgerLive(t, eng, v, "proj2", "sess", "sha-aaa")
+	if cov := mustCoverage(t, eng, "proj2"); cov.N != 0 || cov.State != CoveragePartial {
+		t.Fatalf("ledgering the smaller-sha archive: n=%d state=%q, want 0 partial (live is the larger sha)", cov.N, cov.State)
+	}
+}
+
+// coverageEntryNewer is the deterministic tie-break itself (N1): later
+// captured_at wins; an equal (or empty) captured_at breaks on the larger
+// source_sha256. This is the proof that does not depend on filesystem ordering —
+// it fails if the selection reverts to last-wins or compares the wrong field.
+func TestCoverageEntryNewerTieBreak(t *testing.T) {
+	mk := func(cap, sha string) *archive.Entry {
+		return &archive.Entry{Manifest: &archive.Manifest{CapturedAt: cap, SourceSHA256: sha}}
+	}
+	// Equal captured_at: larger sha wins, both directions.
+	if !coverageEntryNewer(mk("t", "sha-bbb"), mk("t", "sha-aaa")) {
+		t.Error("equal captured_at: larger sha should win")
+	}
+	if coverageEntryNewer(mk("t", "sha-aaa"), mk("t", "sha-bbb")) {
+		t.Error("equal captured_at: smaller sha should not win")
+	}
+	// Empty captured_at on both: still broken by sha, deterministically.
+	if !coverageEntryNewer(mk("", "b"), mk("", "a")) {
+		t.Error("empty captured_at: larger sha should win")
+	}
+	// Later captured_at wins regardless of sha.
+	if !coverageEntryNewer(mk("2026-05-14T00:00:00Z", "sha-aaa"), mk("2026-05-13T00:00:00Z", "sha-zzz")) {
+		t.Error("later captured_at should win over an earlier one with a larger sha")
+	}
+}
+
+// Cost bound (Scope 10): deriving coverage for 30 projects performs a bounded
+// number of file operations per project and opens NO archive. The manifest
+// lister (coverageListEntries) reads manifests only — never archive bytes — so
+// counting its calls, the store reads, and asserting the holder is not read by
+// CoverageState pins the bound without a separate archive-open seam (coverage
+// never calls any archive-content reader by construction).
+func TestCoverageCostBoundOver30Projects(t *testing.T) {
+	eng, v := testEngine(t)
+	markMigrated(t, v)
+
+	origList, origStore, origHolder := coverageListEntries, readStoreFn, coverageReadHolder
+	t.Cleanup(func() {
+		coverageListEntries, readStoreFn, coverageReadHolder = origList, origStore, origHolder
+	})
+	var listCalls, storeCalls, holderCalls int
+	coverageListEntries = func(root, p string) ([]*archive.Entry, error) { listCalls++; return origList(root, p) }
+	readStoreFn = func(vault *storage.Vault, p string) (*indexstore.Store, error) {
+		storeCalls++
+		return origStore(vault, p)
+	}
+	coverageReadHolder = func(vault *storage.Vault) (indexstore.Holder, error) { holderCalls++; return origHolder(vault) }
+
+	const n = 30
+	for i := 0; i < n; i++ {
+		p := "cost-proj-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+		writeNote(t, v, p)
+		if _, err := eng.CoverageState(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One manifest listing per project, at most two store reads per project
+	// (TrulyEmpty's emptiness check and, when there are live sessions,
+	// coverageCounts), and CoverageState reads the holder ZERO times — the run is
+	// read once, separately, by RunInProgress.
+	if listCalls > n {
+		t.Errorf("manifest listings = %d, want <= %d (one per project)", listCalls, n)
+	}
+	if storeCalls > 2*n {
+		t.Errorf("store reads = %d, want <= %d (<= 2 per project)", storeCalls, 2*n)
+	}
+	if holderCalls != 0 {
+		t.Errorf("CoverageState read the run holder %d times, want 0 (the run is read once by RunInProgress)", holderCalls)
+	}
+
+	// RunInProgress reads the holder exactly once per vault.
+	holderCalls = 0
+	if _, err := eng.RunInProgress(); err != nil {
+		t.Fatal(err)
+	}
+	if holderCalls != 1 {
+		t.Errorf("RunInProgress read the holder %d times, want exactly 1", holderCalls)
+	}
+}
+
+// A --no-embed store never reads current (coverage-S4): a project whose sessions
+// are all ledgered live (which would read current) but whose ledgered chunks are
+// missing vectors — exactly what `vp index rebuild --no-embed` leaves — reads
+// stale, because child 7 records the misses and Stale() reports them.
+func TestCoverageNoEmbedNeverCurrent(t *testing.T) {
+	eng, v := testEngine(t)
+	markMigrated(t, v)
+	setBuiltTier(t, v, "proj")
+	writeArchive(t, v, "proj", "s1", "s1", "sha1", "2026-05-13T00:00:00Z")
+	ledgerLive(t, eng, v, "proj", "s1", "sha1") // n=1, m=1: would be current
+	// The --no-embed build recorded a missing vector on the ledgered chunk.
+	setStaleFlag(t, v, "proj", indexstore.StaleReason{Kind: indexstore.StaleMissingVectors}, 1)
+	if cov := mustCoverage(t, eng, "proj"); cov.State != CoverageStale {
+		t.Fatalf("state=%q, want stale (a --no-embed store with misses never reads current)", cov.State)
+	}
+}
+
 // --- run in progress (Scope 5) ---
 
 func TestCoverageRunInProgressFromHolder(t *testing.T) {
