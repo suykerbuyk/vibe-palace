@@ -10,7 +10,6 @@ import (
 	"os"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
-	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -94,12 +93,14 @@ func runIndexStatus(proj string, asJSON bool, out, errOut io.Writer) int {
 	return cli.ExitOK
 }
 
-// indexCoverage builds a no-embedder engine and derives coverage. The lazy
-// embedder's constructor is never called on the coverage path (Stale() and
-// TrulyEmpty() load no model), so no ONNX model is loaded.
+// indexCoverage derives coverage over the shared NO-EMBEDDER engine
+// (search.NewCoverageEngine) — the SAME guard the MCP tool and bootstrap use, so
+// the "no embedder on the coverage path" invariant holds, and fails loud,
+// uniformly (R2). It does NOT build the real vault embedder: a regression that
+// embeds on the coverage path now fails loud under the CLI too, instead of
+// silently loading a model.
 func indexCoverage(vault *storage.Vault, cfg storage.Config, proj string) (search.Coverage, error) {
-	emb := embedder.NewLazy(func() (embedder.Embedder, error) { return newVaultEmbedder(vault, cfg) })
-	eng := search.NewEngine(emb, vault, cfg)
+	eng := search.NewCoverageEngine(vault, cfg)
 	defer eng.Close()
 	return eng.IndexCoverage(proj)
 }

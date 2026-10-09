@@ -6,10 +6,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
-	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -66,16 +64,14 @@ func indexStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 	}
 }
 
-// indexCoverageNoEmbedder derives coverage over a NO-EMBEDDER engine: the lazy
-// embedder's constructor is never called on the coverage path (Stale() and
-// TrulyEmpty() load no model), so no ONNX model is loaded. The constructor
-// returns an error rather than a model, as a guard: if some future code path
-// ever tried to embed here, it would fail loudly instead of loading silently.
+// indexCoverageNoEmbedder derives coverage over the shared NO-EMBEDDER engine
+// (search.NewCoverageEngine): the lazy embedder's constructor is never called on
+// the coverage path (CoverageState/Stale/TrulyEmpty load no model), and it
+// returns an error rather than a model if anything ever tried to embed here, so
+// the failure is loud. The CLI (`vp index status`) and bootstrap use the same
+// guard, so the invariant holds uniformly (R2).
 func indexCoverageNoEmbedder(vault *storage.Vault, cfg storage.Config, project string) (search.Coverage, error) {
-	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
-		return nil, errors.New("vp_index_status loads no embedder")
-	})
-	eng := search.NewEngine(emb, vault, cfg)
+	eng := search.NewCoverageEngine(vault, cfg)
 	defer eng.Close()
 	return eng.IndexCoverage(project)
 }
