@@ -36,6 +36,27 @@ func TestCanonicalKeys(t *testing.T) {
 	}
 }
 
+// TestEmbedderBackendIsNotCanonical pins that [embedder].backend ships COMMENTED
+// in defaults.toml. It is an optional, off-by-default, build-gated key; if it
+// were active (canonical), DetectMissingKeys would nag every pre-existing config
+// via `vp check` / `vp config upgrade` to add a key a default binary resolves to
+// "go" anyway. An absent key resolves to "go" at runtime (embedder.ResolveBackend).
+func TestEmbedderBackendIsNotCanonical(t *testing.T) {
+	keys, err := CanonicalKeys()
+	if err != nil {
+		t.Fatalf("CanonicalKeys: %v", err)
+	}
+	if keys["embedder.backend"] {
+		t.Error("embedder.backend must NOT be canonical — ship it commented in defaults.toml so no existing config is flagged")
+	}
+	// Sanity: the active embedder keys remain canonical.
+	for _, k := range []string{"embedder.model", "embedder.max_sequence_length", "embedder.batch_size"} {
+		if !keys[k] {
+			t.Errorf("expected canonical key %s", k)
+		}
+	}
+}
+
 func TestUserKeys(t *testing.T) {
 	content := `vault_path = "/tmp/vault"
 http_port = 8080
@@ -162,7 +183,6 @@ kind = "global"
 model = "sentence-transformers/all-MiniLM-L6-v2"
 max_sequence_length = 256
 batch_size = 32
-backend = "go"
 
 [search]
 default_limit = 10
@@ -381,7 +401,6 @@ kind = "global"
 model = "test"
 max_sequence_length = 256
 batch_size = 32
-backend = "go"
 
 [search]
 default_limit = 10

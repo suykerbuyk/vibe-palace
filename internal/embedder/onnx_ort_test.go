@@ -102,21 +102,27 @@ func TestORTEmbedsAndIsBackendTagged(t *testing.T) {
 	}
 }
 
-// TestORTLongInputDoesNotCrashAndMatchesTruncation is the direct fix for the
-// Phase 0 crash: a ~600-word input (well over the 256-token limit) embeds
-// successfully on the ORT/rust path (no gomlx-style position-table blow-up), and
-// it embeds the SAME as its first-254-token prefix — proving the rust
-// tokenizer's truncation replicates vp's behaviour=2 256-token rule rather than
-// merely not crashing.
-func TestORTLongInputDoesNotCrashAndMatchesTruncation(t *testing.T) {
+// TestORTLongInputDoesNotCrashAndIsPrefixConsistent checks the Phase 0 crash is
+// gone: a ~600-word input (far over any truncation limit) embeds on the ORT/rust
+// path without the gomlx position-table blow-up, and it embeds the same as its
+// first-254-word prefix (truncation yields a consistent prefix).
+//
+// 🔴 This test does NOT prove installRustTruncation is load-bearing. The model's
+// own tokenizer.json sets truncation max_length=128, so hugot's rust tokenizer
+// truncates on its own regardless of our code, and both the 600-word and
+// 254-word inputs collapse to the same prefix at WHATEVER limit is in force — so
+// the cosine is ~1.0 even with installRustTruncation removed. The guard that
+// installRustTruncation actually overrides the model's 128 to vp's max_seq_len is
+// TestORTTruncationOverridesModelLimitToMatchGo below.
+func TestORTLongInputDoesNotCrashAndIsPrefixConsistent(t *testing.T) {
 	emb := newTestORT(t, 256)
 	ctx := context.Background()
 	long := wordsText(600)
-	ref := wordsText(254) // [CLS] + 254 single-token words + [SEP] = 256 tokens
+	ref := wordsText(254)
 
 	got, err := emb.Embed(ctx, long)
 	if err != nil {
-		t.Fatalf("Embed(long) on ORT crashed/failed — truncation not wired: %v", err)
+		t.Fatalf("Embed(long) on ORT crashed/failed: %v", err)
 	}
 	if len(got) != 384 {
 		t.Fatalf("Embed(long) len = %d, want 384", len(got))
@@ -126,7 +132,51 @@ func TestORTLongInputDoesNotCrashAndMatchesTruncation(t *testing.T) {
 		t.Fatalf("Embed(ref): %v", err)
 	}
 	if c := cosineSim(got, want); c < 0.999 {
-		t.Errorf("cos(Embed(long), Embed(first 254 tokens)) = %.6f on ORT, want >= 0.999 (rust truncation should match vp's 256-token rule)", c)
+		t.Errorf("cos(Embed(long), Embed(prefix)) = %.6f on ORT, want >= 0.999 (truncation should be a consistent prefix)", c)
+	}
+}
+
+// TestORTTruncationOverridesModelLimitToMatchGo is the NON-VACUOUS guard for
+// installRustTruncation. The model's tokenizer.json truncates at max_length=128,
+// but vp's regime is max_seq_len=256; installRustTruncation forces the rust
+// tokenizer up to 256 to match the Go path (whose go-huggingface tokenizer
+// ignores the model limit and is capped only at 256 by vp's truncatingTokenizer).
+//
+// A ~202-token input (200 single-token words + [CLS]/[SEP]) sits strictly
+// between the model's 128 and vp's 256, so the two limits give DIFFERENT vectors:
+//   - WITH installRustTruncation: Go keeps ~202, ORT keeps ~202 → cos ~1.0.
+//   - WITHOUT it: ORT truncates at the model's 128 while Go keeps ~202 → cos ~0.967.
+//
+// So this fails iff installRustTruncation is broken or removed — the exact
+// property the vacuous long-vs-prefix test cannot see.
+func TestORTTruncationOverridesModelLimitToMatchGo(t *testing.T) {
+	requireORTLibs(t)
+	ctx := context.Background()
+	cacheDir := ortModelCacheDir(t)
+	text := wordsText(200) // ~202 tokens: above the model's 128, below vp's 256
+
+	goEmb, err := NewONNXBackend(BackendGo, miniLM, cacheDir, 256, 32)
+	if err != nil {
+		t.Fatalf("NewONNXBackend(go): %v", err)
+	}
+	goVec, err := goEmb.Embed(ctx, text)
+	goEmb.Close()
+	if err != nil {
+		t.Fatalf("go Embed: %v", err)
+	}
+
+	ortEmb, err := NewONNXBackend(BackendORT, miniLM, cacheDir, 256, 32)
+	if err != nil {
+		t.Fatalf("NewONNXBackend(ort): %v", err)
+	}
+	ortVec, err := ortEmb.Embed(ctx, text)
+	ortEmb.Close()
+	if err != nil {
+		t.Fatalf("ort Embed: %v", err)
+	}
+
+	if c := cosineSim(goVec, ortVec); c < 0.999 {
+		t.Errorf("cos(go, ort) = %.6f on a ~202-token input, want >= 0.999; installRustTruncation is not overriding the model's 128-token limit to vp's max_seq_len=256", c)
 	}
 }
 

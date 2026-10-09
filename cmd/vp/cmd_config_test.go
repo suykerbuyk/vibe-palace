@@ -112,7 +112,6 @@ kind = "global"
 model = "test"
 max_sequence_length = 256
 batch_size = 32
-backend = "go"
 
 [search]
 default_limit = 10
