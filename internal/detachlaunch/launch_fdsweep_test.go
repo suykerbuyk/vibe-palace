@@ -71,10 +71,9 @@ func TestFDSweepHelper(t *testing.T) {
 // planted descriptors and the working directory, as the plan requires, so
 // descriptors the Go test runtime opens for itself are never asserted.
 func TestLaunchDetachesCwdAndClosesInheritedFDs(t *testing.T) {
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	// A non-".test" copy of this binary: Launch's fork-bomb guard refuses to
+	// detach a `.test` binary, so the real os.Executable() cannot be used here.
+	helper := testHelperBinary(t)
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "result.txt")
 	logPath := filepath.Join(dir, "child.log")
@@ -111,7 +110,7 @@ func TestLaunchDetachesCwdAndClosesInheritedFDs(t *testing.T) {
 	t.Setenv(fdCheckOutEnv, outPath)
 	t.Setenv(fdCheckSpecEnv, fmt.Sprintf("%d:%s,%d:%s", plantedFD, plantedMrk, lockFD, lockMrk))
 
-	if _, err := Launch(self, []string{"-test.run=^TestFDSweepHelper$"}, logPath); err != nil {
+	if _, err := Launch(helper, []string{"-test.run=^TestFDSweepHelper$"}, logPath); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 

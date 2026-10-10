@@ -15,6 +15,7 @@ package detachlaunch
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,16 +45,41 @@ func withHelperEnv(t *testing.T) {
 	t.Setenv("VP_DETACHLAUNCH_HELPER", "1")
 }
 
-func TestLaunchReturnsImmediately(t *testing.T) {
-	withHelperEnv(t)
+// testHelperBinary returns a byte-identical copy of the running test binary at
+// a path whose base does NOT end in ".test", so Launch's fork-bomb guard
+// permits detaching it. The copy is still the same Go test binary, so it
+// honors -test.run and the helper env gates (TestHelperHarness /
+// TestFDSweepHelper); it is simply not named "*.test". Tests that need a REAL
+// detached spawn pass this instead of os.Executable() (which, under `go test`,
+// the guard refuses).
+func testHelperBinary(t *testing.T) string {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatalf("read self: %v", err)
+	}
+	name := "detachlaunch-helper"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("write helper copy: %v", err)
+	}
+	return dst
+}
+
+func TestLaunchReturnsImmediately(t *testing.T) {
+	withHelperEnv(t)
+	helper := testHelperBinary(t)
 	logPath := filepath.Join(t.TempDir(), "child.log")
 
 	start := time.Now()
-	pid, err := Launch(self, helperArgs(), logPath)
+	pid, err := Launch(helper, helperArgs(), logPath)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
@@ -68,21 +94,13 @@ func TestLaunchReturnsImmediately(t *testing.T) {
 	}
 }
 
-// TestLaunchSelfRelaunch exercises the binary=="" branch, which resolves
-// os.Executable() to relaunch the current binary (the real-world case: `vp`
-// relaunching itself as a detached `vp drain summaries ...`).
-func TestLaunchSelfRelaunch(t *testing.T) {
-	withHelperEnv(t)
-	logPath := filepath.Join(t.TempDir(), "child.log")
-
-	pid, err := Launch("", helperArgs(), logPath)
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
-	if pid <= 0 {
-		t.Fatalf("pid = %d, want > 0", pid)
-	}
-}
+// NOTE: the binary=="" self-relaunch branch can no longer be exercised with a
+// real spawn from a test — under `go test` os.Executable() is the `.test`
+// binary and Launch's fork-bomb guard refuses it by design. That branch's
+// refusal is covered by TestLaunchRefusesSelfRelaunchUnderTestBinary in
+// launch_guard_test.go; the production (non-`.test`) spawn cannot be observed
+// from within a test process and is left to the manual/CI survive-the-parent
+// checks noted at the top of this file.
 
 // TestLaunchWritesLogFile confirms stdout/stderr are redirected to logPath
 // (not piped), by waiting briefly for the child to run and then checking the
@@ -91,13 +109,10 @@ func TestLaunchSelfRelaunch(t *testing.T) {
 // leaves behind the file rather than an os.Pipe with no reader.
 func TestLaunchWritesLogFile(t *testing.T) {
 	withHelperEnv(t)
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	helper := testHelperBinary(t)
 	logPath := filepath.Join(t.TempDir(), "child.log")
 
-	if _, err := Launch(self, helperArgs(), logPath); err != nil {
+	if _, err := Launch(helper, helperArgs(), logPath); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 
@@ -113,16 +128,13 @@ func TestLaunchWritesLogFile(t *testing.T) {
 // assertion beyond "this function returns".
 func TestLaunchNoDeadlockOrLeak(t *testing.T) {
 	withHelperEnv(t)
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	helper := testHelperBinary(t)
 	dir := t.TempDir()
 
 	const n = 10
 	for i := range n {
 		logPath := filepath.Join(dir, "child.log")
-		if _, err := Launch(self, helperArgs(), logPath); err != nil {
+		if _, err := Launch(helper, helperArgs(), logPath); err != nil {
 			t.Fatalf("Launch #%d: %v", i, err)
 		}
 	}
@@ -152,15 +164,15 @@ func TestLaunchNonexistentBinaryReturnsError(t *testing.T) {
 }
 
 func TestLaunchBadLogPathReturnsError(t *testing.T) {
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	// Use a non-".test" helper so the fork-bomb guard does not short-circuit
+	// before the log-open attempt — this test must reach startDetached's
+	// os.OpenFile to exercise the bad-log-path branch.
+	helper := testHelperBinary(t)
 	// A log path inside a directory that does not exist can never be
 	// opened for create/append.
 	badLogPath := filepath.Join(t.TempDir(), "no-such-dir", "child.log")
 
-	if _, err := Launch(self, helperArgs(), badLogPath); err == nil {
+	if _, err := Launch(helper, helperArgs(), badLogPath); err == nil {
 		t.Fatal("expected an error for an unopenable log path, got nil")
 	}
 }

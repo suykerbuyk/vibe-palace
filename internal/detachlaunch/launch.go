@@ -16,15 +16,45 @@
 package detachlaunch
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // LaunchFunc is the signature of Launch, named so callers can accept an
 // injectable launcher (e.g. to stub out the real subprocess spawn in a
 // test).
 type LaunchFunc func(binary string, args []string, logPath string) (pid int, err error)
+
+// ErrRefusedTestBinary is returned by Launch when it would otherwise detach a
+// Go test binary — either by self-relaunching under `go test` (where
+// os.Executable() is the package's `.test` binary) or when handed an explicit
+// `*.test` path. Detaching a test binary is the ADR-014 fork-bomb regression:
+// an unfiltered re-exec of a `.test` binary (notably cmd/vp's, whose TestMain
+// re-runs the whole suite) re-triggers the very detach that spawned it, an
+// unbounded recursive self-spawn that reboots the host. Callers already treat
+// a Launch error as non-fatal and log it, so a sentinel error is more honest
+// than a silent pid-0 no-op.
+var ErrRefusedTestBinary = errors.New("detachlaunch: refusing to self-relaunch a Go test binary")
+
+// runningUnderGoTest reports whether the resolved self-executable is a Go test
+// binary. It replicates the two-pronged idiom of
+// internal/surface/guard.go runningUnderGoTest() — the name ends in ".test",
+// or the testing framework's flags are registered — rather than importing
+// internal/surface (which would be a new dependency). The flag.Lookup half
+// catches `go test -c -o <custom>` and `-exec` wrappers whose filename does
+// not end in ".test". The suffix is checked on the RESOLVED self, not
+// os.Args[0].
+func runningUnderGoTest(self string) bool {
+	if strings.HasSuffix(self, ".test") {
+		return true
+	}
+	return flag.Lookup("test.v") != nil
+}
 
 // Launch starts binary (with args) as a detached child process and returns
 // as soon as the child has started — it never blocks waiting for the child
@@ -66,7 +96,18 @@ func Launch(binary string, args []string, logPath string) (pid int, err error) {
 		if err != nil {
 			return 0, fmt.Errorf("detachlaunch: resolve self: %w", err)
 		}
+		// Fork-bomb guard: refuse to self-relaunch a Go test binary. Return
+		// BEFORE startDetached so no process starts and no logPath file is
+		// created. The production `vp` binary is never a `.test` and registers
+		// no test flags, so this is a no-op there.
+		if runningUnderGoTest(self) {
+			return 0, ErrRefusedTestBinary
+		}
 		binary = self
+	} else if strings.HasSuffix(filepath.Base(binary), ".test") {
+		// Defense in depth: refuse an explicitly-named `*.test` binary too,
+		// again before any process or log file.
+		return 0, ErrRefusedTestBinary
 	}
 
 	pid, startErr := startDetached(binary, args, logPath, setDetached)
