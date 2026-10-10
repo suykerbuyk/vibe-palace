@@ -335,6 +335,11 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		"migrate task-header-block": true,
 		// ONE-SHOT: deleted with cmd_migrate_project_slug.go. Renames and rewrites
 		// a whole project tree, task files included, and commits.
+		// The one-shot authored-only migration (216ea89): rewrites the whole vault
+		// to the authored-only shape — deletes derived search data and commits —
+		// under --yes, through the vault writers. The most vault-mutating command
+		// there is.
+		"migrate authored-only-palace": true,
 	}
 
 	reg, _, _ := testRegistry()
