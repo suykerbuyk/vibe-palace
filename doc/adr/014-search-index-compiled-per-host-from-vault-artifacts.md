@@ -1615,3 +1615,20 @@ measurement, and this ADR fixes no default for any of them:
 - the pending-archive ingester's per-run budget (archives per run, and the wall-clock cap) and the
   failure count N after which automatic runs skip an archive: set by measurement in
   `pending-archive-ingester-and-per-archive-commit-step`.
+
+## Addendum (2026-10-03): the derived index favours simplicity over per-owner fidelity
+
+Operator ruling, on the KG-records plan's C1 finding (the merged index store keeps one KG payload
+per record id, first owner wins): the per-owner-payload fix was overruled in favour of a **shared
+payload per record**, with date and session derived at read time from the ledger — accepting the
+loss of per-session confidence, extractor `valid_from` and archive-supplied `created_at`.
+
+**Why:** the index is per-host derived data rebuilt from archives, so fidelity lost there is not
+lost history — the archives still hold it; the simpler shape is cleaner and more maintainable
+long-term.
+
+**How to apply:** when a design choice for the derived / host-local index trades per-owner or
+historical fidelity against structural simplicity, prefer the simpler shape by default and name
+what it drops; do not frame the higher-fidelity option as the obvious one. This narrows what the
+index dates for KG records. **Fidelity of AUTHORED vault content is a different question and is not
+covered by this ruling.**
