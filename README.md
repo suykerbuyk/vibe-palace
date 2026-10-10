@@ -127,6 +127,12 @@ them explicitly.
   git remotes; `vp vault sync` (or the `vp_vault_sync` MCP tool) pulls,
   tidies machine-generated capture artifacts, and pushes. Every vault
   commit is stamped with the hostname that made it.
+- **The search index is compiled per host, not synced.** The tracked
+  corpus is the transcript archives; each host rebuilds its own semantic
+  index from them with `vp index rebuild` and checks coverage with `vp
+  index status` (see
+  [The host-local search index](doc/TUTORIAL.md#the-host-local-search-index)).
+  A freshly cloned host carries a backlog until its first rebuild.
 - **Concurrent writers are arbitrated, not trusted.** Per-path advisory
   locks serialize writers of the same file; a single repo-root commit
   lock serializes all vault committers through the git index; mutating

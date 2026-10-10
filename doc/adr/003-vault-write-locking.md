@@ -5,7 +5,8 @@ lost-update hole*, then *compare-and-set on blind whole-file overwrites*),
 2026-07-12 (*the surgical editors and `EditResume` are deleted* — *read that one
 first if you are here to write to `resume.md`*), 2026-08-18 (Windows
 `LockFileEx` and the atomic-rename retry), 2026-09-19 (one ordered pair
-acquisition, `AcquirePair`), 2026-09-27 (what the repo-root key covers); dated
+acquisition, `AcquirePair`), 2026-09-27 (what the repo-root key covers),
+2026-10-09 (ADR-014's index locks are separate from this ADR's locks); dated
 in-place corrections 2026-09-28
 **Deciders:** Project owner
 **Context:** Vibe-palace vault-write-concurrency — serializing vault read-modify-write
@@ -828,6 +829,41 @@ purge writing its records and committing them, which no lock can span.
 `internal/tools`: `TestPurgeRefusesWhenHEADMovesBeforeTheLock`,
 `TestPurgeInterruptedAfterTheRecordsIsGuarded`,
 `TestPurgeRollbackIsLossless`.
+
+## Amendment (2026-10-09): the search-index locks are ADR-014's, separate from this ADR
+
+ADR-014 (`doc/adr/014-search-index-compiled-per-host-from-vault-artifacts.md`)
+makes the per-host search index **derived** data — drawers, extracted triples and
+the ledger are rebuilt locally from vault artifacts, not vault content — and gives
+it its own lock layout. Those index locks are **not** the locks this ADR
+describes, and nothing here changes.
+
+### Two index locks, and where they live
+
+ADR-014 introduces an **index run lock** (one per host per vault, non-blocking,
+held for a whole ingest run or a whole `vp index rebuild` run) and an **index
+commit lock** (one per project per vault per host, short and blocking, held only
+to commit already-computed data). Both live under the vault's **host-local
+`palace/.local/locks/`** — so both are **per host, per vault** — never inside
+`index/<p>/` (a discard deletes that), and they are host-local, never synced.
+
+### Separate from the per-path vault-write lock and its CAS contract
+
+This ADR's primitive is the per-path exclusive sidecar lock under `.vp-locks/`
+(plus the `expected_sha256` compare-and-set contract on `resume.md`) that
+serializes a read→modify→write of a **vault file**. ADR-014's index locks guard
+the host-local derived store instead. They are a distinct keyspace with a distinct
+purpose and a distinct lifetime: a holder of an index lock never contends with a
+holder of a `.vp-locks/` per-path lock, and the resume CAS contract does not reach
+the index.
+
+### Index lock order (ADR-014's, internal to it)
+
+Within ADR-014 the index commit lock is a **leaf** — no process holds two at once
+— and the index run lock is taken **before** an index commit lock, never the
+reverse. This order lives entirely inside ADR-014; it does not interact with this
+ADR's *Sequential locks, never nested* rule, the ordered-pair acquisition
+(`AcquirePair`), or the repo-root key. See ADR-014 for its own deadlock argument.
 
 ## References
 

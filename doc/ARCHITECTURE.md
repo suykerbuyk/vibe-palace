@@ -3162,7 +3162,7 @@ day); they never read an archive. Until that session is ledgered on this host, o
 names no session, they take the note's own day (`internal/storage/sessions.go:50`); when the session
 is ledgered later, the next build re-dates them, so a decision chunk's date is fixed only once its
 session is ledgered. At `a32a2d4` decision chunks always take the note's local day
-(`internal/capture/decisions.go:157`). Search derives a result's date from `filed_at`
+(`a32a2d4 internal/capture/decisions.go:157`). Search derives a result's date from `filed_at`
 (`internal/search/engine.go:1236`), shows it (`:1247`) and filters on it (`:1546-1549`), so date
 filters over transcript and decision chunks match the session date, the UTC day of the session's
 start, not the day it was indexed, and `as_of` and timeline order on regenerated temporal triples

@@ -367,21 +367,30 @@ After the first session capture, your vault will contain:
 ```
 {vault}/
 ├── palace/
+│   ├── .local/                                     # host-local, gitignored — never committed
+│   │   ├── index/my-project/                       # compiled search index (chunks + vectors)
+│   │   ├── index/.generation/my-project            # store change counter
+│   │   └── locks/                                  # index run + commit locks (per host)
 │   └── my-project/
-│       ├── drawers/my-project/general/drawers.jsonl   # indexed content
-│       └── kg/entities.jsonl                           # extracted entities
+│       └── kg/entities.jsonl                       # authored knowledge-graph records (tracked)
 └── Projects/
     └── my-project/
-        ├── sessions/2026-04-09-<hostfp>-01.md          # session record
-        └── tasks/                                       # task plans
+        ├── sessions/2026-04-09-<hostfp>-01.md      # session record
+        ├── transcripts/*.{manifest.json,jsonl.zst} # transcript archives — the tracked corpus
+        └── tasks/                                  # task plans
 ```
 
-**palace/** holds knowledge (content chunks, vectors, KG). This is the
-searchable memory.
+**palace/** holds the authored knowledge graph and, under the gitignored
+**palace/.local/**, this host's compiled search index. That index — content
+chunks and their vectors — is *derived*: every host rebuilds it locally from
+the tracked transcript archives, so git never carries it (ADR-014). On a
+migrated authored-only vault, derived drawers and extracted triples stay out
+of git; only authored KG records are tracked.
 
-**Projects/** holds workflow (resume, sessions, tasks, iterations, memory).
-This is the collaboration state between you and the AI. (The tree above is
-abridged.)
+**Projects/** holds workflow (resume, sessions, transcript archives, tasks,
+iterations, memory). The transcript archives are the tracked corpus the search
+index is compiled from. This is the collaboration state between you and the AI.
+(The tree above is abridged.)
 
 > **Executable version.** For a machine-verified walkthrough of the
 > steps in this chapter, run `go test -race -run
@@ -822,6 +831,51 @@ reason (see `search.ProjectExists`). MCP `vp_search` applies the identical
 existence check before any embedder work: an unknown project is now a tool
 error, not `[]`, so the two surfaces no longer disagree.
 
+### The host-local search index
+
+The search index is **compiled per host**, not synced. The tracked corpus is
+the transcript archives under `Projects/<slug>/transcripts/`; each host
+rebuilds its own semantic index (content chunks and their vectors, under the
+gitignored `palace/.local/`) from them. Git never carries the index (ADR-014),
+so a freshly cloned host, or a newly imported project, carries a **backlog**
+until it is built.
+
+```bash
+vp index status [project]            # this host's coverage for a project
+vp index status myproj --json        # the coverage struct as JSON
+vp index rebuild myproj              # build/refresh myproj's index, backlog included
+vp index rebuild myproj --dry-run    # report the plan and the disk estimate; write nothing
+vp index rebuild --all               # rebuild every project in the vault, in slug order
+vp index rebuild --all --skip foo --skip bar   # ...but leave these projects out
+```
+
+- **Coverage states.** `vp index status` reports which of seven ordered states
+  this host is in — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `partial`,
+  `current` — and why, with the session counts behind it (`n` of `m` sessions
+  ingested, and the pending, backlog and failing archives separately). It opens
+  no archive and loads no embedder, and it reports an index run already in
+  progress without taking any lock. The same coverage is surfaced as
+  `index_coverage` in the bootstrap payload at the start of a session.
+- **The per-host backlog (the baseline set).** When a host first builds a
+  project's index, the archives already present are recorded as a *baseline
+  set* — a historical backlog the automatic ingester does not chase. Only a
+  completed `vp index rebuild` on **that host** empties the baseline set and
+  brings the project fully current; running it on one machine does nothing for
+  another. (Copy, merge and import add the archives they bring in to the
+  backlog, on the host that runs them.)
+- **Resumable, and single-writer.** A rebuild ingests the backlog, re-embeds
+  cache misses and retries archives the automatic ingester has given up on; it
+  is resumable, so re-running it after an interruption picks up where it left
+  off, and it writes nothing tracked. Only one index run touches a vault at a
+  time: if another rebuild or ingest already holds the index run lock, the
+  command refuses and names the holder (also visible in `vp index status`). A
+  disk-and-inode watchdog refuses to start, and stops a running rebuild, before
+  it would cross a free-space reserve.
+- **Leaving projects out.** `--skip <slug>` is repeatable and leaves a project
+  wholly untouched (its ledger, baseline set and chunks are not read). Use it
+  on `--all` runs to exclude projects that are about to leave this vault, or
+  that this host should not index.
+
 ### Friction Analytics
 
 Every captured session carries a friction score (0–100, higher = rougher).
@@ -926,7 +980,7 @@ with- and without-context averages.
 
 ```bash
 vp audit rooms              # report on classification quality
-vp audit rooms --apply      # reclassify mismatched drawers
+vp audit rooms --apply      # relabel mismatched rooms in the host-local store
 vp tune rooms --estimate    # estimate LLM cost for weight tuning
 vp tune rooms               # propose keyword weight adjustments via LLM
 vp discover rooms --estimate  # estimate LLM cost for keyword discovery
@@ -991,8 +1045,9 @@ Fail.
 
 You should never have to run raw `git` inside the vault. Session capture and
 the hooks constantly write machine-generated artifacts — session summaries,
-transcript archives, knowledge-graph data, drawers, and `.surface` stamps —
-and these are committed for you automatically:
+transcript archives, authored knowledge-graph records, and `.surface` stamps —
+and these are committed for you automatically (the derived search index stays
+host-local and is never committed):
 
 - **`/restart`** heals leftover capture residue (from the previous session's
   hooks, a crash, or another machine) right after it pulls, so the vault is
@@ -1753,7 +1808,10 @@ vp migrate vibevault --vault-path ~/obsidian/VibeVault --yes
 
 Each `vp migrate vibevault` run prints a `Source` / `Destination` /
 `Same vault` banner before scanning; a real cross-vault import needs `--yes` (or an interactive `[y/N]`
-confirmation). After import, restart the MCP server to rebuild search indexes.
+confirmation). An import writes only transcript archives; build this host's
+search index from them with `vp index rebuild <project>` (restarting the MCP
+server also spawns the ingester as a backstop). See
+[The host-local search index](#the-host-local-search-index).
 
 ---
 

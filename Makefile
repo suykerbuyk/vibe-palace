@@ -113,6 +113,15 @@ fmt-check: ## FAIL if any Go source is not gofmt-clean
 		exit 1; \
 	fi
 
+##@ Docs
+# Resolve every `path:line` citation in doc/ARCHITECTURE.md against the working
+# tree (the only doc that carries code citations). Toolchain-only and no
+# network, like fmt-check, so it is its own fast target rather than folded into
+# a model or -race job. CI runs it as `make arch-cites`.
+.PHONY: arch-cites
+arch-cites: ## FAIL if doc/ARCHITECTURE.md cites a missing file or a line past EOF
+	scripts/check-architecture-citations.sh
+
 ##@ Test
 .PHONY: test
 test: build fmt-check vet ## Run unit tests — fast, no model download

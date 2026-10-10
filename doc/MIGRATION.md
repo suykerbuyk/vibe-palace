@@ -347,6 +347,71 @@ Once vibe-palace covers all of vibe-vault's functions:
 
 ---
 
+## The authored-only migration (`vp migrate authored-only-palace`)
+
+This is the one-time, revertible migration of a populated vault to the
+**authored-only** layout (ADR-014). After it runs, the derived search data —
+drawers, extracted triples and the `ingested-archives` ledger — leaves git and
+is rebuilt per host under `palace/.local/`; only **authored** knowledge-graph
+records (stamped `origin: authored`) stay tracked. The vault gains the
+`authored_only` marker and the derived-path ignore lines.
+
+```bash
+# Preview: prints the path (normal or empty-vault), the tag, the required
+# attestation lines, per-project deletions and the push commands. Mutates nothing.
+vp migrate authored-only-palace
+
+# Apply: one commit over the whole vault. --attest is REQUIRED with --yes.
+vp migrate authored-only-palace --yes --attest attest.txt
+```
+
+**Flags.**
+
+- `--vault PATH` — vault root to migrate (default: the configured `vault_path`;
+  used to rehearse on a remote-stripped copy).
+- `--yes` — apply the migration. Without it the command only previews.
+- `--attest FILE` — operator attestation file, **required with `--yes`**; its
+  bytes go verbatim into the commit message. The preview prints the two lines it
+  must carry (`writer-hosts:` and `quantum-ng-rows-closed:`).
+
+**Plan-first and safe by construction.** The bare command previews and changes
+nothing. `--yes` makes **one** commit over the whole vault, tags the parent
+commit `pre-authored-only-<UTC-date>` and pushes **only the tag** — it never
+pushes the commit and never `--force`, and it prints the exact
+`git push <remote> HEAD:<branch>` line for you to run. It refuses unless the
+vault is clean, pushed, on a named branch, free of any in-progress merge or
+rebase, with the data format not behind the binary, the marker absent, a valid
+attestation, and the surface floor and ancestry satisfied at every remote tip.
+
+**Recovery tag.** The apply creates `pre-authored-only-<date>` on the
+pre-migration commit and pushes it before writing anything. The dropped bytes
+are recoverable there.
+
+**Rollback (`git revert`).** Roll back by reverting the migration commit and
+publishing the revert with the same fast-forward push:
+
+```bash
+git revert HEAD    # then push the revert with the same push line the apply printed
+```
+
+The revert restores the data only; the recovery tag stays and the binaries stay
+at their current surface. Tidy and pull fall back to their pre-migration rules
+and search reads the re-tracked drawers again.
+
+> **Empty-vault path — re-stamp `Audits/.surface` in the same push.** If the
+> migration took the empty-vault path, its revert removes `Audits/.surface`, the
+> vault's **only** surface stamp, which would leave the vault *ungated* for an
+> older binary. You MUST re-stamp `Audits/.surface` at the current surface in
+> the **same push** as the revert, so the vault is never left ungated on a
+> remote. On the normal path the surface stamps committed at every remote tip
+> survive, so no re-stamp is needed.
+
+After the migration, build each host's search index from the tracked archives
+with `vp index rebuild` (see
+[TUTORIAL: The host-local search index](TUTORIAL.md#the-host-local-search-index)).
+
+---
+
 ## Deployment Sequence (Operator Checklist)
 
 This is the practical step-by-step for a single-machine deployment:
