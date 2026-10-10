@@ -802,6 +802,21 @@ func (e *VaultUnreachableError) Unwrap() error { return e.Err }
 // Distinguishing the two lets each caller decide: mutating paths refuse on
 // both, read-only paths may tolerate ErrNoVault.
 func CheckCompatible(vaultPath string) error {
+	return checkCompatibleAs(vaultPath, MCPSurfaceVersion)
+}
+
+// checkCompatibleAs is CheckCompatible parameterized on the surface version of
+// the binary doing the check. CheckCompatible passes MCPSurfaceVersion; it is
+// the only production caller. The parameter is the test seam the migration's
+// gating rows use: a test stamps a vault at MCPSurfaceVersion and asserts
+// checkCompatibleAs(vault, MCPSurfaceVersion-1) refuses it, which is exactly how
+// a one-older binary would be gated out of a vault the migration (or a v9+
+// `vp vault init`) stamped, without that older binary having to exist.
+//
+// Keeping the parameter OUT of production (every real caller is pinned to
+// MCPSurfaceVersion) is deliberate: a binarySurface below the constant is a test
+// condition, never a running state.
+func checkCompatibleAs(vaultPath string, binarySurface int) error {
 	if vaultPath == "" {
 		return ErrNoVault
 	}
@@ -844,9 +859,9 @@ func CheckCompatible(vaultPath string) error {
 		}
 	}
 
-	if maxSurface > MCPSurfaceVersion {
+	if maxSurface > binarySurface {
 		return &IncompatibleError{
-			BinarySurface: MCPSurfaceVersion,
+			BinarySurface: binarySurface,
 			VaultSurface:  maxSurface,
 			StampDir:      worstDir,
 			LastWriter:    worstWriter,

@@ -94,6 +94,7 @@ func knownCommands() []string {
 		"init", "inject", "mcp", "mcp serve",
 		"memory", "memory harvest",
 		"migrate", "migrate mempalace", "migrate vibevault", "migrate kg-census",
+		"migrate authored-only-palace",
 		"search", "sessions",
 		"skills", "skills list", "skills show", "skills upgrade", "skills reset",
 		"status", "tasks", "tasks epics", "tasks edit", "tasks read",

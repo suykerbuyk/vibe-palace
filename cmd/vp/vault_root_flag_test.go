@@ -458,6 +458,20 @@ func commandsTakingVault(t *testing.T, group string) []*cli.Command {
 	return family
 }
 
+// applyFlagFor returns the command's OWN apply flag: "--yes" when it declares
+// one, else "--apply". The migrate family is mixed — most commands apply with
+// --apply, but `migrate authored-only-palace` applies with --yes (its Scope) —
+// so this registry-derived test must pass each command the flag it actually
+// declares, not a single hardcoded "--apply".
+func applyFlagFor(cmd *cli.Command) string {
+	for _, f := range cmd.Flags {
+		if f.Name == "--yes" {
+			return "--yes"
+		}
+	}
+	return "--apply"
+}
+
 // TestMigrateVaultFlagSurfaceGatesTheResolvedRoot: every `vp migrate` command
 // taking --vault can --apply to the root it resolves, and preRun's surfaceGate
 // checked only the CONFIGURED vault. Each must refuse a newer-surface root named
@@ -497,7 +511,7 @@ func TestMigrateVaultFlagSurfaceGatesTheResolvedRoot(t *testing.T) {
 	}
 	for _, cmd := range family {
 		t.Run(cmd.Name, func(t *testing.T) {
-			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmd, "--apply", "--vault", newer)
+			stdout, stderr, code := runVaultCmdCapturingBoth(t, cmd, applyFlagFor(cmd), "--vault", newer)
 			if code != cli.ExitSystem || !strings.Contains(stderr, "this binary supports MCP surface") {
 				t.Errorf("newer-surface --vault root not refused by the surface gate: exit %d, want %d\nstdout:%s\nstderr:%s",
 					code, cli.ExitSystem, stdout, stderr)

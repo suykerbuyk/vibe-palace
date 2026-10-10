@@ -501,6 +501,10 @@
       "reason": "host-local derived index under palace/.local — ignored by git, not vault content (ADR-014). cacheWriteFn (the embed cache's one file write, a seam a test replaces to fail or race a write) passes \"\" as atomicfile.Write's vault root on purpose: its only destinations are the embed-cache vectors and their regime sidecar under palace/.local/embed-cache/<p>/, which the canonical ignore line palace/.local/ (internal/storage/git.go:30) keeps out of git, so a .surface stamp would be wrong. Every call runs under a held index commit lock, through (*EmbedCache).Writer. Task search-index-completeness-and-build-serialization (R-4: atomic Put)."
     },
     {
+      "id": "vault-write-outside-funnel storage.Vault.ApplyAuthoredOnlyMigration",
+      "reason": "CANNOT ROUTE THROUGH THE FAMILY: the one-shot authored-only migration (task one-shot-migration-to-authored-only-vault) removes legacy UNTRACKED residue under palace/<slug>/ for DEPARTED slugs with os.RemoveAll. vaultfs.Delete refuses it — departedpath.RefuseAbs fires for a departed slug (the departure record wins over the init gate, projectdir.refuseUninitialised:258-264), and it cannot remove the directory tree itself. The residue is untracked, uninitialised-project files no other writer touches; the removal writes no content and needs no surface stamp. Delete this entry with cmd_migrate_authored_only.go and internal/storage/authored_only_migration.go."
+    },
+    {
       "id": "vault-write-outside-funnel storage.Vault.RemoveRenamePending",
       "reason": "HOST-LOCAL IGNORED MARKER, not tracked vault content: it removes palace/.local/index/.rename-pending/<slug>, a git-ignored per-host hint written by WriteRenamePending. It must NOT stamp the surface or take the vault root lock (the host-local rename step holds the index run and commit locks, never the root lock), so routing it through vaultfs.Delete would be wrong. Mirrors internal/indexstore's own palace/.local removals, which this audit exempts. Pinned by task rename-core-fresh-target-with-digest-bind (U9 increment 2)."
     },
