@@ -69,10 +69,11 @@ fully applies or it has no effect.`
 	}, &result))
 
 	var captureResult struct {
-		Status    string `json:"status"`
-		SessionID string `json:"session_id"`
-		Iteration int    `json:"iteration"`
-		Project   string `json:"project"`
+		Status     string `json:"status"`
+		SessionID  string `json:"session_id"`
+		SessionKey string `json:"session_key"`
+		Iteration  int    `json:"iteration"`
+		Project    string `json:"project"`
 	}
 	if err := json.Unmarshal([]byte(result), &captureResult); err != nil {
 		t.Fatalf("parse capture result: %v (raw: %s)", err, result)
@@ -82,6 +83,9 @@ fully applies or it has no effect.`
 	}
 	if captureResult.SessionID == "" {
 		t.Error("session_id is empty")
+	}
+	if captureResult.SessionKey == "" {
+		t.Fatal("capture result has no session_key to match the transcript archive")
 	}
 
 	// Ingest the inline archive in-process, exactly as the detached `vp drain
@@ -107,20 +111,22 @@ fully applies or it has no effect.`
 		t.Errorf("top result should mention migration/database, got: %s",
 			truncate(results[0].Content, 100))
 	}
-	// At least one transcript chunk of this session is now present (source_ref
-	// is the session id for transcript chunks).
+	// At least one transcript chunk of this session is now present. Transcript
+	// chunks are owned by the archive's minted id, which the capture tool returns
+	// as session_key — distinct from the vault session_id that keys session-note
+	// and decision chunks.
 	sawTranscript := false
 	for _, r := range results {
 		if r.Project != "test-proj" {
 			t.Errorf("result leaked from another project: %+v", r)
 		}
-		if r.SourceType == "session" && strings.Contains(r.SourceRef, captureResult.SessionID) {
+		if r.SourceType == "session" && r.SourceRef == captureResult.SessionKey {
 			sawTranscript = true
 		}
 	}
 	if !sawTranscript {
-		t.Errorf("no transcript chunk of session %s among the results after ingest: %+v",
-			captureResult.SessionID, results)
+		t.Errorf("no transcript chunk of session_key %s among the results after ingest: %+v",
+			captureResult.SessionKey, results)
 	}
 
 	// A capture WITHOUT an archive leaves the project's host-local chunk store
