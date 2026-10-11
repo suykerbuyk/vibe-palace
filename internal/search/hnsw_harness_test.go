@@ -789,10 +789,10 @@ func latencyBeats(h, b latencyStat) bool {
 // eyeballed. T is the smallest sampled n where HNSW beats brute at k = 30 (the
 // tie rule) AND both POST-churn recalls (ChurnRecallK10/K30, the columns the
 // asserted TestHNSWRealVectorRecall gates on) meet the bar; the true threshold
-// lies in (prev, T]. L is the largest n below T whose HNSW p50@30 is within 1.5×
-// brute, capped at floor(0.9×T); if no n below T is within the band hysteresis
-// collapses to just below T; if T is the smallest sampled n there is no cell
-// below it.
+// lies in (prev, T]. L is deriveL's three-branch §4d rule (collapse to T-1 when
+// no n < T is within 1.5× brute, the floor(0.9×T) cap when every n < T is, else
+// the largest sampled n < T within the band and no cap) — never a min() of the
+// two.
 func deriveTL(m, ef int, ls []gridLine, bar float64) string {
 	tIdx := -1
 	for i, l := range ls {
