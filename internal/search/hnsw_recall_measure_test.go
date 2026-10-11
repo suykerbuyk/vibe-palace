@@ -46,6 +46,9 @@ const realVectorRecallBar = 0.90
 // replacedProbeSample is how many replaced ids the old-vector probe searches.
 const replacedProbeSample = 200
 
+// deletedProbeSample is how many deleted ids the own-vector probe searches.
+const deletedProbeSample = 200
+
 // assertChurnedRecall is the shared churn assertion: tie-aware recall at both k
 // against cr's live set is at or above bar; no result names a deleted id or
 // answers with a vector its id no longer holds (tieAwareRecall's checks); and
@@ -80,6 +83,19 @@ func assertChurnedRecall(t *testing.T, idx VectorIndex, cr churnResult, queries 
 		t.Error("the old-vector probe searched nothing: churn recorded no replaced vector")
 	default:
 		t.Logf("old-vector probe: %d searches with replaced vectors, none answered by an old vector", probed)
+	}
+	// The real-path must-fail for the tombstone filter: a deleted id's own
+	// vector is distance 0 from its dead key, so removing the filter in
+	// hnswIndex.Search returns a non-live id here on any corpus, synthetic or
+	// real, without depending on the dead key ranking into a held-out query.
+	deletedProbed, err := checkDeletedVectorsGone(idx, cr, probeSeed+1, deletedProbeSample, candidateCount(10))
+	switch {
+	case err != nil:
+		t.Errorf("deleted-id probe, after %d searches: %v", deletedProbed, err)
+	case deletedProbed == 0:
+		t.Error("the deleted-id probe searched nothing: churn recorded no net-deleted vector")
+	default:
+		t.Logf("deleted-id probe: %d searches with deleted ids' own vectors, none answered by a tombstone", deletedProbed)
 	}
 }
 
@@ -229,6 +245,12 @@ func loadRealHeldOut(t *testing.T, in realInputs) (realCorpus, heldOut, int) {
 	logRealCacheReport(t, corpus.Report)
 	nq := heldOutQueryCount(len(corpus.IDs))
 	ho := partitionHeldOut(corpus.IDs, corpus.Vecs, nq, realPartitionSeed)
+	// The run that decides the numbers checks the loader paired each id with its
+	// own vector (the 10k slice makes the same check); a mis-pairing would let a
+	// query find itself under another id and inflate recall.
+	if err := checkHeldOutVectors(ho, zipLive(corpus.IDs, corpus.Vecs)); err != nil {
+		t.Fatal(err)
+	}
 	n := churnCorpusSize(len(ho.Pool))
 	t.Logf("union %d vectors: %d held-out queries, corpus %d, %d fresh vectors reserved for churn", len(corpus.IDs), nq, n, len(ho.Pool)-n)
 	if n < 50000 {
@@ -287,11 +309,14 @@ func TestHNSWMeasureGrid(t *testing.T) {
 	t.Logf("crossover table (every cell recorded under this run identity):\n%s", table.String())
 }
 
-// gridSizes is the grid's n axis: 5k, 10k, 20k and 50k, then the whole
-// corpus, in ascending order and without duplicates, so a corpus of exactly
-// 50,000 is not measured, and recorded, twice.
+// gridSizes is the grid's n axis: a dense 5k-step sweep from 5k to 50k so the
+// T/L crossover (expected between 20k and 50k) can be bracketed and L's 1.5×
+// band has a witnessing cell, then the whole corpus, in ascending order and
+// without duplicates, so a corpus of exactly 50,000 is not measured, and
+// recorded, twice. loadRealHeldOut guarantees the union gives at least a 50k
+// corpus, so every fixed point is in range.
 func gridSizes(all int) []int {
-	sizes := []int{5000, 10000, 20000, 50000}
+	sizes := []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000}
 	if !slices.Contains(sizes, all) {
 		sizes = append(sizes, all)
 	}
@@ -342,7 +367,10 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	}
 	res.RecallK10, res.RecallK30, res.SetOverlapK10 = rep.Recall[0], rep.Recall[1], rep.SetOverlap
 	res.ReturnedK10, res.ReturnedK30 = rep.Returned[0], rep.Returned[1]
-	res.HNSWK10, res.HNSWK30 = rep.Latency[0], rep.Latency[1]
+	// The crossover reads both sides through the repeated queryLatency, so the
+	// T/L comparison is median-over-passes with a spread, not the single pass
+	// measureRecall timed above (rep.Latency, kept only for the recall log).
+	res.HNSWK10, res.HNSWK30 = queryLatency(t, idx, ho.Queries, recallKs[0]), queryLatency(t, idx, ho.Queries, recallKs[1])
 	res.BruteK10, res.BruteK30 = queryLatency(t, brute, ho.Queries, recallKs[0]), queryLatency(t, brute, ho.Queries, recallKs[1])
 	brute = nil
 
@@ -353,20 +381,33 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	}
 	res.ChurnRecallK10, res.ChurnRecallK30 = after.Recall[0], after.Recall[1]
 	t.Logf("recall@10 %.4f @30 %.4f; after churn %.4f / %.4f; build %.1fs; HNSW p50@30 %.2f ms, brute %.2f ms",
-		res.RecallK10, res.RecallK30, res.ChurnRecallK10, res.ChurnRecallK30, res.BuildSeconds, res.HNSWK30[0], res.BruteK30[0])
+		res.RecallK10, res.RecallK30, res.ChurnRecallK10, res.ChurnRecallK30, res.BuildSeconds, res.HNSWK30.P50, res.BruteK30.P50)
 	return res
 }
 
-// queryLatency returns idx's query p50 and p99 in ms at k.
-func queryLatency(t *testing.T, idx VectorIndex, queries [][]float32, k int) [2]float64 {
+// queryLatency returns idx's query latency at k: the median per-pass p50 and
+// p99 over latencyRepeats timed passes (after one untimed warmup), and the
+// inter-pass p50 spread. Repeating keeps one GC pause or scheduler quantum from
+// pinning a crossover; the spread feeds the tie rule (B3/3d).
+func queryLatency(t *testing.T, idx VectorIndex, queries [][]float32, k int) latencyStat {
 	t.Helper()
-	ds := make([]time.Duration, 0, len(queries))
-	for _, q := range queries {
-		s := time.Now()
+	for _, q := range queries { // warmup, untimed
 		if _, err := idx.Search(q, k); err != nil {
 			t.Fatal(err)
 		}
-		ds = append(ds, time.Since(s))
 	}
-	return [2]float64{percentile(ds, 50), percentile(ds, 99)}
+	p50s := make([]float64, latencyRepeats)
+	p99s := make([]float64, latencyRepeats)
+	for r := range latencyRepeats {
+		ds := make([]time.Duration, 0, len(queries))
+		for _, q := range queries {
+			s := time.Now()
+			if _, err := idx.Search(q, k); err != nil {
+				t.Fatal(err)
+			}
+			ds = append(ds, time.Since(s))
+		}
+		p50s[r], p99s[r] = percentile(ds, 50), percentile(ds, 99)
+	}
+	return latencyStat{P50: medianFloat(p50s), P99: medianFloat(p99s), Spread: slices.Max(p50s) - slices.Min(p50s)}
 }

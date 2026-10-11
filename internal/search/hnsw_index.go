@@ -55,8 +55,11 @@ type hnswParams struct {
 // implementor3's probe measured, until task
 // hnsw-parameters-from-real-vector-recall-and-production-wiring records values
 // measured on real vectors. The library's default EfSearch of 20 is too low.
-// The tombstone threshold is this task's measurement (see the measurement
-// table in task vector-index-interface-and-coder-hnsw-wrapper).
+// Only M and EfSearch are that task's to choose. TombstoneRatio and
+// MinTombstones are NOT: they belong to task
+// vector-index-interface-and-coder-hnsw-wrapper (see its measurement table) and
+// the recall grid holds them FIXED as inputs, not outputs (gridHarnessVersion
+// covers a change to either).
 var provisionalHNSWParams = hnswParams{
 	M:              16,
 	EfSearch:       100,

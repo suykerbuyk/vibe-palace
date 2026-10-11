@@ -332,6 +332,12 @@ type churnResult struct {
 	// vector a re-inserted id had before its delete, and the vector an
 	// upserted id had before the upsert. No search may answer with one.
 	replaced map[string][][]float32
+	// deletedVec holds, per id still in `deleted` (deleted and never
+	// re-inserted), the vector it held when it was tombstoned. A probe searches
+	// that vector — distance 0 to the dead key — and asserts the id is gone, so
+	// a dropped tombstone filter cannot pass unseen on a corpus where no held-out
+	// query happens to rank the dead key.
+	deletedVec map[string][]float32
 
 	ids []string // the original ids, in corpus order
 }
@@ -383,13 +389,13 @@ func churnBuild(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32,
 	if err := idx.Build(batchVecs, batchIDs); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	return churnResult{live: live, deleted: make(map[string]bool), replaced: replaced, ids: ids}
+	return churnResult{live: live, deleted: make(map[string]bool), replaced: replaced, deletedVec: make(map[string][]float32), ids: ids}
 }
 
 // churnMutate is churn's second phase, on an index churnBuild built.
 func churnMutate(t *testing.T, idx VectorIndex, rng *rand.Rand, cr *churnResult, fresh func() []float32) {
 	t.Helper()
-	ids, live, deleted, replaced := cr.ids, cr.live, cr.deleted, cr.replaced
+	ids, live, deleted, replaced, deletedVec := cr.ids, cr.live, cr.deleted, cr.replaced, cr.deletedVec
 	n := len(ids)
 	gone := make(map[string][]float32) // a deleted id's last vector
 	order := rng.Perm(n)
@@ -398,6 +404,7 @@ func churnMutate(t *testing.T, idx VectorIndex, rng *rand.Rand, cr *churnResult,
 			t.Fatalf("Delete(%s) = false for a live id", ids[i])
 		}
 		gone[ids[i]] = live[ids[i]]
+		deletedVec[ids[i]] = live[ids[i]]
 		delete(live, ids[i])
 		deleted[ids[i]] = true
 	}
@@ -413,6 +420,7 @@ func churnMutate(t *testing.T, idx VectorIndex, rng *rand.Rand, cr *churnResult,
 		replaced[ids[i]] = append(replaced[ids[i]], gone[ids[i]])
 		live[ids[i]] = v
 		delete(deleted, ids[i])
+		delete(deletedVec, ids[i])
 		reinserted++
 	}
 	upserted := 0

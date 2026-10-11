@@ -218,6 +218,34 @@ func percentile(ds []time.Duration, p int) float64 {
 	return float64(s[i].Microseconds()) / 1000
 }
 
+// medianFloat returns the median of xs (the upper-middle element for an even
+// length), 0 for an empty slice.
+func medianFloat(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := slices.Clone(xs)
+	slices.Sort(s)
+	return s[len(s)/2]
+}
+
+// latencyRepeats is how many timed passes queryLatency runs after one untimed
+// warmup. A single pass at small n is a handful of scheduler quanta plus one GC
+// pause, so a lone noisy cell could pin the T/L crossover (task review B3/3d);
+// the median over repeats, and the inter-pass spread the tie rule reads, keep
+// one pass from deciding a threshold.
+const latencyRepeats = 7
+
+// latencyStat is a query-latency measurement robust to a single noisy pass: the
+// median per-pass p50 and p99, in ms, and Spread, the max−min of the per-pass
+// p50s, which the crossover tie rule uses so a difference inside the run-to-run
+// noise is not read as "HNSW beats brute".
+type latencyStat struct {
+	P50    float64 `json:"p50"`
+	P99    float64 `json:"p99"`
+	Spread float64 `json:"spread"`
+}
+
 // recallKs are the two k every recall is measured at: 10, and the engine's
 // actual request for a limit of 10 (candidateCount, 30).
 var recallKs = []int{10, candidateCount(10)}
@@ -307,6 +335,43 @@ func checkReplacedVectorsGone(idx VectorIndex, cr churnResult, seed int64, sampl
 			}
 			if want := cosineDistanceF32(old, cur); math.Abs(float64(d-want)) > crossImplTolerance {
 				return probed, fmt.Errorf("%s at distance %v from its old vector, but its current vector is at %v: the old vector answered", id, d, want)
+			}
+		}
+	}
+	return probed, nil
+}
+
+// checkDeletedVectorsGone searches with the OWN vector of up to sample deleted
+// (never re-inserted) ids — the vector each held when it was tombstoned, so the
+// query sits at distance 0 from the dead key and that key ranks first if Search
+// ever stops dropping tombstones. Every returned id must be live: a tombstoned
+// key surfaces either as the empty string (its id entry is deleted on remove,
+// hnsw_index.go remove) or, under a different implementation, as its own dead
+// id, and both are non-live. This is the real-path must-fail for the tombstone
+// filter (hnsw_index.go Search): unlike a held-out query, a distance-0 probe
+// does not depend on the dead key happening to rank into the window on real
+// vectors. Returns how many ids it probed.
+func checkDeletedVectorsGone(idx VectorIndex, cr churnResult, seed int64, sample, k int) (int, error) {
+	ids := make([]string, 0, len(cr.deletedVec))
+	for id := range cr.deletedVec {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rand.New(rand.NewSource(seed)).Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+	probed := 0
+	for _, id := range ids[:min(sample, len(ids))] {
+		own := cr.deletedVec[id]
+		if !usableVector(own) {
+			continue
+		}
+		res, err := idx.Search(own, k)
+		if err != nil {
+			return probed, err
+		}
+		probed++
+		for _, r := range res {
+			if _, live := cr.live[r.ID]; !live {
+				return probed, fmt.Errorf("searching deleted id %s's own vector returned non-live id %q: a tombstone answered", id, r.ID)
 			}
 		}
 	}
@@ -516,7 +581,11 @@ func TestHeldOutQueriesNotInCorpus(t *testing.T) {
 // recall definition, the churn shape, the cell runner or the hnswParams fields
 // the grid holds fixed (TombstoneRatio, MinTombstones) change, so a resumed
 // grid never mixes cells measured by different code.
-const gridHarnessVersion = 1
+//
+// 2: dense n axis (5k..50k in 5k steps), queryLatency repeats with a median p50
+// and an inter-pass spread, and a latency-and-recall T/L derivation in the
+// table (task B3).
+const gridHarnessVersion = 2
 
 // gridIdentity is what a grid cell's result depends on besides (M, ef, n).
 type gridIdentity struct {
@@ -558,8 +627,8 @@ type gridResult struct {
 	SetOverlapK10            float64
 	ReturnedK10, ReturnedK30 returnedStats
 	BuildSeconds             float64
-	HNSWK10, HNSWK30         [2]float64 // query p50, p99 in ms
-	BruteK10, BruteK30       [2]float64
+	HNSWK10, HNSWK30         latencyStat // median query p50/p99 in ms, with spread
+	BruteK10, BruteK30       latencyStat
 	HNSWHeap, BruteHeap      uint64 // retained bytes
 	HNSWBuildAlloc           uint64 // TotalAlloc across the build
 	ChurnRecallK10           float64
@@ -692,19 +761,73 @@ func writeGridTable(w io.Writer, path string, ident gridIdentity) error {
 			r := l.Result
 			fmt.Fprintf(w, "| %d | %d | %d | %.4f | %.4f | %.4f | %.4f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f |\n",
 				l.M, l.Ef, l.N, r.RecallK10, r.RecallK30, r.ChurnRecallK10, r.ChurnRecallK30,
-				r.HNSWK30[0], r.BruteK30[0], r.HNSWK10[0], r.BruteK10[0], r.BuildSeconds,
+				r.HNSWK30.P50, r.BruteK30.P50, r.HNSWK10.P50, r.BruteK10.P50, r.BuildSeconds,
 				float64(r.HNSWHeap)/(1<<20), float64(r.BruteHeap)/(1<<20))
-			if cross30 == "none" && r.HNSWK30[0] < r.BruteK30[0] {
+			if cross30 == "none" && latencyBeats(r.HNSWK30, r.BruteK30) {
 				cross30 = fmt.Sprint(l.N)
 			}
-			if cross10 == "none" && r.HNSWK10[0] < r.BruteK10[0] {
+			if cross10 == "none" && latencyBeats(r.HNSWK10, r.BruteK10) {
 				cross10 = fmt.Sprint(l.N)
 			}
 		}
-		fmt.Fprintf(w, "crossover (M=%d, ef=%d): HNSW p50 beats brute force from n = %s at k = 30, n = %s at k = 10\n",
+		fmt.Fprintf(w, "crossover (M=%d, ef=%d): HNSW p50 beats brute force from n = %s at k = 30, n = %s at k = 10 (tie rule: the p50 gap must exceed the larger inter-pass spread)\n",
 			p.M, p.Ef, cross30, cross10)
+		fmt.Fprintln(w, deriveTL(p.M, p.Ef, ls, realVectorRecallBar))
 	}
 	return nil
+}
+
+// latencyBeats reports whether HNSW's p50 is below brute's by more than the
+// run-to-run noise: the gap must exceed the larger of the two inter-pass
+// spreads, so a difference inside the noise is a tie, not a crossover (B3/3d).
+func latencyBeats(h, b latencyStat) bool {
+	return b.P50-h.P50 > max(h.Spread, b.Spread)
+}
+
+// deriveTL derives T and L for one (M, ef) from its cells (sorted ascending by
+// n), as one table line, so the four numbers are mechanically derivable and not
+// eyeballed. T is the smallest sampled n where HNSW beats brute at k = 30 (the
+// tie rule) AND both POST-churn recalls (ChurnRecallK10/K30, the columns the
+// asserted TestHNSWRealVectorRecall gates on) meet the bar; the true threshold
+// lies in (prev, T]. L is the largest n below T whose HNSW p50@30 is within 1.5×
+// brute, capped at floor(0.9×T); if no n below T is within the band hysteresis
+// collapses to just below T; if T is the smallest sampled n there is no cell
+// below it.
+func deriveTL(m, ef int, ls []gridLine, bar float64) string {
+	tIdx := -1
+	for i, l := range ls {
+		r := l.Result
+		if latencyBeats(r.HNSWK30, r.BruteK30) && r.ChurnRecallK10 >= bar && r.ChurnRecallK30 >= bar {
+			tIdx = i
+			break
+		}
+	}
+	if tIdx < 0 {
+		return fmt.Sprintf("  T/L (M=%d, ef=%d): T = none (no sampled n meets both the k=30 latency beat and post-churn recall@10&@30 >= %.2f)", m, ef, bar)
+	}
+	T := ls[tIdx].N
+	prev := "0"
+	if tIdx > 0 {
+		prev = fmt.Sprint(ls[tIdx-1].N)
+	}
+	cap := int(0.9 * float64(T))
+	lN := -1
+	for i := 0; i < tIdx; i++ {
+		r := ls[i].Result
+		if r.HNSWK30.P50 <= 1.5*r.BruteK30.P50 {
+			lN = ls[i].N
+		}
+	}
+	var lDesc string
+	switch {
+	case tIdx == 0:
+		lDesc = "L = none (T is the smallest sampled n; no cell below it)"
+	case lN < 0:
+		lDesc = fmt.Sprintf("L collapses just below T (no n < T within 1.5x brute); cap floor(0.9*T) = %d", cap)
+	default:
+		lDesc = fmt.Sprintf("L = %d (largest n < T within 1.5x brute = %d, capped at floor(0.9*T) = %d)", min(lN, cap), lN, cap)
+	}
+	return fmt.Sprintf("  T/L (M=%d, ef=%d): T = %d, bracketed (%s, %d]; %s", m, ef, T, prev, T, lDesc)
 }
 
 // TestHNSWMeasureGridResumes (row 14): with a stub cell runner, the grid driver
@@ -810,8 +933,8 @@ func TestHNSWMeasureGridResumes(t *testing.T) {
 		all  int
 		want []int
 	}{
-		{50000, []int{5000, 10000, 20000, 50000}},
-		{57500, []int{5000, 10000, 20000, 50000, 57500}},
+		{50000, []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000}},
+		{57500, []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 57500}},
 	} {
 		if got := gridSizes(c.all); !slices.Equal(got, c.want) {
 			t.Errorf("gridSizes(%d) = %v, want %v", c.all, got, c.want)
