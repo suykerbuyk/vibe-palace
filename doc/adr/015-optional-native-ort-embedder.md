@@ -1,16 +1,16 @@
 # ADR 015: An Optional, Build-Tag-Gated Native ONNX-Runtime Embedder; the Default Stays Zero-CGO
 
-**Status:** Proposed (2026-10-08)
+**Status:** Accepted (2026-10-11)
 **Deciders:** Project owner
 **Context:** Task `optional-native-ort-cgo-embedder-off-by-default`, including its plan review
 (vpimp3, 2026-10-06 — blockers B1/B2, should-fix S1/S2) and its Phase 0 spike results
-(vpimp3, 2026-10-06). This ADR records the Phase 1 decision; it is a DRAFT and is not yet accepted.
+(vpimp3, 2026-10-06). This ADR records the Phase 1 decision; Phase 2a ratified it and it is now Accepted.
 
 This ADR **qualifies, and does not supersede,** the zero-CGO identity stated in:
 - PRD §1.6 ("A pure-Go ONNX embedder (`hugot`, no CGO)"; "No Python. No Docker. No pip. No
   node_modules. Download, run, done.");
 - PRD Decision D4 (the embedder row);
-- PRD ~line 2092 ("The default must remain zero-dependency");
+- PRD ~line 2098 ("The default must remain zero-dependency");
 - the resume "What This Project Is" pin ("single Go binary with zero CGO dependencies").
 
 It **amends no earlier ADR's decision.** It references:
@@ -87,20 +87,21 @@ therefore write to a **separate physical index-store / cache path** (a throwaway
 alternate `.local` root, or a scratch dir) — never the production per-project dir, which a
 `vp index rebuild` would otherwise re-embed over, discarding the production Go vectors.
 
-## Scope (Phase 1 only) and what is deferred to Phase 2
+## Scope: Phase 1, Phase 2a, and what remains deferred
 
-This ADR is **Proposed**, not accepted. Phase 1 lands only the measurement build: the session seam,
+This ADR is now **Accepted** (Phase 2a). Phase 1 landed only the measurement build: the session seam,
 the rust-tokenizer truncation, the fingerprint backend field, env/config selection, a `make
-build-ort` target, and `-tags ORT` tests. It does **not** touch the production embedding regime, any
-live vault cache, the PRD, or the resume.
+build-ort` target, and `-tags ORT` tests. Phase 1 did **not** touch the production embedding regime,
+any live vault cache, the PRD, or the resume.
 
-On acceptance (Phase 2, a separate decision), the following PRD/resume sentences are edited — **not
-done here**:
-- resume "What This Project Is" pin: zero-CGO applies to the released binary; an optional `-tags ORT`
-  build adds a native backend.
+Phase 2a (this acceptance) makes the PRD carve-outs that qualify the zero-CGO identity for the
+optional backend:
 - PRD §1.6: true for the default, with a carve-out for the optional ORT build.
 - PRD Decision D4 row: note the optional backend, default unchanged.
-- PRD ~line 2092: add a pointer to this ADR.
+- PRD ~line 2098: add a pointer to this ADR.
+
+Still deferred (not done in Phase 2a): the resume "What This Project Is" pin — zero-CGO applies to
+the released binary; an optional `-tags ORT` build adds a native backend — folded in at session wrap.
 
 Phase 2 also owns the real question — whether ORT becomes the production regime for all hosts, which
 entails a project-wide forced re-embed and a bundling/install story for the native libs — gated on

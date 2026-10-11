@@ -30,7 +30,7 @@ func cmdConfig() *cli.Command {
 	return &cli.Command{
 		Name:        "config",
 		Synopsis:    "vp config <command>",
-		Description: "Manage the global vibe-palace configuration.",
+		Description: "Manage the global vibe-palace configuration. Config keys live in the managed config file and are documented by its comments; run `vp config sync` to reconcile them. The `[embedder].backend` key selects the embedding backend: `go` (default — the pure-Go, zero-CGO backend the released binary ships) or `ort` (the optional native ONNX-Runtime fast re-embed path, reachable only in a binary built with `-tags ORT`; see ADR-015).",
 	}
 }
 

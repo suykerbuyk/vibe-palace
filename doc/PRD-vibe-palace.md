@@ -196,7 +196,9 @@ The compiled Go binary contains:
 - The MCP server (stdio transport, plus an optional bearer-authenticated, read-only-by-default Streamable-HTTP transport via `vp mcp serve`)
 - A CLI for human interaction
 - A pure-Go ONNX embedder (`hugot`, no CGO) for text embeddings; the model is
-  downloaded on first use, not embedded
+  downloaded on first use, not embedded. This is the default and the only backend
+  the released binary ships; an optional native ONNX-Runtime backend (CGO,
+  `-tags ORT`, off by default) exists for fast bulk re-embedding — see ADR-015.
 - An exact brute-force cosine vector index. **[ADR-014 · v9.2.0]** It must be compiled per host
   from vault content (§7.8). **[ADR-014 · HNSW]** Each project must use exactly one index,
   chosen by chunk count: brute force below a measured size threshold, HNSW (`coder/hnsw`,
@@ -204,7 +206,9 @@ The compiled Go binary contains:
   (hysteresis; ADR-014 decision 6)
 - Embedded default templates for project initialization
 
-No Python. No Docker. No pip. No node_modules. Download, run, done.
+No Python. No Docker. No pip. No node_modules. Download, run, done. (This is the
+default, released binary; the optional `-tags ORT` build adds a native backend
+that links one system library — see ADR-015.)
 
 ### 1.7 Language-Agnostic Classification
 
@@ -2096,7 +2100,9 @@ backend but are readily available through Ollama. Users who already run Ollama
 
 **Design constraints:**
 - The default must remain zero-dependency: `hugot` pure-Go ONNX, no external
-  services required, single binary
+  services required, single binary. (An optional, off-by-default native
+  ONNX-Runtime backend for fast bulk re-embedding is build-tag-gated and never
+  part of the released binary — see ADR-015.)
 - Alternative backends are opt-in via configuration, never required
 - Switching backends triggers a full re-index (different dimensions/model =
   incompatible vectors); `vp check` must detect and warn about mismatches
@@ -2444,7 +2450,7 @@ decisions — they are final.
 | D1 | Go module path | `github.com/suykerbuyk/vibe-palace` | `github.com/suykerbuyk/vibe-palace` | Matches GitHub account and project name |
 | D2 | Minimum Go version | 1.21, 1.23, 1.25 | **1.25.0** | Required by `mark3labs/mcp-go` (our MCP library). The minimum is set by our dependencies, not by the developer's machine. `go.mod` declares `go 1.25.0`. |
 | D3 | ONNX model delivery | Embed in binary (~90 MB) vs download on first run | **Download on first run** | Keeps the ~90 MB model out of the binary. Model cached under `{vault}/palace/.local/models/` in a directory named after the model (default `sentence-transformers_all-MiniLM-L6-v2/`, holding `model.onnx`, `tokenizer.json`, `vocab.txt`). Downloaded from HuggingFace. No checksum: a cached snapshot counts as complete when `tokenizer.json` and a non-empty `.onnx` are present, and a load failure discards the copy and re-downloads once (`internal/embedder/onnx.go`). `vp check` loads the embedder. |
-| D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`doc/spike-hugot-pure-go-embedding.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s (a 2026-04 spike projection for the brute-force index over tracked drawers, not a measurement of ADR-014's index). Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. |
+| D4 | Embedding library | hugot pure-Go backend, hugot+ORT, ollama sidecar | **hugot with pure Go backend** (`knights-analytics/hugot`) | **Validated via spike** (`doc/spike-hugot-pure-go-embedding.md`, 2026-04-07): single embed 66ms, batch-32 290ms (9ms/item amortized), 17MB stripped binary, no CGO. 10K-drawer reindex projected at ~90s (a 2026-04 spike projection for the brute-force index over tracked drawers, not a measurement of ADR-014's index). Pure-Go backend produces correct 384-dim L2-normalized embeddings. All go thresholds passed. License: Apache-2.0. Zero-CGO pure-Go backend remains the shipped/supported default; an optional, build-tag-gated native ONNX-Runtime backend (`-tags ORT`, `CGO_ENABLED=1`, off by default, never released or cross-compiled) was added as a host-native fast re-embed path — see ADR-015. |
 | D5 | HNSW library | `coder/hnsw`, `fogfish/hnsw`, brute-force with vek | **`coder/hnsw`, pinned at `36cab6028fed`, behind a thin wrapper, for projects above a measured size** (**[ADR-014 · HNSW]**: target, not shipped) | Pure Go, no CGO. CC0 license. Supports incremental insertion and export/import persistence. The three upstream recall fixes (`c8a3b11` heap, `bc94177` replenish, `36cab60` search bounded by `efSearch`) merged 2026-06-22; no tagged release contains them, and `c8a3b11` alone measured recall@10 0.024. At that commit the library has no lock, its deletes leave dangling edges, a re-added key panics and Import does not validate, so a wrapper must supply locking, tombstones, upsert, input validation and a checksummed envelope. It does not build for windows/amd64 (`coder/hnsw@36cab60 encode.go:304` → `renameio.TempFile`, used only by `SavedGraph`), so an upstream PR is sent and, until it merges, a `go.mod` `replace` points at a minimal vendored copy without `SavedGraph`, a bounded, temporary exception to "no fork"; acceptance includes a `CGO_ENABLED=0` cross-build of every goreleaser target. HNSW does not beat brute force below about 20k vectors, so each project uses exactly one index chosen by chunk count, with hysteresis (HNSW at the threshold, back to brute force only below a lower bound); the threshold, its lower bound, `M` and `EfSearch` are chosen by measurement on real MiniLM vectors at ≥ 50k chunks. **Shipped at `a32a2d4`: the exact brute-force index**, which remains the small-project index and the test oracle. |
 | D6 | MCP library | `mark3labs/mcp-go`, `modelcontextprotocol/go-sdk`, hand-rolled | **`mark3labs/mcp-go`** | MIT license. 8,500 stars. Handles full JSON-RPC protocol, stdio transport, tool registration with fluent JSON Schema builders. Go 1.23. The official `go-sdk` requires Go 1.25. |
 | D7 | MCP protocol version | 2024-11-05, 2025-03-26 | **2025-03-26** | Latest stable spec. `mcp-go` supports it. Matches VibeVault's upper protocol bound. |

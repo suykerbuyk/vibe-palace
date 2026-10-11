@@ -1,0 +1,76 @@
+name: ORT smoke
+
+# Opt-in smoke build of the OPTIONAL native ONNX-Runtime embedder (the
+# `-tags ORT`, CGO_ENABLED=1 backend; ADR-015). It is NOT part of the project's
+# CI contract:
+#
+#   * It NEVER gates. The trigger below is `workflow_dispatch` only — no `push`,
+#     no `pull_request`, no `schedule`. No gating workflow `needs:` this one, so
+#     by construction it can never block a merge or a release.
+#   * It is the ONLY place CGO is turned on. ci.yml and the goreleaser matrix
+#     stay CGO_ENABLED=0 (the released binary is a single, static, zero-CGO Go
+#     binary; see .goreleaser.yml and ci.yml's `build` job). Keeping the CGO
+#     build isolated in its own dispatch-only workflow is deliberate.
+#
+#     gh workflow run ort-smoke.yml --ref <branch>
+#
+# What it proves: that the shipped `make build-ort` recipe
+# (`CGO_ENABLED=1 CGO_LDFLAGS="-L<dir>" go build -tags ORT ./cmd/vp`) still
+# COMPILES AND LINKS — i.e. the ORT-tagged Go + cgo sources build and the final
+# link resolves libtokenizers' symbols. Only `libtokenizers.a` is needed to
+# link: the Makefile's own guard checks for it alone, and `libonnxruntime.so` is
+# dlopen'd at RUNTIME, not consulted by the linker.
+#
+# What it does NOT prove: anything at runtime. We never execute the binary, so
+# this does not exercise dlopen of libonnxruntime.so, actual embedding, or the
+# Go/ORT parity tests. Those need libonnxruntime.so 1.24.4 plus a Hugging Face
+# model download (the flaky parts) and are the operator's host-native runs, not
+# CI's. This job is honest about being a compile-and-link smoke, nothing more.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ort-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      # libtokenizers.a (daulet/tokenizers v1.26.0 — the version hugot v0.7.0
+      # pins; see doc/ort-embedder.md) is the only native lib the link needs.
+      # Pin the release asset by sha256 so an upstream retag or asset re-upload
+      # cannot silently change what we build against. ubuntu-latest ships gcc,
+      # so the cgo compile of daulet/tokenizers works out of the box.
+      - name: Fetch libtokenizers.a (pinned by sha256)
+        run: |
+          set -euo pipefail
+          ORT_LIB_DIR="$RUNNER_TEMP/ort-libs"
+          mkdir -p "$ORT_LIB_DIR"
+          url="https://github.com/daulet/tokenizers/releases/download/v1.26.0/libtokenizers.linux-amd64.tar.gz"
+          sha="0713ac926d8473440572f59369a1bf2d3aa3fa5c6446eab45191f6e5f04ffeb0"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/libtokenizers.tar.gz"
+          echo "${sha}  $RUNNER_TEMP/libtokenizers.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/libtokenizers.tar.gz" -C "$ORT_LIB_DIR"
+          test -f "$ORT_LIB_DIR/libtokenizers.a"
+          echo "ORT_LIB_DIR=$ORT_LIB_DIR" >> "$GITHUB_ENV"
+
+      # The shipped recipe, unmodified. Its guard passes because libtokenizers.a
+      # is present; libonnxruntime.so is deliberately absent (not needed to link).
+      # We assert the artifact was produced but DO NOT run it.
+      - name: Build-and-link smoke (make build-ort)
+        run: |
+          set -euo pipefail
+          make build-ort ORT_LIB_DIR="$ORT_LIB_DIR"
+          test -x ./vp-ort
+          echo "linked ./vp-ort successfully (not executed — no libonnxruntime.so)"

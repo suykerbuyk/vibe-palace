@@ -90,6 +90,7 @@ func knownCommands() []string {
 		"archive extract", "archive backfill", "archive link",
 		"audit", "audit rooms", "audit vault",
 		"check", "commands", "commands list", "commands upgrade", "commands reset",
+		"config",
 		"index", "index rebuild", "index status",
 		"init", "inject", "mcp", "mcp serve",
 		"memory", "memory harvest",
