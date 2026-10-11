@@ -61,29 +61,98 @@ func partitionHeldOut(ids []string, vecs [][]float32, nq int, seed int64) heldOu
 	return ho
 }
 
-// checkHeldOutVectors checks a partition's vectors, not only its ids: each
-// query and pool vector is the vector of the id beside it (byID is the loaded
-// corpus), and no query vector equals any pool vector, so no query can find
-// itself under another id.
+// checkHeldOutVectors checks a partition's vectors, not only its ids: each query
+// and pool vector is the vector of the id beside it (byID is the loaded corpus),
+// and no query's OWN id is also in the pool.
+//
+// It does NOT reject a query whose VECTOR equals a different pool id's vector.
+// Real corpora contain exact-duplicate embeddings — identical source text under
+// two chunk ids — so a held-out query can have a distance-0 twin in the pool.
+// That is legitimate data, not a leak: the twin is a valid ground-truth nearest
+// neighbour, and tieAwareRecall scores it correctly against τ (a distance-0 hit
+// is in-ground-truth, and the query still has to find the rest of the k nearest,
+// so the duplicate does not inflate recall). The only genuine held-out/pool leak
+// is the query's own id appearing in the pool, which would put the query itself
+// in the index; that is still rejected. (Synthetic fixtures had no exact
+// duplicates, so the old vector-equality guard never fired until real data.)
 func checkHeldOutVectors(ho heldOut, byID map[string][]float32) error {
 	for i, id := range ho.QueryIDs {
 		if !slices.Equal(ho.Queries[i], byID[id]) {
 			return fmt.Errorf("query %d is not the vector of its id %s", i, id)
 		}
 	}
-	pool := make(map[string]bool, len(ho.Pool))
+	poolIDs := make(map[string]bool, len(ho.PoolIDs))
 	for i, id := range ho.PoolIDs {
 		if !slices.Equal(ho.Pool[i], byID[id]) {
 			return fmt.Errorf("pool entry %d is not the vector of its id %s", i, id)
 		}
-		pool[string(encodeVec(ho.Pool[i]))] = true
+		poolIDs[id] = true
 	}
-	for i, q := range ho.Queries {
-		if pool[string(encodeVec(q))] {
-			return fmt.Errorf("query %d (%s) is the same vector as a pool entry", i, ho.QueryIDs[i])
+	for i, id := range ho.QueryIDs {
+		if poolIDs[id] {
+			return fmt.Errorf("query %d (%s) has its own id in the pool: a held-out/pool leak", i, id)
 		}
 	}
 	return nil
+}
+
+// TestHeldOutVectorsToleratesRealDuplicates: the guard tolerates a held-out
+// query whose vector exact-duplicates a DIFFERENT pool id's vector (real data),
+// still rejects a genuine id leak (the query's own id in the pool), and the
+// distance-0 twin is scored as a real ground-truth hit by tieAwareRecall, not a
+// vacuous one.
+func TestHeldOutVectorsToleratesRealDuplicates(t *testing.T) {
+	u := func(v ...float32) []float32 { return normalize(v) }
+	dup := u(1, 0.3, 0, 0)
+	byID := map[string][]float32{
+		"p/a": u(1, 0, 0, 0),
+		"p/b": dup,               // the pool twin
+		"q/x": slices.Clone(dup), // held-out query: same vector, distinct id
+	}
+	ho := heldOut{
+		QueryIDs: []string{"q/x"},
+		Queries:  [][]float32{slices.Clone(dup)},
+		PoolIDs:  []string{"p/a", "p/b"},
+		Pool:     [][]float32{byID["p/a"], byID["p/b"]},
+	}
+	// (a) a real exact-duplicate across two ids must NOT be rejected.
+	if err := checkHeldOutVectors(ho, byID); err != nil {
+		t.Errorf("real duplicate rejected: %v", err)
+	}
+	// (b) a genuine id leak (query id also in the pool) IS still rejected.
+	leak := heldOut{
+		QueryIDs: []string{"p/b"},
+		Queries:  [][]float32{byID["p/b"]},
+		PoolIDs:  []string{"p/a", "p/b"},
+		Pool:     [][]float32{byID["p/a"], byID["p/b"]},
+	}
+	if err := checkHeldOutVectors(leak, byID); err == nil || !strings.Contains(err.Error(), "leak") {
+		t.Errorf("id leak not rejected: err = %v, want the leak error", err)
+	}
+	// (c) the duplicate query is scored correctly: the distance-0 twin is a valid
+	// ground-truth hit. tieAwareRecall must not error on the distance-0 result,
+	// and the exact (brute) index earns recall 1.
+	idx := newBruteIndex(4)
+	if err := idx.Build(ho.Pool, ho.PoolIDs); err != nil {
+		t.Fatal(err)
+	}
+	live := newLiveSet(zipLive(ho.PoolIDs, ho.Pool))
+	rep, err := measureRecall(idx, nil, live, ho.Queries)
+	if err != nil {
+		t.Fatalf("measureRecall on the duplicate query: %v", err)
+	}
+	if rep.Recall[0] < 0.999 {
+		t.Errorf("duplicate query recall@10 = %.4f, want ~1 (the distance-0 twin is ground truth)", rep.Recall[0])
+	}
+	// tieAwareRecall directly: a result naming the twin at its true distance 0 is
+	// a hit (d=0 <= τ+ε), scored, not an error.
+	q := slices.Clone(dup)
+	tau := thresholds(q, live, 2)[0]
+	res := []VectorResult{{ID: "p/b", Distance: cosineDistanceF32(q, byID["p/b"])}}
+	r, err := tieAwareRecall(q, res, live, 2, tau)
+	if err != nil || r <= 0 {
+		t.Errorf("distance-0 twin as a hit: recall %v err %v, want a positive score and no error", r, err)
+	}
 }
 
 // churnCorpusSize is the largest n whose churn's fresh draws fit in a pool of
