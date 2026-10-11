@@ -810,24 +810,110 @@ func deriveTL(m, ef int, ls []gridLine, bar float64) string {
 	if tIdx > 0 {
 		prev = fmt.Sprint(ls[tIdx-1].N)
 	}
-	cap := int(0.9 * float64(T))
-	lN := -1
-	for i := 0; i < tIdx; i++ {
-		r := ls[i].Result
+	_, lDesc := deriveL(ls, tIdx)
+	return fmt.Sprintf("  T/L (M=%d, ef=%d): T = %d, bracketed (%s, %d]; %s", m, ef, T, prev, T, lDesc)
+}
+
+// deriveL is deriveTL's hysteresis-bound half, split out so it can be tested
+// directly: it takes the cells sorted ascending by n and tIdx, the index of T
+// (ls[tIdx].N == T), and returns L and a table description. The cells below T
+// are ls[:tIdx]. Plan §4d, three exclusive branches:
+//   - NO cell below T inside the 1.5x band (which includes T being the smallest
+//     sampled n, so there is no cell below it at all): hysteresis collapses and
+//     L = T - 1.
+//   - EVERY cell below T inside the band: L = floor(0.9*T) — a computed cap, not
+//     a sampled n.
+//   - otherwise: L = the largest sampled n below T inside the band, with NO cap.
+//
+// in-band is HNSW p50@30 within 1.5x brute p50@30. L is the number child 16
+// reads, so the branches are exact: no min() of the witness against the cap.
+func deriveL(ls []gridLine, tIdx int) (int, string) {
+	T := ls[tIdx].N
+	below := ls[:tIdx]
+	inBand := 0
+	largestInBand := -1
+	for _, l := range below {
+		r := l.Result
 		if r.HNSWK30.P50 <= 1.5*r.BruteK30.P50 {
-			lN = ls[i].N
+			inBand++
+			largestInBand = l.N
 		}
 	}
-	var lDesc string
 	switch {
-	case tIdx == 0:
-		lDesc = "L = none (T is the smallest sampled n; no cell below it)"
-	case lN < 0:
-		lDesc = fmt.Sprintf("L collapses just below T (no n < T within 1.5x brute); cap floor(0.9*T) = %d", cap)
+	case inBand == 0:
+		L := T - 1
+		if len(below) == 0 {
+			return L, fmt.Sprintf("L = %d (T is the smallest sampled n; hysteresis collapses to just below T)", L)
+		}
+		return L, fmt.Sprintf("L = %d (no n < T within 1.5x brute; hysteresis collapses to just below T)", L)
+	case inBand == len(below):
+		capN := int(0.9 * float64(T))
+		return capN, fmt.Sprintf("L = %d (every n < T within 1.5x brute; computed cap floor(0.9*T), not a sampled n)", capN)
 	default:
-		lDesc = fmt.Sprintf("L = %d (largest n < T within 1.5x brute = %d, capped at floor(0.9*T) = %d)", min(lN, cap), lN, cap)
+		return largestInBand, fmt.Sprintf("L = %d (largest sampled n < T within 1.5x brute; no cap)", largestInBand)
 	}
-	return fmt.Sprintf("  T/L (M=%d, ef=%d): T = %d, bracketed (%s, %d]; %s", m, ef, T, prev, T, lDesc)
+}
+
+// TestDeriveL pins deriveL's three plan-§4d branches, the L value child 16
+// reads. The every-cell case with the largest in-band n below floor(0.9*T) is
+// the one the round-1 min(lN, cap) bug got wrong (it returned the sampled n,
+// not the cap).
+func TestDeriveL(t *testing.T) {
+	// bandCell is in-band (HNSW p50 == brute p50); outCell is out of band
+	// (HNSW p50 = 2x brute, above the 1.5x line).
+	bandCell := func(n int) gridLine {
+		return gridLine{N: n, Result: gridResult{HNSWK30: latencyStat{P50: 1}, BruteK30: latencyStat{P50: 1}}}
+	}
+	outCell := func(n int) gridLine {
+		return gridLine{N: n, Result: gridResult{HNSWK30: latencyStat{P50: 2}, BruteK30: latencyStat{P50: 1}}}
+	}
+	for _, tc := range []struct {
+		name  string
+		below []gridLine
+		T     int
+		wantL int
+	}{
+		{
+			// some in, some out: L is the largest in-band n, no cap.
+			name:  "witness-largest-in-band",
+			below: []gridLine{bandCell(5000), bandCell(10000), bandCell(15000), bandCell(20000), outCell(25000)},
+			T:     30000,
+			wantL: 20000,
+		},
+		{
+			// no cell below T in band: collapse to T-1, emitted as a number.
+			name:  "collapse-none-in-band",
+			below: []gridLine{outCell(5000), outCell(10000), outCell(15000), outCell(20000), outCell(25000)},
+			T:     30000,
+			wantL: 29999,
+		},
+		{
+			// every cell below T in band, largest in-band (25000) above
+			// floor(0.9*T)=27000: the cap wins. The round-1 bug returned 25000.
+			name:  "every-in-band-cap",
+			below: []gridLine{bandCell(5000), bandCell(10000), bandCell(15000), bandCell(20000), bandCell(25000)},
+			T:     30000,
+			wantL: 27000,
+		},
+		{
+			// T is the smallest sampled n: no cell below it, collapse to T-1.
+			name:  "T-is-smallest-sample",
+			below: nil,
+			T:     5000,
+			wantL: 4999,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ls := append(slices.Clone(tc.below), bandCell(tc.T))
+			gotL, desc := deriveL(ls, len(tc.below))
+			if gotL != tc.wantL {
+				t.Errorf("deriveL = %d, want %d (%s)", gotL, tc.wantL, desc)
+			}
+			if !strings.Contains(desc, fmt.Sprintf("L = %d", tc.wantL)) {
+				t.Errorf("description %q does not state L = %d", desc, tc.wantL)
+			}
+		})
+	}
 }
 
 // TestHNSWMeasureGridResumes (row 14): with a stub cell runner, the grid driver

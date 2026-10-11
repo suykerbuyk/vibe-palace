@@ -279,12 +279,13 @@ func TestHNSWRealVectorRecall(t *testing.T) {
 }
 
 // TestHNSWMeasureGrid (make hnsw-measure-grid, the operator) is the measurement
-// itself: M ∈ {16, 24, 32} × ef ∈ {100, 200, 400} × n ∈ {5k, 10k, 20k, 50k,
-// all}, in ascending n, one subtest per cell, each result appended and fsynced
-// to VP_HNSW_GRID_OUT, resuming past cells already recorded under this run
-// identity. The library has one ef (EfSearch builds and searches), so each cell
-// builds and searches at its single ef. It asserts only that its inputs loaded;
-// the crossover table is printed at the end.
+// itself: M ∈ {16, 24, 32} × ef ∈ {100, 200, 400} × n a dense sweep
+// {5k, 10k, 15k, ..., 50k, all} (gridSizes), in ascending n, one subtest per
+// cell, each result appended and fsynced to VP_HNSW_GRID_OUT, resuming past
+// cells already recorded under this run identity. The library has one ef
+// (EfSearch builds and searches), so each cell builds and searches at its single
+// ef. It asserts only that its inputs loaded; the crossover and T/L table is
+// printed at the end.
 func TestHNSWMeasureGrid(t *testing.T) {
 	requireHNSWMeasure(t)
 	in := requireRealInputs(t, true)
