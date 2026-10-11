@@ -332,6 +332,44 @@ func CheckConfigStaleness(configPath string) Result {
 	return r
 }
 
+// CheckConfigDocs reports the optional/documented tier — keys shipped COMMENTED
+// in the template (storage.OptionalDocKeys) that the user's config does not yet
+// carry. They are inert (commented → resolve to their defaults), so this is NOT a
+// nag and is kept textually and structurally distinct from CheckConfigStaleness:
+// a separate row that never enters the "new setting(s) available" count.
+// `vp config upgrade` copies them in as documentation. Info when any are absent,
+// Skip when the config already documents them all (or on a read error).
+func CheckConfigDocs(configPath string) Result {
+	r := Result{Name: "Config Docs"}
+
+	defaults, err := storage.DefaultsTomlContent()
+	if err != nil {
+		r.Status = Skip
+		r.Summary = fmt.Sprintf("cannot check: %v", err)
+		return r
+	}
+	missing, err := storage.DetectOptionalDocKeys(configPath, storage.TemplateTomlContent(), defaults)
+	if err != nil {
+		r.Status = Skip
+		r.Summary = fmt.Sprintf("cannot check: %v", err)
+		return r
+	}
+	if len(missing) == 0 {
+		r.Status = Skip
+		r.Summary = "optional settings already documented"
+		return r
+	}
+
+	r.Status = Info
+	r.Summary = fmt.Sprintf("%d optional setting(s) documented", len(missing))
+	r.Details = append(r.Details,
+		"Inert commented examples — they resolve to defaults and need no action. Run 'vp config upgrade' to copy them into your config as documentation.")
+	for _, k := range missing {
+		r.Details = append(r.Details, "  "+k)
+	}
+	return r
+}
+
 // CheckProject checks whether a project is detected in the current directory.
 // This always returns Info status — it never causes a failure.
 //

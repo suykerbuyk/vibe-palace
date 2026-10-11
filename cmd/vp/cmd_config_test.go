@@ -91,6 +91,46 @@ http_port = 7423
 	}
 }
 
+// TestConfigUpgradePropagatesOptionalBlock guards the optional/documented pass at
+// the CLI layer: `vp config upgrade` must land a commented optional block (here
+// [enrichment]) in a config that lacks it. Unlike TestConfigUpgradeWritesChanges
+// (which the canonical git_enabled insertion alone would satisfy), this fails if
+// the optional pass regresses to a no-op.
+func TestConfigUpgradePropagatesOptionalBlock(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	vpDir := filepath.Join(configDir, "vibe-palace")
+	os.MkdirAll(vpDir, 0o755)
+	configPath := filepath.Join(vpDir, "config.toml")
+	// A config with no optional blocks at all.
+	content := `vault_path = "/tmp"
+git_enabled = true
+http_port = 7423
+`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	cmd := cmdConfigUpgrade()
+	if code := cmd.Run([]string{}); code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The optional [enrichment] block must have been propagated as an inert,
+	// commented doc-block — never as an ACTIVE [enrichment] header.
+	if !strings.Contains(string(after), "# [enrichment]") {
+		t.Errorf("optional [enrichment] block was not propagated into the config:\n%s", after)
+	}
+	for _, line := range strings.Split(string(after), "\n") {
+		if strings.TrimSpace(line) == "[enrichment]" {
+			t.Error("optional block was activated — [enrichment] must stay commented")
+		}
+	}
+}
+
 func TestConfigUpgradeUpToDate(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -98,31 +138,12 @@ func TestConfigUpgradeUpToDate(t *testing.T) {
 	vpDir := filepath.Join(configDir, "vibe-palace")
 	os.MkdirAll(vpDir, 0o755)
 	configPath := filepath.Join(vpDir, "config.toml")
-	content := `vault_path = "/tmp"
-git_enabled = true
-http_port = 7423
-log_level = "info"
-
-[meta]
-version_major = 1
-version_minor = 0
-kind = "global"
-
-[embedder]
-model = "test"
-max_sequence_length = 256
-batch_size = 32
-
-[search]
-default_limit = 10
-structural_boost_wing = 0.12
-structural_boost_hall = 0.24
-structural_boost_room = 0.34
-
-[chunker]
-max_chars = 800
-overlap = 100
-`
+	// A truly complete config is the template verbatim — it carries every
+	// canonical key AND every optional/documented block, so BOTH upgrade passes
+	// are no-ops. Deriving it from the template (rather than a hand-written
+	// subset) keeps this test from re-churning when the next optional key is
+	// added to the template (S3).
+	content := storage.GenerateConfigTOML("/tmp", true)
 	os.WriteFile(configPath, []byte(content), 0o644)
 
 	cmd := cmdConfigUpgrade()

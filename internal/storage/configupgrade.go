@@ -583,3 +583,331 @@ func trimSpace(s string) string {
 
 func isLetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
 func isDigit(b byte) bool  { return b >= '0' && b <= '9' }
+
+// ---------------------------------------------------------------------------
+// Optional / documented config-key tier.
+//
+// A third tier beside canonical (active-in-the-schema) and absent: keys shipped
+// COMMENTED in the template. On `vp config upgrade` they propagate into existing
+// configs as inert, commented documentation — visible, benign (a commented key
+// resolves to its default), and NOT counted by the `vp check` staleness nag
+// (CheckConfigStaleness is driven by CanonicalKeys, which never sees them).
+//
+// Everything below is ADDITIVE. The canonical-tier primitives above
+// (UpgradeConfig, MissingKeys, CanonicalKeys[From], DetectMissingKeys,
+// PresentKeys, ParseTemplateBlocks, ExtractKeySnippet) are unchanged and are only
+// READ from here, never modified — the optional pass is orchestrated above the
+// storage layer (internal/reconcile), and this file merely supplies the pieces.
+// ---------------------------------------------------------------------------
+
+// OptionalDocKeys returns the optional/documented tier: dot-notation keys that
+// appear COMMENTED in templateText (so PresentKeys sees them) but are NOT active
+// in canonicalText (so CanonicalKeysFrom does not). This is the SINGLE chokepoint
+// that decides tier membership — an exclusion filter, if one is ever wanted,
+// belongs here and nowhere else.
+//
+// A malformed canonicalText (which cannot happen for the embedded, build-pinned
+// sources) yields an empty set rather than a panic, so the optional pass degrades
+// to a no-op instead of mis-classifying every present key as optional.
+func OptionalDocKeys(templateText, canonicalText string) map[string]bool {
+	canonical, err := CanonicalKeysFrom(canonicalText)
+	if err != nil {
+		return map[string]bool{}
+	}
+	optional := make(map[string]bool)
+	for k := range PresentKeys(templateText) {
+		if !canonical[k] {
+			optional[k] = true
+		}
+	}
+	return optional
+}
+
+// DetectOptionalDocKeys returns the sorted optional/documented keys that are
+// absent (in any form — active or commented) from the config at configPath.
+// Parameterized by template+canonical text so BOTH the `vp check` row
+// (check.CheckConfigDocs, embedded globals) and the `vp config upgrade` dry-run
+// (reconcile Plan, per-tier texts) call this one function — a single chokepoint,
+// so neither helper is a duplicate that sourceaudit would flag uninvoked.
+func DetectOptionalDocKeys(configPath, templateText, canonicalText string) ([]string, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	optional := OptionalDocKeys(templateText, canonicalText)
+	present := PresentKeys(string(data))
+	var missing []string
+	for k := range optional {
+		if !present[k] {
+			missing = append(missing, k)
+		}
+	}
+	sort.Strings(missing)
+	return missing, nil
+}
+
+// PropagateOptionalBlocks inserts the optional/documented tier (OptionalDocKeys)
+// into userText as inert commented documentation, idempotently, and returns the
+// upgraded text plus the sorted list of keys it propagated. It never activates a
+// key, never synthesizes an ACTIVE section header for a commented template
+// section, and never duplicates content already present (active or commented).
+//
+// Per missing section S, the home is read from the USER's config:
+//   - S == "" (top-level), or S has an ACTIVE [S] header, or S has only a
+//     COMMENTED "# [S]" header  -> insert ONLY the missing keys under that
+//     existing header (insertKeysUnderHeader).
+//   - S absent entirely         -> append the verbatim commented block at EOF
+//     (orderEOFSections keeps project_vaults last, per the template's documented
+//     intent).
+//
+// It deliberately does NOT route group-(a) (active-header) keys through
+// UpgradeConfig/ExtractKeySnippet. ExtractKeySnippet accumulates a comment buffer
+// that only resets on a non-comment, non-key line, so against any run of
+// consecutive commented keys (e.g. the cwd template's `# domain` then `# tags`,
+// or a top-level `# vault_path` under a prose preamble) it drags the earlier keys
+// into the later key's snippet — duplicating them on insert. extractCommentedKeySnippet
+// (below) is drag-free and used uniformly instead.
+func PropagateOptionalBlocks(userText, templateText, canonicalText string) (string, []string) {
+	optional := OptionalDocKeys(templateText, canonicalText)
+	present := PresentKeys(userText)
+	missing := MissingKeys(optional, present)
+	if len(missing) == 0 {
+		return userText, nil
+	}
+
+	blocks := ParseTemplateBlocks(templateText)
+
+	activeHeaders := make(map[string]bool)
+	for _, sr := range FindSectionRanges(userText) {
+		if sr.Name != "" {
+			activeHeaders[sr.Name] = true
+		}
+	}
+
+	// Deterministic processing order.
+	sections := make([]string, 0, len(missing))
+	for s := range missing {
+		sections = append(sections, s)
+	}
+	sort.Strings(sections)
+
+	out := userText
+	var eofSections []string
+	for _, s := range sections {
+		if s == "" || activeHeaders[s] || hasCommentedHeader(out, s) {
+			out = insertKeysUnderHeader(out, s, missing[s], blocks[s])
+		} else {
+			eofSections = append(eofSections, s)
+		}
+	}
+	for _, s := range orderEOFSections(eofSections) {
+		out = appendBlockAtEOF(out, optionalSectionBlock(s, missing[s], blocks[s]))
+	}
+
+	var propagated []string
+	for _, keys := range missing {
+		propagated = append(propagated, keys...)
+	}
+	sort.Strings(propagated)
+	return out, propagated
+}
+
+// hasCommentedHeader reports whether text carries a commented "# [section]"
+// header for section (and no active one — callers check active first).
+func hasCommentedHeader(text, section string) bool {
+	for _, line := range splitLines(text) {
+		if sec, ok := parseSectionHeader(trimLeftSpace(line), true); ok && sec == section {
+			return true
+		}
+	}
+	return false
+}
+
+// insertKeysUnderHeader inserts the missing keys (as commented snippets drawn
+// from block) under section's existing home in text, after the section's last
+// non-blank line. It handles three homes uniformly: the implicit top-level
+// section (section == ""), an active [section] header, and a commented
+// "# [section]" header. A section's scope runs to the next header of EITHER kind
+// (FindSectionRanges is active-only and cannot scope a commented section, which is
+// why this is done by hand). Returns text unchanged if no home is found.
+func insertKeysUnderHeader(text, section string, keys []string, block string) string {
+	lines := splitLines(text)
+
+	// Resolve the section's line range [bodyStart, end): the lines that belong
+	// to it, after its header (if any).
+	bodyStart, end := 0, len(lines)
+	if section != "" {
+		hdr := -1
+		for i, line := range lines {
+			t := trimLeftSpace(line)
+			if sec, ok := parseSectionHeader(t, false); ok && sec == section {
+				hdr = i
+				break
+			}
+			if sec, ok := parseSectionHeader(t, true); ok && sec == section {
+				hdr = i
+				break
+			}
+		}
+		if hdr < 0 {
+			return text
+		}
+		bodyStart = hdr + 1
+	}
+	for i := bodyStart; i < len(lines); i++ {
+		t := trimLeftSpace(lines[i])
+		if _, ok := parseSectionHeader(t, false); ok {
+			end = i
+			break
+		}
+		if _, ok := parseSectionHeader(t, true); ok {
+			end = i
+			break
+		}
+	}
+
+	// Insertion point: after the last non-blank line in the section body; if the
+	// body is empty, insert at the very start of the body (bodyStart).
+	after := bodyStart
+	for i := bodyStart; i < end; i++ {
+		if len(trimLeftSpace(lines[i])) > 0 {
+			after = i + 1
+		}
+	}
+
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	var snippet []string
+	for _, k := range sorted {
+		short := k
+		if i := lastDot(k); i >= 0 {
+			short = k[i+1:]
+		}
+		s := extractCommentedKeySnippet(block, short)
+		if s == "" {
+			s = "# " + short + ` = ""`
+		}
+		snippet = append(snippet, splitLines(s)...)
+	}
+	if len(snippet) == 0 {
+		return text
+	}
+
+	out := make([]string, 0, len(lines)+len(snippet))
+	out = append(out, lines[:after]...)
+	out = append(out, snippet...)
+	out = append(out, lines[after:]...)
+	return joinLines(out)
+}
+
+// extractCommentedKeySnippet returns a commented key's own documentation (its
+// contiguous leading comment prose) together with its "# key = val" line, from a
+// template section block. Unlike ExtractKeySnippet it does NOT accumulate across
+// sibling commented keys, blank lines, or the section header: the backward walk
+// from the key line stops at the first blank line, non-comment (active) line,
+// commented *key* line, or commented section header. Returns "" if key is absent.
+// This is what makes the optional tier drag-free regardless of how many commented
+// keys sit together in a block, while still carrying each key's doc comment.
+func extractCommentedKeySnippet(sectionBlock, key string) string {
+	lines := splitLines(sectionBlock)
+	idx := -1
+	for i, line := range lines {
+		if k, ok := parseKeyAssignment(trimLeftSpace(line), true); ok && k == key {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ""
+	}
+	start := idx
+	for i := idx - 1; i >= 0; i-- {
+		t := trimLeftSpace(lines[i])
+		if len(t) == 0 || t[0] != '#' {
+			break // blank or active line
+		}
+		if _, ok := parseSectionHeader(t, true); ok {
+			break // commented section header
+		}
+		if _, ok := parseKeyAssignment(t, true); ok {
+			break // commented sibling key
+		}
+		start = i // a prose comment line belonging to this key
+	}
+	return joinLines(lines[start : idx+1])
+}
+
+// orderEOFSections sorts the fully-absent sections to append, but keeps
+// project_vaults (and any project_vaults.* subtable) LAST, honoring the
+// template's "Kept LAST in this file: every key below a [table] header belongs to
+// it" intent so a later uncommented binding is not stranded above another table.
+func orderEOFSections(sections []string) []string {
+	var normal, last []string
+	for _, s := range sections {
+		if s == "project_vaults" || strings.HasPrefix(s, "project_vaults.") {
+			last = append(last, s)
+		} else {
+			normal = append(normal, s)
+		}
+	}
+	sort.Strings(normal)
+	sort.Strings(last)
+	return append(normal, last...)
+}
+
+// optionalSectionBlock renders the EOF block for a fully-absent section. When the
+// template block is wholly commented (every non-blank line is a comment) it is
+// used verbatim, preserving the header, key order and prose a fresh `vp init`
+// would carry. Otherwise — a section whose template block carries ACTIVE
+// (canonical) keys, which in the real flow cannot reach EOF-append because the
+// canonical pass creates that section first — it synthesizes a commented
+// "# [section]" header plus ONLY the optional keys' commented snippets, so the
+// optional pass never injects an active canonical key.
+func optionalSectionBlock(section string, keys []string, block string) string {
+	if block != "" && blockIsWhollyCommented(block) {
+		return block
+	}
+	var b []string
+	if section != "" {
+		b = append(b, "# ["+section+"]")
+	}
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		short := k
+		if i := lastDot(k); i >= 0 {
+			short = k[i+1:]
+		}
+		s := extractCommentedKeySnippet(block, short)
+		if s == "" {
+			s = "# " + short + ` = ""`
+		}
+		b = append(b, splitLines(s)...)
+	}
+	return joinLines(b)
+}
+
+// blockIsWhollyCommented reports whether every non-blank line of block is a
+// comment (no active key or active section header).
+func blockIsWhollyCommented(block string) bool {
+	for _, line := range splitLines(block) {
+		t := trimLeftSpace(line)
+		if len(t) == 0 || t[0] == '#' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// appendBlockAtEOF appends a verbatim (already fully commented) template block to
+// text, separated by a blank line. A no-op for an empty block.
+func appendBlockAtEOF(text, block string) string {
+	if block == "" {
+		return text
+	}
+	if text == "" {
+		return block
+	}
+	return text + "\n\n" + block
+}

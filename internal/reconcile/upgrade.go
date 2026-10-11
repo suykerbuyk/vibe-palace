@@ -59,25 +59,71 @@ func applyUpgrade(configPath string, target upgradeTarget) (int, error) {
 	return applyUpgradeHostLocal(configPath, target)
 }
 
-// upgradedConfig computes the upgraded body of userText against target and the
-// number of keys it adds. Returns ("", 0, nil) when userText is already up to
-// date, which both branches treat as "write nothing".
-func upgradedConfig(userText string, target upgradeTarget) (string, int, error) {
+// upgradedConfig computes the upgraded body of userText against target plus the
+// number of canonical keys and optional/documented keys it adds. Returns
+// ("", 0, 0, nil) when userText is already up to date (both tiers), which the
+// caller treats as "write nothing".
+//
+// Two passes, canonical first: the canonical pass (storage.UpgradeConfig) adds
+// missing schema keys as commented defaults; the optional pass
+// (storage.PropagateOptionalBlocks) then propagates the commented doc-blocks the
+// config lacks. Ordering matters for one case — a legacy config missing an entire
+// active section gets that section (keys commented) from the canonical pass first,
+// so the optional pass then finds its header and inserts a key like
+// embedder.backend in place rather than appending a stray block at EOF.
+//
+// S3 invariant: the optional pass is invoked HERE, in reconcile, never wired into
+// the storage primitives or check.CheckConfigStaleness.
+func upgradedConfig(userText string, target upgradeTarget) (string, int, int, error) {
 	canonical, err := storage.CanonicalKeysFrom(target.canonicalText)
 	if err != nil {
-		return "", 0, fmt.Errorf("parse schema: %w", err)
+		return "", 0, 0, fmt.Errorf("parse schema: %w", err)
 	}
-	present := storage.PresentKeys(userText)
-	missing := storage.MissingKeys(canonical, present)
-	total := 0
+	missing := storage.MissingKeys(canonical, storage.PresentKeys(userText))
+	canonicalCount := 0
 	for _, keys := range missing {
-		total += len(keys)
+		canonicalCount += len(keys)
 	}
-	if total == 0 {
-		return "", 0, nil
+
+	body := userText
+	if canonicalCount > 0 {
+		body = storage.UpgradeConfig(body, missing, storage.ParseTemplateBlocks(target.templateText))
 	}
-	templateBlocks := storage.ParseTemplateBlocks(target.templateText)
-	return storage.UpgradeConfig(userText, missing, templateBlocks), total, nil
+
+	body, optionalKeys := storage.PropagateOptionalBlocks(body, target.templateText, target.canonicalText)
+	optionalCount := len(optionalKeys)
+
+	if canonicalCount == 0 && optionalCount == 0 {
+		return "", 0, 0, nil
+	}
+	return body, canonicalCount, optionalCount, nil
+}
+
+// upgradeSummary renders the two-category drift summary for a Plan Update,
+// keeping the required (canonical) and optional/documented counts textually
+// distinct — never one undifferentiated "N new settings" line.
+func upgradeSummary(required, optional int) string {
+	switch {
+	case required > 0 && optional > 0:
+		return fmt.Sprintf("%d required key(s) as commented defaults; %d optional setting(s) documented", required, optional)
+	case optional > 0:
+		return fmt.Sprintf("%d optional setting(s) — will document as inert comments", optional)
+	default:
+		return fmt.Sprintf("%d required key(s) — will add as commented defaults", required)
+	}
+}
+
+// upgradeDetails tags each proposed key with its tier so the dry-run never reads
+// as a single undifferentiated list.
+func upgradeDetails(required, optional []string) []string {
+	out := make([]string, 0, len(required)+len(optional))
+	for _, k := range required {
+		out = append(out, "required  "+k)
+	}
+	for _, k := range optional {
+		out = append(out, "optional  "+k)
+	}
+	return out
 }
 
 // applyUpgradeHostLocal upgrades a config that lives OUTSIDE the vault (the CWD
@@ -92,10 +138,11 @@ func applyUpgradeHostLocal(configPath string, target upgradeTarget) (int, error)
 	if err != nil {
 		return 0, fmt.Errorf("read %s: %w", configPath, err)
 	}
-	upgraded, total, err := upgradedConfig(string(data), target)
+	upgraded, canonicalCount, optionalCount, err := upgradedConfig(string(data), target)
 	if err != nil {
 		return 0, err
 	}
+	total := canonicalCount + optionalCount
 	if total == 0 {
 		return 0, nil
 	}

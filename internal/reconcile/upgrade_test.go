@@ -43,6 +43,10 @@ func TestApplyUpgrade_HostLocalBranchUnchanged(t *testing.T) {
 	}
 	missing := storage.MissingKeys(canonical, storage.PresentKeys(before))
 	want := storage.UpgradeConfig(before, missing, storage.ParseTemplateBlocks(target.templateText))
+	// applyUpgrade now runs the optional/documented pass after the canonical one,
+	// so the expected bytes track both passes (still derived from the storage
+	// primitives, not a frozen golden).
+	want, _ = storage.PropagateOptionalBlocks(want, target.templateText, target.canonicalText)
 
 	added, err := applyUpgrade(cfgPath, target)
 	if err != nil {

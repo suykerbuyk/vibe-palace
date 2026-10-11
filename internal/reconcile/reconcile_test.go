@@ -231,16 +231,21 @@ func TestGlobalConfig_CheckRows(t *testing.T) {
 		t.Fatalf("expected 1 Fail row when missing, got %+v", rows)
 	}
 
-	// Present + up-to-date: Check returns 2 rows (config + staleness).
+	// Present + up-to-date: Check returns 3 rows (config + staleness + docs).
+	// A freshly-created config is template-verbatim, so it already carries every
+	// optional/documented block → the Config Docs row is Skip.
 	r2 := NewGlobalConfig(root, GlobalSeed{VaultPath: filepath.Join(tmp, "vault"), GitEnabled: true}.WithCreate())
 	p, _ := r2.Plan(context.Background())
 	_, _ = r2.Apply(context.Background(), p)
 	rows = r2.Check(context.Background())
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows after create, got %+v", rows)
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows after create (config + staleness + docs), got %+v", rows)
 	}
 	if rows[0].Status != check.Pass || rows[1].Status != check.Pass {
-		t.Errorf("expected both rows Pass, got %+v", rows)
+		t.Errorf("expected config and staleness rows Pass, got %+v", rows)
+	}
+	if rows[2].Name != "Config Docs" || rows[2].Status != check.Skip {
+		t.Errorf("expected a Config Docs Skip row for a template-verbatim config, got %+v", rows[2])
 	}
 }
 

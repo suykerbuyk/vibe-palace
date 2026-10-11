@@ -72,7 +72,14 @@ func (r *CwdProjectReconciler) Plan(_ context.Context) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	if len(missing) == 0 {
+	// cwd optional/documented keys propagate on upgrade too, but there is no cwd
+	// `vp check` config row, so they surface only here in the dry-run (S4).
+	optional, err := storage.DetectOptionalDocKeys(cfg,
+		storage.CwdProjectTemplateContent(), storage.CwdProjectTemplateContent())
+	if err != nil {
+		return Plan{}, err
+	}
+	if len(missing) == 0 && len(optional) == 0 {
 		return Plan{Actions: []Action{{
 			Kind: ActionUnchanged, Target: cfg, Summary: "in sync",
 		}}}, nil
@@ -80,8 +87,8 @@ func (r *CwdProjectReconciler) Plan(_ context.Context) (Plan, error) {
 	return Plan{Actions: []Action{{
 		Kind:    ActionUpdate,
 		Target:  cfg,
-		Summary: fmt.Sprintf("%d missing key(s)", len(missing)),
-		Details: missing,
+		Summary: upgradeSummary(len(missing), len(optional)),
+		Details: upgradeDetails(missing, optional),
 	}}}, nil
 }
 

@@ -50,6 +50,9 @@ func (r *GlobalConfigReconciler) Check(_ context.Context) []check.Result {
 	results := []check.Result{row}
 	if row.Status == check.Pass && configPath != "" {
 		results = append(results, check.CheckConfigStaleness(configPath))
+		// Separate, additive row: optional/documented keys. Never folds into the
+		// staleness count above (operator's no-nag ruling).
+		results = append(results, check.CheckConfigDocs(configPath))
 	}
 	return results
 }
@@ -89,7 +92,11 @@ func (r *GlobalConfigReconciler) Plan(_ context.Context) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	if len(missing) == 0 {
+	optional, err := storage.DetectOptionalDocKeys(configPath, storage.TemplateTomlContent(), defaultsText)
+	if err != nil {
+		return Plan{}, err
+	}
+	if len(missing) == 0 && len(optional) == 0 {
 		return Plan{Actions: []Action{{
 			Kind: ActionUnchanged, Target: configPath,
 			Summary: "in sync with canonical keys",
@@ -98,8 +105,8 @@ func (r *GlobalConfigReconciler) Plan(_ context.Context) (Plan, error) {
 	return Plan{Actions: []Action{{
 		Kind:    ActionUpdate,
 		Target:  configPath,
-		Summary: fmt.Sprintf("%d missing key(s) — will add as commented defaults", len(missing)),
-		Details: missing,
+		Summary: upgradeSummary(len(missing), len(optional)),
+		Details: upgradeDetails(missing, optional),
 	}}}, nil
 }
 
