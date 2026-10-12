@@ -1094,11 +1094,11 @@ func TestHNSWMeasureGridResumes(t *testing.T) {
 	if got, want := len(lines), 1+len(others)+len(ran); got != want {
 		t.Errorf("%d parseable lines, want %d", got, want)
 	}
-	// gridCells: every (M,ef) pair at each low n, plus 50000 and the whole corpus
-	// for the leading pairs only.
+	// gridCells: every (M,ef) pair at each low n, a 50000 cell for grid50kPairs,
+	// and a whole-corpus cell for gridAllPairs (the single top candidate).
 	nPairs := len(gridMs) * len(gridEfs)
 	gcells := gridCells(104000)
-	if got, want := len(gcells), nPairs*len(gridNLow)+len(gridHighPairs)*2; got != want {
+	if got, want := len(gcells), nPairs*len(gridNLow)+len(grid50kPairs)+len(gridAllPairs); got != want {
 		t.Errorf("gridCells(104000) = %d cells, want %d", got, want)
 	}
 	byN := map[int]int{}
@@ -1108,24 +1108,27 @@ func TestHNSWMeasureGridResumes(t *testing.T) {
 	if byN[25000] != nPairs {
 		t.Errorf("n=25000 has %d cells, want every pair (%d)", byN[25000], nPairs)
 	}
-	if byN[50000] != len(gridHighPairs) || byN[104000] != len(gridHighPairs) {
-		t.Errorf("high-n cells: 50000=%d, 104000=%d, want %d each (leaders only)", byN[50000], byN[104000], len(gridHighPairs))
+	if byN[50000] != len(grid50kPairs) || byN[104000] != len(gridAllPairs) {
+		t.Errorf("high-n cells: 50000=%d (want %d), 104000=%d (want %d)", byN[50000], len(grid50kPairs), byN[104000], len(gridAllPairs))
 	}
-	for _, c := range gcells {
-		if c.N > 25000 { // a high-n cell must be a leading pair
-			lead := false
-			for _, p := range gridHighPairs {
-				if c.M == p[0] && c.Ef == p[1] {
-					lead = true
-				}
-			}
-			if !lead {
-				t.Errorf("high-n cell %s is not a leading pair", c.name())
+	isHighPair := func(c gridCell, pairs [][2]int) bool {
+		for _, p := range pairs {
+			if c.M == p[0] && c.Ef == p[1] {
+				return true
 			}
 		}
+		return false
 	}
-	if n := gridCells(50000); len(n) != nPairs*len(gridNLow)+len(gridHighPairs) {
-		t.Errorf("gridCells(50000) = %d cells, want %d (whole-corpus size == 50000 is added once)", len(n), nPairs*len(gridNLow)+len(gridHighPairs))
+	for _, c := range gcells {
+		if c.N == 50000 && !isHighPair(c, grid50kPairs) {
+			t.Errorf("50000 cell %s is not a 50k pair", c.name())
+		}
+		if c.N == 104000 && !isHighPair(c, gridAllPairs) {
+			t.Errorf("104000 cell %s is not the top candidate", c.name())
+		}
+	}
+	if n := gridCells(50000); len(n) != nPairs*len(gridNLow)+len(grid50kPairs) {
+		t.Errorf("gridCells(50000) = %d cells, want %d (whole-corpus size == 50000 is added once)", len(n), nPairs*len(gridNLow)+len(grid50kPairs))
 	}
 	var buf bytes.Buffer
 	if err := writeGridTable(&buf, path, ident); err != nil {

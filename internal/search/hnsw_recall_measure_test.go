@@ -43,6 +43,17 @@ const clusteredChurnRecallBar50k = 0.92
 // both k. The operator sets it otherwise if no measured cell reaches it.
 const realVectorRecallBar = 0.90
 
+// recallTierN and recallQueriesLarge tier the post-churn recall query count
+// DOWN at large n, where the τ ground truth measureRecall computes per query is
+// O(queries×n) and dominates the cell. Below recallTierN the full held-out set
+// is used (cheap); at or above it, recallQueriesLarge queries. At N=400 and a
+// measured recall ≈0.95 the standard error is sqrt(p(1-p)/N) ≈ 0.011, far inside
+// the ~0.05 margin to the 0.90 bar, so the pass/fail decision stays unambiguous.
+const (
+	recallTierN        = 25000
+	recallQueriesLarge = 400
+)
+
 // replacedProbeSample is how many replaced ids the old-vector probe searches.
 const replacedProbeSample = 200
 
@@ -320,18 +331,19 @@ var (
 	// (run 1 showed HNSW already beats brute at 5k, so T is below 5000) and its
 	// hysteresis bound L, and 10k/25k carry the recall curve.
 	gridNLow = []int{1000, 2000, 3000, 4000, 5000, 10000, 25000}
-	// gridHighPairs are run 1's leading candidates — the only pairs the expensive
-	// high-n confirmation cells (50k and the whole corpus) run for, the Chair's
-	// "run 'all' only for the 1–2 leading (M,ef)" cut. T and L are pinned in
-	// gridNLow (full churn), so the high-n cells only confirm recall at scale.
-	gridHighPairs = [][2]int{{32, 100}, {24, 100}}
+	// grid50kPairs get a 50000 confirmation cell; gridAllPairs get a
+	// whole-corpus (104k) cell. T and L are pinned in gridNLow under full churn,
+	// so the high-n cells only confirm recall at scale — and a 104k cell is
+	// inherently multi-ten-minute, so only the single top candidate (32,100) runs
+	// it (grok's "do not run four 104k-class cells"), while both leaders get 50k.
+	grid50kPairs = [][2]int{{32, 100}, {24, 100}}
+	gridAllPairs = [][2]int{{32, 100}}
 )
 
 // gridCells builds the run-2 cell list for a corpus of `all` vectors: every
-// (M,ef) pair at each gridNLow size, plus the two high-n confirmation sizes
-// (50000 and the whole corpus) for the leading pairs only. A high-n size already
-// in gridNLow, or larger than the corpus, is skipped, and the whole-corpus size
-// is only added once.
+// (M,ef) pair at each gridNLow size, a 50000 cell for grid50kPairs, and a
+// whole-corpus cell for gridAllPairs. A high-n size already in gridNLow, or
+// larger than the corpus, is skipped, and the whole-corpus size is added once.
 func gridCells(all int) []gridCell {
 	var cells []gridCell
 	for _, n := range gridNLow {
@@ -344,24 +356,23 @@ func gridCells(all int) []gridCell {
 			}
 		}
 	}
-	highNs := []int{50000}
-	if all != 50000 {
-		highNs = append(highNs, all)
-	}
-	for _, n := range highNs {
-		if n > all || slices.Contains(gridNLow, n) {
-			continue
+	if 50000 <= all && !slices.Contains(gridNLow, 50000) {
+		for _, p := range grid50kPairs {
+			cells = append(cells, gridCell{p[0], p[1], 50000})
 		}
-		for _, p := range gridHighPairs {
-			cells = append(cells, gridCell{p[0], p[1], n})
+	}
+	if all != 50000 && !slices.Contains(gridNLow, all) {
+		for _, p := range gridAllPairs {
+			cells = append(cells, gridCell{p[0], p[1], all})
 		}
 	}
 	return cells
 }
 
 // measureGridCell measures one cell: build the corpus Pool[:n] with churn's
-// colliding ids (pinned rebuilds off), time and weigh it against brute force,
-// measure recall and latency at both k, then churn and measure recall again.
+// colliding ids (pinned rebuilds off), weigh it and its brute-force baseline,
+// time the latency crossover at both k over a query subset, then churn and
+// measure the POST-churn recall (the only recall pass, the 0.90 bar).
 func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	var res gridResult
 	params := noRebuild(provisionalHNSWParams)
@@ -396,25 +407,10 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 		t.Fatal(err)
 	}
 	res.BruteHeap = bheap
-	// Recall is scored over EVERY held-out query against the exact ground truth
-	// (tieAwareRecall vs the τ threshold, which sorts the whole live set). The
-	// brute oracle here would add only the logged, never-asserted set-overlap, at
-	// the cost of one more O(n) brute scan per query — so the grid passes nil and
-	// leaves SetOverlapK10 zero. The brute index is still built and still the
-	// latency baseline below; the exactness oracle (the τ ground truth) is intact.
-	rep, err := measureRecall(idx, nil, newLiveSet(before), ho.Queries)
-	if err != nil {
-		t.Fatalf("before churn: %v", err)
-	}
-	res.RecallK10, res.RecallK30, res.SetOverlapK10 = rep.Recall[0], rep.Recall[1], rep.SetOverlap
-	res.ReturnedK10, res.ReturnedK30 = rep.Returned[0], rep.Returned[1]
-	// The crossover reads both sides through the repeated queryLatency, so the
-	// T/L comparison is median-over-passes with a spread, not the single pass
-	// measureRecall timed above (rep.Latency, kept only for the recall log).
-	// Latency is timed over a fixed subset of the queries (latencyQueries): a p50
+	// Latency crossover, timed over a fixed query subset (latencyQueries): a p50
 	// over 200 queries × latencyRepeats passes is a robust timing sample, while
-	// timing all ~1000 at each large-n cell was the grid's dominant cost (the
-	// brute side scans the whole corpus per query).
+	// timing all ~1000 at each large-n cell was costly (the brute side scans the
+	// whole corpus per query). Timed on the pre-churn graph; latency tracks n.
 	latQ := ho.Queries
 	if len(latQ) > latencyQueries {
 		latQ = latQ[:latencyQueries]
@@ -423,14 +419,27 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	res.BruteK10, res.BruteK30 = queryLatency(t, brute, latQ, recallKs[0]), queryLatency(t, brute, latQ, recallKs[1])
 	brute = nil
 
+	// The ONLY recall pass is POST-churn: ChurnRecallK10/K30 is the 0.90 bar and
+	// the column deriveTL/deriveL read for T and L, so the pre-churn recall pass
+	// (and its full O(queries×n) τ ground truth) is dropped as wasted cost —
+	// RecallK10/K30, SetOverlap and ReturnedK10/K30 stay zero in run 2. The recall
+	// query count is tiered DOWN at large n, where the τ ground truth is
+	// O(queries×n): at n≥recallTierN it uses recallQueriesLarge queries. For a
+	// measured recall ≈0.95 that is SE=sqrt(p(1-p)/N) ≈ 0.011 at N=400 — far
+	// inside the ~0.05 margin to the bar, so the pass/fail decision is unambiguous.
+	churnStart := time.Now()
 	churnMutate(t, idx, rng, &cr, fresh)
-	after, err := measureRecall(idx, nil, newLiveSet(cr.live), ho.Queries)
+	recallQ := ho.Queries
+	if c.N >= recallTierN && len(recallQ) > recallQueriesLarge {
+		recallQ = recallQ[:recallQueriesLarge]
+	}
+	after, err := measureRecall(idx, nil, newLiveSet(cr.live), recallQ)
 	if err != nil {
 		t.Fatalf("after churn: %v", err)
 	}
 	res.ChurnRecallK10, res.ChurnRecallK30 = after.Recall[0], after.Recall[1]
-	t.Logf("recall@10 %.4f @30 %.4f; after churn %.4f / %.4f; build %.1fs; HNSW p50@30 %.2f ms, brute %.2f ms",
-		res.RecallK10, res.RecallK30, res.ChurnRecallK10, res.ChurnRecallK30, res.BuildSeconds, res.HNSWK30.P50, res.BruteK30.P50)
+	t.Logf("n=%d churn@10 %.4f @30 %.4f (%d queries); build %.1fs; churn+recall %.1fs; HNSW p50@30 %.2f ms, brute %.2f ms",
+		c.N, res.ChurnRecallK10, res.ChurnRecallK30, len(recallQ), res.BuildSeconds, time.Since(churnStart).Seconds(), res.HNSWK30.P50, res.BruteK30.P50)
 	return res
 }
 
