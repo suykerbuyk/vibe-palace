@@ -99,8 +99,10 @@ func checkHeldOutVectors(ho heldOut, byID map[string][]float32) error {
 // TestHeldOutVectorsToleratesRealDuplicates: the guard tolerates a held-out
 // query whose vector exact-duplicates a DIFFERENT pool id's vector (real data),
 // still rejects a genuine id leak (the query's own id in the pool), and the
-// distance-0 twin is scored as a real ground-truth hit by tieAwareRecall, not a
-// vacuous one.
+// distance-0 twin is scored as a real ground-truth hit by tieAwareRecall. This
+// shows the twin counts as a hit (and tieAwareRecall does not error on a
+// distance-0 result); it does NOT prove non-inflation — that rests on τ being
+// the k-th live distance, so the query must still find the other k−1 neighbours.
 func TestHeldOutVectorsToleratesRealDuplicates(t *testing.T) {
 	u := func(v ...float32) []float32 { return normalize(v) }
 	dup := u(1, 0.3, 0, 0)
@@ -129,9 +131,11 @@ func TestHeldOutVectorsToleratesRealDuplicates(t *testing.T) {
 	if err := checkHeldOutVectors(leak, byID); err == nil || !strings.Contains(err.Error(), "leak") {
 		t.Errorf("id leak not rejected: err = %v, want the leak error", err)
 	}
-	// (c) the duplicate query is scored correctly: the distance-0 twin is a valid
-	// ground-truth hit. tieAwareRecall must not error on the distance-0 result,
-	// and the exact (brute) index earns recall 1.
+	// (c) the distance-0 twin is counted as a valid ground-truth hit:
+	// tieAwareRecall must not error on the distance-0 result, and the exact
+	// (brute) index earns recall 1. (This checks the twin IS a hit, not that a
+	// duplicate cannot inflate recall — τ being the k-th live distance is what
+	// bounds that, not this fixture.)
 	idx := newBruteIndex(4)
 	if err := idx.Build(ho.Pool, ho.PoolIDs); err != nil {
 		t.Fatal(err)
@@ -662,8 +666,10 @@ func TestHeldOutQueriesNotInCorpus(t *testing.T) {
 // and an inter-pass spread, and a latency-and-recall T/L derivation in the
 // table (task B3).
 // 3: run-2 re-scope — M∈{24,32}×ef∈{100,200}, the gridNLow+leader-only-high-n
-// cell list (gridCells), latency timed over a query subset (latencyQueries), and
-// the info-only brute set-overlap dropped from the grid's recall pass.
+// cell list (gridCells), latency timed over a query subset (latencyQueries), the
+// info-only brute set-overlap dropped from the recall pass, the PRE-CHURN recall
+// pass dropped entirely (only post-churn ChurnRecall is kept, the bar), and the
+// post-churn recall query count tiered down to recallQueriesLarge at n≥recallTierN.
 const gridHarnessVersion = 3
 
 // gridIdentity is what a grid cell's result depends on besides (M, ef, n).

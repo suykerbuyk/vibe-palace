@@ -51,17 +51,29 @@ type hnswParams struct {
 	beforeCatchUpRound func(round int)
 }
 
-// provisionalHNSWParams are PROVISIONAL: (M, EfSearch) = (16, 100), the values
-// implementor3's probe measured, until task
-// hnsw-parameters-from-real-vector-recall-and-production-wiring records values
-// measured on real vectors. The library's default EfSearch of 20 is too low.
+// provisionalHNSWParams carries the HNSW parameters chosen for production:
+// (M, EfSearch) = (32, 100), measured on the real ≥50k MiniLM backend=ort corpus
+// by task hnsw-parameters-from-real-vector-recall-and-production-wiring (run 2,
+// 2026-10-12): post-churn recall@10 0.919 at the full 81,730-vector corpus (bar
+// 0.90), ~17× faster than brute at scale (5.0 vs 84.9 ms p50). The former
+// (16, 100) was MEASURED AND REJECTED in run 1 — its post-churn recall@10 fell to
+// 0.868 at 25k, below the bar, because real MiniLM vectors cluster more than the
+// synthetic corpus. The library's default EfSearch of 20 is too low.
+//
 // Only M and EfSearch are that task's to choose. TombstoneRatio and
 // MinTombstones are NOT: they belong to task
 // vector-index-interface-and-coder-hnsw-wrapper (see its measurement table) and
 // the recall grid holds them FIXED as inputs, not outputs (gridHarnessVersion
 // covers a change to either).
+//
+// The per-project size SWITCH (brute below T=3000 chunks, HNSW at/above, with
+// hysteresis lower bound L=2700) is NOT wired here: T and L are recorded in the
+// task for child 16 (hnsw-graph-file-envelope-and-warm-start), which owns the
+// switch. Both production newIndex() callers still construct kindBrute (which
+// ignores M/EfSearch), so these values change no behaviour today — they set what
+// the HNSW path will use once child 16 wires the switch.
 var provisionalHNSWParams = hnswParams{
-	M:              16,
+	M:              32,
 	EfSearch:       100,
 	Seed:           1,
 	TombstoneRatio: 0.20,

@@ -12,10 +12,10 @@ import (
 
 // Seeded synthetic corpora for the HNSW tests. The 5k churn recall floor
 // (TestHNSWChurnRecallFloor5k) uses randomGen, not clusteredGen: on random data
-// EfSearch moves recall most (about 0.48 at 100 against 0.17 at 20 after churn),
-// while on the clustered corpus the same gap is 0.011 (0.9745 against 0.9635),
-// under the floor's 0.02 margin, so only random data can catch EfSearch left
-// at 20. The clustered corpus is measured at 50k instead
+// EfSearch moves recall most (at the chosen M=32, about 0.74 at ef=100 against
+// 0.30 at ef=20 after churn), while on the clustered corpus the same gap is
+// small (well under the floor's 0.02 margin), so only random data can catch
+// EfSearch left at 20. The clustered corpus is measured at 50k instead
 // (TestHNSWClusteredChurnRecall50k), for recall and tombstones. Task
 // hnsw-parameters-from-real-vector-recall-and-production-wiring.
 

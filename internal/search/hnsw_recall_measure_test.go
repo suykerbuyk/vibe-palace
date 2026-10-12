@@ -32,11 +32,16 @@ import (
 // 10-minute timeout, which a 50k build can exceed: use the make targets.
 
 // clusteredChurnRecallBar50k is the tie-aware recall bar, at k = 10 and at
-// k = 30, of TestHNSWClusteredChurnRecall50k at the provisional (16, 100): the
-// lowest of 5 recorded runs (0.9498, at k = 30; k = 10 ranged 0.9514-0.9520)
-// minus churnFloorMargin, rounded down. A build is not reproducible (the
-// library ranges over Go maps), so the bar is a repeated-run minimum, never
-// one run's value. The runs are recorded in the task.
+// k = 30, of TestHNSWClusteredChurnRecall50k. It was derived at the former
+// (16, 100) as the lowest of 5 recorded runs (0.9498 at k = 30; k = 10 ranged
+// 0.9514-0.9520) minus churnFloorMargin, rounded down. The test now builds at
+// the chosen (32, 100) (provisionalHNSWParams); 0.92 stays as a CONSERVATIVE
+// floor that a higher M clears with more margin — it was not re-tightened,
+// because re-deriving it needs a fresh 5-run synthetic measurement at (32, 100)
+// (gated, out of the re-baseline commit's scope), and a loose synthetic floor is
+// safe (the real-vector bar is realVectorRecallBar). A build is not reproducible
+// (the library ranges over Go maps), so the bar is a repeated-run minimum, never
+// one run's value.
 const clusteredChurnRecallBar50k = 0.92
 
 // realVectorRecallBar is the recall@10 bar on real vectors (ADR-014): 0.90 at

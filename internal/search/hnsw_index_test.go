@@ -511,17 +511,19 @@ func TestHNSWChurnSafety(t *testing.T) {
 // churnFloorMargin is the stated margin under the measured recall.
 const churnFloorMargin = 0.02
 
-// churnRecallFloor is the recall@10 floor at the provisional (M, EfSearch) =
-// (16, 100) after churn on the seeded 5k RANDOM corpus: the LOWEST recall
-// measured over 12 runs (0.4645; highest 0.5075) minus churnFloorMargin,
+// churnRecallFloor is the recall@10 floor at the chosen (M, EfSearch) =
+// (32, 100) after churn on the seeded 5k RANDOM corpus: the LOWEST recall
+// measured over 12 runs (0.7375; highest 0.7550) minus churnFloorMargin,
 // rounded down. The minimum, not one run, because a build is not reproducible
 // even with a seeded Rng: the library keeps neighbours in Go maps, whose
-// iteration order is randomised. EfSearch 20 measured at most 0.1850 over the
-// same runs. The fixture is random, not clustered, because on the clustered
-// corpus the gap between EfSearch 100 and 20 after churn (0.9745 against
-// 0.9635) is smaller than the margin. The runs are recorded in task
-// vector-index-interface-and-coder-hnsw-wrapper.
-const churnRecallFloor = 0.44
+// iteration order is randomised. EfSearch 20 measured at most 0.3195 over the
+// same 12 runs — far below floor − margin, so the floor catches a wrapper that
+// leaves EfSearch at 20. The fixture is random, not clustered, because on the
+// clustered corpus the gap between EfSearch 100 and 20 after churn is smaller
+// than the margin. Re-baselined 2026-10-12 from the former (16, 100)/0.44 when
+// task hnsw-parameters-from-real-vector-recall-and-production-wiring chose
+// (32, 100) on the real corpus (12 runs recorded there).
+const churnRecallFloor = 0.71
 
 // TestHNSWChurnRecallFloor5k (VP_HNSW_SLOW=1; the hnsw CI job, without -race):
 // after churn on a seeded random 5k corpus, recall@10 against brute force at the
@@ -534,7 +536,7 @@ func TestHNSWChurnRecallFloor5k(t *testing.T) {
 	ef20params := provisionalHNSWParams
 	ef20params.EfSearch = 20
 	ef20 := measureChurnRecall(t, ef20params)
-	t.Logf("recall@10 after churn at 5k random: (16,100) = %.4f, (16,20) = %.4f", ef100, ef20)
+	t.Logf("recall@10 after churn at 5k random: (32,100) = %.4f, (32,20) = %.4f", ef100, ef20)
 	if ef100 < churnRecallFloor {
 		t.Errorf("recall@10 at the provisional parameters = %.4f, below the floor %.4f", ef100, churnRecallFloor)
 	}
