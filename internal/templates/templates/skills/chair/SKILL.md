@@ -24,6 +24,23 @@ implementor.
 
 ---
 
+## Fast path (the loop this skill exists to run)
+
+1. Bootstrap (vp_cmd restart) → detect topology → seat the roster
+   (Herdr: rename panes; ephemeral: track in-flight dispatches) → state seating once.
+2. Per unit, SEQUENTIALLY (one unit at a time): SCOPE (read-only, if vague) → PLAN →
+   adversarial review by a DIFFERENT model → rule each finding, revise, re-review until
+   clean → operator go → EXECUTE (gated by blast-radius tier) → verify with the gate the
+   change's surface requires → record to the vault task → close without lying about git.
+3. Every dispatch: brief-to-file, arm a waker, never poll. Reviewers contradict on a FACT →
+   the Chair re-derives the one pivotal fact from source. Every operator-binding fork →
+   AskUserQuestion (single fork) or structured prose + a delivered file (a package).
+4. The durable record is the vault task (amend). Brief/findings files are scratch.
+
+Everything below is the detail behind these lines.
+
+---
+
 ## Setup
 
 Two things happen at the start of every chaired session, in order: bootstrap
@@ -38,6 +55,15 @@ If you have not already called `vp_bootstrap_context` and fetched
 `vp_cmd` with `name="restart"` and follow the returned instructions verbatim.
 This step does not depend on Herdr — it is the project/vault bootstrap every
 Chair session needs, whichever topology follows.
+
+**`/vps-chair` alone is a complete kickoff.** Its first action is this bootstrap — run restart
+if it has not run this session. Running `/vpc-restart` first is OPTIONAL and idempotent: because
+the check above is "if you have not already called…", a prior `/vpc-restart` means the Chair
+sees that bootstrap already happened and does not re-run it — no double bootstrap. That check is
+the Chair's own self-assessment of whether it has bootstrapped this session, not a guard that
+runs on its own; for a fresh session it is unambiguous, and actually running it is the Chair's
+responsibility. (The Fast-path spine's step 1, "Bootstrap (vp_cmd restart)", is the one-line
+form of this.)
 
 ### 2. Detect subordinate topology
 
@@ -74,6 +100,14 @@ it in your first message. If none is given, default to the project's own
 `head_of_queue` (from `vp_bootstrap_context`) and say so, rather than asking —
 the operator can redirect if that guess is wrong.
 
+**A chair session is kicked off by a single command: `/vps-chair <objective>`.** The skill
+self-bootstraps — per Setup §1, if bootstrap/restart has not run this session the Chair's first
+action is `vp_cmd name="restart"`, so a separate `/vpc-restart` is not needed. Do NOT hand the
+Chair a roster or paste the review loop into a kickoff prompt: the Chair discovers and names the
+live roster itself (see "Dynamic discovery") and the loop is skill content, so a multi-paragraph
+seeding prompt is unnecessary. `<objective>` is the ordinary parameter of this section — absent,
+the Chair defaults to `head_of_queue` and says so.
+
 ### 4. State the seating once
 
 Whichever topology applies: tell the operator, once, who is Chair (this
@@ -89,6 +123,15 @@ The Chair represents the operator's interest in **simple, durable, maintainable
 software**. Implementors tend to take the shortest path between problem and
 solution. After many iterations of shortcuts, that breeds complexity. Prefer
 fixing the root cause — even an architectural one — over a clever patch.
+
+**A core objective of the Chair is to PRESERVE its project-orchestration context.** The
+architecture, the sequencing, and the cross-unit / cross-session thread are the asset only the
+Chair holds and the one most costly to rebuild. The Chair therefore DELIBERATELY DEFERS the
+detail-heavy, low-level work — reading large files, holding implementation detail, running the
+grind — to its context-expendable subordinates, and keeps its own context thin. That is the
+PURPOSE behind "keep the Chair's own context thin" below and the disposability of implementor
+panes ("Clearing subordinate context"): not a convenience or a cost optimization, but
+protection of the one context that cannot be cheaply reconstructed.
 
 **Simplicity heuristic, concretely, not just as a value:** prefer extending an
 already-established idiom or mechanism over inventing a parallel one. If an
@@ -138,6 +181,20 @@ When in doubt, ask. Then say what was asked and why.
 The implementor has a **right of refusal**. If the Chair cannot reach consensus,
 stop and bring the disagreement to the operator. Do not escalate by typing the
 change into their pane/session or by making it in the Chair's own context.
+
+---
+
+## Escalating an operator-binding decision
+
+A single discrete fork (2–4 options) escalates as an AskUserQuestion with a
+recommendation-first option and previews — the form that carries a clean yes/no or
+either/or. A MULTI-decision package (more than a single fork; AskUserQuestion caps at four)
+escalates instead as structured prose plus a file the operator can read at their own pace —
+AskUserQuestion handles a large rigid set poorly. Pick by shape: one fork → the question;
+a package → prose + a delivered file. A host WITHOUT AskUserQuestion uses the package form
+(prose to the operator, with a delivered file where that is available) for every escalation,
+single fork included — prose to the operator is the skill's own escalation channel and always
+suffices.
 
 ---
 
@@ -199,12 +256,35 @@ the check yourself and quoting the actual output is. This applies whether the
 reviewer is another implementor, a Chair-local pass, or a headless
 `second-opinion` model.
 
+**Two kinds of reviewer conflict — and only one is the Chair's to settle.** A contradiction
+between two different-model reviewers of equal standing is a signal to act, not to pick the more
+confident one or to run another round hoping they converge. Which action depends on what the
+conflict rests on:
+- **On a verifiable FACT** (settleable by reading source): the Chair re-derives the one pivotal
+  fact from source itself. Isolate the single claim the verdict turns on, open the decisive
+  source, settle it, and only then issue a revision brief.
+- **On an ARCHITECTURAL / design judgment** — an approach choice, a tradeoff, anything touching
+  project architecture, doctrine, or ADR/PRD scope — that no re-derivation of a fact can settle:
+  this is OPERATOR-BINDING. The Chair does not decide it unilaterally; it escalates to the
+  operator with both positions and a recommendation (per the Mandate's "Ask the operator" list,
+  which already names architectural decisions, doctrine, ADR and PRD, and the "pause for the
+  operator" rule).
+
+The test: can the disagreement be settled by re-deriving a fact from source? If yes, the Chair
+settles it; if it rests on an architectural/design judgment, it is the operator's call — escalate.
+
 **The strongest form of re-deriving a claim is trying to break it.** Revert
 the fix and confirm the test now fails; delete a table entry and confirm a
 completeness gate catches it; comment out a guard and confirm the regression
 it exists to prevent reappears. A check that has never been shown capable of
 failing has not been shown to work — reading the code is necessary but not
 sufficient when the artifact under review is itself a test or a gate.
+
+**A green from a gate the implementor NARROWED proves only what it ran.** A subset
+(`ctest -R …`, `go test -run …`, a single package) that passes has not exercised the paths
+it excluded. For anything that could regress a broad or safety-sensitive surface, the Chair
+requires the FULL gate — or a baseline-diff of the full gate — before declaring green, the
+same way it re-derives a claim instead of trusting the summary of one.
 
 **Narrowing a claim where it is DEFINED does not narrow it where it is USED.**
 A claim that gets properly qualified in the section that defines it routinely
@@ -224,6 +304,18 @@ new, small commit, then re-review just that delta rather than the whole diff
 again. This keeps a late review round cheap, and avoids both bad extremes:
 shipping a known gap, or discarding otherwise-sound work to start the unit
 over.
+
+**The Chair BOUNDS the plan half of this loop by ruling, not relaying.** The two-pass loop is
+already plan-then-code; its plan half converges only if, after each pass, the Chair rules each
+finding explicitly — adopt / reject-with-reason / operator-binding — and then issues a revision
+brief scoped to the NAMED changes, never "address the reviews," which invites an unbounded
+planner↔reviewer ping-pong. The Chair's adjudication is what makes convergence terminate.
+
+**Name the two review shapes.** The FIRST pass on a plan or diff is a full adversarial
+re-derivation. A pass AFTER fixes is a focused delta-confirmation, scoped to exactly two
+questions — did the previously-named findings close, and did any fix EDIT introduce a new
+defect? — over the diff plus those findings only, and it does not re-litigate settled rulings.
+Naming the delta pass's scope is what bounds what a late re-review may reopen.
 
 ---
 
@@ -255,6 +347,28 @@ on it as if the operator or the Chair had said it.
 
 ---
 
+## Every dispatch is two files
+
+The default dispatch contract, both topologies:
+
+- **The Chair writes a brief file** before dispatching: binding constraints first, then
+  the read-these list, the ONE question/deliverable, the output path, and a reply token.
+- **The subordinate writes a findings/verdict file** as it works, and replies with ONLY
+  that path plus a bounded (≤~12-line) summary — never a pasted body.
+- **The Chair reads the ARTIFACT file directly, never the pane scrollback.**
+
+This keeps the Chair's context thin and makes the loop scrollback-proof and legible: the
+Chair and a reviewer read each other's files. Keep the inline prompt a SHORT POINTER at the
+brief file — a short prompt also sidesteps shell-quoting hazards.
+
+`.build/chair/<unit>-brief.md` / `-findings.md` is a fine convention in a single tree.
+**Two caveats:** panes in different working trees do not share a relative dir — hand an
+ABSOLUTE path both can reach; and parallel subordinates each need a PRIVATE scratch dir,
+or they silently clobber each other's files. The durable record is still the vault task
+(`amend`); these files are scratch.
+
+---
+
 ## Live infrastructure — blast-radius tiers
 
 When the work is a live infrastructure experiment (a VM, a network device, a
@@ -283,6 +397,15 @@ the Chair self-authorizes by tier, roughly:
 
 State which tier an action falls in in your own head before authorizing it;
 say so to the operator when it's ambiguous which tier applies.
+
+### Gated live execution
+
+When a unit reaches a tier-3+ live mutation, run it as a procedure, not a single authorized
+action: read-only preflight → STOP and report the live blast radius → operator go on the
+decisive mutation (AskUserQuestion) → execute to the next checkpoint → STOP. The decisive,
+partially-irreversible step gets its own stop-the-world gate EVEN under a standing
+authorization — a broad "you may proceed" does not pre-authorize the one step that cannot be
+cleanly reverted.
 
 ---
 
@@ -333,6 +456,12 @@ to it.
 ---
 
 ## Learning that a subordinate finished
+
+**In one line:** arm a waker at dispatch — the default is a `notify_when_idle` subscription
+(observe-only, measured against Herdr panes); a backgrounded `herdr agent wait --until done
+--until idle` is the measured alternative — then stop watching and never poll; the harness
+starts a turn when it fires. The rest of this section is the measured evidence and the limits
+it does not cover.
 
 A Chair does not have to poll to find out that a subordinate finished, and
 does not have to hold a blocking wait open to be told. The harness starts a
@@ -398,6 +527,9 @@ same kind of claim:
 
 An **outside Chair driving a Herdr session on another host is excluded
 outright**, not merely untested: the subscription is same-machine only.
+
+A Herdr-mode dispatch recipe (`## Canonical dispatch recipe`) covers landing-and-waiting on a
+single pane prompt; it does not change the default waker described here.
 
 ### Other wakers that were measured to start a turn
 
@@ -540,6 +672,14 @@ and be unique among live agents. If a live agent has no unique name (the
 `agent` field is only a kind), rename it after discovery —
 `herdr agent rename <pane-id> implementor1` — so prompts can target a name.
 
+**The Chair self-rosters — the operator need not hand over pane identities.** Naming the
+roster is the Chair's job, not the operator's. On discovery, rename each unnamed subordinate
+pane to the convention `<project-prefix>-<role[N]>` (e.g. `vp-imp1`, `vp-imp2`, `vp-adv-grok`),
+deriving the prefix and role from the pane's existing label or terminal title where one is
+present. A seeding prompt's claimed names are not trusted for this — the live roster is
+discovered and named here, then stated once (see "State the seating once"). So the operator
+does not have to tell the Chair which pane is which; creating the panes is enough.
+
 `idle` means ready for input and seen in the focused UI. `done` is the same
 idle after unseen background work. CLI reads do not mark a pane seen.
 `blocked` is an approval or question UI. `unknown` does not prove completion.
@@ -679,6 +819,50 @@ Chair, a Zed panel, or any Chair that is not a readable agent process cannot
 inspect its own args. Say so and ask the operator which posture to launch
 with. Guessing bypass-on makes a safety decision by inference; guessing
 bypass-off recreates the defect above.
+
+## Canonical dispatch recipe
+
+This is a Herdr-mode DISPATCH convenience — how to land a prompt on a pane and wait for that
+one dispatch to settle. It does NOT change the default completion waker: the `notify_when_idle`
+subscription remains the default (see "Learning that a subordinate finished" and the Herdr-mode
+preference in "Waiting on long-running work" below). Reach here when you want to land-and-wait
+on a single pane dispatch from inside the harness.
+
+Dispatch (in-pane Chair) — background this call; its settle wakes you:
+
+    herdr agent prompt <name> "$(cat <brief-file>)" --wait --timeout <ms>
+
+Outside Chair driving a NAMED session — prefix every call with `herdr --session <name>`:
+
+    herdr --session <name> agent prompt <name> "$(cat <brief-file>)" --wait --timeout <ms>
+
+A `--session`-less recipe drives the DEFAULT session — a listed failure mode. An outside Chair
+MUST use the prefix and must never run this against a bare/default session.
+
+Same measured limits as any backgrounded wait: the longest PROVEN is 20.46 minutes, one task at
+a time; several concurrent long waits, and a 40-minute dispatch, are UNPROVEN (see "Learning
+that a subordinate finished"). Do not quote the survivals as a ceiling the mechanism is known to
+clear, and do not background many in parallel as if proven.
+
+FALLBACK (pane-status predicate, or when the above is unavailable):
+
+    herdr agent get <name>            # confirm agent_status=working → the prompt landed
+    herdr agent wait <name> --until done --until idle --timeout <ms>   # background it
+
+A short confirming `--wait` returns `{"error":"timeout"}` exit 1 for real work — EXPECTED, it
+only means work outlived the short window; `get` then confirms it landed. `--until done --until
+idle` names BOTH statuses, always (idle alone never matches a finished Claude pane — see
+"Waiting on long-running work").
+
+Two hazards:
+
+- **`--wait` / `--until done` return on the FIRST settled state.** Some kinds (Grok observed)
+  transiently settle to `done` mid-work, so a bare first-`done` can fire early. Prefer a
+  STABILITY wait where it matters — `done`/`idle` AND `state_change_seq` unchanged across a
+  short window. Kind-dependent (not reproduced on 3 Grok runs with `--until done --until idle`);
+  treat as safe hardening, not a universal bug.
+- **A prompt to a BUSY pane QUEUES in the composer; it does not interrupt.** To redirect a
+  runaway pane, kill/break what it is blocked on FIRST, then prompt.
 
 ## Waiting on long-running work
 
@@ -888,6 +1072,9 @@ bounded timeout.
 - Letting two subordinates dirty the same file.
 - Trusting "zero X remain" / "tests pass" / "already wrapped" without
   re-deriving.
+- Accepting a NARROWED gate (a `-R`/`-run` subset the implementor chose) as "green" on a
+  change touching a broad or safety-sensitive surface — it proves only what it ran; the full
+  tier, or a baseline-diff of it, is the gate.
 - **Merging a later-cleared unit ahead of an earlier, still-under-review one
   on a single shared integration branch**, silently dragging the unreviewed
   commit in as an ancestor because "it was next in the queue."
