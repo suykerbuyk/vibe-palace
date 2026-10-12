@@ -279,27 +279,26 @@ func TestHNSWRealVectorRecall(t *testing.T) {
 }
 
 // TestHNSWMeasureGrid (make hnsw-measure-grid, the operator) is the measurement
-// itself: M ∈ {16, 24, 32} × ef ∈ {100, 200, 400} × n a dense sweep
-// {5k, 10k, 15k, ..., 50k, all} (gridSizes), in ascending n, one subtest per
-// cell, each result appended and fsynced to VP_HNSW_GRID_OUT, resuming past
-// cells already recorded under this run identity. The library has one ef
-// (EfSearch builds and searches), so each cell builds and searches at its single
-// ef. It asserts only that its inputs loaded; the crossover and T/L table is
-// printed at the end.
+// itself. It builds the re-scoped run-2 cell list (gridCells), runs one subtest
+// per cell in ascending n, appends and fsyncs each result to VP_HNSW_GRID_OUT,
+// and resumes past cells already recorded under this run identity. The library
+// has one ef (EfSearch builds and searches), so each cell builds and searches at
+// its single ef. It asserts only that its inputs loaded; the crossover and T/L
+// table is printed at the end.
+//
+// Run 1 (99 planned cells over M∈{16,24,32}×ef∈{100,200,400}×n{5k..50k,all})
+// timed out at 45 cells but was decisive (grid-run1-partial-45cells.jsonl):
+// (16,100) FAILS the 0.90 post-churn recall@10 bar at n≥10k and ef=400 only adds
+// latency for no recall gain — both were MEASURED and REJECTED, not dropped
+// untested. Run 2 narrows to M∈{24,32}×ef∈{100,200} (gridMs/gridEfs) and
+// re-scopes the n-axis (gridNLow + the leader-only high-n confirmation).
 func TestHNSWMeasureGrid(t *testing.T) {
 	requireHNSWMeasure(t)
 	in := requireRealInputs(t, true)
 	corpus, ho, all := loadRealHeldOut(t, in)
 	ident := gridIdentity{IDsSHA256: sortedIDsHash(corpus.IDs), Fingerprint: in.Fingerprint, Seed: realPartitionSeed,
 		NQ: len(ho.Queries), Library: hnswLibraryVersion, Harness: gridHarnessVersion}
-	var cells []gridCell
-	for _, n := range gridSizes(all) {
-		for _, m := range []int{16, 24, 32} {
-			for _, ef := range []int{100, 200, 400} {
-				cells = append(cells, gridCell{m, ef, n})
-			}
-		}
-	}
+	cells := gridCells(all)
 	runGrid(t, in.GridOut, ident, cells, func(t *testing.T, c gridCell) gridResult {
 		return measureGridCell(t, c, ho)
 	})
@@ -310,19 +309,54 @@ func TestHNSWMeasureGrid(t *testing.T) {
 	t.Logf("crossover table (every cell recorded under this run identity):\n%s", table.String())
 }
 
-// gridSizes is the grid's n axis: a dense 5k-step sweep from 5k to 50k so the
-// T/L crossover (expected between 20k and 50k) can be bracketed and L's 1.5×
-// band has a witnessing cell, then the whole corpus, in ascending order and
-// without duplicates, so a corpus of exactly 50,000 is not measured, and
-// recorded, twice. loadRealHeldOut guarantees the union gives at least a 50k
-// corpus, so every fixed point is in range.
-func gridSizes(all int) []int {
-	sizes := []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000}
-	if !slices.Contains(sizes, all) {
-		sizes = append(sizes, all)
+// The re-scoped run-2 parameter set, narrowed by run 1's 45-cell result
+// (grid-run1-partial-45cells.jsonl): M=16 failed the 0.90 post-churn recall@10
+// bar at n≥10k and ef=400 only added latency for no recall gain, so both are
+// dropped. The survivors are M∈{24,32} × ef∈{100,200}.
+var (
+	gridMs  = []int{24, 32}
+	gridEfs = []int{100, 200}
+	// gridNLow is measured for EVERY (M,ef) pair: the dense 1k–5k region pins T
+	// (run 1 showed HNSW already beats brute at 5k, so T is below 5000) and its
+	// hysteresis bound L, and 10k/25k carry the recall curve.
+	gridNLow = []int{1000, 2000, 3000, 4000, 5000, 10000, 25000}
+	// gridHighPairs are run 1's leading candidates — the only pairs the expensive
+	// high-n confirmation cells (50k and the whole corpus) run for, the Chair's
+	// "run 'all' only for the 1–2 leading (M,ef)" cut. T and L are pinned in
+	// gridNLow (full churn), so the high-n cells only confirm recall at scale.
+	gridHighPairs = [][2]int{{32, 100}, {24, 100}}
+)
+
+// gridCells builds the run-2 cell list for a corpus of `all` vectors: every
+// (M,ef) pair at each gridNLow size, plus the two high-n confirmation sizes
+// (50000 and the whole corpus) for the leading pairs only. A high-n size already
+// in gridNLow, or larger than the corpus, is skipped, and the whole-corpus size
+// is only added once.
+func gridCells(all int) []gridCell {
+	var cells []gridCell
+	for _, n := range gridNLow {
+		if n > all {
+			continue
+		}
+		for _, m := range gridMs {
+			for _, ef := range gridEfs {
+				cells = append(cells, gridCell{m, ef, n})
+			}
+		}
 	}
-	slices.Sort(sizes)
-	return sizes
+	highNs := []int{50000}
+	if all != 50000 {
+		highNs = append(highNs, all)
+	}
+	for _, n := range highNs {
+		if n > all || slices.Contains(gridNLow, n) {
+			continue
+		}
+		for _, p := range gridHighPairs {
+			cells = append(cells, gridCell{p[0], p[1], n})
+		}
+	}
+	return cells
 }
 
 // measureGridCell measures one cell: build the corpus Pool[:n] with churn's
@@ -362,7 +396,13 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 		t.Fatal(err)
 	}
 	res.BruteHeap = bheap
-	rep, err := measureRecall(idx, brute, newLiveSet(before), ho.Queries)
+	// Recall is scored over EVERY held-out query against the exact ground truth
+	// (tieAwareRecall vs the τ threshold, which sorts the whole live set). The
+	// brute oracle here would add only the logged, never-asserted set-overlap, at
+	// the cost of one more O(n) brute scan per query — so the grid passes nil and
+	// leaves SetOverlapK10 zero. The brute index is still built and still the
+	// latency baseline below; the exactness oracle (the τ ground truth) is intact.
+	rep, err := measureRecall(idx, nil, newLiveSet(before), ho.Queries)
 	if err != nil {
 		t.Fatalf("before churn: %v", err)
 	}
@@ -371,8 +411,16 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	// The crossover reads both sides through the repeated queryLatency, so the
 	// T/L comparison is median-over-passes with a spread, not the single pass
 	// measureRecall timed above (rep.Latency, kept only for the recall log).
-	res.HNSWK10, res.HNSWK30 = queryLatency(t, idx, ho.Queries, recallKs[0]), queryLatency(t, idx, ho.Queries, recallKs[1])
-	res.BruteK10, res.BruteK30 = queryLatency(t, brute, ho.Queries, recallKs[0]), queryLatency(t, brute, ho.Queries, recallKs[1])
+	// Latency is timed over a fixed subset of the queries (latencyQueries): a p50
+	// over 200 queries × latencyRepeats passes is a robust timing sample, while
+	// timing all ~1000 at each large-n cell was the grid's dominant cost (the
+	// brute side scans the whole corpus per query).
+	latQ := ho.Queries
+	if len(latQ) > latencyQueries {
+		latQ = latQ[:latencyQueries]
+	}
+	res.HNSWK10, res.HNSWK30 = queryLatency(t, idx, latQ, recallKs[0]), queryLatency(t, idx, latQ, recallKs[1])
+	res.BruteK10, res.BruteK30 = queryLatency(t, brute, latQ, recallKs[0]), queryLatency(t, brute, latQ, recallKs[1])
 	brute = nil
 
 	churnMutate(t, idx, rng, &cr, fresh)

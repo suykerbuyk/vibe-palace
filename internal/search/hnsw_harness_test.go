@@ -305,6 +305,13 @@ func medianFloat(xs []float64) float64 {
 // one pass from deciding a threshold.
 const latencyRepeats = 7
 
+// latencyQueries caps how many held-out queries queryLatency times per pass. A
+// p50 over 200 queries × latencyRepeats passes is a robust timing sample; timing
+// all ~1000 queries at each large-n cell was the grid's dominant cost, because
+// the brute baseline scans the whole corpus per query. Recall is unaffected — it
+// is still scored over every held-out query.
+const latencyQueries = 200
+
 // latencyStat is a query-latency measurement robust to a single noisy pass: the
 // median per-pass p50 and p99, in ms, and Spread, the max−min of the per-pass
 // p50s, which the crossover tie rule uses so a difference inside the run-to-run
@@ -654,7 +661,10 @@ func TestHeldOutQueriesNotInCorpus(t *testing.T) {
 // 2: dense n axis (5k..50k in 5k steps), queryLatency repeats with a median p50
 // and an inter-pass spread, and a latency-and-recall T/L derivation in the
 // table (task B3).
-const gridHarnessVersion = 2
+// 3: run-2 re-scope — M∈{24,32}×ef∈{100,200}, the gridNLow+leader-only-high-n
+// cell list (gridCells), latency timed over a query subset (latencyQueries), and
+// the info-only brute set-overlap dropped from the grid's recall pass.
+const gridHarnessVersion = 3
 
 // gridIdentity is what a grid cell's result depends on besides (M, ef, n).
 type gridIdentity struct {
@@ -1084,16 +1094,38 @@ func TestHNSWMeasureGridResumes(t *testing.T) {
 	if got, want := len(lines), 1+len(others)+len(ran); got != want {
 		t.Errorf("%d parseable lines, want %d", got, want)
 	}
-	for _, c := range []struct {
-		all  int
-		want []int
-	}{
-		{50000, []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000}},
-		{57500, []int{5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 57500}},
-	} {
-		if got := gridSizes(c.all); !slices.Equal(got, c.want) {
-			t.Errorf("gridSizes(%d) = %v, want %v", c.all, got, c.want)
+	// gridCells: every (M,ef) pair at each low n, plus 50000 and the whole corpus
+	// for the leading pairs only.
+	nPairs := len(gridMs) * len(gridEfs)
+	gcells := gridCells(104000)
+	if got, want := len(gcells), nPairs*len(gridNLow)+len(gridHighPairs)*2; got != want {
+		t.Errorf("gridCells(104000) = %d cells, want %d", got, want)
+	}
+	byN := map[int]int{}
+	for _, c := range gcells {
+		byN[c.N]++
+	}
+	if byN[25000] != nPairs {
+		t.Errorf("n=25000 has %d cells, want every pair (%d)", byN[25000], nPairs)
+	}
+	if byN[50000] != len(gridHighPairs) || byN[104000] != len(gridHighPairs) {
+		t.Errorf("high-n cells: 50000=%d, 104000=%d, want %d each (leaders only)", byN[50000], byN[104000], len(gridHighPairs))
+	}
+	for _, c := range gcells {
+		if c.N > 25000 { // a high-n cell must be a leading pair
+			lead := false
+			for _, p := range gridHighPairs {
+				if c.M == p[0] && c.Ef == p[1] {
+					lead = true
+				}
+			}
+			if !lead {
+				t.Errorf("high-n cell %s is not a leading pair", c.name())
+			}
 		}
+	}
+	if n := gridCells(50000); len(n) != nPairs*len(gridNLow)+len(gridHighPairs) {
+		t.Errorf("gridCells(50000) = %d cells, want %d (whole-corpus size == 50000 is added once)", len(n), nPairs*len(gridNLow)+len(gridHighPairs))
 	}
 	var buf bytes.Buffer
 	if err := writeGridTable(&buf, path, ident); err != nil {
