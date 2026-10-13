@@ -173,8 +173,8 @@ func selectKind(res loadResult, n int, converts bool) (indexKind, graphAction) {
 var insertHook func()
 
 // liveIDs returns the ids of every live (non-tombstoned) vector. The engine's
-// sameIDSet compares this to a rebuild's keep-set to decide whether a loaded
-// graph still indexes exactly the current corpus.
+// catchUpGraph compares this to a rebuild's keep-set to decide which ids a
+// loaded graph is missing or must drop when it reconciles to the current corpus.
 func (h *hnswIndex) liveIDs() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -347,6 +347,12 @@ type hnswIndex struct {
 	// rebuild is the in-flight tombstone rebuild, or nil.
 	rebuild *hnswRebuild
 	closed  bool
+	// catchingUp suppresses maybeRebuildLocked while an incremental catch-up
+	// (Unit C) applies its inserts and tombstones: a catch-up's churn must not
+	// start a background rebuild, because that would set rebuild != nil and make
+	// saveGraph refuse the save (skipStale, the B4 witness guard). finishCatchUp
+	// clears it and re-arms one rebuild AFTER the file is durable.
+	catchingUp bool
 	// rebuilders tracks every rebuild goroutine, including one Build has
 	// cancelled and unhooked, so Close can wait for all of them.
 	rebuilders sync.WaitGroup
@@ -578,13 +584,36 @@ func (h *hnswIndex) logLocked(id string, vec []float32) {
 	}
 }
 
+// beginCatchUp marks the index as catching up, so its inserts/tombstones do not
+// start a background rebuild (which would make saveGraph refuse the save). The
+// caller (catchUpGraph) applies the delta, the graph is saved, then
+// finishCatchUp clears the flag and re-arms the rebuild.
+func (h *hnswIndex) beginCatchUp() {
+	h.mu.Lock()
+	h.catchingUp = true
+	h.mu.Unlock()
+}
+
+// finishCatchUp clears the catching-up flag and re-arms one maybeRebuildLocked,
+// so an over-ratio graph still self-heals — AFTER the file is durable, not
+// instead of it. It is idempotent: clearing an already-clear flag is a no-op,
+// and maybeRebuildLocked starts nothing when the graph is under the ratio or a
+// rebuild is already running. Registered as a defer in rebuild, so it runs on
+// every exit (a save skip, a busy lock, a panic).
+func (h *hnswIndex) finishCatchUp() {
+	h.mu.Lock()
+	h.catchingUp = false
+	h.maybeRebuildLocked()
+	h.mu.Unlock()
+}
+
 // maybeRebuildLocked starts a rebuild when the tombstones have passed the
 // threshold and none is running. It returns at once: the rebuild runs on its own
 // goroutine, so the caller, which may itself hold the engine's lock, is never
 // stalled by it. The caller holds mu for writing.
 func (h *hnswIndex) maybeRebuildLocked() {
 	p := h.params
-	if h.rebuild != nil || h.closed || p.TombstoneRatio <= 0 {
+	if h.catchingUp || h.rebuild != nil || h.closed || p.TombstoneRatio <= 0 {
 		return
 	}
 	tomb := h.st.tombstones()

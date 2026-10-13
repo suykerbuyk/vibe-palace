@@ -1400,12 +1400,31 @@ its named mutant and failed before passing.
 | `TestMismatchAboveLKeepsFileServesBrute` | A fingerprint mismatch serves brute and leaves the file byte-identical for Unit E's heal. Mutant: treat a mismatch as HNSW and save over it |
 | `TestCorruptFileDeletedThenBrute` | A corrupt file is deleted, then the project is brute. Mutant: do not delete a corrupt file |
 | `TestWarmStartBelowLDeletesFallsBrute` | A valid graph whose project is now below L is deleted and the index falls to brute. Mutant: drop the below-L delete |
-| `TestWarmStartIDSetDriftRebuilds` | When the corpus id set drifts from the on-disk graph, `sameIDSet` declines the warm start and a fresh build serves the new id. Mutant: `sameIDSet` always true (serves the stale graph) |
 | `TestIOErrorFallsBackToBrute` | An I/O fault reading the file falls back to brute without failing the rebuild and without deleting. Mutant: return the error |
 | `TestCaptureInsertReleasesEMuAcrossAdd` | The capture insert runs with `e.mu` released — a hook inside `Insert` (under `h.mu`) can take `e.mu.TryRLock` (Scope 3). Mutant: hold `e.mu` across the insert |
 | `TestCaptureCollisionKeepsVector` | A same-id/different-content collision leaves the first (kept) vector live (not a tombstone) and writes no second metadata entry — collision check stays before insert, no insert-then-`Delete` retract (B3). Mutant: drop the phase-1 collision skip |
 | `TestCaptureSameIdNoDoubleInsert` | Two batch rows with the same id are deduplicated by the `pendingInsert` reservation: one insert lands, no tombstone. Mutant: drop the reservation |
 | `TestHNSWSelectionBruteParity` | The selected HNSW index answers the brute oracle's neighbours within a recall bar (never identical order); brute stays the oracle. Mutant: route selection to brute (the `*hnswIndex` assertion fails) |
+| `TestWarmStartIDSetDriftRebuilds` | (repointed for Unit C) a drifted corpus catches the loaded graph up — the new id is served, `Len` grows, and `libraryAdds == 1` (only the new id g.Added, not a full `Build`). Mutant: revert to a full rebuild on drift (`libraryAdds == len(all)`) |
+
+**HNSW production switch: incremental catch-up on load + debounced save**
+(`hnsw_catchup_test.go`; task `hnsw-incremental-catch-up-and-save-triggers`,
+Unit C). Thresholds lowered per test; each was broken once against its named
+mutant and failed before passing.
+
+| Test | What it proves |
+|---|---|
+| `TestCatchUpAddsNewTombstonesRemoved` | catch-up inserts the new ids and tombstones the removed ones (serves a,b,d, not c). Mutant: skip the Delete loop / the Insert loop |
+| `TestCatchUpChangedVectorUpserts` | a SAME id whose vector changed upserts (equal-vector no-op for the rest): serves the new vector, `libraryAdds` advances by 1, `changed==true` (B2). Mutant: a set-difference delta that skips the in-both upsert → serves the stale vector |
+| `TestCatchUpEmptyDeltaNoChange` | an identical corpus is a true no-op: `changed==false`, no g.Adds, no tombstones (so no needless save). Mutant: always report changed |
+| `TestCatchUpSuppressesRebuild` | `beginCatchUp` suppresses `maybeRebuildLocked`, so a threshold-crossing catch-up starts no background rebuild while it runs — keeping `h.rebuild==nil` so the save does not `skipStale` (B1). Mutant: drop the `catchingUp` guard → a rebuild starts during catch-up |
+| `TestLargeDriftCatchUpPersists` | a large-drift catch-up (≈80 tombstones) PERSISTS: the file re-loads with only the live corpus, not the removed ids (B1 end-to-end). |
+| `TestCatchUpClearsFlagThenRebuildStarts` | after a drift catch-up, the deferred `finishCatchUp` cleared `catchingUp`, so a later tombstone storm starts a background rebuild (R1). Mutant: `finishCatchUp` does not clear the flag |
+| `TestCatchUpNoChangeStillClearsFlag` | a no-change catch-up (commitGraphAction's early return, no save) still clears the flag via the DEFER (R1). Mutant: call `finishCatchUp` only when a save was armed → the no-change path leaks the flag |
+| `TestDebounceSkipsTooSoonSave` | a save within the ≥30s window writes nothing (mtime unchanged); the in-memory index stays current and the skip holds the 7a shape (`e.loaded==ReadGeneration`, no second rebuild). Mutant: remove the debounce check |
+| `TestDebounceFiresAfterWindow` | past the window the save fires — the on-disk graph re-loads with the drifted id. Mutant: always within the window (always skip) |
+| `TestDebounceCrossProcessNoDoubleSave` | two engines on one vault do not both save within the window — the second reads the first's mtime under the commit lock and skips. Mutant: remove the debounce check |
+| `TestSkippedSaveSurvivesRestart` | a debounced (skipped) save loses nothing — a restart warm-starts the stale file and catch-up reconciles it to the drifted corpus. Mutant: (covered by catch-up) |
 
 **HNSW recall measurement** (`hnsw_realcache_test.go`, `hnsw_harness_test.go`,
 `hnsw_recall_measure_test.go`; task

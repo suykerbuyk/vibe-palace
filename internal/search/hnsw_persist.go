@@ -19,8 +19,10 @@ import (
 	"io/fs"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -38,6 +40,11 @@ import (
 //	               | tombstones (u64 count, then u64 keys) | sortedIDHash[32] |
 //	               exportStream (library Graph.Export) | bodyCRC u32
 //	               (crc32c over body[:len-4]).
+
+// graphFileName is the on-disk graph file, under index/<project>/. It mirrors
+// indexstore's unexported graphFile; indexstore owns the writes (Tx.WriteGraph),
+// this package only stats it for the save debounce (graphFileModTime).
+const graphFileName = "hnsw.idx"
 
 var graphMagic = [8]byte{'V', 'P', 'H', 'N', 'S', 'W', 'G', '\n'}
 
@@ -91,6 +98,7 @@ const (
 	skipMissingDir
 	skipGenRead  // the store counter could not be read; the save did not happen.
 	skipWriteErr // the write itself failed (not a post-rename sync); nothing to trust.
+	skipDebounce // within the ≥30s save window (Unit C); the in-memory index stays current.
 )
 
 func (o saveOutcome) String() string {
@@ -111,6 +119,8 @@ func (o saveOutcome) String() string {
 		return "skipGenRead"
 	case skipWriteErr:
 		return "skipWriteErr"
+	case skipDebounce:
+		return "skipDebounce"
 	default:
 		return "unknown"
 	}
@@ -553,4 +563,42 @@ func classifyWriteError(err error) (saveOutcome, error) {
 	default:
 		return skipWriteErr, err
 	}
+}
+
+// --- debounced save window (Unit C, Scope 5) --------------------------------
+
+// graphSaveDebounce is the minimum interval between two graph saves of one
+// project: a converting rebuild or a catch-up saves at most once per window, so
+// a busy project does not rewrite hnsw.idx on every rebuild. It is a fixed
+// policy constant (a sibling of provisionalHNSWParams), not a config knob. The
+// in-memory index stays current across a skipped save, and a restart reconciles
+// the slightly-stale file by catch-up, so the window never costs correctness.
+const graphSaveDebounce = 30 * time.Second
+
+// nowFn is the clock the debounce reads; a test seam. Production is time.Now.
+var nowFn = time.Now
+
+// graphFileModTime reports hnsw.idx's modification time, the host-local,
+// per-project "last saved" timestamp the debounce compares against nowFn. The
+// file is written under the commit lock (Tx.WriteGraph's atomic rename), so a
+// caller holding that lock reads a value no concurrent saver is mid-changing.
+// Contract: a MISSING file is (zero, false, nil) — not debounced, so the first
+// convert always saves; ANY OTHER stat error is (_, false, err) — the caller
+// must treat err as "do not skip" and fall through to saveGraph (the safe
+// direction). A stat failure is never reported as present==true, so a flaky
+// stat can never silently suppress a save. The store generation counter is NOT
+// used here: it is a change counter, not a clock, and bumps on every write.
+func graphFileModTime(vault *storage.Vault, project string) (time.Time, bool, error) {
+	dir, err := vault.IndexDir(project)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	fi, err := os.Stat(filepath.Join(dir, graphFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return fi.ModTime(), true, nil
 }

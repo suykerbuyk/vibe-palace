@@ -394,9 +394,10 @@ func TestWarmStartBelowLDeletesFallsBrute(t *testing.T) {
 	}
 }
 
-// Test 11 (S3): when the corpus id set drifts from the on-disk graph, the warm
-// start declines and a fresh build serves the new id. Mutant: sameIDSet always
-// true (serves the stale graph).
+// Test 11 (repointed for Unit C): when the corpus id set drifts from the on-disk
+// graph, warm-start catch-up reconciles it and the new id is served. Mutant:
+// catch-up skips the delta (graphDelta-empty / reverts to serving the stale
+// graph) → the new id is absent.
 func TestWarmStartIDSetDriftRebuilds(t *testing.T) {
 	withThresholds(t, 2, 1)
 	v := testVault(t)
@@ -417,7 +418,12 @@ func TestWarmStartIDSetDriftRebuilds(t *testing.T) {
 		t.Fatalf("want HNSW; got %T", installedIndex(t, e2, project))
 	}
 	if h.Len() != 4 {
-		t.Fatalf("index Len = %d, want 4 (rebuilt from the current corpus, not the stale 3-node graph)", h.Len())
+		t.Fatalf("index Len = %d, want 4 (caught up to the current corpus, not the stale 3-node graph)", h.Len())
+	}
+	// Caught up, not full-rebuilt: the loaded graph (libraryAdds started at 0)
+	// added exactly the one new id, not all four.
+	if got := h.libraryAdds.Load(); got != 1 {
+		t.Fatalf("libraryAdds = %d after catch-up, want 1 (only the new id g.Added, not a full Build of 4)", got)
 	}
 	found := false
 	for _, id := range h.liveIDs() {
@@ -426,7 +432,7 @@ func TestWarmStartIDSetDriftRebuilds(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("the new drawer %s is absent; the warm start served the stale graph", d4.ID)
+		t.Fatalf("the new drawer %s is absent; catch-up served the stale graph", d4.ID)
 	}
 }
 

@@ -1253,8 +1253,8 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 
 	// Unit B selection + warm-start. n is the post-dedup keep-set length (B4) —
 	// the count the built graph actually holds (dims+usableVector drop applied),
-	// NOT len(ids) nor the distinct-id count — so sameIDSet can match a loaded
-	// graph exactly.
+	// NOT len(ids) nor the distinct-id count — so selection and the Unit C
+	// catch-up reconcile against exactly the ids the graph would hold.
 	params := provisionalHNSWParams
 	keep, err := dedupBatch(vecs, ids, dims)
 	if err != nil {
@@ -1279,8 +1279,27 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	var idx VectorIndex
 	switch kind {
 	case kindHNSW:
-		if res == loaded && idx0 != nil && e.sameIDSet(idx0, keep, ids, metas) {
-			idx = idx0 // warm start: the on-disk graph still indexes the corpus; skip Build (no g.Add)
+		if res == loaded && idx0 != nil {
+			// Unit C: incrementally catch the loaded graph up to the corpus
+			// (insert new/changed ids, tombstone removed) instead of a full
+			// rebuild. finishCatchUp runs on EVERY exit of rebuild (R1): it
+			// clears the suppression flag and re-arms the tombstone auto-rebuild.
+			// The re-arm happens whatever the exit — a durable save, a debounced
+			// or stale skip (no new save to wait for), or a catch-up error — so
+			// an over-ratio graph still self-heals.
+			idx0.beginCatchUp()
+			defer idx0.finishCatchUp()
+			changed, cerr := e.catchUpGraph(idx0, keep, ids, vecs, metas)
+			if cerr != nil {
+				// N-CR1: a failed insert would leave a partial graph; fail the
+				// rebuild (like a Build error) so remember is never reached and
+				// nothing is installed or persisted.
+				return stats, fmt.Errorf("catch-up: %w", cerr)
+			}
+			idx = idx0
+			if changed {
+				action = graphSave // persist the caught-up graph (debounced in commitGraphAction)
+			}
 		} else {
 			if idx0 != nil {
 				_ = idx0.Close()
@@ -1334,35 +1353,78 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	return stats, nil
 }
 
-// sameIDSet reports whether a warm-start-loaded graph still indexes exactly the
-// current corpus: a pure id-set equality between the loaded graph's live ids
-// and the rebuild's keep-set, minus ids that would collide on the global
-// drawer-id key (those carry no metadata and are dropped by search; excluding
-// them keeps the comparison honest without claiming same id ⇒ same content —
-// DrawerID is a 32-bit md5[:8] the engine documents can collide, detectCollision).
-// It is NOT a content guarantee. A collision (rare, logged) makes the sets
-// differ and declines the warm start, so the caller does a safe full build.
-func (e *Engine) sameIDSet(idx0 *hnswIndex, keep []int, ids []string, metas []drawerMeta) bool {
+// catchUpErrHook, when a test sets it, forces catchUpGraph's next Insert to
+// return an error, at a real Insert site — so N-CR1's "a failed insert fails the
+// rebuild" path can be exercised (the real path's vectors are dims/usable-checked
+// by dedupBatch, so Insert does not otherwise error). Production leaves it nil.
+var catchUpErrHook func() error
+
+// catchUpGraph reconciles a warm-start-loaded graph to the current corpus
+// incrementally (Unit C), instead of a full rebuild on drift. It Inserts EVERY
+// expected id and Deletes every removed id, and reports whether anything
+// actually changed:
+//
+//   - expected = the keep-set ids minus ids that would collide on the global
+//     drawer-id key (those carry no metadata and are dropped by search; excluding
+//     them matches B's sameIDSet, and does not claim same id ⇒ same content —
+//     DrawerID is a 32-bit md5[:8] the engine documents can collide).
+//   - Insert of every expected id relies on the wrapper's equal-vector no-op
+//     (an unchanged id mutates nothing); a same-id changed vector upserts
+//     (tombstone old, add new), so the caught-up graph is vector-identical in
+//     served results to a full Build of keep (B2).
+//   - removed = the graph's live ids absent from expected; each is tombstoned.
+//
+// It runs under the index's beginCatchUp suppression, so its churn starts no
+// background rebuild (which would make saveGraph refuse the save). The caller
+// saves only when it returns changed==true. The new/changed vectors come from
+// vecs (the walk's embed-cache reads) — no re-embed, no full g.Add.
+//
+// A failed Insert is returned as an error (N-CR1), not swallowed: a partial
+// graph must fail the rebuild so the caller never installs or remembers it. On
+// the real path this is defensive — the vectors already passed dedupBatch's
+// dims/usable check, so Insert does not error — but a corrupt vector must never
+// be silently remembered. Delete cannot fail (it returns bool).
+func (e *Engine) catchUpGraph(idx0 *hnswIndex, keep []int, ids []string, vecs [][]float32, metas []drawerMeta) (bool, error) {
 	expected := make(map[string]struct{}, len(keep))
+	expectedPos := make([]int, 0, len(keep))
 	e.mu.RLock()
 	for _, i := range keep {
 		if e.wouldCollide(ids[i], metas[i]) {
 			continue
 		}
+		if _, dup := expected[ids[i]]; dup {
+			continue
+		}
 		expected[ids[i]] = struct{}{}
+		expectedPos = append(expectedPos, i)
 	}
 	e.mu.RUnlock()
 
-	live := idx0.liveIDs()
-	if len(live) != len(expected) {
-		return false
-	}
-	for _, id := range live {
+	var removed []string
+	for _, id := range idx0.liveIDs() {
 		if _, ok := expected[id]; !ok {
-			return false
+			removed = append(removed, id)
 		}
 	}
-	return true
+
+	changed := len(removed) > 0
+	startAdds := idx0.libraryAdds.Load()
+	for _, id := range removed {
+		idx0.Delete(id)
+	}
+	for _, i := range expectedPos {
+		err := idx0.Insert(ids[i], vecs[i])
+		if err == nil && catchUpErrHook != nil {
+			err = catchUpErrHook() // test seam: simulate an Insert failure at a real Insert site
+		}
+		if err != nil {
+			return changed, fmt.Errorf("insert %s: %w", ids[i], err)
+		}
+	}
+	if idx0.libraryAdds.Load() != startAdds {
+		changed = true // a new or changed id did a g.Add; an unchanged id is a no-op
+	}
+	return changed, nil
 }
 
 // wouldCollide is detectCollision's read-only predicate: the global drawer-id
@@ -1409,6 +1471,16 @@ func (e *Engine) commitGraphAction(ctx context.Context, pl *projectLock, timeout
 		if !ok {
 			_, _, _ = pl.finishTx() // defensive: only an hnswIndex is ever saved
 			return
+		}
+		// Debounce (Unit C): under the commit lock we just took, so two processes
+		// serialize and the second reads the first's fresh mtime. Within the
+		// window, write nothing — the in-memory index stays current and the next
+		// trigger past the window (or a restart's catch-up) persists it. A missing
+		// file is not debounced (the first convert always saves); a stat error
+		// falls through to saveGraph (the safe direction), never a silent skip.
+		if mt, present, serr := graphFileModTime(e.vault, project); serr == nil && present && nowFn().Sub(mt) < graphSaveDebounce {
+			out = skipDebounce
+			break
 		}
 		data, w := h.snapshot()
 		builtAt := tx.Generation()
