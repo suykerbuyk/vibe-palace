@@ -68,3 +68,26 @@ func (e *NothingIndexableError) Error() string {
 	}
 	return fmt.Sprintf("project %q has nothing to search yet; run `vp index rebuild %s`", e.Project, e.Project)
 }
+
+// IndexNotBuiltError reports that Project has content to index but no search
+// index is built or servable on THIS host yet, and building one now would embed
+// a cold corpus synchronously (or the embedding model could not be made ready in
+// time). The search path returns it instead of blocking the caller on that embed
+// — the hang this guards against. It is distinct from ErrIndexNotReady (a
+// momentarily busy project the caller should simply retry): this one names the
+// one-time remedy, `vp index rebuild`, exactly as NothingIndexableError does, and
+// is surfaced unwrapped to the MCP and CLI surfaces so the model reads the
+// remediation text cleanly.
+//
+// An empty Project means a cross-project search found every non-empty project
+// not-ready; a non-empty Project names the single project asked for.
+type IndexNotBuiltError struct {
+	Project string
+}
+
+func (e *IndexNotBuiltError) Error() string {
+	if e.Project == "" {
+		return "no project in the vault has a built search index on this host yet; run `vp index rebuild <project>`"
+	}
+	return fmt.Sprintf("project %q has no built search index on this host yet; run `vp index rebuild %s`", e.Project, e.Project)
+}

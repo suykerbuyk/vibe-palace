@@ -147,11 +147,9 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 	ctx := context.Background()
 
 	// A truly empty project has nothing any tier could index. Refuse it here,
-	// before the synchronous rebuild, so the CLI pays no model load and exits
-	// non-zero naming `vp index rebuild` (ADR-014 decision 8). This mirrors
-	// Engine.Search's own pre-build check, which the MCP surface relies on;
-	// doing it here too keeps the CLI from loading the embedder for an empty
-	// project via the explicit Rebuild below.
+	// before the search, so the CLI pays no model load and exits non-zero naming
+	// `vp index rebuild` (ADR-014 decision 8). Engine.Search makes the same check,
+	// so this is belt-and-suspenders for the CLI's own exit-code mapping.
 	if empty, err := eng.TrulyEmpty(proj); err != nil {
 		fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 		return cli.ExitSystem
@@ -160,12 +158,11 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 		return cli.ExitUser
 	}
 
-	// Synchronous rebuild for the target project.
-	if _, err := eng.Rebuild(ctx, proj); err != nil {
-		fmt.Fprintf(os.Stderr, "vp search: rebuild index: %v\n", err)
-		return cli.ExitSystem
-	}
-
+	// No explicit pre-rebuild here: Engine.Search builds the project's index on
+	// first use through the bounded, refuse-before-embed search path, so the CLI
+	// inherits the same "never hang on a cold index" guarantee as the MCP surface
+	// (a stray unbounded Rebuild here would bypass that gate). The unbounded full
+	// rebuild stays reachable only through `vp index rebuild`.
 	results, err := eng.Search(ctx, query, search.SearchFilters{
 		Project:    proj,
 		Wing:       wing,
@@ -194,6 +191,14 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 		// UnknownProjectError case.
 		var none *search.NothingIndexableError
 		if errors.As(err, &none) {
+			fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
+			return cli.ExitUser
+		}
+		// A cold/unbuilt index on this host is a user-facing "run `vp index
+		// rebuild`" condition (ExitUser), not "I could not search" (ExitSystem):
+		// the search refused to embed the corpus synchronously rather than hang.
+		var notBuilt *search.IndexNotBuiltError
+		if errors.As(err, &notBuilt) {
 			fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 			return cli.ExitUser
 		}

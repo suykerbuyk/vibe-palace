@@ -103,6 +103,20 @@ type Engine struct {
 	// once per engine, from lockProject, before the engine takes any project
 	// mutex or commit lock.
 	indexSweep sync.Once
+
+	// Proactive embedder warm-up (B1.1). A search needs the embedding model to
+	// embed its query, and constructing a LazyEmbedder's ONNX model runs inside
+	// a sync.Once that cannot be interrupted by a ctx. So the construction is
+	// kicked ONCE, off the caller's goroutine, and the search path waits a
+	// bounded time for it (waitEmbedderReady) instead of ever calling Embed on a
+	// cold model. warmDone is closed when the construct returns (success OR
+	// failure); warmFailed records a failure so the wait can fast-fail. warmWG
+	// lets Close wait for an in-flight construct before closing the embedder, so
+	// no construct publishes a live model session into a torn-down process (S-D1).
+	warmOnce   sync.Once
+	warmDone   chan struct{}
+	warmFailed atomic.Bool
+	warmWG     sync.WaitGroup
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -133,6 +147,7 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		buildsRun:     make(map[string]*projectBuild),
 		invalidated:   make(map[string]uint64),
 		sems:          make(map[string]chan struct{}),
+		warmDone:      make(chan struct{}),
 	}
 }
 
@@ -143,9 +158,116 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 // user-facing answer.
 var ErrIndexNotReady = errors.New("search index not built yet: the project is busy")
 
+// errEmbedRefused is the internal sentinel a search-path build returns when it
+// WOULD embed more than missBudget cache misses and nothing servable is in
+// memory: the build refuses before touching the embedder, so the caller never
+// blocks on a whole-corpus embed (the hang this fix closes). ensureIndex maps it
+// to serve-as-is (HasIndex) or *IndexNotBuiltError. It is never surfaced raw.
+var errEmbedRefused = errors.New("search: build would embed a cold corpus on the search path")
+
+// Search-path bounds (all vars so a test can shorten them). None of them is the
+// guarantee on its own; together they ensure no cold/uninterruptible path blocks
+// the caller unboundedly.
+var (
+	// readyWait is how long the search path waits for the embedding model to
+	// finish constructing before it refuses, rather than ever calling Embed on a
+	// cold model (which blocks uninterruptibly inside the LazyEmbedder once).
+	readyWait = 15 * time.Second
+	// joinBuildTimeout bounds how long a search waits to join another search's
+	// in-flight build of the same project before it serves-as-is or refuses.
+	joinBuildTimeout = 5 * time.Second
+	// embedBudget is a wall-clock backstop around embedMisses on the search path
+	// (a build already admitted past the miss-count gate), a child of the
+	// caller's ctx. It never wraps lockProject nor the commit closure.
+	embedBudget = 10 * time.Second
+)
+
 // joinBuildHook, when a test sets it, runs when a search joins another
 // search's in-flight build of the same project.
 var joinBuildHook func(project string)
+
+// WarmEmbedder kicks a one-time, detached construction of the embedding model so
+// it is ready (or has failed) by the time the first search needs it, moving the
+// tens-of-seconds ONNX load (and ~90MB first-ever download) off the caller's
+// goroutine. It returns immediately. The construct runs under warmWG so Close
+// can wait for it (S-D1). Safe to call repeatedly and from any surface; a
+// non-lazy or already-ready embedder just closes the signal.
+func (e *Engine) WarmEmbedder() {
+	if e == nil || e.embedder == nil {
+		return
+	}
+	e.warmOnce.Do(func() {
+		if e.EmbedderReady() {
+			close(e.warmDone)
+			return
+		}
+		e.warmWG.Add(1)
+		go func() {
+			defer e.warmWG.Done()
+			// Dimensions forces the lazy construct; its result is memoized, so a
+			// later on-demand kick or a real Embed is a no-op construct.
+			if _, err := e.embedder.Dimensions(); err != nil || !e.EmbedderReady() {
+				e.warmFailed.Store(true)
+			}
+			close(e.warmDone)
+		}()
+	})
+}
+
+// waitEmbedderReady returns nil once the embedding model is ready, or
+// *IndexNotBuiltError if it is not ready within budget, has already failed to
+// construct, or the caller ctx is cancelled first. It NEVER calls
+// Embed/EmbedBatch/Dimensions on the caller's goroutine — the construct runs
+// only under WarmEmbedder's detached goroutine — so a cold model can never block
+// the caller here (B1.1). A ready embedder (warm, or a non-lazy test embedder)
+// returns nil on entry with no wait.
+func (e *Engine) waitEmbedderReady(ctx context.Context, project string, budget time.Duration) error {
+	if e.EmbedderReady() {
+		return nil
+	}
+	e.WarmEmbedder() // idempotent kick: covers a surface that did not warm at startup
+	select {
+	case <-e.warmDone:
+		if e.EmbedderReady() {
+			return nil
+		}
+		return &IndexNotBuiltError{Project: project} // construct finished but failed: fast-fail
+	case <-time.After(budget):
+		return &IndexNotBuiltError{Project: project}
+	case <-ctx.Done():
+		return &IndexNotBuiltError{Project: project}
+	}
+}
+
+// mapBuildErr turns a build's raw error into the search path's answer. A "soft"
+// condition — a busy lock, a refused cold-corpus embed, or a build-budget
+// deadline — serves the project's in-memory index as-is when one is actually
+// servable (servableInMemory: a non-empty index in memory, S1), so a healthy
+// index still answers while the project is momentarily unbuildable. The
+// predicate deliberately does NOT require e.loaded (as HasIndex does): a
+// timed-out capture insert clears e.loaded to mark the project out of date, yet
+// its already-built in-memory index must still answer (ADR-014 decision 7); only
+// an empty / cold-insert index (Len()==0) refuses. With nothing servable, a busy
+// lock stays ErrIndexNotReady (retry), while a refused embed or a deadline
+// becomes *IndexNotBuiltError (run `vp index rebuild`). Every other error passes
+// through unchanged.
+func (e *Engine) mapBuildErr(project string, err error) error {
+	if err == nil {
+		return nil
+	}
+	soft := isLockTimeout(err) || errors.Is(err, errEmbedRefused) || errors.Is(err, context.DeadlineExceeded)
+	if !soft {
+		return err
+	}
+	if e.servableInMemory(project) {
+		slog.Info("search serves the loaded index as-is: the project cannot rebuild right now", "project", project)
+		return nil
+	}
+	if isLockTimeout(err) {
+		return fmt.Errorf("%w: %s", ErrIndexNotReady, project)
+	}
+	return &IndexNotBuiltError{Project: project}
+}
 
 // ensureIndex builds or reloads a project's index when the store says it must,
 // and returns once the project can be searched. It must be called with no
@@ -175,16 +297,29 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 		if joinBuildHook != nil {
 			joinBuildHook(project)
 		}
-		<-b.done
-		return b.err
+		// Bound the join (B1.2): a joiner must never wait unboundedly on another
+		// search's build — the owner may be a long build, and the caller ctx
+		// (MCP) has no deadline. On the bound or on ctx cancellation, serve the
+		// index as-is when one is servable (S1), else refuse. b.err was already
+		// mapped by the owner, so a received value is returned directly.
+		select {
+		case <-b.done:
+			return b.err
+		case <-time.After(joinBuildTimeout):
+			if e.servableInMemory(project) {
+				return nil
+			}
+			return &IndexNotBuiltError{Project: project}
+		case <-ctx.Done():
+			if e.servableInMemory(project) {
+				return nil
+			}
+			return &IndexNotBuiltError{Project: project}
+		}
 	}
 	b := &projectBuild{done: make(chan struct{})}
 	e.buildsRun[project] = b
 	e.buildMu.Unlock()
-
-	e.mu.RLock()
-	_, inMemory := e.indexes[project]
-	e.mu.RUnlock()
 
 	// However the build ends, the in-flight entry is cleared and every joined
 	// search released: a build that panicked must not leave later searches of
@@ -202,16 +337,12 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 		}
 	}()
 
-	_, b.err = e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch)
+	_, rerr := e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch, true)
 	finished = true
-	if isLockTimeout(b.err) {
-		if ok || inMemory {
-			slog.Info("search serves the loaded index: the project is busy", "project", project)
-			b.err = nil
-		} else {
-			b.err = fmt.Errorf("%w: %s", ErrIndexNotReady, project)
-		}
-	}
+	// Map the raw build outcome once, here, so every joined search receives the
+	// same already-mapped answer from b.err (a busy lock, a refused cold embed,
+	// or a build-budget deadline → serve-as-is or the typed not-ready error).
+	b.err = e.mapBuildErr(project, rerr)
 	e.endBuild(project, b)
 	return b.err
 }
@@ -247,12 +378,13 @@ func (e *Engine) endBuild(project string, b *projectBuild) {
 // a project that has since moved to another vault (ListAllProjects stops
 // listing it; nothing evicts the index), and searching every index would serve
 // it.
-func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, error) {
+func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, bool, error) {
 	projects, err := e.vault.ListAllProjects()
 	if err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
+		return nil, false, fmt.Errorf("list projects: %w", err)
 	}
 	listed := make(map[string]bool, len(projects))
+	skippedNotReady := false
 	for _, p := range projects {
 		// A truly empty project (a bare Projects/<slug>/ scaffold, a project
 		// with only tracked archives, etc.) is skipped, never built: the skip
@@ -261,17 +393,25 @@ func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, error) 
 		// project constructs no embedder and pays no model load.
 		empty, err := e.TrulyEmpty(p.Slug)
 		if err != nil {
-			return nil, fmt.Errorf("check project emptiness for %s: %w", p.Slug, err)
+			return nil, false, fmt.Errorf("check project emptiness for %s: %w", p.Slug, err)
 		}
 		if empty {
 			continue
 		}
 		if err := e.ensureIndex(ctx, p.Slug); err != nil {
-			return nil, fmt.Errorf("build index for %s: %w", p.Slug, err)
+			// One project's cold/unbuilt index must not fail the whole
+			// cross-project search and drop every warm project (B1 §6): skip it
+			// and answer from the rest. Only a genuine error fails hard.
+			var nb *IndexNotBuiltError
+			if errors.As(err, &nb) {
+				skippedNotReady = true
+				continue
+			}
+			return nil, false, fmt.Errorf("build index for %s: %w", p.Slug, err)
 		}
 		listed[p.Slug] = true
 	}
-	return listed, nil
+	return listed, skippedNotReady, nil
 }
 
 // HasIndex reports whether project already has a complete, non-empty
@@ -286,6 +426,25 @@ func (e *Engine) HasIndex(project string) bool {
 	_, built := e.loaded[project]
 	e.buildMu.Unlock()
 	if !built {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	idx, ok := e.indexes[project]
+	return ok && idx != nil && idx.Len() > 0
+}
+
+// servableInMemory reports whether project has a non-empty index in memory right
+// now, regardless of whether it is still marked current (e.loaded). It is the
+// serve-as-is predicate for a soft build failure (busy lock, refused cold embed,
+// or a build-budget deadline): a project whose in-memory index was marked out of
+// date by a timed-out capture insert still answers from that index (ADR-014
+// decision 7), while an empty or cold-insert index (Len()==0) does NOT — that
+// refuses with *IndexNotBuiltError rather than returning an empty success (S1).
+// Unlike HasIndex it does not require e.loaded, because the whole point of
+// serving as-is is a project that cannot rebuild right now.
+func (e *Engine) servableInMemory(project string) bool {
+	if e == nil {
 		return false
 	}
 	e.mu.RLock()
@@ -343,23 +502,45 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 		}
 	}
 
+	// Every semantic search embeds its query, so the embedding model must be
+	// ready before either the build (which may embed a notes miss) or the query
+	// embed runs. Wait a bounded time for the proactively-warmed model instead of
+	// ever calling Embed on a cold one (which blocks uninterruptibly); on expiry
+	// or a failed construct, refuse with the typed not-ready error (B1.1). A warm
+	// model returns immediately. Bootstrap's SearchReady does NOT reach here — it
+	// short-circuits on !EmbedderReady() and never waits.
+	if err := e.waitEmbedderReady(ctx, f.Project, readyWait); err != nil {
+		return nil, err
+	}
+
 	// Build the index(es) this search reads, on first use. Must happen before
 	// e.mu is taken — Rebuild acquires it for write.
 	if f.Project != "" {
 		if err := e.ensureIndex(ctx, f.Project); err != nil {
+			// The typed not-ready error names `vp index rebuild`; surface it
+			// unwrapped (like NothingIndexableError) so the handler/CLI get the
+			// clean remediation text, not a `build index for …` prefix (S2).
+			var nb *IndexNotBuiltError
+			if errors.As(err, &nb) {
+				return nil, nb
+			}
 			return nil, fmt.Errorf("build index for %s: %w", f.Project, err)
 		}
 		return e.searchReady(ctx, query, f, nil)
 	}
-	listed, err := e.ensureAllIndexes(ctx)
+	listed, skippedNotReady, err := e.ensureAllIndexes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Cross-project search skips truly empty projects and still answers; it
-	// errors only when every project in the vault is truly empty (ADR-014
-	// decision 8). ensureAllIndexes has already dropped the empties from
-	// listed, so an empty set means nothing in the vault is indexable.
+	// Cross-project search skips truly empty projects (and not-ready ones) and
+	// still answers; it errors only when every project in the vault dropped out.
+	// ensureAllIndexes has already removed both from listed, so an empty set with
+	// no not-ready skip means nothing in the vault is indexable; an empty set
+	// where a project was skipped not-ready names `vp index rebuild` instead (S2).
 	if len(listed) == 0 {
+		if skippedNotReady {
+			return nil, &IndexNotBuiltError{}
+		}
 		return nil, &NothingIndexableError{}
 	}
 	return e.searchReady(ctx, query, f, listed)
@@ -852,7 +1033,7 @@ type RebuildStats struct {
 // for the project's mutex and commit lock with no timeout. The lazy search
 // path (ensureIndex) builds through the same code with searchLockTimeout.
 func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeSearch)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeSearch, false)
 }
 
 // rebuildMode selects how a rebuild treats cache misses, tier by tier (the
@@ -888,7 +1069,7 @@ var (
 // every local-tier cache miss, so a completed `vp index rebuild` leaves no
 // missing vector. The rebuild driver calls it.
 func (e *Engine) RebuildExplicit(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeExplicit)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeExplicit, false)
 }
 
 // RebuildNoEmbed rebuilds from embed-cache hits only, embedding nothing. A
@@ -896,7 +1077,7 @@ func (e *Engine) RebuildExplicit(ctx context.Context, project string) (RebuildSt
 // `--no-embed` run can never read current with no vectors. The rebuild driver
 // calls it for `--no-embed`.
 func (e *Engine) RebuildNoEmbed(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeNoEmbed)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeNoEmbed, false)
 }
 
 // rebuildAndRemember rebuilds project and remembers the store counter its
@@ -905,13 +1086,13 @@ func (e *Engine) RebuildNoEmbed(ctx context.Context, project string) (RebuildSta
 // counter past the remembered value, and the next search rebuilds again. The
 // cache forgets its remembered regime, so a regime another process replaced
 // is read afresh.
-func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration, mode rebuildMode) (RebuildStats, error) {
+func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool) (RebuildStats, error) {
 	e.buildMu.Lock()
 	inv := e.invalidated[project]
 	e.buildMu.Unlock()
 	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.cache.Forget(project)
-	return e.rebuild(ctx, project, timeout, mode, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
+	return e.rebuild(ctx, project, timeout, mode, refuse, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
 }
 
 // buildStart is what a build knew when it started: the store counter (and
@@ -987,7 +1168,7 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 // past timeout skips that write: the batch serves this process from memory and
 // is embedded again later, and the reap waits for the next build. Only a busy
 // mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
-func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, start buildStart) (RebuildStats, error) {
+func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool, start buildStart) (RebuildStats, error) {
 	var stats RebuildStats
 	pl, err := e.lockProject(ctx, project, timeout)
 	if err != nil {
@@ -1221,8 +1402,37 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	stats.Embedded = len(missIdx)
 	stats.CacheHits = stats.Indexed - stats.Embedded
 
+	// Corpus gate (§1): on the search path, refuse to embed a cold corpus rather
+	// than block the caller for the whole embed. stats.Embedded is the miss count
+	// the walk above already produced (archives are excluded by embedLocal), so a
+	// warm cache (zero misses) still builds. A budget of one embed batch lets a
+	// tiny never-built project build; anything larger returns the sentinel, which
+	// ensureIndex maps to serve-as-is (HasIndex) or *IndexNotBuiltError. Nothing
+	// has been installed yet, so e.indexes/e.loaded are left untouched.
+	if refuse {
+		budget := e.config.EmbedderBatchSize
+		if budget <= 0 {
+			budget = 32
+		}
+		if stats.Embedded > budget {
+			return stats, errEmbedRefused
+		}
+	}
+
 	commit := func(batch map[string][]float32) { e.commitVectors(ctx, pl, timeout, batch, &chain) }
-	if err := e.embedMisses(ctx, project, ids, vecs, missIdx, missText, commit); err != nil {
+	// embedBudget (§5) is a wall-clock backstop around embedMisses ONLY, on the
+	// search path with misses to embed — a child of the caller ctx, never passed
+	// to lockProject (already held) nor to the commit closure (which keeps the
+	// outer ctx + timeout). embedMisses honors ctx between batches, so a deadline
+	// stops it before the index is installed below; ensureIndex maps the deadline
+	// like a refusal.
+	embedCtx := ctx
+	if refuse && embedBudget > 0 && stats.Embedded > 0 {
+		var cancel context.CancelFunc
+		embedCtx, cancel = context.WithTimeout(ctx, embedBudget)
+		defer cancel()
+	}
+	if err := e.embedMisses(embedCtx, project, ids, vecs, missIdx, missText, commit); err != nil {
 		return stats, err
 	}
 
@@ -1801,6 +2011,10 @@ func candidateCount(limit int) int {
 // then the embedder. The remembered counters are cleared with the index map,
 // so no project reads as built once its index is gone.
 func (e *Engine) Close() error {
+	// Wait for any in-flight proactive warm-up construct to finish before closing
+	// the embedder, so a construct goroutine never publishes a live model session
+	// into a process whose embedder has already been closed (S-D1).
+	e.warmWG.Wait()
 	e.mu.Lock()
 	indexes := e.indexes
 	e.indexes = make(map[string]VectorIndex)

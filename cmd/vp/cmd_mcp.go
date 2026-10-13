@@ -65,11 +65,34 @@ func serveMCP(ctx context.Context, in io.Reader, out io.Writer) int {
 	// not a session start.
 	spawnStartupIngestBackstop(stack)
 
+	// Proactive embedder warm-up (B1.1): kick the ONNX model construction now, in
+	// the idle window before the first search, so a cold model does not block the
+	// first `vp_search` caller. Detached and best-effort (WarmEmbedder returns
+	// immediately and runs the load on its own goroutine). Like the ingester
+	// backstop, this is a session-start action, so `vp mcp serve` does NOT do it.
+	spawnStartupEmbedderWarmup(stack)
+
 	if err := stack.srv.Listen(ctx, in, out); err != nil {
 		fmt.Fprintf(os.Stderr, "vp: %v\n", err)
 		return cli.ExitSystem
 	}
 	return cli.ExitOK
+}
+
+// startupEmbedderWarmupEnabled gates the proactive embedder warm-up. It is a
+// package variable so a test can disable the model load (there is no dedicated
+// "semantic search enabled" config today to gate on; when one lands, both this
+// and the search path's on-demand kick should consult it).
+var startupEmbedderWarmupEnabled = true
+
+// spawnStartupEmbedderWarmup kicks the engine's one-time, detached embedder
+// construction at vp mcp startup. WarmEmbedder itself is non-blocking and
+// idempotent; the gate only exists so tests need not load a real model.
+func spawnStartupEmbedderWarmup(stack *serverStack) {
+	if !startupEmbedderWarmupEnabled || stack == nil || stack.eng == nil {
+		return
+	}
+	stack.eng.WarmEmbedder()
 }
 
 // spawnStartupIngestBackstop starts one detached `vp drain archives` run at vp

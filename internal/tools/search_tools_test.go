@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -177,6 +178,40 @@ func TestSearchToolTrulyEmptyIsError(t *testing.T) {
 	var none *search.NothingIndexableError
 	if !errors.As(err, &none) {
 		t.Fatalf("error is not *search.NothingIndexableError: %v", err)
+	}
+	if !strings.Contains(err.Error(), "vp index rebuild proj") {
+		t.Errorf("error does not name `vp index rebuild proj`: %v", err)
+	}
+}
+
+// TestSearchToolColdIndexIsNotBuiltErrorUnwrapped pins the cold-index guarantee:
+// a project with content but a cold, over-budget corpus (no cached vectors, no
+// in-memory index) is a tool error naming `vp index rebuild`, surfaced UNWRAPPED
+// (no `search:` prefix), never a hung caller and never an empty result.
+func TestSearchToolColdIndexIsNotBuiltErrorUnwrapped(t *testing.T) {
+	eng, vault := testSearchEngine(t)
+	testutil.InitProject(t, vault.Root, "proj")
+	// Append-only (no IndexDrawers), so every chunk is a cold cache miss; more
+	// than one embed batch so the search path refuses before embedding.
+	for i := 0; i < 40; i++ {
+		d := storage.Drawer{Content: "cold distinct drawer " + strconv.Itoa(i), Hall: "facts", SourceType: "session", FiledAt: "2026-04-07T10:00:00Z"}
+		if err := vault.AppendDrawer("proj", "wing", "room", d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := SearchTool(eng)
+
+	_, err := tool.Handler(context.Background(),
+		json.RawMessage(`{"query": "anything", "project": "proj"}`))
+	if err == nil {
+		t.Fatal("expected a not-built error for a cold over-budget index, got nil")
+	}
+	var nb *search.IndexNotBuiltError
+	if !errors.As(err, &nb) {
+		t.Fatalf("error is not *search.IndexNotBuiltError: %v", err)
+	}
+	if strings.Contains(err.Error(), "search:") || strings.Contains(err.Error(), "build index for") {
+		t.Fatalf("error text is wrapped, want unwrapped: %v", err)
 	}
 	if !strings.Contains(err.Error(), "vp index rebuild proj") {
 		t.Errorf("error does not name `vp index rebuild proj`: %v", err)

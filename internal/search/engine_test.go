@@ -533,7 +533,7 @@ func TestRebuildSkipsTheReapWhileTheCommitLockIsBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, rerr := eng.rebuildAndRemember(ctx, "proj", 0, modeSearch)
+	stats, rerr := eng.rebuildAndRemember(ctx, "proj", 0, modeSearch, false)
 	if rerr != nil || stats.Reaped != 0 {
 		t.Fatalf("lazy build with the lock busy: err=%v reaped=%d; want no error and 0", rerr, stats.Reaped)
 	}
@@ -543,7 +543,7 @@ func TestRebuildSkipsTheReapWhileTheCommitLockIsBusy(t *testing.T) {
 	if err := held.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if stats, err := eng.rebuildAndRemember(ctx, "proj", 0, modeSearch); err != nil || stats.Reaped != 1 {
+	if stats, err := eng.rebuildAndRemember(ctx, "proj", 0, modeSearch, false); err != nil || stats.Reaped != 1 {
 		t.Fatalf("lazy build with the lock free: err=%v reaped=%d; want 1", err, stats.Reaped)
 	}
 }

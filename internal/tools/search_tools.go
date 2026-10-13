@@ -161,6 +161,13 @@ func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 			if errors.As(err, &none) {
 				return nil, none
 			}
+			// A cold/unbuilt index on this host is a tool error naming `vp index
+			// rebuild`, never a hung caller: surface it unwrapped so the model
+			// reads the remediation text cleanly (not a `search:` prefix).
+			var notBuilt *search.IndexNotBuiltError
+			if errors.As(err, &notBuilt) {
+				return nil, notBuilt
+			}
 			return nil, fmt.Errorf("search: %w", err)
 		}
 		if results == nil {
@@ -193,6 +200,12 @@ func crossSearchHandler(engine *search.Engine) mcp.HandlerFunc {
 			var none *search.NothingIndexableError
 			if errors.As(err, &none) {
 				return nil, none
+			}
+			// Every non-empty project not-ready on this host: surface the typed
+			// error unwrapped, naming `vp index rebuild` (never a hung caller).
+			var notBuilt *search.IndexNotBuiltError
+			if errors.As(err, &notBuilt) {
+				return nil, notBuilt
 			}
 			return nil, fmt.Errorf("search: %w", err)
 		}
