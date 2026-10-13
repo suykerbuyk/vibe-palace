@@ -179,27 +179,70 @@ printf '%s\n' "$out"
 assert_contains "$out" "pre-authored-only-$(date -u +%Y-%m-%d)-2" "re-apply did not create the -2 tag"
 ( cd "$PERSONAL_COPY" && git push -q origin "HEAD:$(git rev-parse --abbrev-ref HEAD)" )
 
-note "Step 7: empty-vault path on the quantum copy"
+note "Step 7: migrate the quantum copy (path detected from the plan: empty-vault or normal)"
 out="$("$VP" migrate authored-only-palace --vault "$QUANTUM_COPY" --yes --attest "$ATTEST")"
 printf '%s\n' "$out"
-assert_contains "$out" "empty-vault" "quantum copy did not take the empty-vault path"
-qsurf="$(grep -oE 'surface = [0-9]+' "$QUANTUM_COPY/Audits/.surface" | grep -oE '[0-9]+')"
-[ -n "$qsurf" ] || die "Audits/.surface absent after the empty-vault migration"
-grep -q '^authored_only = ' "$QUANTUM_COPY/.vibe-palace/vault.toml" || die "marker absent after the empty-vault migration"
+qpath="$(printf '%s\n' "$out" | sed -n 's/^path: //p')"
+case "$qpath" in
+  empty-vault*|normal*) : ;;
+  *) die "quantum migrate reported neither empty-vault nor normal path (got: '$qpath')";;
+esac
+
+# Postconditions common to both paths (mirror the personal migration, Step 2 / 2b).
+assert_contains "$out" "git push origin HEAD:" "quantum migration did not print the operator push line"
+grep -q '^authored_only = ' "$QUANTUM_COPY/.vibe-palace/vault.toml" || die "marker absent after the quantum migration ($qpath)"
+grep -q 'palace/\*/drawers/' "$QUANTUM_COPY/.gitignore" || die "derived ignore lines absent after the quantum migration ($qpath)"
+# No tracked drawer survives (same glob as personal Step 2).
+if ( cd "$QUANTUM_COPY" && git ls-files -- 'palace/*/drawers/*' | grep -q . ); then
+  die "a tracked drawer survived the quantum migration ($qpath)"
+fi
+# palace/*/kg/ is deliberately NOT ignored: authored triples (origin: authored) stay tracked;
+# only EXTRACTED triples are dropped. Every surviving tracked triple must be authored.
+for tri in $(cd "$QUANTUM_COPY" && git ls-files -- 'palace/*/kg/triples/*.json'); do
+  case "$(cd "$QUANTUM_COPY" && git show "HEAD:$tri")" in
+    *'"origin": "authored"'*) : ;;
+    *) die "a non-authored triple survived the quantum migration: $tri";;
+  esac
+done
+# No blob of 20 MiB or more remains tracked (same awk as Step 2b).
+qbig="$(cd "$QUANTUM_COPY" && git ls-tree -r -l HEAD | awk '$4 ~ /^[0-9]+$/ && $4+0 >= 20*1024*1024 {print $5" ("$4" bytes)"}')"
+[ -z "$qbig" ] || die "a blob of 20 MiB or more is still tracked in the quantum copy: $qbig"
+
+# Path-specific postconditions.
+if [ "${qpath%% *}" = empty-vault ]; then
+  qsurf="$(grep -oE 'surface = [0-9]+' "$QUANTUM_COPY/Audits/.surface" | grep -oE '[0-9]+')"
+  [ -n "$qsurf" ] || die "Audits/.surface absent after the empty-vault migration"
+else
+  # normal path: the plan states the surface gate takes the MAXIMUM of existing stamps, so no
+  # Audits/.surface is written and a revert needs no re-stamp. Verify the plan said so.
+  assert_contains "$out" "gate takes the maximum" "normal-path quantum migrate did not print the max-stamp rollback rule"
+fi
 ( cd "$QUANTUM_COPY" && git push -q origin "HEAD:$(git rev-parse --abbrev-ref HEAD)" )
 
 note "Step 8: quantum split copy (dry-run) — both vaults migrated; then the two-marker refusal"
-# Positive: a copy from the migrated personal remote into the migrated quantum
-# copy plans without a 20 MiB blob and names the push targets.
-out="$("$VP" vault copy qa-metabuild-system orchestrator --from "${PERSONAL_COPY}.git" --vault "$QUANTUM_COPY" --dry-run)"
-printf '%s\n' "$out"
-case "$out" in *"20"*"MiB"*"refus"*|*"exceeds"*) die "the split copy plan reports a 20 MiB blob";; esac
-# Negative: a copy from the UNMARKED (reverted) source is refused by the
-# two-marker refusal and writes nothing.
-if "$VP" vault copy qa-metabuild-system --from "$UNMARKED_BARE" --vault "$QUANTUM_COPY" --dry-run >/dev/null 2>&1; then
-  die "a copy from an UNMARKED source into a migrated destination was NOT refused (two-marker refusal missing)"
+# Positive: copy from the migrated personal remote (a file:// URL; a bare host path is refused by
+# validateCopyRequest before any plan) into the migrated quantum copy. It must SUCCEED and print
+# its dry-run plan and push targets.
+if ! out="$("$VP" vault copy qa-metabuild-system orchestrator --from "file://${PERSONAL_COPY}.git" --vault "$QUANTUM_COPY" --dry-run 2>&1)"; then
+  die "the positive split copy dry-run failed: $out"
 fi
-printf 'two-marker refusal held: an unmarked source was refused.\n'
+printf '%s\n' "$out"
+assert_contains "$out" "DRY RUN" "the split copy dry-run did not announce DRY RUN"
+assert_contains "$out" "push targets:" "the split copy dry-run did not name its push targets"
+# A real byte check (printCopy never prints MiB/exceeds): no source blob of 20 MiB or more in the
+# copied projects at the source tip (same awk as Step 2b).
+srcbig="$(cd "$PERSONAL_COPY" && git ls-tree -r -l HEAD -- Projects/qa-metabuild-system Projects/orchestrator | awk '$4 ~ /^[0-9]+$/ && $4+0 >= 20*1024*1024 {print $5" ("$4" bytes)"}')"
+[ -z "$srcbig" ] || die "a source blob of 20 MiB or more would be copied: $srcbig"
+# Negative: a copy from the UNMARKED (reverted) source must be refused by the two-marker rule, and
+# the refusal must NAME the migration marker — not merely exit non-zero.
+if nout="$("$VP" vault copy qa-metabuild-system --from "file://${UNMARKED_BARE}" --vault "$QUANTUM_COPY" --dry-run 2>&1)"; then
+  die "a copy from an UNMARKED source into a migrated destination was NOT refused: $nout"
+fi
+case "$nout" in
+  *"carries no migration marker"*|*"authored_only"*) : ;;
+  *) die "the unmarked-source copy was refused for the wrong reason, not the two-marker rule: $nout";;
+esac
+printf 'two-marker refusal held: an unmarked source was refused by the migration marker.\n'
 
 note "REHEARSAL PASSED"
 trap - EXIT
