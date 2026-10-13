@@ -269,14 +269,6 @@
       "reason": "TEST SEAM, deliberately uninvoked in production (delta re-review of pending-archive-ingester-and-per-archive-commit-step, M2): it lets a package that drives the store (internal/ingest) kill a commit right after a named durable step, as a crashed process would, so the ingester's crash tests (TestRunDropsAVanishedTargetsPartialKG) can prove a vanished supersede target's unledgered KG records are dropped. It only swaps the package's own commitStep seam and returns the restore; no production code calls it."
     },
     {
-      "id": "uninvoked indexstore.Tx.DeleteGraph",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (a corrupt or mismatched graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked indexstore.Tx.WriteGraph",
-      "reason": "STAGED API, ADR-014 (host-local derived index under palace/.local), task host-local-index-store-ledger-and-fingerprint slice 2 (chunk store, ledger, commit steps). Non-test caller: hnsw-graph-file-envelope-and-warm-start (saving the graph). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked mcp.KnowledgeURI",
       "reason": "REAL FINDING, owned by task content-uri-idiom-reaches-only-tasks-and-learnings. The resource template IS registered so vibe-palace://knowledge/<project> resolves; no tool response ever hands one to a client. Its three former siblings here — CommandURI, SessionURI, SkillURI — were emitted by hoist-recovery-handles-above-bulk-across-the-surface and left this baseline; KnowledgeURI could NOT follow them, because it addresses a Knowledge markdown FILE while vp_get_knowledge returns KG TRIPLES. It is not a recovery handle for that tool's body, it is a pointer to a different document, so emitting it would have been a lie rather than a fix. Giving vp_get_knowledge a real hatch means paging its unbounded triple list, which is a design. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — fix deferred to the owning task; declared here."
     },
@@ -295,6 +287,22 @@
     {
       "id": "uninvoked search.Engine.IndexDrawers",
       "reason": "TODO: accepted at baseline creation — explain or fix"
+    },
+    {
+      "id": "uninvoked search.deleteGraph",
+      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A: the hnsw.idx envelope + warm-start). Deletes a corrupt graph through a held commit-lock Tx. Exercised by hnsw_persist_test.go; its non-test caller is Unit B (ensureIndex, on a `corrupt` classification) and Unit E (the graph-heal hook). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked search.newHNSWIndexFromDisk",
+      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). The warm-start constructor: loads hnsw.idx into a ready index, else reports (nil,false) so the caller builds from vectors. Production kind selection stays kindBrute in Unit A; its non-test caller is Unit B (ensureIndex wiring, edge 16->6). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked search.readGraphHeader",
+      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). Header-only, lock-free fingerprint read ('a few dozen bytes', 16-N2/N3); its non-test caller is Unit E's graph-heal hook, which compares a saved graph's fingerprint without parsing the body. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
+    },
+    {
+      "id": "uninvoked search.saveGraph",
+      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). Writes the serialised envelope through a held commit-lock Tx with a witness/epoch re-check. Exercised by hnsw_persist_test.go; its non-test callers are Units B/C/D (conversion, debounced save, dual-write). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked sourceaudit.Baseline.Diff",

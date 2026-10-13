@@ -91,6 +91,11 @@ const hnswLibraryVersion = "v0.6.2-0.20260622133054-36cab6028fed"
 // rebuildBatch is how many nodes a rebuild adds between cancellation checks.
 const rebuildBatch = 256
 
+// defaultMl is the library's level-generation factor (hnsw.NewGraph sets it to
+// 0.25). hnswParams does not carry Ml, so loadGraph re-applies this constant
+// after Import, which overwrites Ml from the file (coder/hnsw encode.go:180).
+const defaultMl = 0.25
+
 // Catch-up bounds for a finished rebuild. Writes keep landing (and being
 // logged) while a rebuild builds, and replaying an upsert is a full graph
 // insertion: 4,700 writes logged during a 20k rebuild took 13.4 s to replay.
@@ -173,14 +178,15 @@ func newHNSWState(p hnswParams) hnswState {
 
 // put stores vec under id: a fresh key, after tombstoning the id's old key if
 // it had one. Keys are never reused, so no key is ever added to the library
-// twice (re-adding a key panics upstream, issue #15).
-func (s *hnswState) put(id string, vec []float32) {
+// twice (re-adding a key panics upstream, issue #15). h counts the add
+// (addNodes); it is the index that owns s.
+func (s *hnswState) put(h *hnswIndex, id string, vec []float32) {
 	if old, ok := s.live[id]; ok {
 		delete(s.ids, old.key)
 	}
 	key := s.nextKey
 	s.nextKey++
-	s.g.Add(hnsw.MakeNode(key, vec))
+	h.addNodes(s.g, hnsw.MakeNode(key, vec))
 	s.live[id] = hnswEntry{key: key, vec: vec}
 	s.ids[key] = id
 }
@@ -270,6 +276,23 @@ type hnswIndex struct {
 	lastReplayLen     atomic.Int64 // mutations replayed under the lock by the last swap
 	lastReplayNanos   atomic.Int64 // time that replay held the lock
 	lastCatchUpRounds atomic.Int64 // off-lock catch-up rounds before the last swap
+	libraryAdds       atomic.Int64 // nodes handed to the library's Graph.Add, across every path
+}
+
+// addNodes hands nodes to the library graph, counting them in libraryAdds. It
+// is the one wrapper for every g.Add call (Build, Insert/replay via put, and a
+// rebuild), so a warm-start Load — which only Imports — leaves the counter at
+// zero while any build-or-publish path moves it. The counter is test-only; no
+// production path reads it.
+func (h *hnswIndex) addNodes(g *hnsw.Graph[uint64], nodes ...hnsw.Node[uint64]) {
+	h.libraryAdds.Add(int64(len(nodes)))
+	g.Add(nodes...)
+}
+
+// newHNSWIndexFromState builds an index around an already-populated state, for
+// the envelope loader (hnsw_persist.go). No g.Add runs, so libraryAdds stays 0.
+func newHNSWIndexFromState(dims int, params hnswParams, st hnswState) *hnswIndex {
+	return &hnswIndex{dims: dims, params: params, st: st}
 }
 
 // newHNSWIndex creates an empty HNSW index for the given dimensionality.
@@ -316,7 +339,7 @@ func (h *hnswIndex) Build(vectors [][]float32, ids []string) error {
 		st.live[ids[i]] = hnswEntry{key: key, vec: vec}
 		st.ids[key] = ids[i]
 	}
-	st.g.Add(nodes...)
+	h.addNodes(st.g, nodes...)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -354,7 +377,7 @@ func (h *hnswIndex) Insert(id string, vector []float32) error {
 			return nil
 		}
 	}
-	h.st.put(id, vector)
+	h.st.put(h, id, vector)
 	h.gen++
 	h.logLocked(id, vector)
 	h.maybeRebuildLocked()
@@ -538,7 +561,7 @@ func (h *hnswIndex) runRebuild(ctx context.Context, b *hnswRebuild, snap []rebui
 			st.live[it.id] = hnswEntry{key: key, vec: it.vec}
 			st.ids[key] = it.id
 		}
-		st.g.Add(nodes...)
+		h.addNodes(st.g, nodes...)
 	}
 
 	// Catch up off-lock, round by round, until the unreplayed remainder is
@@ -566,7 +589,7 @@ func (h *hnswIndex) runRebuild(ctx context.Context, b *hnswRebuild, snap []rebui
 		}
 		if len(pending) <= finalReplayMax {
 			start := time.Now()
-			replayed := replayLog(&st, pending, b.g0)
+			replayed := replayLog(h, &st, pending, b.g0)
 			h.lastReplayNanos.Store(int64(time.Since(start)))
 			h.lastReplayLen.Store(int64(replayed))
 			h.lastCatchUpRounds.Store(int64(round))
@@ -587,7 +610,7 @@ func (h *hnswIndex) runRebuild(ctx context.Context, b *hnswRebuild, snap []rebui
 			if ctx.Err() != nil {
 				return
 			}
-			replayLog(&st, pending[start:min(start+rebuildBatch, len(pending))], b.g0)
+			replayLog(h, &st, pending[start:min(start+rebuildBatch, len(pending))], b.g0)
 		}
 		applied += len(pending)
 	}
@@ -595,7 +618,7 @@ func (h *hnswIndex) runRebuild(ctx context.Context, b *hnswRebuild, snap []rebui
 
 // replayLog applies the logged mutations newer than g0 to st, in order, and
 // returns how many it applied.
-func replayLog(st *hnswState, log []mutation, g0 uint64) int {
+func replayLog(h *hnswIndex, st *hnswState, log []mutation, g0 uint64) int {
 	n := 0
 	for _, m := range log {
 		if m.gen <= g0 {
@@ -604,7 +627,7 @@ func replayLog(st *hnswState, log []mutation, g0 uint64) int {
 		if m.vec == nil {
 			st.remove(m.id)
 		} else {
-			st.put(m.id, m.vec)
+			st.put(h, m.id, m.vec)
 		}
 		n++
 	}

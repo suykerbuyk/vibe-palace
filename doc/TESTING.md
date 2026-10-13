@@ -1362,6 +1362,26 @@ implementations):
 | `TestRebuildBackoffGens` | The backoff rule: `MinTombstones` writes (at least 1) after the first abandon, ×4 per further consecutive abandon, capped |
 | `TestHNSWTombstoneMeasurement` | `VP_HNSW_MEASURE=1`, by hand, asserts nothing: the 0–20% tombstone table at 5k and 20k behind `TombstoneRatio`, then one rebuild under a flat-out writer (swap or abandon, and what the lock replayed) |
 
+**HNSW graph envelope + warm-start** (`hnsw_persist_test.go`;
+`internal/indexstore/graph_write_test.go`; `third_party/coder-hnsw/validate_test.go`;
+task `hnsw-graph-file-envelope-and-warm-start`, Unit A). Each `-short`; each was
+broken once against its named mutant and failed before passing.
+
+| Test | What it proves |
+|---|---|
+| `TestGraphRoundTrip` | Build→Save→Load reconstructs every id→key pairing and every vector byte-for-byte (`nextKey` too), and searches answer over the warm graph. Mutant: an id→key mispairing in the reload loop |
+| `TestGraphLoadRejectsTrailingBytes` | A file longer than `headerSize + bodyLen` is `corrupt` (B1 exact-length bind). Mutant: bound the body to `bodyLen` and accept a longer file |
+| `TestGraphLoadRejectsBadBodyCRC` | A corrupted body-CRC trailer is `corrupt`. Mutant: skip the body-CRC check |
+| `TestGraphLoadRejectsBadHeaderCRC` | A corrupted header-CRC is `corrupt`. Mutant: skip the header-CRC check |
+| `TestGraphLoadFingerprintMismatchLeavesFile` | A differing fingerprint (EfSearch, M, or dims, one field at a time) is `mismatch`, NOT corrupt: the file is left byte-identical for the heal (Unit E). Mutant: treat a mismatch as corrupt and delete |
+| `TestGraphWarmStartSkipsBuild` | A warm start Imports and performs zero `g.Add` (`libraryAdds == 0`). Mutant: a loader that rebuilds from vectors instead of Importing |
+| `TestGraphLoadReappliesParams` | After Import (which overwrites them from the file) Load re-applies the configured `EfSearch`, `M`, `Ml` (`defaultMl`), `cosineNaNGuard` and a seeded `Rng`. Mutant: omit any single re-apply |
+| `TestGraphLoadValidateCatchesDanglingNeighbour` | A crafted envelope (valid CRCs) whose imported graph has a dangling neighbour is `corrupt` via `Graph.Validate()`. Mutant: skip `Validate` |
+| `TestGraphLoadRejectsUnknownDistance` | A crafted stream naming an unregistered distance fails Import and is `corrupt`. Mutant: classify an Import error as `mismatch` |
+| `TestGraphSaveDroppedWhenGraphMoves` | A save whose snapshot witness (`gen`/rebuild/`swaps`) no longer matches the live graph is dropped (`skipStale`), nothing written (B4). Mutant: ignore the witness and write anyway |
+| `TestWriteGraphFailurePreservesPreviousBytes` | A failed whole-file graph write leaves the previous `hnsw.idx` intact, because `WriteGraph` routes through the `writeFileFn` seam (no second writer, S5). Mutant: `WriteGraph` writes the file directly, bypassing the seam |
+| `TestValidate_*` (vendored) | `Graph.Validate` rejects a nil `*layer`, a nil neighbour pointer, a neighbour absent from its layer, a non-finite value, and a higher-layer key missing from layer 0, and accepts a well-formed or empty graph — never panicking. Mutant: weaken any single check |
+
 **HNSW recall measurement** (`hnsw_realcache_test.go`, `hnsw_harness_test.go`,
 `hnsw_recall_measure_test.go`; task
 `hnsw-parameters-from-real-vector-recall-and-production-wiring`). Every test
