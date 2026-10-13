@@ -289,20 +289,8 @@
       "reason": "TODO: accepted at baseline creation — explain or fix"
     },
     {
-      "id": "uninvoked search.deleteGraph",
-      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A: the hnsw.idx envelope + warm-start). Deletes a corrupt graph through a held commit-lock Tx. Exercised by hnsw_persist_test.go; its non-test caller is Unit B (ensureIndex, on a `corrupt` classification) and Unit E (the graph-heal hook). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked search.newHNSWIndexFromDisk",
-      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). The warm-start constructor: loads hnsw.idx into a ready index, else reports (nil,false) so the caller builds from vectors. Production kind selection stays kindBrute in Unit A; its non-test caller is Unit B (ensureIndex wiring, edge 16->6). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked search.readGraphHeader",
       "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). Header-only, lock-free fingerprint read ('a few dozen bytes', 16-N2/N3); its non-test caller is Unit E's graph-heal hook, which compares a saved graph's fingerprint without parsing the body. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
-      "id": "uninvoked search.saveGraph",
-      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). Writes the serialised envelope through a held commit-lock Tx with a witness/epoch re-check. Exercised by hnsw_persist_test.go; its non-test callers are Units B/C/D (conversion, debounced save, dual-write). This entry goes stale, and the gate then demands its removal, the moment that caller lands."
     },
     {
       "id": "uninvoked sourceaudit.Baseline.Diff",

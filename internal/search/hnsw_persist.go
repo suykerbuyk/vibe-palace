@@ -89,7 +89,8 @@ const (
 	skipEpoch
 	skipStale
 	skipMissingDir
-	skipGenRead // the store counter could not be read; the save did not happen.
+	skipGenRead  // the store counter could not be read; the save did not happen.
+	skipWriteErr // the write itself failed (not a post-rename sync); nothing to trust.
 )
 
 func (o saveOutcome) String() string {
@@ -108,6 +109,8 @@ func (o saveOutcome) String() string {
 		return "skipMissingDir"
 	case skipGenRead:
 		return "skipGenRead"
+	case skipWriteErr:
+		return "skipWriteErr"
 	default:
 		return "unknown"
 	}
@@ -470,17 +473,16 @@ func loadGraph(vault *storage.Vault, project string, dims int, params hnswParams
 }
 
 // newHNSWIndexFromDisk warm-starts a project's HNSW index from hnsw.idx. It
-// returns (idx, true) on a valid load, and (nil, false) for no file, a
-// fingerprint mismatch, or a corrupt file, so the caller rebuilds from vectors.
-// Deleting a corrupt or below-threshold file is the caller's job (deleteGraph
-// under a held Tx) — this keeps Load lock-free. Production kind selection is
-// unchanged (Unit B); this is reached only via kindHNSW construction.
-func newHNSWIndexFromDisk(vault *storage.Vault, project string, dims int, params hnswParams) (*hnswIndex, bool, error) {
-	idx, res, err := loadGraph(vault, project, dims, params)
-	if err != nil {
-		return nil, false, err
-	}
-	return idx, res == loaded, nil
+// returns the index and the file's load classification (loadResult): a non-nil
+// idx only on loaded; (nil, mismatch) for a fingerprint mismatch, (nil, corrupt)
+// for an unreadable/bad file, (nil, noGraph) for no file. Unit B's selector
+// switches on that classification (loaded/mismatch/corrupt/noGraph) to pick the
+// kind and the file action. Deleting a corrupt or below-threshold file is the
+// caller's job (deleteGraph under a held Tx) — this keeps Load lock-free. An I/O
+// fault returns a non-nil error (res is corrupt); the caller falls back to brute
+// for that build and does NOT delete (Unit A's do-not-delete rule).
+func newHNSWIndexFromDisk(vault *storage.Vault, project string, dims int, params hnswParams) (*hnswIndex, loadResult, error) {
+	return loadGraph(vault, project, dims, params)
 }
 
 // --- save / delete (§2), each on a held commit-lock Tx -----------------------
@@ -533,11 +535,14 @@ func deleteGraph(tx *indexstore.Tx) (saveOutcome, error) {
 }
 
 // classifyWriteError maps an indexstore write failure to a save outcome by its
-// error chain (S2/N5). A "rename: " failure means the new bytes never landed —
-// a transient skip to re-arm. A "sync dir: " failure means the rename already
+// error chain (S2/N5). A "sync dir: " failure means the rename already
 // succeeded, so the NEW bytes are in place: treat it as written (the caller
-// logs; the next Load re-reads), never as "the old file survived". Any other
-// failure is a real error.
+// logs; the next Load re-reads), never as "the old file survived". A "rename: "
+// failure means the new bytes never landed — a transient skip to re-arm. Any
+// other failure is a genuine write error (B-CR1): it is NOT `written` — the
+// bytes did not land and nothing may trust the save — so it returns the
+// error-carrying skipWriteErr, which the caller never counts as a successful
+// write.
 func classifyWriteError(err error) (saveOutcome, error) {
 	msg := err.Error()
 	switch {
@@ -546,6 +551,6 @@ func classifyWriteError(err error) (saveOutcome, error) {
 	case strings.Contains(msg, "rename:"):
 		return skipRename, nil
 	default:
-		return written, err
+		return skipWriteErr, err
 	}
 }

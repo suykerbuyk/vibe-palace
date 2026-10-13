@@ -54,6 +54,14 @@ type Engine struct {
 	indexes  map[string]VectorIndex // project -> index
 	metadata map[string]drawerMeta  // drawerID -> metadata
 
+	// pendingInsert reserves a drawer id a capture is mid-publishing (Scope 3):
+	// between the collision check (under mu) and the metadata publish (under mu),
+	// the vector is inserted with mu released, so a concurrent capture of the
+	// same global drawer id (DrawerID excludes project, so two projects can share
+	// one) sees the id taken and does not also insert. Search never reads it.
+	// Guarded by mu.
+	pendingInsert map[string]struct{}
+
 	// collisions counts distinct-content DrawerID collisions observed at
 	// index-build time. It is zero in a healthy vault; a nonzero value is the
 	// concrete signal that the 32-bit ID has actually collided and re-keying is
@@ -114,16 +122,17 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		cache.fingerprint = embedder.FingerprintBackend(embedder.ResolveBackend(cfg.EmbedderBackend), cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
 	}
 	return &Engine{
-		embedder:    emb,
-		vault:       vault,
-		cache:       cache,
-		config:      cfg,
-		indexes:     make(map[string]VectorIndex),
-		metadata:    make(map[string]drawerMeta),
-		loaded:      make(map[string]indexstore.Gen),
-		buildsRun:   make(map[string]*projectBuild),
-		invalidated: make(map[string]uint64),
-		sems:        make(map[string]chan struct{}),
+		embedder:      emb,
+		vault:         vault,
+		cache:         cache,
+		config:        cfg,
+		indexes:       make(map[string]VectorIndex),
+		metadata:      make(map[string]drawerMeta),
+		pendingInsert: make(map[string]struct{}),
+		loaded:        make(map[string]indexstore.Gen),
+		buildsRun:     make(map[string]*projectBuild),
+		invalidated:   make(map[string]uint64),
+		sems:          make(map[string]chan struct{}),
 	}
 }
 
@@ -640,31 +649,87 @@ func (e *Engine) indexProjectDrawers(ctx context.Context, project string, ins []
 		return nil // deferred: the next search builds the project
 	}
 
+	// Scope 3: publish off e.mu in three phases — check-and-reserve under e.mu,
+	// insert the vectors with NO engine lock held (g.Add runs under the index's
+	// own lock), then publish metadata under e.mu. Collision stays BEFORE the
+	// insert (no insert-then-Delete retract: on an hnswIndex Delete only
+	// tombstones). The capture path never reads a per-project kind: when the
+	// index exists its kind is whatever the last rebuild installed; when it does
+	// not, kindBrute is constructed exactly as before (Unit B does not widen
+	// this hole, nor consult a kind map a rebuild wrote).
+	type reservation struct {
+		id   string
+		vec  []float32
+		meta drawerMeta
+	}
+
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, in := range ins {
-		idx, ok := e.indexes[in.Project]
-		if !ok {
-			dims, err := e.embedder.Dimensions()
-			if err != nil {
-				return fmt.Errorf("embedder dimensions: %w", err)
-			}
-			idx, err = newIndex(kindBrute, dims, provisionalHNSWParams)
-			if err != nil {
-				return err
-			}
-			e.indexes[in.Project] = idx
+	idx, ok := e.indexes[project]
+	if !ok {
+		dims, derr := e.embedder.Dimensions()
+		if derr != nil {
+			e.mu.Unlock()
+			return fmt.Errorf("embedder dimensions: %w", derr)
 		}
-		meta := makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
-		if e.detectCollision(in.Drawer.ID, meta) {
-			continue
-		}
-		if err := idx.Insert(in.Drawer.ID, in.Vec); err != nil {
+		idx, err = newIndex(kindBrute, dims, provisionalHNSWParams)
+		if err != nil {
+			e.mu.Unlock()
 			return err
 		}
-		e.metadata[in.Drawer.ID] = meta
+		e.indexes[project] = idx
 	}
-	return nil
+	var toInsert []reservation
+	for _, in := range ins {
+		id := in.Drawer.ID
+		meta := makeDrawerMeta(in.Project, in.Wing, in.Room, in.Drawer)
+		if e.detectCollision(id, meta) {
+			continue // never insert a colliding drawer
+		}
+		if _, published := e.metadata[id]; published {
+			continue // already indexed (an identical re-capture is a no-op anyway)
+		}
+		if _, reserved := e.pendingInsert[id]; reserved {
+			continue // a duplicate within this batch, or another publisher is mid-insert
+		}
+		e.pendingInsert[id] = struct{}{}
+		toInsert = append(toInsert, reservation{id: id, vec: in.Vec, meta: meta})
+	}
+	e.mu.Unlock()
+
+	// Phase 2: insert with NO e.mu held. An unusable vector makes Insert call
+	// Delete (tombstones); the capture path tolerates that.
+	insErr := func() error {
+		for _, r := range toInsert {
+			if err := idx.Insert(r.id, r.vec); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+
+	// Phase 3: publish metadata under e.mu, dropping each reservation.
+	e.mu.Lock()
+	for _, r := range toInsert {
+		delete(e.pendingInsert, r.id)
+		if insErr != nil {
+			continue // released the reservation; the failed insert is surfaced below
+		}
+		if e.detectCollision(r.id, r.meta) {
+			// The global pendingInsert reservation (phase 1) makes this
+			// unreachable in the normal path: a same-project publisher holds the
+			// project mutex across all three phases, and a cross-project publisher
+			// of the same global drawer id is skipped at phase 1 (reserved), or
+			// skipped by e.metadata after publish. If it somehow fired anyway, we
+			// simply do NOT publish metadata (S-CR2) — search drops a
+			// metadata-less vector. We never idx.Delete here: on an hnswIndex that
+			// tombstones THIS project's just-inserted or prior-live vector, which
+			// is harmful, not a retract.
+			continue
+		}
+		e.metadata[r.id] = r.meta
+	}
+	e.mu.Unlock()
+	return insErr
 }
 
 // insertSkipped handles a capture insert whose lock wait ran out: the project
@@ -797,6 +862,11 @@ func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, err
 type rebuildMode struct {
 	embedLocal  bool // embed local-tier (ledgered-source) misses too
 	embedOthers bool // embed decision/drawer/iteration/note misses
+	// converts is true only for the explicit `vp index rebuild` drivers. It
+	// gates the one HNSW conversion Unit B performs: a project with no valid
+	// graph and n>=T becomes HNSW only here, never on the lazy search path
+	// (Scope 1 forbids a search-path conversion).
+	converts bool
 }
 
 var (
@@ -804,14 +874,14 @@ var (
 	// iteration and drawer tiers embed their misses; a local-tier miss is left
 	// to the ingester's repair pass or an explicit rebuild, and sets the
 	// missing-vector stale reason.
-	modeSearch = rebuildMode{embedLocal: false, embedOthers: true}
+	modeSearch = rebuildMode{embedLocal: false, embedOthers: true, converts: false}
 	// modeExplicit (`vp index rebuild`) also embeds local-tier misses, so a
 	// completed rebuild repairs every missing vector.
-	modeExplicit = rebuildMode{embedLocal: true, embedOthers: true}
+	modeExplicit = rebuildMode{embedLocal: true, embedOthers: true, converts: true}
 	// modeNoEmbed (`vp index rebuild --no-embed`) embeds nothing: the index is
 	// built from cache hits only, and every miss is left out — a local-tier
 	// miss still sets the missing-vector stale reason.
-	modeNoEmbed = rebuildMode{embedLocal: false, embedOthers: false}
+	modeNoEmbed = rebuildMode{embedLocal: false, embedOthers: false, converts: true}
 )
 
 // RebuildExplicit rebuilds every tier like Rebuild, and additionally embeds
@@ -1166,6 +1236,12 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		e.mu.Unlock()
 		e.closeReplaced(old)
 		stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
+		// A project that shrank to nothing while a graph file is present is the
+		// table's n<L delete row: drop hnsw.idx on its own gen-only Tx (N4).
+		// ReadGraph is lock-free; a missing file needs no Tx.
+		if data, rerr := indexstore.ReadGraph(e.vault, project); rerr == nil && data != nil {
+			e.commitGraphAction(ctx, pl, timeout, project, nil, graphDelete, &chain)
+		}
 		e.remember(project, &chain, start)
 		return stats, nil
 	}
@@ -1175,12 +1251,56 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		return stats, fmt.Errorf("embedder dimensions: %w", err)
 	}
 
-	idx, err := newIndex(kindBrute, dims, provisionalHNSWParams)
+	// Unit B selection + warm-start. n is the post-dedup keep-set length (B4) —
+	// the count the built graph actually holds (dims+usableVector drop applied),
+	// NOT len(ids) nor the distinct-id count — so sameIDSet can match a loaded
+	// graph exactly.
+	params := provisionalHNSWParams
+	keep, err := dedupBatch(vecs, ids, dims)
 	if err != nil {
-		return stats, err
+		return stats, fmt.Errorf("select index kind: %w", err)
 	}
-	if err := idx.Build(vecs, ids); err != nil {
-		return stats, fmt.Errorf("build index: %w", err)
+	n := len(keep)
+
+	idx0, res, lerr := newHNSWIndexFromDisk(e.vault, project, dims, params)
+	if lerr != nil {
+		// B2: an I/O fault (not a corrupt classification) is Unit A's
+		// do-not-delete rule — fall back to brute for THIS build; do not fail
+		// the rebuild and do not delete the file.
+		slog.Warn("hnsw warm-start load failed; serving brute for this build", "project", project, "err", lerr)
+		if idx0 != nil {
+			_ = idx0.Close()
+			idx0 = nil
+		}
+		res = noGraph
+	}
+	kind, action := selectKind(res, n, mode.converts)
+
+	var idx VectorIndex
+	switch kind {
+	case kindHNSW:
+		if res == loaded && idx0 != nil && e.sameIDSet(idx0, keep, ids, metas) {
+			idx = idx0 // warm start: the on-disk graph still indexes the corpus; skip Build (no g.Add)
+		} else {
+			if idx0 != nil {
+				_ = idx0.Close()
+			}
+			h := newHNSWIndex(dims, params)
+			if err := h.Build(vecs, ids); err != nil {
+				return stats, fmt.Errorf("build index: %w", err)
+			}
+			idx = h
+			action = graphSave // persist the just-built graph
+		}
+	default: // kindBrute
+		if idx0 != nil {
+			_ = idx0.Close()
+		}
+		b := newBruteIndex(dims)
+		if err := b.Build(vecs, ids); err != nil {
+			return stats, fmt.Errorf("build index: %w", err)
+		}
+		idx = b
 	}
 
 	e.mu.Lock()
@@ -1195,9 +1315,121 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	e.mu.Unlock()
 	e.closeReplaced(old)
 
+	// R1: the graph file action rides its OWN short, gen-only Tx — NEVER
+	// finalCommit's Tx, whose reap (reapLocked → beginDestructive) pre-bumps gen
+	// WITH an epoch change. It runs AFTER finalCommit because that is the correct
+	// side of the reap: a pre-finalCommit save would let the reap's epoch change
+	// land AFTER the save's gen-only commit, and then another engine's epoch
+	// re-check (saveGraph's builtAt.Epoch compare) would drop a save that had
+	// just succeeded. index/<p>/ must already exist and saveGraph never creates
+	// it; on a converting rebuild the first completeness write (completeness.go,
+	// writeCompleteness) is what creates it — not every finalCommit does. In the
+	// no-reap case the graph Tx chains from finalCommit's gen and remember (next)
+	// records it, so warm-start holds; in the reap case finalCommit has already
+	// broken the chain, so remember keeps start.gen and the next search rebuilds
+	// — the same fallback as any reaping rebuild today.
 	stats.Reaped = e.finalCommit(ctx, pl, timeout, &chain, facts)
+	e.commitGraphAction(ctx, pl, timeout, project, idx, action, &chain)
 	e.remember(project, &chain, start)
 	return stats, nil
+}
+
+// sameIDSet reports whether a warm-start-loaded graph still indexes exactly the
+// current corpus: a pure id-set equality between the loaded graph's live ids
+// and the rebuild's keep-set, minus ids that would collide on the global
+// drawer-id key (those carry no metadata and are dropped by search; excluding
+// them keeps the comparison honest without claiming same id ⇒ same content —
+// DrawerID is a 32-bit md5[:8] the engine documents can collide, detectCollision).
+// It is NOT a content guarantee. A collision (rare, logged) makes the sets
+// differ and declines the warm start, so the caller does a safe full build.
+func (e *Engine) sameIDSet(idx0 *hnswIndex, keep []int, ids []string, metas []drawerMeta) bool {
+	expected := make(map[string]struct{}, len(keep))
+	e.mu.RLock()
+	for _, i := range keep {
+		if e.wouldCollide(ids[i], metas[i]) {
+			continue
+		}
+		expected[ids[i]] = struct{}{}
+	}
+	e.mu.RUnlock()
+
+	live := idx0.liveIDs()
+	if len(live) != len(expected) {
+		return false
+	}
+	for _, id := range live {
+		if _, ok := expected[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// wouldCollide is detectCollision's read-only predicate: the global drawer-id
+// key already holds DIFFERENT content. Unlike detectCollision it neither counts
+// nor logs (the real detectCollision still fires at the metadata write). The
+// caller must hold e.mu (read or write).
+func (e *Engine) wouldCollide(id string, meta drawerMeta) bool {
+	existing, ok := e.metadata[id]
+	return ok && existing.Content != meta.Content
+}
+
+// commitGraphAction performs a rebuild's graph file action (save or delete) on
+// its OWN short, gen-only Tx, taken and committed here (R1). A busy lock marks
+// the chain skipped (the build is not remembered; the next explicit rebuild
+// retries); a gone project is a no-op. On a genuinely successful write it steps
+// the chain by the single gen-only bump the Commit made; that stepped gen is
+// what remember (called next, after this returns) records, so the project is
+// current and warm-start holds for a no-reap build (N-CR1: there is no following
+// finalCommit — it already ran). A skip outcome that wrote nothing makes no bump
+// and does not break the chain. A genuine write error (skipWriteErr, B-CR1) is
+// NOT stepped and is logged as a real failure.
+func (e *Engine) commitGraphAction(ctx context.Context, pl *projectLock, timeout time.Duration, project string, idx VectorIndex, action graphAction, chain *genChain) {
+	if action == graphNone {
+		return
+	}
+	tx, err := pl.Tx(ctx, timeout)
+	if isLockTimeout(err) {
+		chain.skipped = true
+		slog.Info("hnsw graph action skipped: the index commit lock is busy", "project", project, "action", action.String())
+		return
+	}
+	if errors.Is(err, indexstore.ErrProjectGone) {
+		return
+	}
+	if err != nil {
+		slog.Warn("hnsw graph action skipped", "project", project, "action", action.String(), "err", err)
+		return
+	}
+
+	var out saveOutcome
+	switch action {
+	case graphSave:
+		h, ok := idx.(*hnswIndex)
+		if !ok {
+			_, _, _ = pl.finishTx() // defensive: only an hnswIndex is ever saved
+			return
+		}
+		data, w := h.snapshot()
+		builtAt := tx.Generation()
+		out, err = saveGraph(tx, e.vault, project, h, data, w, builtAt)
+	case graphDelete:
+		out, err = deleteGraph(tx)
+	}
+	before, after, cerr := pl.finishTx()
+	if err != nil {
+		// A genuine write error (skipWriteErr) or a save that chose not to write:
+		// either way the bytes are not trustworthy, so do not step the chain.
+		slog.Warn("hnsw graph action failed", "project", project, "action", action.String(), "outcome", out.String(), "err", err)
+	}
+	if cerr != nil {
+		slog.Warn("hnsw graph commit failed", "project", project, "err", cerr)
+		chain.broken = true
+		return
+	}
+	if err == nil && out == written {
+		chain.step(before, after) // the single gen-only bump (a no-op (cur,cur) when nothing was written)
+	}
 }
 
 // cachedVector is a build's embed-cache lookup. A vector file that is

@@ -1382,6 +1382,31 @@ broken once against its named mutant and failed before passing.
 | `TestWriteGraphFailurePreservesPreviousBytes` | A failed whole-file graph write leaves the previous `hnsw.idx` intact, because `WriteGraph` routes through the `writeFileFn` seam (no second writer, S5). Mutant: `WriteGraph` writes the file directly, bypassing the seam |
 | `TestValidate_*` (vendored) | `Graph.Validate` rejects a nil `*layer`, a nil neighbour pointer, a neighbour absent from its layer, a non-finite value, and a higher-layer key missing from layer 0, and accepts a well-formed or empty graph — never panicking. Mutant: weaken any single check |
 
+**HNSW production switch: per-project selection + warm-start + off-`e.mu`
+publish** (`hnsw_selection_test.go`, `hnsw_index.go`; task
+`hnsw-graph-file-envelope-and-warm-start`, Unit B). The selection thresholds are
+lowered per test so a small corpus straddles them; each was broken once against
+its named mutant and failed before passing.
+
+| Test | What it proves |
+|---|---|
+| `TestSelectKindTable` | `selectKind(loadResult, n, converts)` is the whole Scope-1 table (loaded/mismatch/corrupt/noGraph × n vs L/T × converts). Mutant: `noGraph` ignores `converts` (a search-path conversion) |
+| `TestSelectionConstantsMatchTask` | `hnswSelectT == 3000`, `hnswSelectL == 2700`, `L < T`. Mutant: `L = 3000` |
+| `TestNIsKeepSetLength` | `n` is the post-dedup keep-set length (one unusable vector dropped), not `len(ids)`, so it can straddle T correctly. Mutant: `n = len(ids)` |
+| `TestSearchPathNoGraphStaysBrute` | The lazy search path (`modeSearch`, `converts=false`) never converts a project with no graph: it stays brute and writes nothing. Mutant: ignore `converts` |
+| `TestExplicitRebuildAboveTBuildsAndSaves` | The explicit rebuild above T builds HNSW and saves a re-loadable `hnsw.idx`. Mutant: skip the save |
+| `TestWarmStartLoadsSkipsBuild` | A fresh engine Loads a saved graph (Imports) and performs zero `g.Add` (`libraryAdds == 0`). Mutant: always Build |
+| `TestWarmStartSecondSearchDoesNotRebuild` | (a, no orphan) after build+save the project is remembered at the current store gen, so a second search does not rebuild; (b, orphan `.vec`) a reaping rebuild breaks the chain and the next search rebuilds (B1/R1). Mutant: the v2 reaping-Tx shape breaks the chain so (a) also rebuilds |
+| `TestMismatchAboveLKeepsFileServesBrute` | A fingerprint mismatch serves brute and leaves the file byte-identical for Unit E's heal. Mutant: treat a mismatch as HNSW and save over it |
+| `TestCorruptFileDeletedThenBrute` | A corrupt file is deleted, then the project is brute. Mutant: do not delete a corrupt file |
+| `TestWarmStartBelowLDeletesFallsBrute` | A valid graph whose project is now below L is deleted and the index falls to brute. Mutant: drop the below-L delete |
+| `TestWarmStartIDSetDriftRebuilds` | When the corpus id set drifts from the on-disk graph, `sameIDSet` declines the warm start and a fresh build serves the new id. Mutant: `sameIDSet` always true (serves the stale graph) |
+| `TestIOErrorFallsBackToBrute` | An I/O fault reading the file falls back to brute without failing the rebuild and without deleting. Mutant: return the error |
+| `TestCaptureInsertReleasesEMuAcrossAdd` | The capture insert runs with `e.mu` released — a hook inside `Insert` (under `h.mu`) can take `e.mu.TryRLock` (Scope 3). Mutant: hold `e.mu` across the insert |
+| `TestCaptureCollisionKeepsVector` | A same-id/different-content collision leaves the first (kept) vector live (not a tombstone) and writes no second metadata entry — collision check stays before insert, no insert-then-`Delete` retract (B3). Mutant: drop the phase-1 collision skip |
+| `TestCaptureSameIdNoDoubleInsert` | Two batch rows with the same id are deduplicated by the `pendingInsert` reservation: one insert lands, no tombstone. Mutant: drop the reservation |
+| `TestHNSWSelectionBruteParity` | The selected HNSW index answers the brute oracle's neighbours within a recall bar (never identical order); brute stays the oracle. Mutant: route selection to brute (the `*hnswIndex` assertion fails) |
+
 **HNSW recall measurement** (`hnsw_realcache_test.go`, `hnsw_harness_test.go`,
 `hnsw_recall_measure_test.go`; task
 `hnsw-parameters-from-real-vector-recall-and-production-wiring`). Every test

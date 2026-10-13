@@ -341,12 +341,12 @@ func TestGraphWarmStartSkipsBuild(t *testing.T) {
 	h := buildHNSW(t, dims, 400, params)
 	saveBuilt(t, v, project, h)
 
-	idx, ok, err := newHNSWIndexFromDisk(v, project, dims, params)
+	idx, res, err := newHNSWIndexFromDisk(v, project, dims, params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || idx == nil {
-		t.Fatal("warm start did not load")
+	if res != loaded || idx == nil {
+		t.Fatalf("warm start did not load: res=%v idx=%v", res, idx)
 	}
 	if got := idx.libraryAdds.Load(); got != 0 {
 		t.Fatalf("libraryAdds = %d after a warm start, want 0 (load Imports, never Adds)", got)
@@ -497,10 +497,12 @@ func TestClassifyWriteError(t *testing.T) {
 	if o, err := classifyWriteError(fmt.Errorf("indexstore: write x: %w", fmt.Errorf("sync dir: %w", errors.New("EIO")))); o != written || err != nil {
 		t.Fatalf("sync-dir chain -> (%v, %v), want (written, nil)", o, err)
 	}
+	// B-CR1: a genuine (non-sync-dir) write failure is NOT `written` — the bytes
+	// did not land, so nothing may trust the save. It carries the error.
 	plain := errors.New("disk on fire")
 	o, err := classifyWriteError(plain)
-	if o != written || err == nil {
-		t.Fatalf("plain error -> (%v, %v), want (written, non-nil)", o, err)
+	if o != skipWriteErr || err == nil {
+		t.Fatalf("plain error -> (%v, %v), want (skipWriteErr, non-nil)", o, err)
 	}
 }
 

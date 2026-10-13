@@ -96,6 +96,95 @@ const rebuildBatch = 256
 // after Import, which overwrites Ml from the file (coder/hnsw encode.go:180).
 const defaultMl = 0.25
 
+// hnswSelectT / hnswSelectL are the per-project size switch (Scope 1): a
+// project's deduplicated expected id count n selects its index kind, with a
+// hysteresis band L<T so a project hovering near the boundary does not flip
+// kind every rebuild. The values are child-16's to wire and are recorded in
+// provisionalHNSWParams' doc comment above (T=3000, HNSW at/above; L=2700,
+// brute below). They are package vars, not consts, ONLY so a test can lower
+// them to build a small corpus; no production path assigns them.
+var (
+	hnswSelectT = 3000 // at/above n → eligible for HNSW
+	hnswSelectL = 2700 // below n → brute; L<T is the hysteresis band
+)
+
+// graphAction is what a rebuild must do to the on-disk hnsw.idx after it has
+// selected a kind: nothing, write the freshly built graph, or delete a stale /
+// below-L / corrupt file.
+type graphAction int
+
+const (
+	graphNone graphAction = iota
+	graphSave
+	graphDelete
+)
+
+func (a graphAction) String() string {
+	switch a {
+	case graphSave:
+		return "save"
+	case graphDelete:
+		return "delete"
+	default:
+		return "none"
+	}
+}
+
+// selectKind implements the production-switch table (Scope 1) from a graph
+// file's load classification and the keep-set count n. It is the whole switch
+// policy; the caller supplies loadResult and n and honours the returned kind
+// and file action.
+//
+// It NEVER converts a project on the lazy search path: a project with no valid
+// graph becomes HNSW only when converts is true (the explicit rebuild). Unit B
+// does not run the long-lived background converter — the search path answers
+// brute until a converting process (the explicit rebuild now, the Unit D
+// dual-write later) writes a graph. A fingerprint mismatch is left on disk for
+// Unit E's heal and never saved over; a corrupt file is deleted and then
+// treated as no file. The hysteresis boolean selectKind needs is "a valid
+// graph is loaded" (res == loaded), never bare file presence — a mismatch file
+// is present while the served kind is brute.
+func selectKind(res loadResult, n int, converts bool) (indexKind, graphAction) {
+	switch res {
+	case loaded:
+		if n >= hnswSelectL {
+			return kindHNSW, graphNone // keep the file; the caller warm-starts or re-saves
+		}
+		return kindBrute, graphDelete // fell below L
+	case mismatch:
+		if n >= hnswSelectL {
+			return kindBrute, graphNone // brute; leave the mismatch file for the heal, never save over it
+		}
+		return kindBrute, graphDelete
+	case corrupt:
+		return kindBrute, graphDelete // delete, then the no-file row (brute, no save)
+	default: // noGraph
+		if converts && n >= hnswSelectT {
+			return kindHNSW, graphSave
+		}
+		return kindBrute, graphNone // no search-path conversion
+	}
+}
+
+// insertHook, when a test sets it, runs inside hnswIndex.Insert while h.mu is
+// held and no engine lock is. Test 13 uses it to prove the capture path does
+// not hold e.mu across the insert (it tries e.mu.TryRLock there). Production
+// leaves it nil.
+var insertHook func()
+
+// liveIDs returns the ids of every live (non-tombstoned) vector. The engine's
+// sameIDSet compares this to a rebuild's keep-set to decide whether a loaded
+// graph still indexes exactly the current corpus.
+func (h *hnswIndex) liveIDs() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]string, 0, len(h.st.live))
+	for id := range h.st.live {
+		out = append(out, id)
+	}
+	return out
+}
+
 // Catch-up bounds for a finished rebuild. Writes keep landing (and being
 // logged) while a rebuild builds, and replaying an upsert is a full graph
 // insertion: 4,700 writes logged during a 20k rebuild took 13.4 s to replay.
@@ -372,6 +461,10 @@ func (h *hnswIndex) Insert(id string, vector []float32) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if insertHook != nil {
+		insertHook()
+	}
+
 	if old, ok := h.st.live[id]; ok {
 		if equalVectors(old.vec, vector) {
 			return nil
@@ -504,10 +597,12 @@ func (h *hnswIndex) maybeRebuildLocked() {
 
 	// Vectors are copies the index owns and never mutates, so the snapshot
 	// shares them. Ordering by key re-adds them in their original order.
-	// COST: this copy and sort are O(n log n) and run under h.mu, and the
-	// engine's callers (evictMemory, IndexDrawers) also hold e.mu here. At
-	// today's sizes that is milliseconds; revisit for 100k-vector indexes
-	// (recorded in task hnsw-parameters-from-real-vector-recall-and-production-wiring).
+	// COST: this copy and sort are O(n log n) and run under h.mu. evictMemory
+	// still holds e.mu here; IndexDrawers no longer does (Unit B moved the
+	// capture insert off e.mu), so moving it off e.mu unblocks other projects —
+	// but this remains O(n) under h.mu, not a cheap insert. At today's sizes
+	// that is milliseconds; revisit for 100k-vector indexes (recorded in task
+	// hnsw-parameters-from-real-vector-recall-and-production-wiring).
 	snap := make([]rebuildItem, 0, len(h.st.live))
 	for id, e := range h.st.live {
 		snap = append(snap, rebuildItem{key: e.key, id: id, vec: e.vec})
