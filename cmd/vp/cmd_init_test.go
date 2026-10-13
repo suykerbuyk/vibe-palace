@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -529,11 +530,18 @@ func TestInitVaultPathFlag(t *testing.T) {
 	}
 }
 
-// When the global config already exists, passing --vault-path to vp init
-// records the override only in the cwd .vibe-palace.toml, leaving global
-// untouched (matching the work/personal split use case).
+// When the global config already exists and --vault-path names a vault that
+// becomes a real git vault differing from the host default, vp init writes a
+// durable tier-2 [project_vaults] binding (ADR-012 rule 6, amended 2026-10-12),
+// NOT a tracked cwd-marker vault_path (rule 2) — this is the work/personal split
+// use case on its current, git-vault footing. (The no-git / untracked / nested
+// variant keeps the tier-1 marker; see TestInitNoGitFlag and
+// TestInitIntoANestedVaultDoesNotFail.)
 func TestInitVaultPathWritesCwdOverride(t *testing.T) {
-	configDir, _ := initTestEnv(t, true) // global config already exists
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	configDir, _ := initTestEnv(t, true) // global config already exists (git_enabled = true)
 	altVault := filepath.Join(t.TempDir(), "alt-vault")
 
 	projDir := t.TempDir()
@@ -544,22 +552,29 @@ func TestInitVaultPathWritesCwdOverride(t *testing.T) {
 		t.Fatalf("exit code = %d", code)
 	}
 
-	// Global config must NOT have been rewritten to the new path.
+	// The global config carries the durable [project_vaults] binding; its own
+	// vault_path is NOT rewritten to altVault.
 	globalData, _ := os.ReadFile(filepath.Join(configDir, "vibe-palace", "config.toml"))
-	if strings.Contains(string(globalData), altVault) {
-		t.Errorf("global config unexpectedly contains override path: %s", globalData)
+	if !strings.Contains(string(globalData), "alt-proj = \""+altVault+"\"") {
+		t.Errorf("global config missing the [project_vaults] binding:\n%s", globalData)
+	}
+	if strings.Contains(string(globalData), "vault_path = \""+altVault+"\"") {
+		t.Errorf("global vault_path was rewritten to the override path:\n%s", globalData)
 	}
 
-	// Cwd file must carry the override.
+	// The tracked marker is identity only — no active vault_path (rule 2).
 	cwdData, err := os.ReadFile(filepath.Join(projDir, project.ConfigFileName))
 	if err != nil {
 		t.Fatalf("cwd config not created: %v", err)
 	}
-	if !strings.Contains(string(cwdData), "vault_path = \""+altVault+"\"") {
-		t.Errorf("cwd config missing vault_path override:\n%s", cwdData)
+	for _, line := range strings.Split(string(cwdData), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "vault_path") {
+			t.Errorf("cwd marker must be identity-only (no active vault_path):\n%s", cwdData)
+			break
+		}
 	}
 
-	// And resolving from the project dir picks up the override.
+	// And resolving from the project dir picks up the binding (tier 2).
 	path, source, err := storage.ResolveVaultPath(projDir)
 	if err != nil {
 		t.Fatalf("ResolveVaultPath: %v", err)
@@ -567,8 +582,8 @@ func TestInitVaultPathWritesCwdOverride(t *testing.T) {
 	if path != altVault {
 		t.Errorf("resolved path = %q, want %q", path, altVault)
 	}
-	if !strings.HasPrefix(source, "cwd:") {
-		t.Errorf("source = %q, want cwd: prefix", source)
+	if !strings.HasPrefix(source, "binding:") {
+		t.Errorf("source = %q, want binding: prefix", source)
 	}
 }
 

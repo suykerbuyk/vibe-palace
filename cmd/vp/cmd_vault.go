@@ -59,7 +59,7 @@ func cmdVaultPull() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "pull")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "pull", true)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -99,7 +99,7 @@ func cmdVaultPush() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "push")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "push", true)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -144,7 +144,7 @@ func cmdVaultSync() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "sync")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "sync", true)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -287,7 +287,7 @@ func cmdVaultCommit() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "commit")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "commit", true)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -426,7 +426,7 @@ func cmdVaultTidy() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "tidy")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "tidy", true)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -607,7 +607,7 @@ func cmdVaultStatus() *cli.Command {
 				return cli.ExitUser
 			}
 			// git_enabled refuses here, before the dry-run split and ListRemotes.
-			root, code := vaultRootFor(c, fv.Get("--vault"), "report vault status")
+			root, code := vaultRootForBinding(c, fv.Get("--vault"), "report vault status", false)
 			if code != cli.ExitOK {
 				return code
 			}
@@ -670,6 +670,25 @@ func vaultRoot() (string, error) {
 // that the source now survives the call instead of being unavailable.
 func vaultRootWithSource() (root, source string, err error) {
 	return storage.ResolveGlobalVaultPath()
+}
+
+// vaultBindingRootWithSource resolves the vault root for the vault GIT family
+// (pull/push/sync/commit/tidy/status) the cwd-aware way (ADR-012 rule 6, amended
+// 2026-10-12): storage.ResolveVaultPath walks from the process working directory
+// through the ADR-012 tiers — the nearest .vibe-palace.toml vault_path, then the
+// global [project_vaults] entry for that marker's project, then the global
+// vault_path — so `cd`-ing into a project operates on that project's own vault.
+//
+// It is DELIBERATELY not the fallback for vaultRootWithSource: the 7 file-CRUD
+// commands, the surface gate (vaultRoot()) and the vault lifecycle commands
+// (copy/rename/project-delete) stay global-only, because unifying them would
+// change their binding to match the git family's.
+func vaultBindingRootWithSource() (root, source string, err error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("get working directory: %w", err)
+	}
+	return storage.ResolveVaultPath(cwd)
 }
 
 // reportVaultBinding prints which vault a file operation acted on, to STDERR.

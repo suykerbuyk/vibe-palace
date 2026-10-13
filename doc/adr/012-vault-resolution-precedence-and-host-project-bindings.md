@@ -116,15 +116,26 @@ recognise, so an untyped refusal would be a silent capture into the live vault
 (iteration 210). No refusal wraps `fs.ErrNotExist`, which `vp check` and
 `vp skills show` read as "no config at all".
 
-**6. Machine-wide callers stay global-only.** Tier 2 lives inside
-`ResolveVaultBinding`, never in `ResolveGlobalVaultPath`. So the host menu shims
-and the vault git command family (`vp vault pull/push/sync/commit/tidy/status`,
-which take `--vault`) keep resolving the global vault, as before. *(Amended
-2026-09-28, see Amendment (2026-09-28) §2:)* So do the
-lifecycle commands `vp vault copy` and `vp vault project delete`, which act on
-the configured global vault or on `--vault`; `vp vault init <path>` and
-`vp vault clone <url> <path>` take an explicit path and resolve nothing
-(ADR-013).
+**6. Global-only stays the default; the vault *git* family becomes cwd-aware.** Tier 2 lives in
+`ResolveVaultBinding`, never in `ResolveGlobalVaultPath`. The 7 vault file-CRUD commands
+(`read/write/edit/delete/move/exists/sha256`), the surface gate (`vaultRoot()`), the host menu
+shims, the vault *lifecycle* commands (`vp vault copy`, `vp vault rename`, `vp vault project
+delete`, `vp vault init`, `vp vault clone`), and `OpenVaultGlobal` (the `vp hook` fallback) all keep
+resolving the global vault (or an explicit `--vault`). **Amended 2026-10-12:** only the vault *git*
+family — `vp vault pull/push/sync/commit/tidy/status` — now resolves its target through
+`ResolveVaultBinding` (tier 1→2→3) when no `--vault` is given, so `cd`-ing into a project operates on
+that project's own vault. `--vault` still overrides; every **mutating/transport** git-family
+resolution (`pull/push/sync/commit/tidy`, any source) must first pass `refuseUnlessOwnGitRepo`;
+**read-only `status` is exempt (the M1 nested-vault carve-out)** — except an explicit `--vault`
+naming a non-own-repo path, which `status` still refuses (pre-existing
+`TestVaultFlagRefusesSubfolderOfAVault`) — and a mutating one (`commit`, `tidy`) also the surface
+fail-stop. **This changes only the CLI:** the MCP `vp_vault_*` tools resolve
+the server's startup-bound vault and are unchanged (per-project MCP routing is the deferred
+Option C); the vault git family prints a parity note to stderr when it resolves a non-global source.
+The fresh-host `vp init` marker write (rule 2) is unchanged; `vp init --vault-path` on an existing
+host writes a tier-2 `[project_vaults]` binding **when the target is a git vault differing from the
+default**; a **no-git / untracked / nested target keeps the existing tier-1 cwd-marker path**
+(ADR-012 tier-1-for-untracked).
 
 **7. The global config schema moves to 1.2** for the new table. The version
 fields are informational for a minor bump. An older binary silently ignores

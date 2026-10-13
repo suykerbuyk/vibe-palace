@@ -120,6 +120,74 @@ func vaultRootFor(cmd *cli.Command, flagValue, verb string) (string, int) {
 	return root, cli.ExitOK
 }
 
+// vaultRootForBinding is vaultRootFor for the vault GIT family
+// (pull/push/sync/commit/tidy/status): without --vault it resolves the target
+// the cwd-aware way (ADR-012 rule 6, amended 2026-10-12) via
+// vaultBindingRootWithSource, so `cd`-ing into a project operates on that
+// project's own vault instead of the global one. An explicit --vault still
+// overrides (source flag:--vault).
+//
+// Two things differ from vaultRootFor, both load-bearing:
+//
+//   - refuseUnlessOwnGitRepo(root) runs on the RESOLVED ROOT for EVERY source,
+//     not only --vault, for the mutating/transport commands. A cwd — or even a
+//     global root — that resolves to a subfolder of another repository would
+//     otherwise let a git op write into the wrong tree, because git walks up
+//     from whatever directory it is handed. This is the one check that covers
+//     `vault sync`'s nested-repo case even though sync is registered unwrapped.
+//     Read-only `vault status` passes guardOwnRepo=false, so the guard is
+//     skipped for a RESOLVED (cwd/binding/global) nested vault — its bounded,
+//     ref-only fetch carve-out on a vault deliberately nested inside another
+//     repository is the M1 decision (not the write-into-the-wrong-tree harm the
+//     guard exists to stop) — see TestVaultStatusStillWorksOnNestedVault. An
+//     EXPLICIT `--vault <subfolder>` is still refused for status too (source ==
+//     vaultFlagSource below), because naming a subfolder is always an error.
+//   - A parity note prints to stderr whenever the resolved source is not global,
+//     because the MCP vp_vault_* tools resolve the server's startup-bound vault
+//     and are NOT made project-aware by this change (the deferred Option C).
+//     The note fires on all six commands, status included.
+//
+// enforceSurfaceOnRoot still runs only for a MutatesVault command (commit,
+// tidy): pull/push/sync are registered unwrapped on purpose (transport, not
+// authorship) and the newer .surface stamps that raise a vault's version arrive
+// BY pull, so gating pull on the stamp would lock a host out of ever reaching it.
+func vaultRootForBinding(cmd *cli.Command, flagValue, verb string, guardOwnRepo bool) (string, int) {
+	cmdName := "vp " + cmd.Name
+	root, source, err := resolveVaultRootFlag(flagValue, vaultBindingRootWithSource)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", cmdName, err)
+		return "", cli.ExitUser
+	}
+	// The nested-repo guard runs for the mutating/transport commands on every
+	// source, and for read-only status ONLY when --vault named the root
+	// explicitly: an explicit --vault subfolder is always an error (git would
+	// write into the enclosing repo), while status's M1 carve-out is specifically
+	// about a RESOLVED (cwd/binding/global) vault deliberately nested — that read
+	// is bounded and allowed.
+	if guardOwnRepo || source == vaultFlagSource {
+		if err := refuseUnlessOwnGitRepo(root); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", cmdName, err)
+			return "", cli.ExitUser
+		}
+	}
+	fmt.Fprintf(os.Stderr, "vault_path = %s\n", root)
+	fmt.Fprintf(os.Stderr, "vault_path source = %s\n", source)
+	if !strings.HasPrefix(source, "global:") {
+		fmt.Fprintf(os.Stderr, "note: resolved this project's own vault from the working directory (source %s); "+
+			"the MCP vp_vault_* tools still act on the server's startup-bound vault, not this one\n", source)
+	}
+	if cmd.MutatesVault {
+		if code := enforceSurfaceOnRoot(root); code != cli.ExitOK {
+			return "", code
+		}
+	}
+	if err := storage.RefuseIfGitDisabled(root, verb); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", cmdName, err)
+		return "", cli.ExitUser
+	}
+	return root, cli.ExitOK
+}
+
 // enforceSurfaceOnRoot is surfaceGate's fail-stop for a root the caller
 // resolved itself: it returns cli.ExitSystem, with the gate's error on stderr,
 // when root carries a surface stamp newer than this binary (VP_SURFACE_GATE=warn

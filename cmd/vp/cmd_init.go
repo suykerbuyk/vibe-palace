@@ -20,6 +20,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/reconcile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 var initFlags = []cli.FlagDef{
@@ -87,6 +88,23 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 			if !proceed {
 				printInitStatus(os.Stdout, info.Version, results)
 				return projectCode
+			}
+
+			// Durable per-project vault binding (existing-host --vault-path), BEFORE
+			// onboarding scaffolds. It must precede the scaffold: onboarding writes
+			// the project INTO the vault it resolves, and BindProjectVaults' BindNew
+			// mode refuses a project the default vault already holds — so binding
+			// afterwards would be refused on the copy onboarding just created there.
+			// maybeBindProjectVault writes the identity-only marker first (N2), then
+			// binds, so onboarding below resolves and scaffolds into the bound vault.
+			// A bind Fail is a direct non-zero exit here (not exitWorthyFailure,
+			// which only sees onboard.Result.Outcomes), and nothing is scaffolded.
+			if bindRows, owed, ok := maybeBindProjectVault(fv, req); owed {
+				results = append(results, bindRows...)
+				if !ok {
+					printInitStatus(os.Stdout, info.Version, results)
+					return cli.ExitUser
+				}
 			}
 
 			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI)
@@ -193,6 +211,12 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 			results = append(results, check.Result{Name: "Vault", Status: check.Fail, Summary: gerr.Error()})
 			return results, cli.ExitSystem
 		}
+		// A no-git target is NOT a tier-2 bind: it keeps the existing tier-1
+		// cwd-marker path (ADR-012 tier-1-for-untracked), so initGlobal still
+		// scaffolds the (un-versioned) vault here and onboarding binds the project
+		// via the marker's vault_path. The tier-2 git-vault bind — and its
+		// git-vault requirement — lives in maybeBindProjectVault, which only
+		// engages a standalone stamped git vault differing from the default.
 		vaultResults, code := initVault(cwd, newVault, gitEnabled)
 		if gitNote != "" && len(vaultResults) > 0 {
 			vaultResults[0].Details = append(vaultResults[0].Details, gitNote)
@@ -421,6 +445,131 @@ func existingInstallGitChoice(vaultPath string, wanted bool) (bool, string, erro
 	}
 }
 
+// sameVaultRootClean reports whether two vault roots name the same tree. It
+// mirrors storage.sameVaultRoot (unexported): Clean first, then EvalSymlinks
+// only if that disagrees, so a symlink resolving to the same tree is not treated
+// as a different vault.
+func sameVaultRootClean(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return ra == rb
+}
+
+// tier2BindApplies decides whether `vp init --vault-path X` on this host should
+// write a durable tier-2 [project_vaults] binding, rather than the existing
+// tier-1 cwd-marker (ADR-012 tier-1-for-untracked). It engages ONLY when X is a
+// standalone, stamped GIT vault that differs from the host default:
+//
+//   - --vault-path unset, or --no-git, or host git disabled → tier 1 (no bind).
+//   - X not the top level of its own git work tree (nested, or not a repo) →
+//     tier 1 (the existing nested/untracked init path is preserved).
+//   - X IS the host default vault (fresh-host, where initGlobal just set the
+//     default to X) → tier 1, no redundant binding.
+//
+// A no-default-vault host still returns apply=true for a git-vault X, so the
+// bind's own pre-check refuses it with a clear message rather than silently
+// writing a tier-1 marker to a host that cannot resolve a default.
+func tier2BindApplies(fv *cli.FlagValues) (x string, apply bool) {
+	raw := fv.Get("--vault-path")
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	abs, err := expandAndAbsPath(raw)
+	if err != nil {
+		return "", false
+	}
+	if fv.Bool("--no-git") {
+		return abs, false
+	}
+	if en, _, gerr := existingInstallGitChoice(abs, true); gerr != nil || !en {
+		return abs, false // host git disabled → tier-1 cwd marker
+	}
+	if state, serr := storage.InspectVaultGit(abs); serr != nil || state != storage.VaultGitOK {
+		return abs, false // nested / not-a-repo → tier-1 (keeps nested-vault init)
+	}
+	if global, _, gerr := storage.ResolveGlobalVaultPath(); gerr == nil && sameVaultRootClean(abs, global) {
+		return abs, false // X is the host default vault → no redundant binding
+	}
+	return abs, true
+}
+
+// maybeBindProjectVault writes the durable tier-2 [project_vaults] binding for an
+// existing-host `vp init --vault-path X` when tier2BindApplies, or reports that
+// none is owed (the tier-1 cwd-marker path handled it). It runs BEFORE
+// onboarding scaffolds, so it writes the identity-only marker itself (N2: the
+// marker must exist for BindProjectVaults' Checkouts proof; onboarding has not
+// written it yet). Returns (rows, owed, ok).
+func maybeBindProjectVault(fv *cli.FlagValues, req onboard.Request) (rows []check.Result, owed, ok bool) {
+	x, apply := tier2BindApplies(fv)
+	if !apply {
+		return nil, false, true
+	}
+	fail := func(summary string) ([]check.Result, bool, bool) {
+		return []check.Result{{Name: "Project binding", Status: check.Fail, Summary: summary}}, true, false
+	}
+
+	// Pre-check: X is a git repo (tier2BindApplies required VaultGitOK) but must
+	// also be a vp vault — carrying the data-format stamp. A standalone git repo
+	// that was never `vp vault init`ed is refused, pointing there.
+	if format, ferr := surface.ReadFormat(x); ferr != nil || format != surface.RequiredDataFormat {
+		return fail(x + " is a git repository but not an initialised vault (no data-format stamp); run `vp vault init " + x + "` first, then `vp config bind " + req.Slug + " --vault " + x + "`")
+	}
+
+	// Pre-check: a checkout marker that already sets vault_path and disagrees
+	// with X. BindProjectVaults does not catch this — the tier1/tier2 clash is
+	// only refused later by the resolver (resolve.go:124) — so a silent write
+	// here would leave the project unresolvable.
+	markerPath, markerVP, merr := storage.CwdMarker(req.ProjectDir)
+	if merr == nil && markerVP != "" {
+		if expanded, xerr := expandAndAbsPath(markerVP); xerr == nil && !sameVaultRootClean(expanded, x) {
+			return fail("the checkout's .vibe-palace.toml sets vault_path " + expanded + ", which differs from " + x +
+				"; remove it (a tracked marker is identity only, ADR-012) or bind with `vp config bind " + req.Slug + " --vault " + x + "`")
+		}
+	}
+
+	// Pre-check: BindProjectVaults needs a host default vault_path (it refuses
+	// otherwise), so there is nothing to bind against without one.
+	if _, _, gerr := storage.ResolveGlobalVaultPath(); gerr != nil {
+		return fail("host has no default vault_path; `vp config bind` cannot bind until one exists: " + gerr.Error())
+	}
+
+	// Write the identity-only marker now, if onboarding's target does not already
+	// have one, so BindProjectVaults' Checkouts proof (verifyBind) can read its
+	// [project].name. A tracked marker is identity only (rule 2): no vault_path.
+	if markerPath == "" {
+		if _, werr := storage.WriteCwdProjectConfig(req.ProjectDir, req.Slug, req.Domain, req.Tags, ""); werr != nil {
+			return fail("write identity marker: " + werr.Error())
+		}
+	}
+
+	// Write the binding. Checkouts:[projectDir] makes verifyBind prove the bound
+	// slug resolves through the marker's [project].name from the checkout.
+	rep, err := storage.BindProjectVaults(storage.BindVaultsRequest{
+		Slugs:     []string{req.Slug},
+		VaultPath: x,
+		CheckRoot: x,
+		Mode:      storage.BindNew,
+		Checkouts: []string{req.ProjectDir},
+	})
+	if err != nil {
+		return fail(err.Error() + " — bind manually with `vp config bind " + req.Slug + " --vault " + x + "`")
+	}
+	return []check.Result{{
+		Name:    "Project binding",
+		Status:  check.Pass,
+		Summary: "[project_vaults]." + req.Slug + " = " + rep.Vault,
+	}}, true, true
+}
+
 // vaultStepOutcome is initGlobal's reading of the Vault reconciler's Plan and
 // Report.
 type vaultStepOutcome struct {
@@ -586,7 +735,15 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 			})
 			return onboard.Request{}, results, cli.ExitUser, false
 		}
-		vaultPathOverride = expanded
+		// A tier-2 git-vault bind (standalone stamped git vault differing from the
+		// host default) is identity-only — the [project_vaults] entry carries the
+		// path, not the marker (ADR-012 rule 2). EVERY other --vault-path target —
+		// fresh host, no-git, untracked, nested, or same-as-default — keeps the
+		// existing tier-1 cwd-marker path and writes vault_path here
+		// (ADR-012 tier-1-for-untracked).
+		if _, tier2 := tier2BindApplies(fv); !tier2 {
+			vaultPathOverride = expanded
+		}
 	}
 
 	var tagsList []string
