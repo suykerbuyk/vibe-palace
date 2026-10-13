@@ -84,7 +84,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) deps() Deps {
-	return Deps{Vault: f.v, Engine: f.eng, Embedder: f.emb}
+	return Deps{Vault: f.v, Engine: f.eng, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng)}
 }
 
 // git runs git in the vault with a fixed identity.

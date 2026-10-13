@@ -960,7 +960,7 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch det
 			return nil, fmt.Errorf("project is required")
 		}
 
-		deps := ingest.Deps{Vault: vault, Engine: engine, Embedder: engine.Embedder()}
+		deps := ingest.Deps{Vault: vault, Engine: engine, Embedder: engine.Embedder(), GraphHealer: ingest.NewEngineHealer(engine)}
 
 		// dry_run: the preflight in-process. It writes nothing and takes no
 		// lock, so a trigger that arrives during it is never turned away

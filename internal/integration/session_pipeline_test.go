@@ -92,7 +92,7 @@ fully applies or it has no effect.`
 	// archives` the capture spawned would. Explicit so the freshly-created
 	// archive is ingested regardless of this fresh host's baseline set.
 	if _, err := ingest.Run(context.Background(),
-		ingest.Deps{Vault: h.Vault, Engine: h.Engine, Embedder: h.Embedder},
+		ingest.Deps{Vault: h.Vault, Engine: h.Engine, Embedder: h.Embedder, GraphHealer: ingest.NewEngineHealer(h.Engine)},
 		ingest.RunOptions{VaultRoot: h.Vault.Root, Project: "test-proj", Explicit: true}); err != nil {
 		t.Fatalf("ingest the inline archive: %v", err)
 	}

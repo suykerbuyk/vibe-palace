@@ -131,7 +131,7 @@ func runIndexRebuild(ctx context.Context, a indexRebuildArgs, out, errOut io.Wri
 	eng := search.NewEngine(emb, v, cfg)
 	defer eng.Close()
 
-	d := ingest.Deps{Vault: v, Engine: eng, Embedder: emb}
+	d := ingest.Deps{Vault: v, Engine: eng, Embedder: emb, GraphHealer: ingest.NewEngineHealer(eng)}
 	opts := ingest.RebuildOptions{
 		Project:     a.project,
 		All:         a.all,

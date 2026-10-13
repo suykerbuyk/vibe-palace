@@ -89,7 +89,7 @@ func runDrainArchives(ctx context.Context, vaultRoot, project, first string, err
 	emb := embedder.NewLazy(func() (embedder.Embedder, error) { return newVaultEmbedder(v, cfg) })
 	eng := search.NewEngine(emb, v, cfg)
 	defer eng.Close()
-	res, err := ingest.Run(ctx, ingest.Deps{Vault: v, Engine: eng, Embedder: emb}, ingest.RunOptions{
+	res, err := ingest.Run(ctx, ingest.Deps{Vault: v, Engine: eng, Embedder: emb, GraphHealer: ingest.NewEngineHealer(eng)}, ingest.RunOptions{
 		VaultRoot: vaultRoot, Project: project, First: first,
 		// The disk/inode watchdog as the during-run check, so a background
 		// run cannot fill the filesystem that holds palace/.local/ either.

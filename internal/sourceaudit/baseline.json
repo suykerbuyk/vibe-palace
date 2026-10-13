@@ -289,10 +289,6 @@
       "reason": "TODO: accepted at baseline creation — explain or fix"
     },
     {
-      "id": "uninvoked search.readGraphHeader",
-      "reason": "STAGED SEAM, task hnsw-graph-file-envelope-and-warm-start (Unit A). Header-only, lock-free fingerprint read ('a few dozen bytes', 16-N2/N3); its non-test caller is Unit E's graph-heal hook, which compares a saved graph's fingerprint without parsing the body. This entry goes stale, and the gate then demands its removal, the moment that caller lands."
-    },
-    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only-by-construction is structural intent no parse recovers; declared here, enforced by the baseline ratchet. Do NOT wire a fake production caller to clear this."
     },
