@@ -1426,6 +1426,32 @@ mutant and failed before passing.
 | `TestDebounceCrossProcessNoDoubleSave` | two engines on one vault do not both save within the window — the second reads the first's mtime under the commit lock and skips. Mutant: remove the debounce check |
 | `TestSkippedSaveSurvivesRestart` | a debounced (skipped) save loses nothing — a restart warm-starts the stale file and catch-up reconciles it to the drifted corpus. Mutant: (covered by catch-up) |
 
+**HNSW production switch: kind-swap dual-write conversion**
+(`hnsw_convert_test.go`; task `hnsw-kind-swap-dual-write-conversion`, Unit D).
+The background converter builds the HNSW graph off the project mutex while
+captures keep dual-writing to the authoritative brute index, then gates, swaps,
+saves and remembers in one `projectLock` critical section. Each test drives the
+race through the converter's OWN step-hooks (`convertAfterBuild`,
+`convertEachRound`, `convertBeforeFinal`, `convertBeforeGate`,
+`convertBeforeSwap`, `convertBeforeSave` — NOT the wrapper's
+`afterSnapshot`/`beforeCatchUpRound`, which fire only on `runRebuild`), asserts
+on the published index's `Search`/`liveIDs` rather than a restart (a restart's
+search-path catch-up would mask the bug), and was broken once against its named
+revert before passing.
+
+| Test | What it proves |
+|---|---|
+| `TestConvertT1MidConversionCaptureNotLost` | a capture landing mid-conversion is in the published graph after the swap (same engine's `h.Search`, no restart). Revert: `convertReconcileBounded` returns true at entry → the gate refuses the unreconciled snapshot, no swap, X lost |
+| `TestConvertT2ConcurrentInsertInPostSwitch` | an Insert during the off-lock build is the post-switch nearest neighbour of its own vector. Revert: both reconciles return true at entry → id absent from `h`, gate abandons |
+| `TestConvertT3DeleteAndUpsertRace` | a racing upsert (changed vector) and delete land correctly — `Y`'s NEW vector ranks `Y` first (asserts the stored vector, not a one-hot tie), `Z` never returns. Revert: skip the changed-id upsert (stale `Y`) / drop the removed-id delete (`Z` reappears) |
+| `TestConvertT4CompletenessGateBlocksPoisonedSwitch` | the gate abandons unless `h.liveIDs() == b0.LiveIDs()` as sets — no swap, no file. Revert: compile out the `sameIDSet` gate → an incomplete `h` is published |
+| `TestConvertT5AbandonOnOutpacedWrites` | writes outpacing the catch-up past the converter's OWN bound abandon; `b0` keeps serving. Revert: delete `convertCatchUpRounds`/`convertFinalReplayMax` (the converter's bound, not the wrapper's `catchUpRounds`) → a never-converged graph is swapped |
+| `TestConvertS1CacheMissAbandonBacksOff` | a cache miss on a want id abandons AND records the backoff, so a persistent miss cannot retry on every search. Revert: return without `convertAbandon` → the next `ensureIndex` reconverts immediately (thrash) |
+| `TestConvertT6IdentityChangeAbandons` | a concurrent `modeSearch` brute rebuild swapping `b0`→`b1` during the window abandons the converter; `e.indexes[project]` is a `*bruteIndex`, not `h`. Revert: restrict the identity check to explicit rebuilds → `h` is stored over `b1` |
+| `TestConvertT7GenWitnessSkipsFile` | a concurrent store commit (gen bump, epoch unchanged) makes the save skip and drops `e.loaded` directly (not via `remember`); no `hnsw.idx` for that gen. Revert: drop the `tx.Generation()==builtGen` guard → the stale graph is written |
+| `TestConvertTriggerGatedByOption` | the converter goroutine starts only under `WithBackgroundConverter()`; an engine without the option never converts |
+| `TestConvertTriggerRunsAndCloses` | the real async trigger starts a conversion and `Engine.Close` cancels and waits for it before replacing the index map (race-clean) |
+
 **HNSW recall measurement** (`hnsw_realcache_test.go`, `hnsw_harness_test.go`,
 `hnsw_recall_measure_test.go`; task
 `hnsw-parameters-from-real-vector-recall-and-production-wiring`). Every test

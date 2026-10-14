@@ -117,6 +117,47 @@ type Engine struct {
 	warmDone   chan struct{}
 	warmFailed atomic.Bool
 	warmWG     sync.WaitGroup
+
+	// Background brute→HNSW converter (task
+	// hnsw-kind-swap-dual-write-conversion). convertEnabled is set ONLY by the
+	// WithBackgroundConverter option, which only bootstrap() passes, so the
+	// converter runs only in the long-lived MCP serving engine and never in a
+	// per-invocation CLI engine or the detached ingester (S3). convertCtx is
+	// cancelled by Close before it unpublishes the indexes, and convertWG lets
+	// Close wait for every in-flight conversion to return. The converter's
+	// lockProject waits are bounded by searchLockTimeout and honour convertCtx; an
+	// in-progress h.Build (the minutes-long g.Add, which takes no ctx) is awaited
+	// to completion — bounded by one build that runs off all engine locks with no
+	// swap pending (making Build cancellable is a separate wrapper follow-on).
+	// converting (guarded by convertMu) is the in-flight set,
+	// and convertBackoff (also convertMu) the per-project write-counted backoff
+	// after an abandoned conversion.
+	convertEnabled bool
+	convertCtx     context.Context
+	convertCancel  context.CancelFunc
+	convertWG      sync.WaitGroup
+	convertMu      sync.Mutex
+	converting     map[string]struct{}
+	convertBackoff map[string]convBackoff
+}
+
+// convBackoff records, per project, the store generation at the last abandoned
+// conversion and how many abandons have run in a row, so a hot project is not
+// reconverted on a tight loop (mirrors the wrapper's rebuildBackoffGens).
+type convBackoff struct {
+	abandonedAt indexstore.Gen
+	abandons    int
+}
+
+// EngineOption configures a new Engine.
+type EngineOption func(*Engine)
+
+// WithBackgroundConverter enables the brute→HNSW background converter on this
+// engine. Only bootstrap() (the long-lived MCP serving engine) passes it; every
+// other search.NewEngine caller leaves it off, so no CLI invocation or the
+// detached ingester process ever runs the in-memory kind swap (S3).
+func WithBackgroundConverter() EngineOption {
+	return func(e *Engine) { e.convertEnabled = true }
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -126,8 +167,9 @@ type projectBuild struct {
 	err  error
 }
 
-// NewEngine creates a search engine.
-func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) *Engine {
+// NewEngine creates a search engine. opts are applied after construction;
+// WithBackgroundConverter is the only one, and only bootstrap() passes it.
+func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config, opts ...EngineOption) *Engine {
 	cache := NewEmbedCache(vault)
 	if emb != nil {
 		// Only an engine that can embed validates the cache's regime: one with
@@ -135,20 +177,29 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config) 
 		// replace.
 		cache.fingerprint = embedder.FingerprintBackend(embedder.ResolveBackend(cfg.EmbedderBackend), cfg.EmbedderModel, cfg.EmbedderMaxSeqLen)
 	}
-	return &Engine{
-		embedder:      emb,
-		vault:         vault,
-		cache:         cache,
-		config:        cfg,
-		indexes:       make(map[string]VectorIndex),
-		metadata:      make(map[string]drawerMeta),
-		pendingInsert: make(map[string]struct{}),
-		loaded:        make(map[string]indexstore.Gen),
-		buildsRun:     make(map[string]*projectBuild),
-		invalidated:   make(map[string]uint64),
-		sems:          make(map[string]chan struct{}),
-		warmDone:      make(chan struct{}),
+	convertCtx, convertCancel := context.WithCancel(context.Background())
+	e := &Engine{
+		embedder:       emb,
+		vault:          vault,
+		cache:          cache,
+		config:         cfg,
+		indexes:        make(map[string]VectorIndex),
+		metadata:       make(map[string]drawerMeta),
+		pendingInsert:  make(map[string]struct{}),
+		loaded:         make(map[string]indexstore.Gen),
+		buildsRun:      make(map[string]*projectBuild),
+		invalidated:    make(map[string]uint64),
+		sems:           make(map[string]chan struct{}),
+		convertCtx:     convertCtx,
+		convertCancel:  convertCancel,
+		converting:     make(map[string]struct{}),
+		convertBackoff: make(map[string]convBackoff),
+		warmDone:       make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // ErrIndexNotReady is the first-build answer: a search reached a project that
@@ -285,6 +336,15 @@ func (e *Engine) mapBuildErr(project string, err error) error {
 // memory returns ErrIndexNotReady. A failed build is not remembered, and its
 // error is returned rather than swallowed into an empty result.
 func (e *Engine) ensureIndex(ctx context.Context, project string) error {
+	// A search that touches a brute-served project past the HNSW threshold is the
+	// converter's trigger (task hnsw-kind-swap-dual-write-conversion, Step 1). The
+	// probe is cheap and gated: it no-ops unless the converter is enabled (only in
+	// the MCP serving engine) and the project is a brute index over threshold with
+	// no conversion already running and the backoff elapsed. Deferred so it runs
+	// once the index is in a known state, on every return path.
+	if e.convertEnabled {
+		defer e.maybeStartConvert(project)
+	}
 	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.buildMu.Lock()
 	lg, ok := e.loaded[project]
@@ -1646,6 +1706,450 @@ func (e *Engine) wouldCollide(id string, meta drawerMeta) bool {
 	return ok && existing.Content != meta.Content
 }
 
+// --- background brute→HNSW converter (task hnsw-kind-swap-dual-write-conversion)
+
+// maybeStartConvert is the converter's trigger (Step 1). It is called from
+// ensureIndex on the serving engine only (convertEnabled). It launches one
+// detached conversion for project when the project is served by a *bruteIndex
+// over the HNSW threshold, no conversion is already running, and the
+// write-counted backoff from any previous abandon has elapsed. Every real check
+// is repeated under the project mutex inside runConvert; this is only a cheap,
+// throttled gate so a hot search loop does not spawn goroutines unboundedly.
+func (e *Engine) maybeStartConvert(project string) {
+	if !e.convertEnabled || e.convertCtx.Err() != nil {
+		return
+	}
+
+	e.mu.RLock()
+	b, ok := e.indexes[project].(*bruteIndex)
+	e.mu.RUnlock()
+	if !ok || b.Len() < hnswSelectT {
+		return // not brute, or below the switch threshold
+	}
+
+	e.convertMu.Lock()
+	if _, running := e.converting[project]; running {
+		e.convertMu.Unlock()
+		return
+	}
+	if bo, ok := e.convertBackoff[project]; ok && bo.abandons > 0 {
+		// A write-counted backoff after the last abandon: skip until the store has
+		// taken rebuildBackoffGens(1, abandons) more writes. ReadGeneration is
+		// lock-free; only read it on the backoff path.
+		if cur, err := indexstore.ReadGeneration(e.vault, project); err == nil {
+			if cur.Gen-bo.abandonedAt.Gen < rebuildBackoffGens(1, bo.abandons) {
+				e.convertMu.Unlock()
+				return
+			}
+		}
+	}
+	e.converting[project] = struct{}{}
+	e.convertMu.Unlock()
+
+	e.convertWG.Add(1)
+	go e.runConvert(project)
+}
+
+// clearConverting drops project from the in-flight set.
+func (e *Engine) clearConverting(project string) {
+	e.convertMu.Lock()
+	delete(e.converting, project)
+	e.convertMu.Unlock()
+}
+
+// convertAbandon records a write-counted backoff for project after an abandoned
+// conversion, so the next trigger waits (mirrors the wrapper's rebuild backoff).
+func (e *Engine) convertAbandon(project string) {
+	cur, err := indexstore.ReadGeneration(e.vault, project)
+	if err != nil {
+		return // cannot time a backoff without the counter; the trigger will re-check
+	}
+	e.convertMu.Lock()
+	bo := e.convertBackoff[project]
+	bo.abandons++
+	bo.abandonedAt = cur
+	e.convertBackoff[project] = bo
+	e.convertMu.Unlock()
+}
+
+// convertResetBackoff clears project's backoff after a successful conversion.
+func (e *Engine) convertResetBackoff(project string) {
+	e.convertMu.Lock()
+	delete(e.convertBackoff, project)
+	e.convertMu.Unlock()
+}
+
+// convertVecsFromCache reads the embed-cache vector of each id. ok is false if
+// any id missed the cache (the converter cannot reconcile a want-id it cannot
+// embed, so it abandons rather than publish a graph short that id). Every id a
+// brute index holds was cache-committed before it was inserted
+// (indexProjectDrawers commits vectors at :817 before the insert at :884), so a
+// miss here is the rare torn-cache case.
+func (e *Engine) convertVecsFromCache(project string, ids []string) (map[string][]float32, bool) {
+	out := make(map[string][]float32, len(ids))
+	for _, id := range ids {
+		vec, err := e.cachedVector(project, id)
+		if err != nil || vec == nil {
+			return nil, false
+		}
+		out[id] = vec
+	}
+	return out, true
+}
+
+// convertSetDiff reports, against h's current live ids, the ids in want that h
+// lacks (adds) and the ids h holds that want no longer has (dels).
+func convertSetDiff(h *hnswIndex, want map[string]struct{}) (adds, dels []string) {
+	have := make(map[string]struct{})
+	for _, id := range h.liveIDs() {
+		have[id] = struct{}{}
+	}
+	for id := range want {
+		if _, ok := have[id]; !ok {
+			adds = append(adds, id)
+		}
+	}
+	for id := range have {
+		if _, ok := want[id]; !ok {
+			dels = append(dels, id)
+		}
+	}
+	return adds, dels
+}
+
+// convertReconcileFull makes h's live set exactly want, off the project mutex
+// (Step 4). It Inserts EVERY want id with its CURRENT cached vector — so a
+// changed vector for an id h already holds upserts (hnswIndex.Insert's
+// equal-vector guard makes an unchanged one a no-op), closing the upsert race —
+// and Deletes every h id not in want. Vectors come from the embed cache; a miss
+// abandons (false). h is private to the converter, so only its own lock applies.
+func (e *Engine) convertReconcileFull(project string, h *hnswIndex, want map[string]struct{}) bool {
+	_, dels := convertSetDiff(h, want)
+	ids := make([]string, 0, len(want))
+	for id := range want {
+		ids = append(ids, id)
+	}
+	vecs, ok := e.convertVecsFromCache(project, ids)
+	if !ok {
+		return false
+	}
+	for _, id := range dels {
+		h.Delete(id)
+	}
+	for _, id := range ids {
+		if err := h.Insert(id, vecs[id]); err != nil {
+			return false // a corrupt vector must never be silently published
+		}
+	}
+	return true
+}
+
+// convertReconcileBounded is the under-mutex final reconcile (Step 5.3): b0 is
+// frozen (the caller holds the project mutex), so only the set difference can
+// remain — an id captured or reaped in the off-lock window between the last
+// Step-4 round and here. It applies at most bound mutations (Insert the adds
+// from the cache, Delete the dels) and abandons (false) if the difference
+// exceeds bound or an add has no cached vector. It does NOT re-Insert ids h
+// already holds: any changed vector was applied in Step 4, and b0 cannot change
+// under the mutex. Under-mutex work is one b0 enumeration (the caller's want)
+// plus at most bound mutations, never an O(corpus) read (S1).
+func (e *Engine) convertReconcileBounded(project string, h *hnswIndex, want map[string]struct{}, bound int) bool {
+	adds, dels := convertSetDiff(h, want)
+	if len(adds)+len(dels) > bound {
+		return false // writes outpaced the catch-up
+	}
+	vecs, ok := e.convertVecsFromCache(project, adds)
+	if !ok {
+		return false
+	}
+	for _, id := range dels {
+		h.Delete(id)
+	}
+	for _, id := range adds {
+		if err := h.Insert(id, vecs[id]); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// convertWantLocked is the completeness oracle's target set (Step 5.3): the ids
+// the brute index b0 holds that also have a published metadata row. The caller
+// holds e.mu. b0 is frozen (the caller holds the project mutex), so its LiveIDs
+// are a stable snapshot. An id in b0 with NO metadata row is a publish-skipped
+// collision loser (indexProjectDrawers phase 3 at :898-908) or metadata-less
+// hit, which search drops anyway (:625-627); excluding it is the collision rule
+// AS A FILTER (never a veto — N-D1), realised through e.metadata because a
+// bruteIndex carries no per-id content for wouldCollide and e.metadata is the
+// authoritative published meta.
+func (e *Engine) convertWantLocked(b0 *bruteIndex) map[string]struct{} {
+	want := make(map[string]struct{})
+	for _, id := range b0.LiveIDs() {
+		if _, ok := e.metadata[id]; ok {
+			want[id] = struct{}{}
+		}
+	}
+	return want
+}
+
+// sameIDSet reports whether a (an id slice) and b (an id set) hold the same ids.
+func sameIDSet(a []string, b map[string]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, id := range a {
+		if _, ok := b[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// runConvert performs the brute→HNSW conversion for one project (Steps 2-7). It
+// builds a detached HNSW graph off every engine lock while the authoritative
+// brute index keeps serving and absorbing writes (the dual-write), reconciles
+// the graph to the brute index, and — under ONE project-mutex hold — proves the
+// graph holds exactly what brute holds, swaps it in, and persists it behind a
+// generation witness. It loses no write: nothing is published until the gate
+// proves the graph equals brute, and brute stays authoritative until the swap.
+func (e *Engine) runConvert(project string) {
+	defer e.convertWG.Done()
+	defer e.clearConverting(project)
+	ctx := e.convertCtx
+
+	// Step 2: snapshot b0 and its id set under the project mutex, then release.
+	pl, err := e.lockProject(ctx, project, searchLockTimeout)
+	if err != nil {
+		return // busy or cancelled; a later trigger retries
+	}
+	// A graph file already present means this is a mismatch/corrupt file (a valid
+	// one would have made the project HNSW, not brute) — that is Unit E heal's
+	// job, not a conversion. Skip.
+	if data, rerr := indexstore.ReadGraph(e.vault, project); rerr != nil || data != nil {
+		pl.release()
+		return
+	}
+	e.mu.RLock()
+	b0, ok := e.indexes[project].(*bruteIndex)
+	var ids0 []string
+	if ok {
+		ids0 = b0.LiveIDs()
+	}
+	e.mu.RUnlock()
+	pl.release()
+	if !ok || len(ids0) < hnswSelectT {
+		return
+	}
+
+	dims, derr := e.embedder.Dimensions()
+	if derr != nil {
+		return
+	}
+
+	// Step 3: build the detached graph off ALL locks, from cache-hit vectors.
+	vecs0, ok := e.convertVecsFromCache(project, ids0)
+	if !ok {
+		return // a torn cache; a later rebuild repairs vectors, then retry
+	}
+	buildVecs := make([][]float32, 0, len(ids0))
+	buildIDs := make([]string, 0, len(ids0))
+	for _, id := range ids0 {
+		buildVecs = append(buildVecs, vecs0[id])
+		buildIDs = append(buildIDs, id)
+	}
+	h := newHNSWIndex(dims, provisionalHNSWParams)
+	// B3: begin suppression on h ONLY, and disarm it with a defer that runs at
+	// function return — i.e. strictly AFTER the Step-5 save — on every exit path
+	// (abandon, gate failure, save skip, panic). finishCatchUp is never called
+	// before the save, and never on b0 (a *bruteIndex has no such method).
+	h.beginCatchUp()
+	defer h.finishCatchUp()
+	if err := h.Build(buildVecs, buildIDs); err != nil {
+		return
+	}
+	if convertAfterBuild != nil {
+		convertAfterBuild()
+	}
+
+	// Step 4: off-lock catch-up rounds. Reconcile h toward b0's live set without
+	// any lock, narrowing the delta each round; proceed once at most
+	// convertFinalReplayMax mutations remain, abandon if still outpaced after
+	// convertCatchUpRounds rounds.
+	converged := false
+	for round := 0; round < convertCatchUpRounds; round++ {
+		if ctx.Err() != nil {
+			return
+		}
+		e.mu.RLock()
+		cur, stillB0 := e.indexes[project].(*bruteIndex)
+		changed := !stillB0 || cur != b0
+		var want map[string]struct{}
+		if !changed {
+			want = e.convertWantLocked(b0)
+		}
+		e.mu.RUnlock()
+		if changed {
+			e.convertAbandon(project)
+			return // b0 was replaced (rebuild / drop / Close): abandon
+		}
+		if convertEachRound != nil {
+			convertEachRound(round)
+		}
+		// Reconcile h to this round's want. The full reconcile also upserts a
+		// changed vector landed during the build window.
+		if !e.convertReconcileFull(project, h, want) {
+			e.convertAbandon(project) // S1: a persistent cache miss must back off, not thrash
+			return
+		}
+		// Judge convergence on the delta to b0 AS IT STANDS AFTER the reconcile
+		// (S2): a pre-reconcile snapshot (or one against a stale want) could break
+		// the loop with h more than the bound behind b0 and waste the Step-5 try.
+		e.mu.RLock()
+		cur2, still := e.indexes[project].(*bruteIndex)
+		var want2 map[string]struct{}
+		if still && cur2 == b0 {
+			want2 = e.convertWantLocked(b0)
+		}
+		e.mu.RUnlock()
+		if !still || cur2 != b0 {
+			e.convertAbandon(project)
+			return // b0 replaced mid-round
+		}
+		adds, dels := convertSetDiff(h, want2)
+		if len(adds)+len(dels) <= convertFinalReplayMax {
+			converged = true
+			break
+		}
+	}
+	if !converged {
+		e.convertAbandon(project) // writes outpaced the catch-up
+		return
+	}
+	if convertBeforeFinal != nil {
+		convertBeforeFinal()
+	}
+
+	// Step 5: THE CRITICAL SECTION — one project-mutex hold through the save and
+	// remember. Lock order: project mutex → e.mu (for the identity/want and the
+	// swap, released before the commit lock) → commit lock via pl.Tx.
+	pl, err = e.lockProject(ctx, project, searchLockTimeout)
+	if err != nil {
+		return // busy/cancelled: no swap happened; a later trigger retries
+	}
+	defer pl.release()
+
+	// 5.1 generation witness, read before the final reconcile.
+	builtGen, gerr := indexstore.ReadGeneration(e.vault, project)
+	if gerr != nil {
+		return
+	}
+	e.buildMu.Lock()
+	invStart := e.invalidated[project]
+	e.buildMu.Unlock()
+
+	// 5.2 identity + eligibility, and 5.3 the want set — all under one e.mu hold.
+	e.mu.Lock()
+	if cur, ok := e.indexes[project].(*bruteIndex); !ok || cur != b0 {
+		e.mu.Unlock()
+		e.convertAbandon(project) // b0 replaced during Steps 2-4
+		return
+	}
+	if b0.Len() < hnswSelectT {
+		e.mu.Unlock()
+		e.convertAbandon(project) // a reaper dropped it below the band (S2)
+		return
+	}
+	want := e.convertWantLocked(b0)
+	e.mu.Unlock()
+
+	// 5.3 final bounded reconcile, and 5.4 the completeness gate.
+	if !e.convertReconcileBounded(project, h, want, convertFinalReplayMax) {
+		e.convertAbandon(project)
+		return
+	}
+	if convertBeforeGate != nil {
+		convertBeforeGate(h)
+	}
+	if !sameIDSet(h.liveIDs(), want) {
+		e.convertAbandon(project) // the child-16 proof: h must equal b0's want exactly
+		return
+	}
+	if convertBeforeSwap != nil {
+		convertBeforeSwap()
+	}
+
+	// 5.5 atomic kind swap under e.mu (not held across the commit lock).
+	e.mu.Lock()
+	if cur, ok := e.indexes[project].(*bruteIndex); !ok || cur != b0 {
+		e.mu.Unlock()
+		e.convertAbandon(project)
+		return
+	}
+	e.indexes[project] = h
+	e.mu.Unlock()
+	e.closeReplaced(b0)
+	if convertBeforeSave != nil {
+		convertBeforeSave()
+	}
+
+	// 5.6 gen-guarded save on its own short commit-lock Tx. Skip the file unless
+	// the store generation still equals builtGen (heal's witness,
+	// graph_heal.go:311-313): a gen change means another process committed since
+	// the reconcile, so the graph may omit its write.
+	chain := genChain{cur: builtGen}
+	out, written := e.convertSave(ctx, pl, project, h, builtGen, &chain)
+
+	// 5.7 remember ONLY on a written save at the witnessed gen; otherwise drop
+	// e.loaded directly so the next search rebuilds and the trigger retries (N-D2
+	// — remember would record builtGen as current on a skip, an in-process loss).
+	if written {
+		e.remember(project, &chain, buildStart{gen: builtGen, readable: true, invalidated: invStart})
+		e.convertResetBackoff(project)
+	} else {
+		e.buildMu.Lock()
+		delete(e.loaded, project)
+		e.buildMu.Unlock()
+		slog.Info("hnsw conversion swapped but did not persist; next search rebuilds", "project", project, "outcome", out.String())
+	}
+}
+
+// convertSave writes h as hnsw.idx on its own commit-lock Tx, guarded by the
+// generation witness. It returns the save outcome and whether the file was
+// actually written (so the caller remembers only a durable, witnessed save).
+// The caller holds the project mutex (pl); this takes and releases only the
+// commit lock, through pl.Tx, so TestLockDiscipline holds (no direct
+// indexstore.Lock from internal/search).
+func (e *Engine) convertSave(ctx context.Context, pl *projectLock, project string, h *hnswIndex, builtGen indexstore.Gen, chain *genChain) (saveOutcome, bool) {
+	tx, err := pl.Tx(ctx, searchLockTimeout)
+	if err != nil {
+		// The swap already happened in memory; the file waits for the next trigger
+		// or a restart's warm-start reconcile. Not written.
+		return skipTimeout, false
+	}
+	if tx.Generation() != builtGen {
+		_, _, _ = pl.finishTx()
+		return skipEpoch, false // the store moved under us; abandon the file
+	}
+	data, w := h.snapshot()
+	builtAt := tx.Generation()
+	out, serr := saveGraph(tx, e.vault, project, h, data, w, builtAt)
+	before, after, cerr := pl.finishTx()
+	if serr != nil {
+		slog.Warn("hnsw conversion save failed", "project", project, "outcome", out.String(), "err", serr)
+		return out, false
+	}
+	if cerr != nil {
+		slog.Warn("hnsw conversion commit failed", "project", project, "err", cerr)
+		chain.broken = true
+		return out, false
+	}
+	if out == written {
+		chain.step(before, after)
+		return out, true
+	}
+	return out, false
+}
+
 // commitGraphAction performs a rebuild's graph file action (save or delete) on
 // its OWN short, gen-only Tx, taken and committed here (R1). A busy lock marks
 // the chain skipped (the build is not remembered; the next explicit rebuild
@@ -2011,6 +2515,18 @@ func candidateCount(limit int) int {
 // then the embedder. The remembered counters are cleared with the index map,
 // so no project reads as built once its index is gone.
 func (e *Engine) Close() error {
+	// Cancel and wait for any in-flight background conversion BEFORE the index
+	// map is replaced below, so no converter performs its Step-5 swap into a map
+	// this Close has just cleared. convertCtx cancellation unblocks a converter
+	// waiting in lockProject (those waits are also bounded by searchLockTimeout);
+	// a converter already inside h.Build is awaited to completion, because g.Add
+	// takes no ctx — bounded by one build, off all engine locks, with no swap
+	// pending (S3; making Build cancellable is a separate wrapper follow-on).
+	if e.convertCancel != nil {
+		e.convertCancel()
+	}
+	e.convertWG.Wait()
+
 	// Wait for any in-flight proactive warm-up construct to finish before closing
 	// the embedder, so a construct goroutine never publishes a live model session
 	// into a process whose embedder has already been closed (S-D1).

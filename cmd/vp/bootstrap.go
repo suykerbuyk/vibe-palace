@@ -93,7 +93,11 @@ func bootstrap() (*serverStack, error) {
 	// The engine builds each project's index lazily, on the first search that
 	// touches it. Rebuilding all projects up front cost minutes of CPU on every
 	// MCP spawn — most of it for projects the session never searched.
-	eng := search.NewEngine(emb, v, cfg)
+	// WithBackgroundConverter: this is the long-lived engine that serves searches
+	// (shared by `vp mcp` and `vp mcp serve`), so it is the one process allowed to
+	// run the brute→HNSW background converter and perform the in-memory kind swap.
+	// No CLI invocation or the detached ingester passes this option.
+	eng := search.NewEngine(emb, v, cfg, search.WithBackgroundConverter())
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)

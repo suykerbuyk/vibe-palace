@@ -307,6 +307,23 @@ func (vi *bruteIndex) Len() int {
 	return len(vi.entries)
 }
 
+// LiveIDs returns the ids of every vector the brute index holds. It is the
+// kind-swap converter's completeness oracle (task
+// hnsw-kind-swap-dual-write-conversion, Step 5.3/5.4): the converter proves the
+// HNSW graph it is about to publish holds exactly the ids the authoritative
+// brute index holds. Read under the index's own lock, like Len; it is not on
+// the VectorIndex interface, so only a caller that already knows it holds a
+// *bruteIndex (the converter) uses it. hnswIndex has its own liveIDs.
+func (vi *bruteIndex) LiveIDs() []string {
+	vi.mu.RLock()
+	defer vi.mu.RUnlock()
+	out := make([]string, 0, len(vi.byID))
+	for id := range vi.byID {
+		out = append(out, id)
+	}
+	return out
+}
+
 // Close is a no-op: brute force owns no goroutine and no file.
 func (vi *bruteIndex) Close() error { return nil }
 

@@ -216,6 +216,35 @@ func rebuildBackoffGens(minTombstones, abandons int) uint64 {
 	return min(b, maxRebuildBackoffGens)
 }
 
+// Bounds for the kind-swap converter (task hnsw-kind-swap-dual-write-conversion,
+// Steps 4-5). They are DISTINCT from the wrapper's own catchUpRounds /
+// finalReplayMax (above), which bound runRebuild's tombstone rebuild: the
+// converter reconciles the detached graph against the live brute index off the
+// project mutex in at most convertCatchUpRounds rounds, then enters the critical
+// section only if at most convertFinalReplayMax mutations remain — otherwise it
+// abandons (writes are outpacing it) and the next trigger waits out a
+// write-counted backoff. Deleting these does NOT change runRebuild. Vars (not
+// consts) only so a test can lower them; production never rebinds them.
+var (
+	convertFinalReplayMax = 64
+	convertCatchUpRounds  = 8
+)
+
+// Converter step-hooks (task hnsw-kind-swap-dual-write-conversion, Acceptance).
+// When a test sets one it runs at the named point on the converter goroutine
+// (runConvert), so a test can inject a concurrent capture/rebuild/commit and
+// assert on the published index directly. They are package vars (like
+// insertHook / catchUpErrHook), nil in production, and never fire on the
+// runRebuild path (that path has afterSnapshot/beforeCatchUpRound instead).
+var (
+	convertAfterBuild  func()             // after Step 3 builds the detached graph, off all locks
+	convertEachRound   func(round int)    // inside each off-lock Step-4 round, holding no lock
+	convertBeforeFinal func()             // after the off-lock rounds, before Step 5 re-takes the project mutex
+	convertBeforeGate  func(h *hnswIndex) // in the critical section, after the final reconcile, before the gate
+	convertBeforeSwap  func()             // in the critical section, after the gate passes, before the e.mu swap
+	convertBeforeSave  func()             // in the critical section, after the swap, before the gen-guarded save
+)
+
 // distanceName is the name cosineNaNGuard is registered under. A saved graph
 // records it, and a load resolves it, so renaming it makes every saved graph
 // fail to Import. TestMain pins it.
