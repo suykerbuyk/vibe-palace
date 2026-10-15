@@ -131,7 +131,9 @@ type Engine struct {
 	// swap pending (making Build cancellable is a separate wrapper follow-on).
 	// converting (guarded by convertMu) is the in-flight set,
 	// and convertBackoff (also convertMu) the per-project write-counted backoff
-	// after an abandoned conversion.
+	// after an abandoned conversion. runConvert holds the (host,vault) index run
+	// lock across the whole convert (ADR-016 decision 3), released when the
+	// goroutine returns, so convertWG.Wait() in Close also waits out that hold.
 	convertEnabled bool
 	convertCtx     context.Context
 	convertCancel  context.CancelFunc
@@ -142,8 +144,10 @@ type Engine struct {
 
 	// rebuildLauncher, when set, ensures a detached `vp index rebuild <project>`
 	// is running after a cold/stale search degraded (ADR-016 decision 4). It is
-	// the spawn seam that lives OUTSIDE this package: the engine never try-locks
-	// the run lock to decide whether to build, and never spawns a process itself.
+	// the spawn seam that lives OUTSIDE this package: the cold-search launcher path
+	// never try-locks the run lock to decide whether to build (the spawned child's
+	// own try-lock is the authority), and never spawns a process itself. (The one
+	// engine path that DOES take the run lock is runConvert, decision 3.)
 	// Only the long-lived MCP serving engine injects one (WithRebuildLauncher from
 	// bootstrap); a CLI/one-shot engine leaves it nil and only serves degraded.
 	rebuildLauncher RebuildLauncher
@@ -463,7 +467,8 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 // `vp index rebuild` is running. It is a no-op on an engine with no launcher (a
 // CLI/one-shot engine), which then only serves degraded. The engine never
 // try-locks the run lock here — the spawned child's own try-lock is the
-// authority.
+// authority. (The one engine path that DOES take the run lock is runConvert,
+// ADR-016 decision 3.)
 func (e *Engine) ensureDetachedRebuild(project string) {
 	if e.rebuildLauncher == nil {
 		return
@@ -2139,6 +2144,46 @@ func (e *Engine) runConvert(project string) {
 	defer e.convertWG.Done()
 	defer e.clearConverting(project)
 	ctx := e.convertCtx
+
+	// ADR-016 decision 3: the converter is a corpus-building embed pass, so it
+	// runs under the (host,vault) index run lock — at most one convert per vault.
+	// Taken HERE, before the Step-2 lockProject below, it keeps the documented
+	// order (run lock → project mutex → commit lock; see lock.go and ADR-014
+	// decision 7). This is a FRESH, non-blocking TryRunLock: runConvert holds no
+	// run lock of its own to pass in (unlike the detached builder's RunHeld path).
+	// The one per-vault run lock has other openers in THIS process too — a
+	// lifecycle rename (indexstore.AdoptRenamedProject) and the lockProject sweep's
+	// runLockHeld probe — so contention here may be cross-process (a detached
+	// vp index rebuild / vp drain archives) OR in-process; either way it surfaces
+	// as ok=false (a second same-process open does not hang), and the decline
+	// branch handles it.
+	held, ok, err := indexstore.TryRunLock(e.vault, indexstore.KindRebuild, project)
+	if err != nil {
+		// Infra failure, not contention: the locks dir could not be created or the
+		// lock file could not be opened/flocked for a reason other than a peer
+		// holding it (runlock.go:81-91). Log and return; a later trigger retries.
+		// NOT a backoff — this is not the lock being held.
+		slog.Warn("hnsw convert: run lock unavailable; a later trigger retries", "project", project, "err", err)
+		return
+	}
+	if !ok {
+		// Declined: a detached rebuild/ingest, or an in-process lifecycle/rename,
+		// holds the vault run lock. Per ADR-016 decision 3, re-fire on the NEXT
+		// maybeStartConvert trigger — record NO backoff and write NO inbox marker.
+		// (convertAbandon is WRONG here: it keys the backoff on THIS project's Gen,
+		// which a convert that lost the vault-wide lock to another project's build
+		// never advances.) While a foreign holder keeps the vault lock, each search
+		// of a brute-over-threshold project re-fires a fresh runConvert that does one
+		// cheap non-blocking TryRunLock-and-return (a single flock syscall — no
+		// lockProject, no build/embed), so a persistent holder means repeated CHEAP
+		// re-attempts, not repeated embeds. (clearConverting runs on the way out and
+		// `converting` only collapses CONCURRENT launches, so it does NOT bound these
+		// sequential per-search re-fires; a bounded holder-liveness decline mark —
+		// re-fire once, then wait until the holder is gone — is the filed follow-on
+		// `converter-decline-needs-holder-liveness-bound`.)
+		return
+	}
+	defer func() { _ = held.Release() }() // panic-safe: Release returns an error
 
 	// Step 2: snapshot b0 and its id set under the project mutex, then release.
 	pl, err := e.lockProject(ctx, project, searchLockTimeout)

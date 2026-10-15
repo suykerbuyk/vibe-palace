@@ -119,7 +119,9 @@ func calls(fn *ast.FuncDecl) []string {
 //     process deadlocks);
 //   - only (*CacheWriter).Put calls the cache's unexported putVector, so every
 //     vector is written under a held commit lock;
-//   - internal/search never touches the index run lock.
+//   - only Engine.runConvert takes the index run lock, and only via TryRunLock as
+//     a transient holder (ADR-016 decision 3); the corpus-build paths never do
+//     (decision 1), and runConvert must still take it (checked below).
 func TestLockDiscipline(t *testing.T) {
 	for _, fn := range productionFuncs(t, ".", false) {
 		if sendsOn(fn.decl) && fn.name != "acquireSem" {
@@ -133,8 +135,10 @@ func TestLockDiscipline(t *testing.T) {
 				t.Errorf("%s (%s) takes a project semaphore; only lockProject may", fn.name, fn.file)
 			case c == ".putVector" && fn.name != "CacheWriter.Put":
 				t.Errorf("%s (%s) calls the cache's putVector; only (*CacheWriter).Put may", fn.name, fn.file)
-			case strings.HasPrefix(c, "indexstore.") && strings.Contains(c, "RunLock"):
-				t.Errorf("%s (%s) calls %s: internal/search never takes the run lock", fn.name, fn.file, c)
+			case strings.HasPrefix(c, "indexstore.") && strings.Contains(c, "RunLock") &&
+				!(fn.name == "Engine.runConvert" && c == "indexstore.TryRunLock"):
+				t.Errorf("%s (%s) calls %s: only Engine.runConvert may take the run lock, and only via "+
+					"TryRunLock (ADR-016 decision 3); the corpus-build paths never do (decision 1)", fn.name, fn.file, c)
 			}
 			if fn.name == "Engine.reapLocked" || fn.name == "Engine.evictLocked" {
 				switch c {
@@ -143,6 +147,23 @@ func TestLockDiscipline(t *testing.T) {
 				}
 			}
 		}
+	}
+
+	// ADR-016 decision 3: runConvert MUST take the run lock. If this stops being
+	// true the singleton is broken even though every build test still passes.
+	var sawConvertTryLock bool
+	for _, fn := range productionFuncs(t, ".", false) {
+		if fn.name != "Engine.runConvert" {
+			continue
+		}
+		for _, c := range calls(fn.decl) {
+			if c == "indexstore.TryRunLock" {
+				sawConvertTryLock = true
+			}
+		}
+	}
+	if !sawConvertTryLock {
+		t.Error("Engine.runConvert no longer calls indexstore.TryRunLock: the converter must run under the run lock (ADR-016 decision 3)")
 	}
 }
 

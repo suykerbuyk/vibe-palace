@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -551,5 +552,367 @@ func TestConvertTriggerRunsAndCloses(t *testing.T) {
 	}
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// --- U3 §4.1: the converter holds the run lock, taken before any commit lock ---
+//
+// ADR-016 decision 3: runConvert takes the (host,vault) index run lock at the TOP,
+// before the Step-2 lockProject, and holds it across the save's commit-lock Tx.
+// This pins (a) no commit lock is acquired before the convert's RunAcquired — a
+// REAL oracle, never "first event in the slice": ObserveCommitLocks is
+// process-global and the lockProject sweep's ReapGoneProjects can emit
+// CommitAcquired, so we assert on the ordering relative to RunAcquired — and
+// (b) RunAcquired still holds when convertSave takes its Tx (driven by the
+// convertBeforeSave hook). Deleting the acquire makes RunAcquired/RunReleased
+// vanish and this test goes RED.
+func TestConvertHoldsRunLockBeforeAnyCommitLock(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3own"
+	e := newSelEngine(t, v)
+	seedBruteProject(t, v, e, project, 5)
+
+	// Record run- and commit-lock events in one ordered log, installed AFTER the
+	// seed's Rebuild (which takes commit locks, no run lock) so only the convert's
+	// events are captured.
+	var mu sync.Mutex
+	var log []string
+	add := func(s string) { mu.Lock(); log = append(log, s); mu.Unlock() }
+	restoreRun := indexstore.ObserveRunLocks(func(ev indexstore.RunLockEvent) { add("run:" + string(ev)) })
+	defer restoreRun()
+	restoreCommit := indexstore.ObserveCommitLocks(func(_ string, ev indexstore.CommitLockEvent) { add("commit:" + string(ev)) })
+	defer restoreCommit()
+	convertBeforeSave = func() { add("mark:beforeSave") }
+
+	convertSync(e, project)
+
+	mu.Lock()
+	defer mu.Unlock()
+	idxOf := func(tag string) int {
+		for i, s := range log {
+			if s == tag {
+				return i
+			}
+		}
+		return -1
+	}
+	try := idxOf("run:" + string(indexstore.RunTry))
+	acq := idxOf("run:" + string(indexstore.RunAcquired))
+	rel := idxOf("run:" + string(indexstore.RunReleased))
+	if try < 0 || acq < 0 || rel < 0 {
+		t.Fatalf("missing run-lock events (acquire not taken?): log=%v", log)
+	}
+	if !(try < acq && acq < rel) {
+		t.Fatalf("run-lock events out of order: try=%d acq=%d rel=%d log=%v", try, acq, rel, log)
+	}
+	// (a) No commit lock is acquired before the run lock — the documented order.
+	for i := 0; i < acq; i++ {
+		if log[i] == "commit:"+string(indexstore.CommitAcquired) {
+			t.Fatalf("a commit lock was acquired before the run lock (acquire taken too late): log=%v", log)
+		}
+	}
+	// (b) The run lock still holds when convertSave is about to take its Tx: the
+	// beforeSave mark is after RunAcquired and before RunReleased, and the save's
+	// commit acquire falls in that window.
+	mark := idxOf("mark:beforeSave")
+	if !(acq < mark && mark < rel) {
+		t.Fatalf("convertBeforeSave did not fall inside the run-lock hold: acq=%d mark=%d rel=%d log=%v", acq, mark, rel, log)
+	}
+	saveCommit := -1
+	for i := mark; i < rel; i++ {
+		if log[i] == "commit:"+string(indexstore.CommitAcquired) {
+			saveCommit = i
+			break
+		}
+	}
+	if saveCommit < 0 {
+		t.Fatalf("the save's commit lock was not taken while the run lock was held: log=%v", log)
+	}
+	if _, ok := installedIndex(t, e, project).(*hnswIndex); !ok {
+		t.Fatalf("convert did not publish an HNSW index; log=%v", log)
+	}
+}
+
+// --- U3 §4.2: a convert declines when the vault run lock is already held --------
+//
+// The PRIMARY oracle is "stays *bruteIndex" — the only observable a broken
+// proceed would flip. The event-stream and inbox checks are TRIPWIRES (F4):
+// RunLockEvent carries no caller identity, and the kernel forbids the test's own
+// second same-process acquire, so the stream alone cannot distinguish a broken
+// proceed. (The real decline+retry oracle is TestConvertDeclineReleasesThenRetries.)
+func TestConvertDeclinesWhenRunLockHeld(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3decl"
+	e := newSelEngine(t, v)
+	seedBruteProject(t, v, e, project, 5)
+
+	// A different run holds the one vault-wide run lock (project "" needs no index
+	// dir; the lock file is the same regardless of the holder's named project).
+	rl, ok, err := indexstore.TryRunLock(v, indexstore.KindRebuild, "")
+	if err != nil || !ok {
+		t.Fatalf("test could not pre-acquire the run lock: ok=%v err=%v", ok, err)
+	}
+	defer func() { _ = rl.Release() }()
+
+	// Observe only the converter's events (installed AFTER the pre-acquire).
+	var mu sync.Mutex
+	var sawTry, sawAcq bool
+	restore := indexstore.ObserveRunLocks(func(ev indexstore.RunLockEvent) {
+		mu.Lock()
+		switch ev {
+		case indexstore.RunTry:
+			sawTry = true
+		case indexstore.RunAcquired:
+			sawAcq = true
+		}
+		mu.Unlock()
+	})
+	defer restore()
+
+	convertSync(e, project)
+
+	// PRIMARY oracle.
+	if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
+		t.Fatal("the converter swapped to HNSW despite the run lock being held by another run")
+	}
+	// Tripwires.
+	mu.Lock()
+	gotTry, gotAcq := sawTry, sawAcq
+	mu.Unlock()
+	if !gotTry {
+		t.Error("tripwire: the converter never tried the run lock")
+	}
+	if gotAcq {
+		t.Error("tripwire: the converter acquired the run lock though it was held")
+	}
+	if wanted, werr := indexstore.ReadRebuildWanted(v, project); werr != nil {
+		t.Fatalf("ReadRebuildWanted: %v", werr)
+	} else if wanted {
+		t.Error("tripwire: the decline wrote a rebuild-corpus marker (it must not — decision 3)")
+	}
+	// F1: the decline records NO write-counted backoff.
+	e.convertMu.Lock()
+	abandons := e.convertBackoff[project].abandons
+	e.convertMu.Unlock()
+	if abandons != 0 {
+		t.Errorf("the decline recorded a backoff (abandons=%d); decision 3 is re-fire on the next trigger", abandons)
+	}
+}
+
+// --- U3 §4.3: Close waits out an in-flight convert's Build; the run lock is free
+//
+//	afterward --------------------------------------------------------------
+//
+// U3 holds the run lock across h.Build (uncancellable here; threading ctx into
+// Build is U5, out of scope). Close must therefore WAIT on convertWG while a
+// converter is mid-build, and the run lock must be released by the time Close
+// returns (held.Release runs before convertWG.Done, LIFO). This asserts the WAIT,
+// not interruption.
+func TestConvertCloseWaitsForBuildThenRunLockFree(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3close"
+	e := NewEngine(embedder.NewMock(384), v, selCfg(), WithBackgroundConverter())
+
+	// F8 precondition: maybeStartConvert is a DEFER in ensureIndex and no-ops
+	// unless the project is an installed *bruteIndex over threshold. Build it so,
+	// or the trigger silently no-ops and inBuild never arrives.
+	seedBruteProject(t, v, e, project, 5)
+
+	inBuild := make(chan struct{})
+	release := make(chan struct{})
+	var relOnce sync.Once
+	closeRelease := func() { relOnce.Do(func() { close(release) }) }
+	t.Cleanup(closeRelease) // always let a parked converter drain
+
+	var buildOnce sync.Once
+	convertAfterBuild = func() {
+		buildOnce.Do(func() { close(inBuild) })
+		<-release // park the converter while it holds the run lock
+	}
+
+	var closeOnce sync.Once
+	var closeErr error
+	closeEngine := func() { closeOnce.Do(func() { closeErr = e.Close() }) }
+	t.Cleanup(closeEngine)
+
+	// Trigger the async converter goroutine.
+	_ = e.ensureIndex(context.Background(), project)
+
+	select {
+	case <-inBuild:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the converter never reached convertAfterBuild: the trigger no-oped (not brute / over threshold?)")
+	}
+
+	// The run lock is held now: a concurrent try must fail.
+	if rl, ok, _ := indexstore.TryRunLock(v, indexstore.KindRebuild, ""); ok {
+		_ = rl.Release() // release the leaked hold before failing — a held lock poisons later run-lock tests
+		t.Fatal("the run lock was NOT held while the converter was mid-build")
+	}
+
+	// Close must BLOCK on convertWG while the converter is parked.
+	closed := make(chan struct{})
+	go func() { closeEngine(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the converter was still inside Build")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	closeRelease() // let the converter return
+	select {
+	case <-closed:
+		if closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the converter was released")
+	}
+
+	// After Close, the run lock must be free (held.Release ran before convertWG.Done).
+	rl, ok, err := indexstore.TryRunLock(v, indexstore.KindRebuild, "")
+	if err != nil {
+		t.Fatalf("post-Close TryRunLock: %v", err)
+	}
+	if !ok {
+		t.Fatal("the run lock outlived the converter (held.Release leaked)")
+	}
+	_ = rl.Release()
+}
+
+// --- U3 §4.4: a decline leaves NO durable suppression; the next trigger retries -
+//
+// F1 oracle. convertAbandon keys its write-counted backoff on THIS project's Gen,
+// but the run lock is vault-wide — a convert of A that lost the lock to a build of
+// B must NOT be suppressed until A is itself rewritten. So the decline records no
+// backoff, and once the foreign holder is gone the next maybeStartConvert (the gate
+// that consults the backoff) converts. Reverting the fix to convertAbandon-on-
+// decline makes the abandons==0 assertion RED (and would gate out the retry since
+// project's Gen never advanced).
+func TestConvertDeclineReleasesThenRetries(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3retry"
+	e := NewEngine(embedder.NewMock(384), v, selCfg(), WithBackgroundConverter())
+	t.Cleanup(func() { _ = e.Close() })
+	seedBruteProject(t, v, e, project, 5)
+
+	// Hold the vault-wide run lock for a different run. Releasing it later does NOT
+	// advance `project`'s Gen — the whole point of F1.
+	rl, ok, err := indexstore.TryRunLock(v, indexstore.KindRebuild, "")
+	if err != nil || !ok {
+		t.Fatalf("pre-acquire: ok=%v err=%v", ok, err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = rl.Release()
+		}
+	}()
+
+	// Decline deterministically (synchronous): no swap, and F1's hard oracle — no
+	// backoff recorded.
+	convertSync(e, project)
+	if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
+		t.Fatal("declined convert swapped anyway")
+	}
+	e.convertMu.Lock()
+	abandons := e.convertBackoff[project].abandons
+	e.convertMu.Unlock()
+	if abandons != 0 {
+		t.Fatalf("decline recorded a backoff (abandons=%d); with the vault-wide lock this suppresses the convert until THIS project's Gen advances, which a foreign release never does (decision 3 is re-fire on the next trigger)", abandons)
+	}
+
+	// Foreign holder gone; project's Gen is UNCHANGED (nothing was written to it).
+	if rerr := rl.Release(); rerr != nil {
+		t.Fatalf("release foreign holder: %v", rerr)
+	}
+	released = true
+
+	// The next NATURAL trigger (maybeStartConvert — the gate that consults the
+	// backoff) must retry and now convert. With a stale backoff it would be gated
+	// out, because project's Gen did not advance.
+	e.maybeStartConvert(project)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("convert did not retry after the foreign holder released (decline left durable suppression?)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// --- U3 §4.4 (F2): the converter owns a KindRebuild holder record during the hold
+//
+// ADR-016 decision 6: a convert runs as KindRebuild, so TryRunLock writes a
+// KindRebuild holder record on acquire. This test pins that KIND (and the holder's
+// project) during the hold, so a telemetry/liveness reader sees a rebuild-kind run,
+// never a lifecycle one. It is NOT an ordering oracle: the sweep's runLockHeld probe
+// emits RunTry only when a KindLifecycle holder AND a rename-pending record already
+// exist (lifecycle.go:314,:198) — neither of which this test plants — and TryRunLock
+// overwrites the holder to KindRebuild regardless of where the acquire sits, so this
+// test cannot catch a move of the acquire below lockProject. §4.1
+// TestConvertHoldsRunLockBeforeAnyCommitLock is the ordering oracle (no commit lock
+// acquired before RunAcquired); do NOT delete it believing this test covers it.
+func TestConvertHolderRecordIsRebuildKindDuringHold(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3holder"
+	e := newSelEngine(t, v)
+	seedBruteProject(t, v, e, project, 5)
+
+	var mu sync.Mutex
+	var firstEvent indexstore.RunLockEvent
+	var seen int
+	restore := indexstore.ObserveRunLocks(func(ev indexstore.RunLockEvent) {
+		mu.Lock()
+		if seen == 0 {
+			firstEvent = ev
+		}
+		seen++
+		mu.Unlock()
+	})
+	defer restore()
+
+	var holderKind indexstore.RunKind
+	var holderProject string
+	var holderErr error
+	convertAfterBuild = func() {
+		h, herr := indexstore.ReadHolder(v)
+		holderKind, holderProject, holderErr = h.Kind, h.Project, herr
+	}
+
+	convertSync(e, project)
+
+	if holderErr != nil {
+		t.Fatalf("ReadHolder during the convert: %v", holderErr)
+	}
+	if holderKind != indexstore.KindRebuild {
+		t.Fatalf("holder kind during the convert = %q, want %q (the converter must own a rebuild-kind holder record, never read as a lifecycle run)", holderKind, indexstore.KindRebuild)
+	}
+	if holderProject != project {
+		t.Fatalf("holder project during the convert = %q, want %q", holderProject, project)
+	}
+	mu.Lock()
+	fe := firstEvent
+	mu.Unlock()
+	if fe != indexstore.RunTry {
+		t.Fatalf("first run-lock event = %q, want %q (on a quiet vault the converter's own RunTry is first; a sanity check, NOT an ordering guard — §4.1 is the ordering oracle)", fe, indexstore.RunTry)
 	}
 }

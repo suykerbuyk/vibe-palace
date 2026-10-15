@@ -1036,10 +1036,11 @@ const rebuildLauncherNoteTimeout = 5 * time.Second
 //     right now — this is the coalesce, and it is why a contended spawn loses
 //     nothing;
 //  2. ensure the detached singleton `vp index rebuild` is running: it reads the
-//     run lock's ADVISORY holder record (never a try-lock — the engine never
-//     reaches the run lock) and, while that names a live process, spawns nothing;
-//     otherwise it spawns a detached `vp index rebuild <project>` whose OWN
-//     try-lock is the authoritative check.
+//     run lock's ADVISORY holder record (never a try-lock — this cold-search
+//     ensure path never reaches the run lock; the one engine path that does is
+//     runConvert, ADR-016 decision 3) and, while that names a live process,
+//     spawns nothing; otherwise it spawns a detached `vp index rebuild <project>`
+//     whose OWN try-lock is the authoritative check.
 //
 // A bounded burst of spawns on a cold wave is accepted (ADR-016 Consequences):
 // losers exit fast writing nothing, and the want is kept by the marker above.

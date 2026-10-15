@@ -95,7 +95,10 @@ func cmdSearch() *cli.Command {
 			// ANY process" — so a CLI `vp search` that degrades on a cold corpus
 			// also records the durable rebuild-corpus want and spawns the detached
 			// `vp index rebuild`, exactly as the MCP serving engine does. The seam
-			// lives in the tools layer; the engine never try-locks the run lock.
+			// lives in the tools layer; this cold-search path never try-locks the
+			// run lock. (A CLI engine is built WITHOUT WithBackgroundConverter, so
+			// its runConvert never runs — the one engine path that takes the run
+			// lock, decision 3, exists only on the MCP serving engine.)
 			eng := search.NewEngine(emb, vault, cfg,
 				search.WithRebuildLauncher(tools.NewRebuildLauncher(vault, detachlaunch.Launch)))
 			defer eng.Close()
