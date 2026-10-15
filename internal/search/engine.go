@@ -486,15 +486,17 @@ func (e *Engine) ensureDetachedRebuild(project string) {
 //     empty rows, on a long-lived engine whose embed cache is cold;
 //  3. the WITNESS: re-read the counter and require g1 == g2 (so the corpus walk
 //     was a consistent store snapshot, no commit landed during it), AND require
-//     the graph's live-id set to EQUAL the walked corpus's id set. The set check
-//     is the pairing test ADR-016's hazard names directly ("a graph newer or
-//     older than the chunk store it is paired with"): a graph with an id the
-//     corpus lacks is newer (removed content), a corpus id the graph lacks is
-//     older (added content, including a notes/iterations edit the generation
-//     counter can NOT see). It is strictly stronger than a Gen stamp, which is
-//     blind to the vault-tree edits notes and iterations are, and it cannot
-//     straddle the two-file (graph + counter) rename window because it compares
-//     the loaded graph against the freshly-walked corpus, not against a proxy.
+//     the graph's live-id set to be a SUBSET of the walked corpus's id set. The
+//     subset check is the pairing test ADR-016's hazard names directly ("a graph
+//     newer or older than the chunk store it is paired with"): a graph id the
+//     corpus lacks is removed or edited content (ids are content-addressed), so
+//     the graph is stale → refuse; a corpus id the graph lacks is content the
+//     writer legitimately omitted (a heal's cache miss, an unusable vector, a
+//     not-yet-built addition), so the graph is still correctly paired → consume
+//     degraded. It is stronger than a Gen stamp, which is blind to the vault-tree
+//     edits notes and iterations are, and it cannot straddle the two-file (graph +
+//     counter) rename window because it compares the loaded graph against the
+//     freshly-walked corpus, not against a proxy.
 //
 // Install happens only when all three hold; otherwise nothing is installed and
 // the build path serves this search and retries next time. The install swaps
@@ -540,23 +542,38 @@ func (e *Engine) tryWitnessedLoad(ctx context.Context, project string, g1 indexs
 		_ = idx.Close()
 		return false // a commit landed during the walk: the snapshot is not consistent
 	}
-	corpusSet := make(map[string]struct{}, len(w.ids))
-	for _, id := range w.ids {
-		corpusSet[id] = struct{}{}
+	// The pairing witness (N1): every id the GRAPH serves must still be present in
+	// the walked corpus (graph live-ids ⊆ corpus). A graph id the corpus no longer
+	// has is removed or edited content — ids are content-addressed, so an in-place
+	// edit drops the old id from the corpus — i.e. the graph is older than the
+	// store it is paired with: REFUSE. A corpus id the graph LACKS is the opposite
+	// and is NOT stale: it is content the writer was allowed to omit — a heal's
+	// cache miss, an unusable vector dedupBatch dropped, a not-yet-built addition —
+	// so the graph is still correctly paired, just not yet complete. Consuming it
+	// serves the cheaply-available answer now (decision 4): a missing result, never
+	// a wrong one; the durable marker and the detached rebuild catch the rest up.
+	// Subset, not equality: equality false-rejects every such correctly-subset
+	// graph and would never consume it (round-3 N1).
+	graphIDs := idx.liveIDs()
+	metaByID := make(map[string]drawerMeta, len(w.ids))
+	for i, id := range w.ids {
+		metaByID[id] = w.metas[i] // last occurrence wins, matching dedupBatch's keep-last
 	}
-	if !sameIDSet(idx.liveIDs(), corpusSet) {
-		_ = idx.Close()
-		return false // the graph is not paired with the current corpus — defer to the rebuild
+	for _, id := range graphIDs {
+		if _, ok := metaByID[id]; !ok {
+			_ = idx.Close()
+			return false // the graph serves an id the corpus no longer has: genuinely stale
+		}
 	}
 
 	e.mu.Lock()
 	old := e.indexes[project]
 	e.indexes[project] = idx
-	for i, id := range w.ids {
-		if e.detectCollision(id, w.metas[i]) {
-			continue
-		}
-		e.metadata[id] = w.metas[i]
+	// N2: write metadata for exactly the ids the installed graph serves — not for
+	// every walked id (an id the graph lacks would be inert), and never skipping a
+	// served one — so e.metadata matches what the graph returns at query time.
+	for _, id := range graphIDs {
+		e.metadata[id] = metaByID[id]
 	}
 	e.mu.Unlock()
 	e.closeReplaced(old)

@@ -35,23 +35,37 @@ func (s *launchSpy) projects() []string {
 	return append([]string(nil), s.seen...)
 }
 
-// commitDrawerGraph adds n distinct drawers to project and writes an on-disk
-// hnsw.idx built from their (id, mock-embedded-vector) pairs — exactly what a
-// detached `vp index rebuild` would commit — bumping the generation. The engine
-// under test keeps its own cold embed cache, so a later search must consume this
-// graph without re-embedding. Returns the drawer ids.
-func commitDrawerGraph(t *testing.T, v *storage.Vault, project string, n int) []string {
+// commitGraphFromDrawers adds n distinct drawers to project, then writes an
+// on-disk hnsw.idx — as a detached rebuild / heal would — built from the first
+// `keep` drawers' (id, mock-embedded-vector) pairs PLUS any extraIDs (fabricated
+// ids with a vector, to model a graph still holding content the corpus no longer
+// has). keep<n models a heal / unusable-vector graph that correctly omits a
+// walked id; extraIDs models a genuinely stale graph. The engine under test keeps
+// its own cold embed cache, so a later search must consume this graph without
+// re-embedding. Returns the drawer ids.
+func commitGraphFromDrawers(t *testing.T, v *storage.Vault, project string, n, keep int, extraIDs ...string) []string {
 	t.Helper()
 	mock := embedder.NewMock(384)
-	var ids []string
+	var drawerIDs, ids []string
 	var vecs [][]float32
 	for i := 0; i < n; i++ {
 		d := addDrawer(t, v, project, "wing", "room", fmt.Sprintf("distinct chunk number %d", i), "facts")
-		vec, err := mock.Embed(context.Background(), d.Content)
+		drawerIDs = append(drawerIDs, d.ID)
+		if i < keep {
+			vec, err := mock.Embed(context.Background(), d.Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, d.ID)
+			vecs = append(vecs, vec)
+		}
+	}
+	for _, gid := range extraIDs {
+		vec, err := mock.Embed(context.Background(), "ghost "+gid)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, d.ID)
+		ids = append(ids, gid)
 		vecs = append(vecs, vec)
 	}
 	h := newHNSWIndex(384, provisionalHNSWParams)
@@ -59,7 +73,13 @@ func commitDrawerGraph(t *testing.T, v *storage.Vault, project string, n int) []
 		t.Fatal(err)
 	}
 	saveBuilt(t, v, project, h) // writes hnsw.idx and bumps the generation
-	return ids
+	return drawerIDs
+}
+
+// commitDrawerGraph is commitGraphFromDrawers with a full, exactly-matching graph.
+func commitDrawerGraph(t *testing.T, v *storage.Vault, project string, n int) []string {
+	t.Helper()
+	return commitGraphFromDrawers(t, v, project, n, n)
 }
 
 // TestColdDegradeEnsuresDetachedRebuild (U2 / ADR-016 decision 4): a cold corpus
@@ -182,33 +202,95 @@ func TestWitnessedLoadWitnessCatchesInterleavedWrite(t *testing.T) {
 	}
 }
 
-// TestWitnessedLoadDefersOnCorpusDrift (U2, B2b): a graph that does not cover the
-// current corpus — a drawer/note added after the build, the shape that does not
-// move Gen's pairing — must NOT be installed or recorded as current. Recording
-// e.loaded here would pin the new content invisible, suppressing the rebuild
-// that would index it.
-func TestWitnessedLoadDefersOnCorpusDrift(t *testing.T) {
+// TestColdEngineConsumesSubsetGraph (U2, N1): a HEAL-style committed graph whose
+// live-id set is a STRICT SUBSET of the current corpus — one chunk the writer
+// omitted (a heal's cache miss, an unusable vector) — must still be CONSUMED by a
+// cold long-lived engine through Search, serving HNSW hits for the ids it has.
+// A mutant that kept the set-EQUALITY witness refuses this and never consumes.
+func TestColdEngineConsumesSubsetGraph(t *testing.T) {
+	v := testVault(t)
+	emb := newCountingEmbedder(384)
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	t.Cleanup(func() { eng.Close() })
+
+	// 40 drawers in the corpus (> one 32-batch), but the committed graph holds
+	// only 39 of them — the 40th is an id the writer legitimately omitted.
+	commitGraphFromDrawers(t, v, "proj", 40, 39)
+
+	results, err := eng.Search(context.Background(), "distinct chunk number 5", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatalf("cold engine did not consume a correctly-subset graph: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no results — a heal/subset graph was refused instead of consumed (N1 regression)")
+	}
+	if _, bc := emb.counts(); bc != 0 {
+		t.Fatalf("the corpus was embedded inline (%d EmbedBatch calls); the consume must be a disk load", bc)
+	}
+	if !eng.HasIndex("proj") {
+		t.Fatal("the project was not marked built after consuming the subset graph")
+	}
+}
+
+// TestWitnessedLoadConsumesGraphMissingAWalkedID (U2, N1, unusable-vector shape):
+// a graph the writer built without one walked id (dedupBatch dropped an unusable
+// vector) is installed, not refused. Driven at the witness directly.
+func TestWitnessedLoadConsumesGraphMissingAWalkedID(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
 	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
 	t.Cleanup(func() { eng.Close() })
 
-	commitDrawerGraph(t, v, "proj", 5)
-	// New content the committed graph does not hold (its id is not in the graph).
-	addDrawer(t, v, "proj", "wing", "room", "a chunk added after the build committed", "facts")
+	commitGraphFromDrawers(t, v, "proj", 5, 4) // the 5th id is in the corpus, not the graph
+	g1, err := indexstore.ReadGeneration(v, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eng.tryWitnessedLoad(context.Background(), "proj", g1) {
+		t.Fatal("witnessed load refused a graph that correctly omitted a walked id (N1)")
+	}
+	eng.mu.RLock()
+	idx, inMem := eng.indexes["proj"]
+	eng.mu.RUnlock()
+	if !inMem || idx == nil || idx.Len() != 4 {
+		t.Fatalf("installed index missing or wrong size: inMem=%v", inMem)
+	}
+	eng.buildMu.Lock()
+	_, loaded := eng.loaded["proj"]
+	eng.buildMu.Unlock()
+	if !loaded {
+		t.Fatal("a consumed subset graph must record e.loaded")
+	}
+}
 
+// TestWitnessedLoadRefusesTrueStaleGraph (U2, B2b true positive): a graph that
+// serves an id the corpus NO LONGER has — removed or in-place-edited content, the
+// stale direction — must be REFUSED and nothing installed. It refuses because the
+// GRAPH holds a removed id, not because the walk has an extra one.
+func TestWitnessedLoadRefusesTrueStaleGraph(t *testing.T) {
+	v := testVault(t)
+	emb := newCountingEmbedder(384)
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	t.Cleanup(func() { eng.Close() })
+
+	// The graph holds all 5 drawer ids PLUS a ghost id that is not (any longer) in
+	// the corpus — content removed or edited after the build.
+	commitGraphFromDrawers(t, v, "proj", 5, 5, "deadbeefdeadbeef")
 	g1, err := indexstore.ReadGeneration(v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if eng.tryWitnessedLoad(context.Background(), "proj", g1) {
-		t.Fatal("witnessed load installed a graph stale relative to the corpus")
+		t.Fatal("witnessed load installed a graph that serves content the corpus no longer has (stale)")
 	}
+	eng.mu.RLock()
+	_, inMem := eng.indexes["proj"]
+	eng.mu.RUnlock()
 	eng.buildMu.Lock()
 	_, pinned := eng.loaded["proj"]
 	eng.buildMu.Unlock()
-	if pinned {
-		t.Fatal("corpus drift must not record e.loaded — it would pin the new content invisible until some other write bumps Gen")
+	if inMem || pinned {
+		t.Fatalf("a refused stale graph must install nothing and not pin: inMem=%v pinned=%v", inMem, pinned)
 	}
 }
 
