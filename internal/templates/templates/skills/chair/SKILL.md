@@ -168,13 +168,15 @@ catch a bad call. Escalate only the ones that are genuinely operator-binding
 
 **`git commit` is delegable, narrowly, and only when the operator has said so
 explicitly this session.** The default is still that the operator commits (the
-Chair may `/vpc-stage`). If the operator grants standing commit authority
+Chair prepares with the project's stage command; the Chair's full close-out
+follows "3. Close a unit without lying about git" below — stage is not the
+Chair's whole close-out). If the operator grants standing commit authority
 (e.g. "you may commit once plan and code review reach consensus, without
 referring architectural calls back to me"), that grant covers **local commit
-only** — never push — and only for units that actually went through the
-review discipline below with no open architectural question. Note the scope
-of the grant back to the operator once, so neither of you is guessing later
-what it covered.
+only** — never push — and only for units that actually went through the review
+discipline below with no open architectural question. Note the scope of the
+grant back to the operator once, so neither of you is guessing later what it
+covered.
 
 When in doubt, ask. Then say what was asked and why.
 
@@ -203,7 +205,7 @@ suffices.
 | Seat | Does | Does not |
 |---|---|---|
 | **Implementor** | Code, tests, project-specific lab, wrap of *their* bound unit, their own sub-work, path-scoped staging | Retire, commit, start a new epic, change doctrine, gated destructive work, **retire a task on their own read of the Chair's tone** — see Failure modes |
-| **Chair** (this agent) | Discover/dispatch, sequence, review, unblock, speak for the operator on technical calls, `/vpc-stage` from its own context | Implement in an implementor's own work, hide an implementation unit in Chair-local sub-work, override a refusal by doing the work itself |
+| **Chair** (this agent) | Discover/dispatch, sequence, review, unblock, speak for the operator on technical calls, prepare with the project's stage command and commit under a standing grant, run the project's wrap command only for a Chair-bound unit, and verify the vault mirror landed before the next unit — see "3. Close a unit without lying about git" | Implement in an implementor's own work, hide an implementation unit in Chair-local sub-work, override a refusal by doing the work itself |
 | **Operator** (the human) | Push, retire, cancel, doctrine, deadlock, gated destructive work, and any commit the Chair hasn't been explicitly delegated | Chair the subordinates |
 
 The Chair is not the implementors' orchestrator of *their own* sub-work. They
@@ -965,10 +967,59 @@ same time.
 
 ### 3. Close a unit without lying about git
 
-Do not start the next unit inside an uncommitted wrap. Default close-out:
-stage (path-scoped, never `git add -A`) → capture → the operator (or the
-Chair, under an explicit delegation) commits → wrap, coherency-only, after the
-commit lands → the next unit, only once picked or already authorized.
+Do not start the next unit inside an uncommitted wrap. Close-out is the
+project's **wrap** command, timed by the project workflow's commit pattern.
+Dispatch stage and wrap the way the rest of this skill dispatches commands —
+`vp_cmd` with `name="stage"` / `name="wrap"` (the host surfaces these as the
+`vpc-`-prefixed shims); do not hand-type a slash alias. The default pattern,
+which the wrap and stage commands already implement, is:
+
+- **Direct commit to the integration branch the project workflow names
+  (default `main`).** Run wrap BEFORE the commit. Wrap is the whole
+  preparation — the hard gate (clean compile, unit and integration tests
+  pass), author `commit.msg`, vault ingest, path-scoped `git add`. **Do not
+  run stage first.** Then commit from the authored message:
+  `git commit -F commit.msg && rm commit.msg`.
+- **Feature branch.** For each intermediate commit, run stage — the light
+  gate, author `commit.msg`, path-scoped `git add`; **stage does not touch
+  the vault** — then the same `git commit -F commit.msg && rm commit.msg`.
+  Run wrap ONCE, AFTER the workflow's post-merge steps: by default the
+  `--ff-only` merge to the integration branch, then the push the operator
+  still must authorize, then feature-branch deletion. On that clean project
+  tree, wrap's `commit.msg` and staging steps self-skip; its git-derived
+  commit-log archive and vault sync still run. Wrapping before those steps
+  records transient state into the vault narrative.
+
+If the project workflow names a different commit pattern, follow the workflow.
+
+**The commit is always `git commit -F commit.msg && rm commit.msg`, never a
+bare `git commit -m` — a standing commit grant does not waive that.** Two
+separate reasons, not one chain:
+
+- `-m` bypasses the authored `commit.msg`, so the project's commit-message
+  tooling never ran. A `-m` message is also not the file the post-commit
+  reaper compares, so the hook does not reap unless the `-m` text happens to
+  equal a leftover `commit.msg`. The `&& rm` is what consumes `commit.msg` on
+  the hand-run path; the hook only backstops a forgotten `rm`.
+- Skipping wrap leaves no vault mirror of the unit until some later wrap
+  happens to run. Running `-m` does not itself skip wrap — these are two
+  independent omissions; do not treat fixing one as fixing the other.
+
+Do not add `Co-Authored-By` trailers, author lines, or any other AI authorship
+marker, in the commit message or in code. The project's stage and wrap
+commands already enforce this; a standing commit grant does not waive it. If
+the project workflow states a stricter attribution rule, follow that too.
+
+**Who runs what.** Wrap of a bound unit is the implementor's — dispatch the
+implementor through the project's wrap command for their own unit; run wrap
+from the Chair's own context only when the unit is Chair-bound. The commit
+itself is run by whoever holds the commit grant — the Chair under an explicit
+standing delegation, otherwise the operator; an implementor never commits
+(Roles table). On the feature-branch path, an implementor may run the stage
+step for their own unit (Roles table permits path-scoped staging), but the
+commit itself stays with the grant-holder. Before starting the next unit,
+confirm the vault mirror actually landed (ingest, commit-log, sync), not merely
+that a wrap was reported.
 
 If the operator says the git operations are done, believe the tree
 (`git status`, `git log -1`), not the chat.
@@ -1079,7 +1130,9 @@ bounded timeout.
   on a single shared integration branch**, silently dragging the unreviewed
   commit in as an ancestor because "it was next in the queue."
 - Starting the next unit while wrap is uncommitted (unless the operator did).
-- Wrapping as if uncommitted work had landed.
+- Wrapping as if work had landed that the tree does not show — a
+  direct-to-main wrap describes the about-to-commit state; it does not claim
+  the commit already exists.
 - Answering an operator-binding question (push, retire, gated destructive
   work, or a commit outside an explicit delegation) to keep the queue moving.
 - Treating unsent composer text, or a subagent's own trailing suggestion, as
@@ -1093,6 +1146,9 @@ bounded timeout.
   enthusiasm about a result is not the operator saying the task is done.
 - A standing commit delegation being read as covering `git push` too — it
   never does; push is always a fresh ask.
+- Adding a `Co-Authored-By` trailer (or any AI-authorship marker) because the
+  host's commit-message guidance said to — the project's stage/wrap commands
+  forbid it and a standing commit grant does not waive it.
 - Trusting a sibling git worktree's IDE/LSP diagnostics instead of that
   worktree's own build/vet/test output — see "Git worktrees and stale
   diagnostics" above.
