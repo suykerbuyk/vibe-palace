@@ -260,6 +260,12 @@ var (
 // search's in-flight build of the same project.
 var joinBuildHook func(project string)
 
+// witnessInterleaveHook, when a test sets it, runs inside tryWitnessedLoad after
+// the corpus walk and BEFORE the generation re-read, so a test can interleave a
+// writer (bump the counter / rewrite the graph) and prove the witness refuses a
+// load that straddled a concurrent commit. Production leaves it nil.
+var witnessInterleaveHook func()
+
 // WarmEmbedder kicks a one-time, detached construction of the embedding model so
 // it is ready (or has failed) by the time the first search needs it, moving the
 // tens-of-seconds ONNX load (and ~90MB first-ever download) off the caller's
@@ -426,7 +432,7 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	// no commit lock, no run lock. Only the build owner does this (serialized by
 	// buildsRun), so no two loads race and it never races a full rebuild. When it
 	// installs, the project is current and no build runs.
-	if gerr == nil && e.tryWitnessedLoad(project, g) {
+	if gerr == nil && e.tryWitnessedLoad(ctx, project, g) {
 		finished = true
 		b.err = nil
 		e.endBuild(project, b)
@@ -465,26 +471,37 @@ func (e *Engine) ensureDetachedRebuild(project string) {
 	e.rebuildLauncher(project)
 }
 
-// tryWitnessedLoad consumes a graph another process committed to disk, by a
-// generation-witnessed load that takes neither the index commit lock nor the run
-// lock (ADR-016 decision 4). g1 is the counter read by the caller BEFORE the
-// load (the reader rule). It:
+// tryWitnessedLoad consumes a graph another process (the detached
+// `vp index rebuild`, a heal, a catch-up) committed to disk, WITHOUT an inline
+// embed and taking neither the index commit lock nor the run lock (ADR-016
+// decision 4). g1 is the counter the caller read BEFORE this call (the reader
+// rule). The steps:
 //
-//   - loads hnsw.idx off-lock (newHNSWIndexFromDisk → indexstore.ReadGraph, which
-//     is atomic-rename-safe and lock-free); a no-graph / mismatch / corrupt file
-//     installs nothing, so a never-built project stays notes-only;
-//   - re-reads the counter and REFUSES the install if Gen or Epoch moved between
-//     the two reads — the graph may be mid-write or paired with a different chunk
-//     store — leaving the build path to serve this search and retry next time;
-//   - installs the loaded graph ONLY when this engine already holds metadata for
-//     every id it serves. A graph with an unknown id (a corpus another process
-//     grew) is left to the full rebuild, which walks the corpus and populates the
-//     metadata; installing it here would return hits with no renderable row.
+//  1. load hnsw.idx off-lock (newHNSWIndexFromDisk → indexstore.ReadGraph, which
+//     is atomic-rename-safe, CRC-checked and lock-free); a no-graph / mismatch /
+//     corrupt file installs nothing, so a never-built project stays notes-only;
+//  2. walk the four corpus sources with NO embed (walkCorpus, the exact walk
+//     rebuild uses) to produce the metadata rows search needs — this populates
+//     e.metadata for the graph's ids so the installed graph serves REAL hits, not
+//     empty rows, on a long-lived engine whose embed cache is cold;
+//  3. the WITNESS: re-read the counter and require g1 == g2 (so the corpus walk
+//     was a consistent store snapshot, no commit landed during it), AND require
+//     the graph's live-id set to EQUAL the walked corpus's id set. The set check
+//     is the pairing test ADR-016's hazard names directly ("a graph newer or
+//     older than the chunk store it is paired with"): a graph with an id the
+//     corpus lacks is newer (removed content), a corpus id the graph lacks is
+//     older (added content, including a notes/iterations edit the generation
+//     counter can NOT see). It is strictly stronger than a Gen stamp, which is
+//     blind to the vault-tree edits notes and iterations are, and it cannot
+//     straddle the two-file (graph + counter) rename window because it compares
+//     the loaded graph against the freshly-walked corpus, not against a proxy.
 //
-// It returns whether it installed. The install swaps e.indexes under e.mu
-// briefly (never held across the load) and records the counter under buildMu,
-// honouring the capture-invalidation guard the full rebuild uses.
-func (e *Engine) tryWitnessedLoad(project string, g1 indexstore.Gen) bool {
+// Install happens only when all three hold; otherwise nothing is installed and
+// the build path serves this search and retries next time. The install swaps
+// e.indexes and populates e.metadata under e.mu briefly (never held across the
+// load or the walk) and records the counter under buildMu, honouring the
+// capture-invalidation guard remember() uses.
+func (e *Engine) tryWitnessedLoad(ctx context.Context, project string, g1 indexstore.Gen) bool {
 	if e.embedder == nil {
 		return false
 	}
@@ -503,22 +520,44 @@ func (e *Engine) tryWitnessedLoad(project string, g1 indexstore.Gen) bool {
 		}
 		return false
 	}
+
+	// Walk the corpus (no embed) for the metadata rows, using modeExplicit so a
+	// cache miss is still emitted (its vector comes from the loaded graph, not
+	// the cache). This is the ONLY way to populate e.metadata on a cold engine,
+	// and walking also lets the set witness below see notes/iterations edits.
+	w, werr := e.walkCorpus(ctx, project, modeExplicit)
+	if werr != nil {
+		_ = idx.Close()
+		return false
+	}
+
+	if witnessInterleaveHook != nil {
+		witnessInterleaveHook() // a test writes here, between the pre-load read and the re-read
+	}
+
 	g2, gerr := indexstore.ReadGeneration(e.vault, project)
 	if gerr != nil || g1 != g2 {
 		_ = idx.Close()
-		return false // the witness failed: the graph is not consistent with g1
+		return false // a commit landed during the walk: the snapshot is not consistent
+	}
+	corpusSet := make(map[string]struct{}, len(w.ids))
+	for _, id := range w.ids {
+		corpusSet[id] = struct{}{}
+	}
+	if !sameIDSet(idx.liveIDs(), corpusSet) {
+		_ = idx.Close()
+		return false // the graph is not paired with the current corpus — defer to the rebuild
 	}
 
 	e.mu.Lock()
-	for _, id := range idx.liveIDs() {
-		if _, ok := e.metadata[id]; !ok {
-			e.mu.Unlock()
-			_ = idx.Close()
-			return false // a graph id we have no metadata for: defer to the full rebuild
-		}
-	}
 	old := e.indexes[project]
 	e.indexes[project] = idx
+	for i, id := range w.ids {
+		if e.detectCollision(id, w.metas[i]) {
+			continue
+		}
+		e.metadata[id] = w.metas[i]
+	}
 	e.mu.Unlock()
 	e.closeReplaced(old)
 
@@ -1348,40 +1387,30 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 	return c.cur
 }
 
-// rebuild is Rebuild's body. It holds the project's mutex for the whole run,
-// so it never interleaves with IndexDrawers on the project
-// (their inserts can no longer be dropped by its swap, nor their vectors
-// reaped). It embeds without the commit lock, commits each embed batch in its
-// own short Tx, and takes one final Tx for the reap. A commit lock that is busy
-// past timeout skips that write: the batch serves this process from memory and
-// is embedded again later, and the reap waits for the next build. Only a busy
-// mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
-func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool, start buildStart) (RebuildStats, error) {
-	var stats RebuildStats
-	pl, err := e.lockProject(ctx, project, timeout)
-	if err != nil {
-		return stats, err
-	}
-	defer pl.release()
-	chain := genChain{cur: start.gen}
+// corpusWalk is the result of reading a project's four corpus sources (the
+// host-local store, tracked drawers, iterations, session notes) into the
+// parallel id/vec/meta slices a build or a witnessed load installs. It is the
+// LOCK-FREE half of a rebuild — it takes no commit lock and no e.mu — so the
+// witnessed consume (tryWitnessedLoad) can reuse the exact same walk rather than
+// duplicating it.
+type corpusWalk struct {
+	ids      []string
+	vecs     [][]float32
+	metas    []drawerMeta
+	missIdx  []int
+	missText []string
+	facts    buildFacts
+	stats    RebuildStats
+}
 
-	// The embed cache's directory first: resolving it runs the cache's one-time
-	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
-	// before any commit lock is held, and before the reap reads the layout. For
-	// a project with no corpus this is the only cache access a Rebuild makes.
-	if _, err := e.cache.dir(project); err != nil {
-		return stats, fmt.Errorf("embed cache dir: %w", err)
-	}
-
-	// The notes tier's decision-chunk writer, BEFORE the store read below: it
-	// makes the store hold exactly the decision chunks of the session notes on
-	// disk, so the read then loads them. The same writer the capture path uses,
-	// so a rebuilt decision matches a captured one (ADR-014; this child's Scope
-	// 2). It takes the commit lock in its own short Tx and skips on a busy lock.
-	if err := e.regenerateDecisionChunks(ctx, pl, timeout, &chain, project); err != nil {
-		return stats, fmt.Errorf("note corpus: regenerate decision chunks: %w", err)
-	}
-
+// walkCorpus reads a project's four corpus sources into a corpusWalk, using only
+// embed-cache hits (never embedding) and never taking the commit lock or e.mu.
+// It is called by rebuild (which then embeds the misses and installs under the
+// locks) and by tryWitnessedLoad (which uses only ids+metas, taking the vectors
+// from the on-disk graph). It must NOT regenerate decision chunks — that is a
+// commit-lock WRITE rebuild does before this walk; the walk reads the store as
+// it stands.
+func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMode) (corpusWalk, error) {
 	var ids []string
 	var vecs [][]float32
 	var metas []drawerMeta
@@ -1390,6 +1419,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	var missIdx []int
 	var missText []string
 
+	var stats RebuildStats
 	facts := buildFacts{tiers: map[string]indexstore.TierRecord{}}
 
 	// First corpus source: the host-local store, ledgered sources only
@@ -1401,18 +1431,18 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// ingester's repair pass or an explicit rebuild, never embedded here.
 	st, err := readStoreFn(e.vault, project)
 	if err != nil {
-		return stats, fmt.Errorf("read index store: %w", err)
+		return corpusWalk{stats: stats}, fmt.Errorf("read index store: %w", err)
 	}
 	storeIDs := map[string]bool{}
 	decisionNotes, localOwners := map[string]bool{}, map[string]bool{}
 	for _, c := range st.Chunks(true) {
 		if err := ctx.Err(); err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		storeIDs[c.ID] = true
 		vec, err := e.cachedVector(project, c.ID)
 		if err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		if c.SourceType == storage.SourceTypeDecision {
 			if vec == nil && !mode.embedOthers {
@@ -1466,19 +1496,19 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// chunk.
 	migrated, err := storage.VaultMigrated(e.vault.Root)
 	if err != nil {
-		return stats, err
+		return corpusWalk{stats: stats}, err
 	}
 	var wings []string
 	if !migrated {
 		if wings, err = e.vault.ListWings(project); err != nil {
-			return stats, fmt.Errorf("list wings: %w", err)
+			return corpusWalk{stats: stats}, fmt.Errorf("list wings: %w", err)
 		}
 	}
 
 	for _, wing := range wings {
 		rooms, err := e.vault.ListRooms(project, wing)
 		if err != nil {
-			return stats, fmt.Errorf("list rooms for wing %s: %w", wing, err)
+			return corpusWalk{stats: stats}, fmt.Errorf("list rooms for wing %s: %w", wing, err)
 		}
 
 		for _, room := range rooms {
@@ -1490,7 +1520,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 
 			for _, d := range drawers {
 				if err := ctx.Err(); err != nil {
-					return stats, err
+					return corpusWalk{stats: stats}, err
 				}
 				if storeIDs[index.ChunkID(d.Content)] {
 					stats.DedupedDrawers++
@@ -1501,7 +1531,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 				// Try cache first; misses are embedded together below.
 				vec, err := e.cachedVector(project, d.ID)
 				if err != nil {
-					return stats, err
+					return corpusWalk{stats: stats}, err
 				}
 				if vec == nil {
 					if !mode.embedOthers {
@@ -1526,16 +1556,16 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// (wrapstate.ParseEntries). No synthetic drawers.jsonl.
 	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(e.vault, project)
 	if err != nil {
-		return stats, fmt.Errorf("iteration corpus: %w", err)
+		return corpusWalk{stats: stats}, fmt.Errorf("iteration corpus: %w", err)
 	}
 	stats.IterationChunks = len(iterIDs)
 	for i, id := range iterIDs {
 		if err := ctx.Err(); err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		vec, err := e.cachedVector(project, id)
 		if err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		if vec == nil {
 			if !mode.embedOthers {
@@ -1559,16 +1589,16 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// wrap prose, structurally rather than by a flag.
 	noteIDs, noteTexts, noteMetas, err := collectNoteCorpus(e.vault, project)
 	if err != nil {
-		return stats, fmt.Errorf("note corpus: %w", err)
+		return corpusWalk{stats: stats}, fmt.Errorf("note corpus: %w", err)
 	}
 	stats.NoteChunks = len(noteIDs)
 	for i, id := range noteIDs {
 		if err := ctx.Err(); err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		vec, err := e.cachedVector(project, id)
 		if err != nil {
-			return stats, err
+			return corpusWalk{stats: stats}, err
 		}
 		if vec == nil {
 			if !mode.embedOthers {
@@ -1589,6 +1619,54 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	stats.Indexed = len(ids)
 	stats.Embedded = len(missIdx)
 	stats.CacheHits = stats.Indexed - stats.Embedded
+	return corpusWalk{ids: ids, vecs: vecs, metas: metas, missIdx: missIdx, missText: missText, facts: facts, stats: stats}, nil
+}
+
+// rebuild is Rebuild's body. It holds the project's mutex for the whole run,
+// so it never interleaves with IndexDrawers on the project
+// (their inserts can no longer be dropped by its swap, nor their vectors
+// reaped). It embeds without the commit lock, commits each embed batch in its
+// own short Tx, and takes one final Tx for the reap. A commit lock that is busy
+// past timeout skips that write: the batch serves this process from memory and
+// is embedded again later, and the reap waits for the next build. Only a busy
+// mutex fails the build, with an error wrapping vaultlock.ErrLockWaitTimeout.
+func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool, start buildStart) (RebuildStats, error) {
+	var stats RebuildStats
+	pl, err := e.lockProject(ctx, project, timeout)
+	if err != nil {
+		return stats, err
+	}
+	defer pl.release()
+	chain := genChain{cur: start.gen}
+
+	// The embed cache's directory first: resolving it runs the cache's one-time
+	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
+	// before any commit lock is held, and before the reap reads the layout. For
+	// a project with no corpus this is the only cache access a Rebuild makes.
+	if _, err := e.cache.dir(project); err != nil {
+		return stats, fmt.Errorf("embed cache dir: %w", err)
+	}
+
+	// The notes tier's decision-chunk writer, BEFORE the store read below: it
+	// makes the store hold exactly the decision chunks of the session notes on
+	// disk, so the read then loads them. The same writer the capture path uses,
+	// so a rebuilt decision matches a captured one (ADR-014; this child's Scope
+	// 2). It takes the commit lock in its own short Tx and skips on a busy lock.
+	if err := e.regenerateDecisionChunks(ctx, pl, timeout, &chain, project); err != nil {
+		return stats, fmt.Errorf("note corpus: regenerate decision chunks: %w", err)
+	}
+
+	// The four-source corpus walk, lock-free (shared with the witnessed consume,
+	// tryWitnessedLoad). It embeds nothing; the misses it reports are embedded
+	// below, under this build's held locks.
+	w, err := e.walkCorpus(ctx, project, mode)
+	if err != nil {
+		return w.stats, err
+	}
+	ids, vecs, metas := w.ids, w.vecs, w.metas
+	missIdx, missText := w.missIdx, w.missText
+	facts := w.facts
+	stats = w.stats
 
 	// Corpus gate (§1): on the search path, refuse to embed a cold corpus rather
 	// than block the caller for the whole embed. stats.Embedded is the miss count

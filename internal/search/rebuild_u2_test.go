@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -32,6 +33,33 @@ func (s *launchSpy) projects() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.seen...)
+}
+
+// commitDrawerGraph adds n distinct drawers to project and writes an on-disk
+// hnsw.idx built from their (id, mock-embedded-vector) pairs — exactly what a
+// detached `vp index rebuild` would commit — bumping the generation. The engine
+// under test keeps its own cold embed cache, so a later search must consume this
+// graph without re-embedding. Returns the drawer ids.
+func commitDrawerGraph(t *testing.T, v *storage.Vault, project string, n int) []string {
+	t.Helper()
+	mock := embedder.NewMock(384)
+	var ids []string
+	var vecs [][]float32
+	for i := 0; i < n; i++ {
+		d := addDrawer(t, v, project, "wing", "room", fmt.Sprintf("distinct chunk number %d", i), "facts")
+		vec, err := mock.Embed(context.Background(), d.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, d.ID)
+		vecs = append(vecs, vec)
+	}
+	h := newHNSWIndex(384, provisionalHNSWParams)
+	if err := h.Build(vecs, ids); err != nil {
+		t.Fatal(err)
+	}
+	saveBuilt(t, v, project, h) // writes hnsw.idx and bumps the generation
+	return ids
 }
 
 // TestColdDegradeEnsuresDetachedRebuild (U2 / ADR-016 decision 4): a cold corpus
@@ -77,116 +105,110 @@ func TestBuiltProjectDoesNotLaunch(t *testing.T) {
 	}
 }
 
-// --- the generation-witnessed disk load (ADR-016 decision 4) ----------------
+// TestColdEngineConsumesCommittedGraph (U2 / ADR-016 decision 4, B1): the load-
+// bearing case. A long-lived engine with a COLD embed cache and a corpus larger
+// than one embed batch — the exact case the search-path rebuild refuses — must,
+// on the NEXT search after a detached rebuild committed hnsw.idx and bumped Gen,
+// CONSUME that graph and serve real HNSW hits, WITHOUT an inline corpus embed.
+// Driven through Search, not by calling tryWitnessedLoad directly.
+func TestColdEngineConsumesCommittedGraph(t *testing.T) {
+	v := testVault(t)
+	emb := newCountingEmbedder(384)
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	t.Cleanup(func() { eng.Close() })
 
-// seedMeta publishes placeholder metadata for ids, so the witnessed load's
-// "metadata present for every graph id" guard passes.
-func (e *Engine) seedMeta(ids ...string) {
-	e.mu.Lock()
-	for _, id := range ids {
-		e.metadata[id] = drawerMeta{Project: "graphproj", Content: "x " + id}
+	commitDrawerGraph(t, v, "proj", 40) // 40 > one 32-batch: the rebuild would refuse
+
+	results, err := eng.Search(context.Background(), "distinct chunk number 7", SearchFilters{Project: "proj"})
+	if err != nil {
+		t.Fatalf("search did not consume the committed graph: %v", err)
 	}
-	e.mu.Unlock()
+	if len(results) == 0 {
+		t.Fatal("cold engine returned no results — the committed graph was not consumed (B1 regression)")
+	}
+	if _, bc := emb.counts(); bc != 0 {
+		t.Fatalf("the corpus was embedded inline (%d EmbedBatch calls); the consume must be a disk load, not a rebuild", bc)
+	}
+	if !eng.HasIndex("proj") {
+		t.Fatal("the project was not marked built after the witnessed consume")
+	}
 }
 
-func graphIDs(n int) []string {
-	ids := make([]string, n)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("id-%06d", i)
-	}
-	return ids
-}
-
-// TestWitnessedLoadInstallsDiskGraph: with a graph on disk whose fingerprint
-// matches and whose ids this engine already has metadata for, the witnessed load
-// installs it off the commit lock and remembers the counter it matches.
-func TestWitnessedLoadInstallsDiskGraph(t *testing.T) {
-	v, project := newGraphVault(t) // "graphproj"
+// TestWitnessedLoadWitnessCatchesInterleavedWrite (U2, B2a): a writer that bumps
+// the generation BETWEEN the pre-load read and the re-read must make the load
+// refuse — the loaded graph may be paired with a different store snapshot. This
+// interleaves a real write mid-call (not a fabricated g1).
+func TestWitnessedLoadWitnessCatchesInterleavedWrite(t *testing.T) {
+	v := testVault(t)
 	emb := newCountingEmbedder(384)
 	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
 	t.Cleanup(func() { eng.Close() })
 
-	h := buildHNSW(t, 384, 5, provisionalHNSWParams)
-	saveBuilt(t, v, project, h) // writes hnsw.idx and bumps the generation
-	eng.seedMeta(graphIDs(5)...)
-
-	g1, err := indexstore.ReadGeneration(v, project)
+	commitDrawerGraph(t, v, "proj", 5)
+	g1, err := indexstore.ReadGeneration(v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !eng.tryWitnessedLoad(project, g1) {
-		t.Fatal("witnessed load did not install a consistent on-disk graph")
-	}
-	eng.mu.RLock()
-	idx, ok := eng.indexes[project]
-	eng.mu.RUnlock()
-	if !ok || idx == nil || idx.Len() != 5 {
-		t.Fatalf("installed index missing or wrong size: ok=%v len=%d", ok, func() int {
-			if idx == nil {
-				return -1
-			}
-			return idx.Len()
-		}())
-	}
-	eng.buildMu.Lock()
-	lg, loaded := eng.loaded[project]
-	eng.buildMu.Unlock()
-	if !loaded || lg != g1 {
-		t.Fatalf("loaded counter = (%v, %v), want %v", lg, loaded, g1)
-	}
-}
 
-// TestWitnessedLoadRefusesOnGenMove: if the counter moved between the caller's
-// pre-load read and the post-load re-read, the graph may be mid-write or paired
-// with a different store — the load installs nothing and retries next search.
-func TestWitnessedLoadRefusesOnGenMove(t *testing.T) {
-	v, project := newGraphVault(t)
-	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
-	t.Cleanup(func() { eng.Close() })
-
-	h := buildHNSW(t, 384, 5, provisionalHNSWParams)
-	saveBuilt(t, v, project, h)
-	eng.seedMeta(graphIDs(5)...)
-
-	cur, err := indexstore.ReadGeneration(v, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A pre-load counter that does not equal the current one models a write that
-	// landed during the load: the post-load re-read differs, so the install is
+	// A writer lands during the load (after the walk, before the re-read): it
+	// bumps the generation, so the re-read differs from g1 and the install is
 	// refused.
-	stale := indexstore.Gen{Gen: cur.Gen + 100, Epoch: cur.Epoch}
-	if eng.tryWitnessedLoad(project, stale) {
-		t.Fatal("witnessed load installed a graph despite a moved generation")
+	var once sync.Once
+	witnessInterleaveHook = func() {
+		once.Do(func() {
+			tx, lerr := indexstore.Lock(context.Background(), v, "proj", indexstore.NoTimeout)
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if werr := tx.WriteGraph([]byte("x")); werr != nil { // any write; Commit bumps Gen
+				_ = tx.Release()
+				t.Fatal(werr)
+			}
+			if cerr := tx.Commit(); cerr != nil {
+				t.Fatal(cerr)
+			}
+		})
+	}
+	t.Cleanup(func() { witnessInterleaveHook = nil })
+
+	if eng.tryWitnessedLoad(context.Background(), "proj", g1) {
+		t.Fatal("witnessed load installed a graph although a write interleaved between the two generation reads")
 	}
 	eng.mu.RLock()
-	_, ok := eng.indexes[project]
+	_, inMem := eng.indexes["proj"]
 	eng.mu.RUnlock()
-	if ok {
+	if inMem {
 		t.Fatal("a refused witnessed load must install nothing")
 	}
 }
 
-// TestWitnessedLoadDefersWhenMetadataMissing: a graph whose ids this engine has
-// no metadata for is left to the full rebuild (installing it would return hits
-// with no renderable row), so the witnessed load declines.
-func TestWitnessedLoadDefersWhenMetadataMissing(t *testing.T) {
-	v, project := newGraphVault(t)
+// TestWitnessedLoadDefersOnCorpusDrift (U2, B2b): a graph that does not cover the
+// current corpus — a drawer/note added after the build, the shape that does not
+// move Gen's pairing — must NOT be installed or recorded as current. Recording
+// e.loaded here would pin the new content invisible, suppressing the rebuild
+// that would index it.
+func TestWitnessedLoadDefersOnCorpusDrift(t *testing.T) {
+	v := testVault(t)
 	emb := newCountingEmbedder(384)
 	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
 	t.Cleanup(func() { eng.Close() })
 
-	h := buildHNSW(t, 384, 5, provisionalHNSWParams)
-	saveBuilt(t, v, project, h)
-	// No seedMeta: the engine holds metadata for none of the graph's ids.
+	commitDrawerGraph(t, v, "proj", 5)
+	// New content the committed graph does not hold (its id is not in the graph).
+	addDrawer(t, v, "proj", "wing", "room", "a chunk added after the build committed", "facts")
 
-	g1, err := indexstore.ReadGeneration(v, project)
+	g1, err := indexstore.ReadGeneration(v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if eng.tryWitnessedLoad(project, g1) {
-		t.Fatal("witnessed load installed a graph with no metadata for its ids")
+	if eng.tryWitnessedLoad(context.Background(), "proj", g1) {
+		t.Fatal("witnessed load installed a graph stale relative to the corpus")
+	}
+	eng.buildMu.Lock()
+	_, pinned := eng.loaded["proj"]
+	eng.buildMu.Unlock()
+	if pinned {
+		t.Fatal("corpus drift must not record e.loaded — it would pin the new content invisible until some other write bumps Gen")
 	}
 }
 
@@ -203,7 +225,7 @@ func TestWitnessedLoadNoGraphStaysNotesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if eng.tryWitnessedLoad(project, g1) {
+	if eng.tryWitnessedLoad(context.Background(), project, g1) {
 		t.Fatal("witnessed load claimed to install from a project with no graph")
 	}
 }
