@@ -871,6 +871,16 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 		if ok, err := d.Vault.ProjectExists(p); err != nil || !ok {
 			continue
 		}
+		// The generic rebuild-corpus marker (ADR-016 decision 5) is in scope
+		// independent of archives: an archive-less project can carry one (a cold
+		// search), and a fingerprint-stale one keeps it too. Surface it BEFORE the
+		// stale and len(entries)==0 skips below, which would otherwise drop the
+		// want. The token is not a sha, so no sha reader (plan, ensureLedger,
+		// tidyProject) ever treats it as an archive; it exists only to keep
+		// ReleaseAndRecheck from losing or looping on the want.
+		if want, err := indexstore.ReadRebuildWanted(d.Vault, p); err == nil && want {
+			out = append(out, rebuildToken(p))
+		}
 		if _, reasons, err := d.Engine.Stale(p); err == nil && hasFingerprintReason(reasons) {
 			continue
 		}
@@ -905,6 +915,13 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 	slices.Sort(out)
 	return slices.Compact(out), nil
 }
+
+// rebuildToken is the inScopePending / ReleaseAndRecheck token for a project's
+// rebuild-corpus want. It is per-project (inScopePending aggregates across
+// projects) and deliberately not a 64-hex sha, so it never collides with an
+// archive source_sha256 in the pending/seen sets. It is a comparison token only
+// — it is never fed to plan, ensureLedger or an ingest.
+func rebuildToken(project string) string { return "\x00rebuild\x00" + project }
 
 func hasFingerprintReason(rs []indexstore.StaleReason) bool {
 	for _, r := range rs {

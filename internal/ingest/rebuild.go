@@ -82,6 +82,25 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 	}
 	defer held.Release()
 
+	// U1/ADR-016 decision 5: extend the target set with every project carrying
+	// the generic rebuild-corpus marker, now that the run lock is held (so no
+	// other run is concurrently clearing one). `vp index rebuild` is the ONLY
+	// path that serves a corpus-rebuild want, so a marker a cold search recorded
+	// — including for an archive-less project, which an ingest pass can never
+	// serve — is rebuilt here. The markers are consulted before rebuildProject's
+	// len(entries)==0 archive-pass skip, and each target's rebuildProject clears
+	// its own marker after the build commits and bumps the generation.
+	marked, err := markedProjects(d, o, targets)
+	if err != nil {
+		return res, err
+	}
+	targets = append(targets, marked...)
+
+	// servedMarkers is the projects whose rebuild-corpus marker this run served
+	// and cleared; their tokens are put into ReleaseAndRecheck's seen set so the
+	// holder does not re-acquire on a want it has already served (ADR-016
+	// decision 5, "Loop").
+	var servedMarkers []string
 	for _, p := range targets {
 		if err := ctx.Err(); err != nil {
 			res.Stopped = "cancelled"
@@ -90,11 +109,14 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 		if err := held.SetProject(p); err != nil {
 			return res, err
 		}
-		r, err := rebuildProject(ctx, d, held, eng, wd, o, p)
+		r, served, err := rebuildProject(ctx, d, held, eng, wd, o, p)
 		res.add(r)
 		res.Passes++
 		if err != nil {
 			return res, err
+		}
+		if served {
+			servedMarkers = append(servedMarkers, p)
 		}
 		// A watchdog, checkpoint, cancel or --max-archives stop ends the whole
 		// run cleanly: no completion, and no rescan (the next trigger is served
@@ -111,7 +133,7 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 	// target would re-heal it and, worse, its automatic-scope repair pass would
 	// re-embed a --no-embed target's missing vectors. A trigger that arrived
 	// for another project during the rebuild is served here.
-	if err := rescanAndRelease(ctx, d, held, wd, o, targets, &res); err != nil {
+	if err := rescanAndRelease(ctx, d, held, wd, o, targets, servedMarkers, &res); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -200,6 +222,47 @@ func rebuildTargets(d Deps, o RebuildOptions) ([]string, error) {
 	return []string{o.Project}, nil
 }
 
+// markedProjects is every project of the vault carrying the generic
+// rebuild-corpus marker (ADR-016 decision 5) that is NOT already a target and is
+// NOT named by Skip, in slug order. The run lock is held when this is called, so
+// the set does not race a concurrent clear (only the holder clears). A project
+// whose inbox cannot be read is skipped with a warning, never failing the run:
+// the want is durable and the next trigger serves it.
+func markedProjects(d Deps, o RebuildOptions, targets []string) ([]string, error) {
+	all, err := d.Vault.ListAllProjects()
+	if err != nil {
+		return nil, err
+	}
+	already := map[string]bool{}
+	for _, p := range targets {
+		already[p] = true
+	}
+	var out []string
+	for _, p := range all {
+		if already[p.Slug] || o.skipped(p.Slug) {
+			continue
+		}
+		want, err := indexstore.ReadRebuildWanted(d.Vault, p.Slug)
+		if err != nil {
+			slog.Warn("vp index rebuild: could not read a project's rebuild-corpus marker; left to the next trigger",
+				"project", p.Slug, "error", err)
+			continue
+		}
+		if want {
+			out = append(out, p.Slug)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// clearRebuildMarker removes p's rebuild-corpus marker under p's commit lock
+// (the new clear site, ADR-016 decision 5). The run lock is held; the commit
+// lock is a leaf and is never the run lock, so this takes no lock out of order.
+func clearRebuildMarker(ctx context.Context, d Deps, p string) error {
+	return indexstore.ClearRebuild(ctx, d.Vault, p, indexstore.NoTimeout)
+}
+
 // stopEndsRun reports whether a pass's stop reason ends the whole run without a
 // rescan (as opposed to a clean exhausted pass, whose Stopped is "").
 func stopEndsRun(stopped string) bool {
@@ -213,14 +276,17 @@ func stopEndsRun(stopped string) bool {
 // rebuildProject is one project's rebuild: discard (step 3), the explicit
 // archive pass (step 4), the engine rebuild and graph heal (step 5/5b), the
 // rename-pending cleanup (1b), and completion (step 8). It returns the pass's
-// RunResult; the caller aggregates it and reads its Stopped reason.
-func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string) (RunResult, error) {
+// RunResult (the caller aggregates it and reads its Stopped reason) and whether
+// it served and cleared a generic rebuild-corpus marker for p (ADR-016 decision
+// 5) — served only on a completed embed build, so a stopped or --no-embed run
+// leaves the want for the next trigger.
+func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string) (RunResult, bool, error) {
 	var res RunResult
 
 	// Step 3: discard, only here, only what a present-and-different fingerprint
 	// covers, in one commit step. A missing fingerprint discards nothing.
 	if err := discardOnMismatch(ctx, d, p); err != nil {
-		return res, err
+		return res, false, err
 	}
 
 	// Step 4: the explicit archive pass for THIS project alone (Only), entered
@@ -241,7 +307,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	r, err := RunHeld(ctx, d, held, ro)
 	res.add(r)
 	if err != nil {
-		return res, err
+		return res, false, err
 	}
 	stopped := r.Stopped
 
@@ -250,7 +316,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// resumable from the ledger). A watchdog or --max-archives stop leaves the
 	// context alive, so the engine rebuild below still runs for coherence.
 	if stopped == "cancelled" || ctx.Err() != nil {
-		return res, nil
+		return res, false, nil
 	}
 
 	// Step 5: the explicit-mode (or, under --no-embed, the cache-hits-only)
@@ -264,7 +330,28 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 		stats, err = eng.RebuildExplicit(ctx, p)
 	}
 	if err != nil {
-		return res, err
+		return res, false, err
+	}
+
+	// U1/ADR-016 decision 5: a generic rebuild-corpus want for p is served the
+	// moment the engine rebuild above commits and bumps the generation — this is
+	// the embed pass a cold search's marker asks for, and it is the new clear
+	// site (NOT tidyProject's !listed rule). It is tied to the engine rebuild, not
+	// to archive-ledger completion below: the marker's whole point is the
+	// notes-only / archive-less cold-search case, which has no live archive to
+	// account for and would never reach completion. Served only on a completed
+	// embed build (stopped == "" && !o.NoEmbed): a watchdog/budget/max-archives
+	// stop leaves the corpus partial, so the want stays for the next trigger. The
+	// clear is skipped when no marker is set, so a routine rebuild pays no extra
+	// commit-lock Tx.
+	served := false
+	if stopped == "" && !o.NoEmbed {
+		if want, werr := indexstore.ReadRebuildWanted(d.Vault, p); werr == nil && want {
+			if err := clearRebuildMarker(ctx, d, p); err != nil {
+				return res, false, err
+			}
+			served = true
+		}
 	}
 
 	// Step 5b: the graph heal, once, after the engine rebuild (the archive pass
@@ -279,11 +366,11 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	if stopped == "" && !o.NoEmbed && stats.LocalMisses == 0 {
 		accounted, err := everyLiveArchiveAccounted(d, p, res.FailedSHAs)
 		if err != nil {
-			return res, err
+			return res, served, err
 		}
 		if accounted {
 			if err := completeRebuild(ctx, d, held, p, res.FailedSHAs); err != nil {
-				return res, err
+				return res, served, err
 			}
 			// Requirement from 1b (round 3): only AFTER the rebuild of p
 			// completes, remove every rename-pending record that names p as its
@@ -296,7 +383,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 			}
 		}
 	}
-	return res, nil
+	return res, served, nil
 }
 
 // discardOnMismatch discards, in one commit step, only what a present-and-
@@ -470,7 +557,7 @@ var removeRenamePendingFn = func(path string) error {
 // rescan saw. A trigger that exited because this run held the lock is served
 // here. The memo is shared with the explicit passes, so the target's archives
 // are never re-attempted.
-func rescanAndRelease(ctx context.Context, d Deps, held *indexstore.RunLock, wd *watchdog, o RebuildOptions, targets []string, res *RunResult) error {
+func rescanAndRelease(ctx context.Context, d Deps, held *indexstore.RunLock, wd *watchdog, o RebuildOptions, targets, servedMarkers []string, res *RunResult) error {
 	memo := newMemo()
 	ao := RunOptions{
 		VaultRoot: d.Vault.Root,
@@ -510,6 +597,13 @@ func rescanAndRelease(ctx context.Context, d Deps, held *indexstore.RunLock, wd 
 		seen := map[string]struct{}{}
 		for _, s := range seenList {
 			seen[s] = struct{}{}
+		}
+		// A rebuild-corpus marker this run already served (cleared post-build) is
+		// put into seen so a re-note that races the release does not make this
+		// holder re-acquire on a want it has already served (ADR-016 decision 5,
+		// "Loop"). The token matches inScopePending's rebuildToken.
+		for _, p := range servedMarkers {
+			seen[rebuildToken(p)] = struct{}{}
 		}
 		if beforeReleaseFn != nil {
 			beforeReleaseFn()
