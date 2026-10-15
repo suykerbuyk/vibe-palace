@@ -1022,6 +1022,55 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch det
 	}
 }
 
+// rebuildLauncherNoteTimeout bounds the marker write on the cold-search spawn
+// seam so it can never block a search caller for long on a contended commit
+// lock; a write that cannot land in time is retried by the next cold search.
+const rebuildLauncherNoteTimeout = 5 * time.Second
+
+// NewRebuildLauncher builds the search engine's detached-rebuild spawn seam
+// (ADR-016 decision 4), injected by bootstrap into the long-lived MCP serving
+// engine. When a cold/stale search has served degraded, the engine calls it to:
+//
+//  1. record the durable rebuild-corpus want FIRST (indexstore.NoteRebuild,
+//     ADR-016 decision 5), so the want survives even if no process can build
+//     right now — this is the coalesce, and it is why a contended spawn loses
+//     nothing;
+//  2. ensure the detached singleton `vp index rebuild` is running: it reads the
+//     run lock's ADVISORY holder record (never a try-lock — the engine never
+//     reaches the run lock) and, while that names a live process, spawns nothing;
+//     otherwise it spawns a detached `vp index rebuild <project>` whose OWN
+//     try-lock is the authoritative check.
+//
+// A bounded burst of spawns on a cold wave is accepted (ADR-016 Consequences):
+// losers exit fast writing nothing, and the want is kept by the marker above.
+func NewRebuildLauncher(vault *storage.Vault, launch detachlaunch.LaunchFunc) search.RebuildLauncher {
+	if launch == nil {
+		launch = detachlaunch.Launch
+	}
+	return func(project string) {
+		if project == "" {
+			return
+		}
+		// 1. The durable want first, so a spawn that loses the lock loses nothing.
+		if err := indexstore.NoteRebuild(context.Background(), vault, project, rebuildLauncherNoteTimeout); err != nil {
+			slog.Warn("cold search: could not record the rebuild-corpus want", "project", project, "error", err)
+		}
+		// 2. Do not add to the spawn burst while a live run already holds the
+		// lock. This is the advisory holder record, read WITHOUT the run lock; the
+		// spawned child's own try-lock stays the authoritative check.
+		if h, herr := indexstore.ReadHolder(vault); herr == nil && pidAlive(h.PID) {
+			return
+		}
+		args := []string{"index", "rebuild", project, "--vault-root", vault.Root}
+		logPath := filepath.Join(vault.VaultLocalDir(), "rebuild.log")
+		if _, err := launch("", args, logPath); err != nil {
+			// No lock was taken, so no want was lost; the marker keeps it for the
+			// next trigger.
+			slog.Warn("cold search: could not launch the detached rebuild", "project", project, "error", err)
+		}
+	}
+}
+
 // refreshDryRunResult renders a DryRunReport as the tool's result: per project
 // the pending archives and the baseline set separately with their bytes, plus
 // the estimate, the reserve, the free space and any start refusal.

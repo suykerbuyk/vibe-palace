@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	mcpkg "github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
@@ -97,7 +98,14 @@ func bootstrap() (*serverStack, error) {
 	// (shared by `vp mcp` and `vp mcp serve`), so it is the one process allowed to
 	// run the brute→HNSW background converter and perform the in-memory kind swap.
 	// No CLI invocation or the detached ingester passes this option.
-	eng := search.NewEngine(emb, v, cfg, search.WithBackgroundConverter())
+	// WithRebuildLauncher: on a cold/stale search that serves degraded, this
+	// engine records the durable rebuild-corpus want and ensures a detached
+	// `vp index rebuild` is running (ADR-016 decision 4). The seam lives in the
+	// tools layer, above the engine, so no run-lock or spawn logic enters
+	// internal/search; a CLI/one-shot engine injects none and only serves degraded.
+	eng := search.NewEngine(emb, v, cfg,
+		search.WithBackgroundConverter(),
+		search.WithRebuildLauncher(tools.NewRebuildLauncher(v, detachlaunch.Launch)))
 
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)

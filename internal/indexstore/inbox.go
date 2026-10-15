@@ -125,15 +125,8 @@ func writeInboxContents(path, dir string, c inboxContents) error {
 
 // Firsts returns the project's inbox archive shas: archives triggers named and
 // could not serve, sorted. The rebuild-corpus marker is not a sha and is never
-// returned here; RebuildWanted reads it.
+// returned here; the lock-free ReadRebuildWanted reads it.
 func (tx *Tx) Firsts() ([]string, error) { return readInbox(tx.inboxPath()) }
-
-// RebuildWanted reports whether the project's inbox carries the generic
-// rebuild-corpus marker (ADR-016 decision 5).
-func (tx *Tx) RebuildWanted() (bool, error) {
-	c, err := readInboxContents(tx.inboxPath())
-	return c.rebuild, err
-}
 
 func readInbox(path string) ([]string, error) {
 	c, err := readInboxContents(path)

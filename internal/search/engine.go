@@ -139,7 +139,23 @@ type Engine struct {
 	convertMu      sync.Mutex
 	converting     map[string]struct{}
 	convertBackoff map[string]convBackoff
+
+	// rebuildLauncher, when set, ensures a detached `vp index rebuild <project>`
+	// is running after a cold/stale search degraded (ADR-016 decision 4). It is
+	// the spawn seam that lives OUTSIDE this package: the engine never try-locks
+	// the run lock to decide whether to build, and never spawns a process itself.
+	// Only the long-lived MCP serving engine injects one (WithRebuildLauncher from
+	// bootstrap); a CLI/one-shot engine leaves it nil and only serves degraded.
+	rebuildLauncher RebuildLauncher
 }
+
+// RebuildLauncher records a durable corpus-rebuild want and ensures a detached
+// `vp index rebuild <project>` is running (ADR-016 decisions 4 and 5). The
+// engine calls it when a cold/stale search could not build the corpus inline and
+// served degraded. It MUST NOT try-lock the index run lock: the spawned child's
+// own try-lock is the authority. Implemented in the tools layer, above the
+// engine, so no run-lock or spawn logic enters internal/search.
+type RebuildLauncher func(project string)
 
 // convBackoff records, per project, the store generation at the last abandoned
 // conversion and how many abandons have run in a row, so a hot project is not
@@ -158,6 +174,13 @@ type EngineOption func(*Engine)
 // detached ingester process ever runs the in-memory kind swap (S3).
 func WithBackgroundConverter() EngineOption {
 	return func(e *Engine) { e.convertEnabled = true }
+}
+
+// WithRebuildLauncher injects the detached-rebuild spawn seam (ADR-016 decision
+// 4). Only bootstrap() (the long-lived MCP serving engine) passes it; a CLI or
+// one-shot engine leaves it off and a cold search there only serves degraded.
+func WithRebuildLauncher(l RebuildLauncher) EngineOption {
+	return func(e *Engine) { e.rebuildLauncher = l }
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -397,14 +420,119 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 		}
 	}()
 
+	// ADR-016 decision 4: before building, try to CONSUME a fuller/newer index
+	// another process (the detached `vp index rebuild`, a heal, a catch-up)
+	// committed to disk, by a generation-witnessed disk LOAD — no corpus embed,
+	// no commit lock, no run lock. Only the build owner does this (serialized by
+	// buildsRun), so no two loads race and it never races a full rebuild. When it
+	// installs, the project is current and no build runs.
+	if gerr == nil && e.tryWitnessedLoad(project, g) {
+		finished = true
+		b.err = nil
+		e.endBuild(project, b)
+		return nil
+	}
+
 	_, rerr := e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch, true)
 	finished = true
+	// ADR-016 decision 4/5: the build refused to embed a cold corpus inline (or
+	// ran out its embed budget), so it served degraded. Record the durable
+	// corpus-rebuild want and ensure the detached singleton `vp index rebuild` is
+	// running — never a try-lock from here; the spawn seam is the injected
+	// launcher. A busy lock is transient contention, not a cold corpus, so it does
+	// not coalesce.
+	if errors.Is(rerr, errEmbedRefused) || errors.Is(rerr, context.DeadlineExceeded) {
+		e.ensureDetachedRebuild(project)
+	}
 	// Map the raw build outcome once, here, so every joined search receives the
 	// same already-mapped answer from b.err (a busy lock, a refused cold embed,
 	// or a build-budget deadline → serve-as-is or the typed not-ready error).
 	b.err = e.mapBuildErr(project, rerr)
 	e.endBuild(project, b)
 	return b.err
+}
+
+// ensureDetachedRebuild invokes the injected rebuild launcher (ADR-016 decision
+// 4) to record the durable rebuild-corpus want and ensure a detached
+// `vp index rebuild` is running. It is a no-op on an engine with no launcher (a
+// CLI/one-shot engine), which then only serves degraded. The engine never
+// try-locks the run lock here — the spawned child's own try-lock is the
+// authority.
+func (e *Engine) ensureDetachedRebuild(project string) {
+	if e.rebuildLauncher == nil {
+		return
+	}
+	e.rebuildLauncher(project)
+}
+
+// tryWitnessedLoad consumes a graph another process committed to disk, by a
+// generation-witnessed load that takes neither the index commit lock nor the run
+// lock (ADR-016 decision 4). g1 is the counter read by the caller BEFORE the
+// load (the reader rule). It:
+//
+//   - loads hnsw.idx off-lock (newHNSWIndexFromDisk → indexstore.ReadGraph, which
+//     is atomic-rename-safe and lock-free); a no-graph / mismatch / corrupt file
+//     installs nothing, so a never-built project stays notes-only;
+//   - re-reads the counter and REFUSES the install if Gen or Epoch moved between
+//     the two reads — the graph may be mid-write or paired with a different chunk
+//     store — leaving the build path to serve this search and retry next time;
+//   - installs the loaded graph ONLY when this engine already holds metadata for
+//     every id it serves. A graph with an unknown id (a corpus another process
+//     grew) is left to the full rebuild, which walks the corpus and populates the
+//     metadata; installing it here would return hits with no renderable row.
+//
+// It returns whether it installed. The install swaps e.indexes under e.mu
+// briefly (never held across the load) and records the counter under buildMu,
+// honouring the capture-invalidation guard the full rebuild uses.
+func (e *Engine) tryWitnessedLoad(project string, g1 indexstore.Gen) bool {
+	if e.embedder == nil {
+		return false
+	}
+	dims, err := e.embedder.Dimensions()
+	if err != nil {
+		return false // cannot size the graph; let the build path handle it
+	}
+	e.buildMu.Lock()
+	inv0 := e.invalidated[project]
+	e.buildMu.Unlock()
+
+	idx, res, lerr := newHNSWIndexFromDisk(e.vault, project, dims, provisionalHNSWParams)
+	if lerr != nil || res != loaded || idx == nil {
+		if idx != nil {
+			_ = idx.Close()
+		}
+		return false
+	}
+	g2, gerr := indexstore.ReadGeneration(e.vault, project)
+	if gerr != nil || g1 != g2 {
+		_ = idx.Close()
+		return false // the witness failed: the graph is not consistent with g1
+	}
+
+	e.mu.Lock()
+	for _, id := range idx.liveIDs() {
+		if _, ok := e.metadata[id]; !ok {
+			e.mu.Unlock()
+			_ = idx.Close()
+			return false // a graph id we have no metadata for: defer to the full rebuild
+		}
+	}
+	old := e.indexes[project]
+	e.indexes[project] = idx
+	e.mu.Unlock()
+	e.closeReplaced(old)
+
+	// Remember the counter this index now matches, unless a capture insert raced
+	// the load (the same guard remember() uses): then leave the project out of
+	// date so the next search rebuilds and picks the insert up.
+	e.buildMu.Lock()
+	if e.invalidated[project] == inv0 {
+		e.loaded[project] = g1
+	} else {
+		delete(e.loaded, project)
+	}
+	e.buildMu.Unlock()
+	return true
 }
 
 // endBuild clears project's in-flight build and releases every search that
