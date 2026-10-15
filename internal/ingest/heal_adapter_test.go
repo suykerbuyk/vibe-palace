@@ -94,7 +94,7 @@ func TestDepsGraphHealerDriftGuard(t *testing.T) {
 			t.Fatalf("walk %s: %v", abs, err)
 		}
 	}
-	const want = 5 // cmd_drain_archives, cmd_index_rebuild, system_tools, session_pipeline_test, fixture_test
+	const want = 6 // cmd_drain_archives, cmd_index_rebuild, system_tools, session_pipeline_test, fixture_test, rebuild_marker_test (markerProbe)
 	if deps != want {
 		t.Fatalf("found %d Deps literals, want %d — a new one must wire GraphHealer (update this count deliberately)", deps, want)
 	}

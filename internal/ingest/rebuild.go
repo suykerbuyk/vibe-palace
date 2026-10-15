@@ -566,6 +566,10 @@ func rescanAndRelease(ctx context.Context, d Deps, held *indexstore.RunLock, wd 
 		// only the vault's OTHER projects.
 		Skip:       append(slices.Clone(o.Skip), targets...),
 		Checkpoint: wd.checkpoint,
+		// This is a `vp index rebuild` run, so inScopePending surfaces the
+		// rebuild-corpus token here (and only here) for the served-marker seen
+		// membership below (ADR-016 decision 5 / M1).
+		RebuildRun: true,
 	}
 	pending := func() ([]string, error) { return inScopePending(d, ao) }
 	for {

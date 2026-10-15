@@ -75,6 +75,15 @@ type RunOptions struct {
 	// SkipHeal skips the graph heal for Project (the rebuild heals it once
 	// itself, after its final engine rebuild).
 	SkipHeal bool
+	// RebuildRun marks inScopePending calls made on behalf of a `vp index
+	// rebuild` run (its step-7 rescan). Only such a run can serve a generic
+	// rebuild-corpus want (via rebuildProject), so only it surfaces the
+	// rebuildToken: an ingest run (`vp drain archives`) that observed the token
+	// could never clear it and would re-acquire on it forever, holding the vault
+	// run lock against the very rebuild that would serve it (ADR-016 decision 5,
+	// M1). The rebuild driver still puts its served tokens into ReleaseAndRecheck's
+	// seen; an ingest run simply never sees them.
+	RebuildRun bool
 
 	// Zero values mean the defaults.
 	Budget         RunBudget
@@ -871,15 +880,19 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 		if ok, err := d.Vault.ProjectExists(p); err != nil || !ok {
 			continue
 		}
-		// The generic rebuild-corpus marker (ADR-016 decision 5) is in scope
-		// independent of archives: an archive-less project can carry one (a cold
-		// search), and a fingerprint-stale one keeps it too. Surface it BEFORE the
-		// stale and len(entries)==0 skips below, which would otherwise drop the
-		// want. The token is not a sha, so no sha reader (plan, ensureLedger,
-		// tidyProject) ever treats it as an archive; it exists only to keep
-		// ReleaseAndRecheck from losing or looping on the want.
-		if want, err := indexstore.ReadRebuildWanted(d.Vault, p); err == nil && want {
-			out = append(out, rebuildToken(p))
+		// The generic rebuild-corpus marker (ADR-016 decision 5) is surfaced ONLY
+		// to a `vp index rebuild` run (o.RebuildRun), the only run that can serve
+		// it — so its step-7 ReleaseAndRecheck can apply the served-marker seen
+		// membership. An ingest run (`vp drain archives`) never sees the token:
+		// it could not clear it and would otherwise re-acquire on it forever,
+		// holding the vault run lock against the rebuild that would serve it (M1).
+		// It is surfaced BEFORE the stale and len(entries)==0 skips, which would
+		// otherwise drop an archive-less want. The token is not a sha, so no sha
+		// reader (plan, ensureLedger, tidyProject) ever treats it as an archive.
+		if o.RebuildRun {
+			if want, err := indexstore.ReadRebuildWanted(d.Vault, p); err == nil && want {
+				out = append(out, rebuildToken(p))
+			}
 		}
 		if _, reasons, err := d.Engine.Stale(p); err == nil && hasFingerprintReason(reasons) {
 			continue

@@ -7,11 +7,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // --- rebuild-corpus marker helpers (U1 / ADR-016 decision 5) ----------------
@@ -58,15 +62,18 @@ func (f *fixture) writeNote(project, stem, body string) {
 	}
 }
 
-// TestRebuildMarkerWriteDuringReleaseIsNeverLost (U1, "never lost"): a
+// TestRebuildMarkerWriteDuringReleaseIsNeverLost (U1, "never lost", m3): a
 // NoteRebuild that lands after the holder's last inbox read and before
 // ReleaseAndRecheck — the beforeReleaseFn seam — for a project the run never
-// targeted is not dropped. The want stays durable for the next trigger, exactly
-// like an archive First written in the same window.
+// targeted is not dropped, AND the NEXT trigger actually serves it (rebuilds beta
+// and clears the marker). The second half is what makes this catch a release-path
+// bug: mere file survival would pass even if the want never got served.
 func TestRebuildMarkerWriteDuringReleaseIsNeverLost(t *testing.T) {
 	f := newFixture(t)
 	f.ensureLedger("alpha")
 	f.archiveOf("alpha", "A", transcript(t0, "a", 2), day(1))
+	// beta has a corpus so the next trigger's rebuild of it bumps the generation.
+	f.writeNote("beta", "s1", strings.Repeat("Beta note on the ledger and chunk store. ", 20))
 
 	// beta's marker is written during alpha's release window — after the target
 	// set was fixed, so beta is NOT a target this run and the want is not served.
@@ -75,11 +82,117 @@ func TestRebuildMarkerWriteDuringReleaseIsNeverLost(t *testing.T) {
 	t.Cleanup(func() { beforeReleaseFn = nil })
 
 	if _, err := f.rebuild(RebuildOptions{Project: "alpha", FreeSpace: &fakeFree{ok: plentyFree}}); err != nil {
-		t.Fatalf("rebuild: %v", err)
+		t.Fatalf("first rebuild: %v", err)
 	}
-
 	if !f.rebuildWanted("beta") {
 		t.Fatal("a rebuild-corpus marker written during the release window was lost; it must stay durable for the next trigger")
+	}
+
+	// The next trigger must SERVE the durable want: a fresh rebuild run sweeps
+	// beta's marker (markedProjects), rebuilds beta, and clears the marker.
+	beforeReleaseFn = nil
+	betaBefore := f.gen("beta")
+	if _, err := f.rebuild(RebuildOptions{Project: "alpha", FreeSpace: &fakeFree{ok: plentyFree}}); err != nil {
+		t.Fatalf("second rebuild: %v", err)
+	}
+	if f.rebuildWanted("beta") {
+		t.Fatal("the next trigger did not serve beta's durable want (marker still set)")
+	}
+	if f.gen("beta").Gen <= betaBefore.Gen {
+		t.Fatalf("the next trigger did not actually rebuild beta: gen %+v -> %+v", betaBefore, f.gen("beta"))
+	}
+}
+
+// markerProbe wraps the real engine and records whether the rebuild-corpus marker
+// was still set when RebuildExplicit was called, so a test can pin that the clear
+// happens AFTER the engine rebuild, not before. All other CacheEngine /
+// rebuildEngine methods come from the embedded *search.Engine.
+type markerProbe struct {
+	*search.Engine
+	v                      *storage.Vault
+	sawMarkerDuringRebuild bool
+}
+
+func (m *markerProbe) RebuildExplicit(ctx context.Context, project string) (search.RebuildStats, error) {
+	if want, _ := indexstore.ReadRebuildWanted(m.v, project); want {
+		m.sawMarkerDuringRebuild = true
+	}
+	return m.Engine.RebuildExplicit(ctx, project)
+}
+
+// TestRebuildClearsMarkerOnlyAfterTheEngineRebuild (U1, m4): pins the order — the
+// marker is still set when RebuildExplicit runs, and cleared only after. A clear
+// moved above the engine rebuild makes sawMarkerDuringRebuild false and fails.
+func TestRebuildClearsMarkerOnlyAfterTheEngineRebuild(t *testing.T) {
+	f := newFixture(t)
+	f.ensureLedger("alpha")
+	f.archiveOf("alpha", "A", transcript(t0, "a", 2), day(1))
+	f.noteRebuild("alpha")
+
+	probe := &markerProbe{Engine: f.eng, v: f.v}
+	d := Deps{Vault: f.v, Engine: probe, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng)}
+	if _, err := Rebuild(context.Background(), d, RebuildOptions{Project: "alpha", FreeSpace: &fakeFree{ok: plentyFree}}); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if !probe.sawMarkerDuringRebuild {
+		t.Fatal("the marker was cleared BEFORE the engine rebuild; it must be cleared only after the build commits and bumps the generation")
+	}
+	if f.rebuildWanted("alpha") {
+		t.Fatal("the marker was not cleared after the rebuild")
+	}
+}
+
+// TestIngestRunDoesNotLoopOnRebuildMarker (M1): a drain-archives (KindIngest) Run
+// holding the lock with a rebuild-corpus marker set for an archive-less project
+// must TERMINATE (not re-acquire forever on a token it cannot serve, which would
+// hold the vault run lock against the rebuild that would serve it) and must NOT
+// clear the marker (it has not rebuilt).
+func TestIngestRunDoesNotLoopOnRebuildMarker(t *testing.T) {
+	f := newFixture(t)
+	f.ensureLedger("alpha")
+	f.archiveOf("alpha", "A", transcript(t0, "a", 2), day(1))
+	f.noteRebuild("beta") // archive-less; an ingest run can never serve it
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), f.deps(), RunOptions{VaultRoot: f.v.Root, Project: "alpha"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ingest Run did not terminate — it looped on an unservable rebuild marker (M1)")
+	}
+	if !f.rebuildWanted("beta") {
+		t.Fatal("an ingest Run cleared beta's marker; only a `vp index rebuild` may serve it")
+	}
+}
+
+// TestInScopePendingSurfacesRebuildTokenOnlyToRebuildRuns (M1): the rebuild token
+// is surfaced to a `vp index rebuild` run (for its ReleaseAndRecheck seen
+// membership) but NEVER to an ingest run (which would loop on it).
+func TestInScopePendingSurfacesRebuildTokenOnlyToRebuildRuns(t *testing.T) {
+	f := newFixture(t)
+	f.writeNote("beta", "s1", "beta has a corpus")
+	f.noteRebuild("beta")
+
+	ing, err := inScopePending(f.deps(), RunOptions{VaultRoot: f.v.Root, Project: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(ing, rebuildToken("beta")) {
+		t.Fatal("an ingest run saw the rebuild token; it cannot serve it and would re-acquire on it forever")
+	}
+
+	reb, err := inScopePending(f.deps(), RunOptions{VaultRoot: f.v.Root, RebuildRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(reb, rebuildToken("beta")) {
+		t.Fatal("a rebuild run did not see the rebuild token; its seen-membership (decision 5) needs it")
 	}
 }
 
