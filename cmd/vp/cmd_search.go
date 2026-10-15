@@ -12,10 +12,12 @@ import (
 	"os"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/tools"
 )
 
 var searchFlags = []cli.FlagDef{
@@ -89,7 +91,13 @@ func cmdSearch() *cli.Command {
 			}
 			defer emb.Close()
 
-			eng := search.NewEngine(emb, vault, cfg)
+			// WithRebuildLauncher: ADR-016 decision 4 is "a cold/stale search in
+			// ANY process" — so a CLI `vp search` that degrades on a cold corpus
+			// also records the durable rebuild-corpus want and spawns the detached
+			// `vp index rebuild`, exactly as the MCP serving engine does. The seam
+			// lives in the tools layer; the engine never try-locks the run lock.
+			eng := search.NewEngine(emb, vault, cfg,
+				search.WithRebuildLauncher(tools.NewRebuildLauncher(vault, detachlaunch.Launch)))
 			defer eng.Close()
 
 			limit := fv.Int("--limit")

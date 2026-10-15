@@ -14,15 +14,21 @@ import (
 )
 
 // recordingLaunch is a detachlaunch.LaunchFunc that records the args it was
-// asked to spawn instead of forking a process.
+// asked to spawn instead of forking a process. It also records, at the moment of
+// the spawn, whether the vault's rebuild-corpus marker was already set — so a
+// test can pin that the want is recorded BEFORE the spawn (n1).
 type recordingLaunch struct {
-	mu   sync.Mutex
-	args [][]string
+	mu          sync.Mutex
+	v           *storage.Vault
+	args        [][]string
+	wantAtSpawn []bool
 }
 
 func (r *recordingLaunch) fn(_ string, args []string, _ string) (int, error) {
+	want, _ := indexstore.ReadRebuildWanted(r.v, "proj")
 	r.mu.Lock()
 	r.args = append(r.args, append([]string(nil), args...))
+	r.wantAtSpawn = append(r.wantAtSpawn, want)
 	r.mu.Unlock()
 	return 4321, nil
 }
@@ -39,7 +45,7 @@ func (r *recordingLaunch) calls() int {
 func TestRebuildLauncherRecordsWantThenSpawns(t *testing.T) {
 	v := storage.NewVault(t.TempDir())
 	testutil.InitProject(t, v.Root, "proj")
-	rl := &recordingLaunch{}
+	rl := &recordingLaunch{v: v}
 
 	NewRebuildLauncher(v, rl.fn)("proj")
 
@@ -51,6 +57,11 @@ func TestRebuildLauncherRecordsWantThenSpawns(t *testing.T) {
 	}
 	if got := rl.args[0]; len(got) < 3 || got[0] != "index" || got[1] != "rebuild" || got[2] != "proj" {
 		t.Fatalf("spawn args = %v, want [index rebuild proj ...]", got)
+	}
+	// n1: the want was recorded BEFORE the spawn, so a spawn that loses the lock
+	// loses nothing.
+	if !rl.wantAtSpawn[0] {
+		t.Fatal("the launcher spawned before recording the want; a lost spawn would then lose the want")
 	}
 }
 
@@ -68,7 +79,7 @@ func TestRebuildLauncherRecordsWantButDoesNotSpawnWhileHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = held.Release() })
 
-	rl := &recordingLaunch{}
+	rl := &recordingLaunch{v: v}
 	NewRebuildLauncher(v, rl.fn)("proj")
 
 	if want, err := indexstore.ReadRebuildWanted(v, "proj"); err != nil || !want {
