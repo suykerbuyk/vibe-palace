@@ -15,23 +15,32 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 )
 
-// The automatic run's defaults. They are UNMEASURED: Scope 6's measurement
-// (an operator-provided stripped copy of the live vault, never a quantum
-// project) has not been made, so these are small, stated placeholders (plan
-// revisions D13 and R5) to be replaced from the measured numbers.
+// The automatic run's per-run budget. Scope 6 (the ingester-budget
+// measurement, on an operator-provided stripped copy of the live vault)
+// established that per-archive ingest is the dominant, unavoidable cost — a
+// p50 ~1.3 MiB transcript's ingest exceeds ten minutes at ~5.6 cores, and the
+// small point is almost all fixed model-load cost. These per-run caps are a
+// BACKSTOP, not the throttle: `admit` always admits the first archive (so one
+// large archive overruns the wall-clock cap by design), and the real
+// anti-"stays hot" lever on a multiplexed host is U4's inter-run COOLDOWN
+// (indexstore.DefaultRunCooldown), which spaces successive embedding runs out.
+// The values below hold; only this rationale changed from the earlier
+// UNMEASURED-placeholder note (ADR-016 decision 6).
 const (
 	// DefaultRunArchives is how many archives one automatic run ingests or
-	// attempts (UNMEASURED).
+	// attempts (a backstop; the cooldown is the throttle).
 	DefaultRunArchives = 3
-	// DefaultRunWallClock caps one automatic run, checked between archives
-	// (UNMEASURED).
+	// DefaultRunWallClock caps one automatic run, checked between archives (a
+	// backstop; Scope 6 showed one median archive exceeds it, so it cannot bound
+	// a single large archive — the cooldown bounds the duty cycle instead).
 	DefaultRunWallClock = 10 * time.Minute
 	// DefaultFailureLimit is how many failures make automatic runs skip an
-	// archive until an explicit rebuild (UNMEASURED).
+	// archive until an explicit rebuild. Pure policy — no measurement sets it;
+	// mirrored by search.coverageFailureLimit (TestCoverageFailureLimitMatchesIngest).
 	DefaultFailureLimit = 3
-	// DefaultMaxSourceBytes is the largest archive (manifest source_bytes)
-	// an automatic run ingests; a larger one is left to `vp index rebuild`
-	// (UNMEASURED).
+	// DefaultMaxSourceBytes is the largest archive (manifest source_bytes) an
+	// automatic run ingests; a larger one is left to `vp index rebuild` (a
+	// backstop; Scope 6 found even 1.3 MiB exceeds the wall-clock cap).
 	DefaultMaxSourceBytes int64 = 32 << 20
 )
 
@@ -89,6 +98,13 @@ type RunOptions struct {
 	Budget         RunBudget
 	FailureLimit   int
 	MaxSourceBytes int64
+	// Cooldown is the inter-run cooldown window the automatic drain consults
+	// before the run lock (ADR-016 decision 6), deferring rather than starting a
+	// back-to-back pass. It is OPT-IN: zero (or negative) disables the throttle,
+	// and the production drain (cmd/vp `vp drain archives`) sets it explicitly to
+	// indexstore.DefaultRunCooldown. A zero default keeps the throttle out of the
+	// many fixture tests that fire back-to-back runs without opting in.
+	Cooldown time.Duration
 }
 
 // skipped reports whether project is named by Skip.
@@ -121,9 +137,17 @@ func (o RunOptions) maxSourceBytes() int64 {
 	return DefaultMaxSourceBytes
 }
 
+// cooldown is the inter-run cooldown window: opt-in, so a zero (or negative)
+// value disables the throttle and only a caller that sets it (the production
+// drain) is throttled. RunCooldownActive treats <= 0 as disabled.
+func (o RunOptions) cooldown() time.Duration {
+	return o.Cooldown
+}
+
 // RunResult reports a run.
 type RunResult struct {
 	LockHeld  bool     // another run held the run lock; this one did nothing
+	Deferred  bool     // the inter-run cooldown was active; this run did not try the lock
 	Committed int      // archives committed or superseded
 	Failed    int      // archives that failed (a failure record each)
 	Changed   int      // archives rewritten mid-run, left for the next run
@@ -191,6 +215,30 @@ func Run(ctx context.Context, d Deps, o RunOptions) (RunResult, error) {
 	if o.VaultRoot == "" || o.Project == "" || d.Vault == nil {
 		return res, ErrNoTarget
 	}
+	// ADR-016 decision 6, U4 B2: on EVERY exit (proceed, cooldown-defer, lock-held,
+	// error) consume any pending rebuild-corpus want by spawning `vp index rebuild`
+	// — the only path that can serve such a want — when the cooldown is inactive
+	// and no live holder is already building. Registered first, so it runs LAST,
+	// after the stamp defer below has written the fresh marker.
+	defer maybeConsumeRebuildWants(d, o)
+
+	// U4 site (a): an automatic drain consults the inter-run cooldown BEFORE the
+	// run lock and defers rather than starting another back-to-back embed pass.
+	// Want-persist-first: the triggering archive is recorded for the eventual
+	// holder exactly as the lock-held branch does (the archive file is durable,
+	// and the inbox line is the want for a baseline-only archive), THEN the run
+	// defers. A deferred run never calls TryRunLock, so it emits no RunTry. The
+	// explicit rebuild driver is never throttled (it does not call Run).
+	if !o.Explicit && indexstore.RunCooldownActive(d.Vault, d.now(), o.cooldown()) {
+		if o.First != "" {
+			if err := indexstore.NoteFirst(ctx, d.Vault, o.Project, o.First, noteFirstTimeout); err != nil {
+				slog.Warn("ingest: the inter-run cooldown is active, and the trigger's archive could not be recorded for the holder",
+					"project", o.Project, "source_sha256", o.First, "error", err)
+			}
+		}
+		res.Deferred = true
+		return res, nil
+	}
 	held, ok, err := indexstore.TryRunLock(d.Vault, indexstore.KindIngest, o.Project)
 	if err != nil {
 		return res, err
@@ -205,6 +253,18 @@ func Run(ctx context.Context, d Deps, o RunOptions) (RunResult, error) {
 		}
 		return res, nil
 	}
+	// U4 site (a) stamp (NB-1): an acquired drain that actually embedded arms the
+	// cooldown. Registered AFTER the consume defer, so LIFO runs it FIRST — the
+	// consume defer then sees the fresh marker. Site (a) releases the run lock in
+	// the body (ReleaseAndRecheck / Release) before every return, so this
+	// return-defer never writes while the flock is held.
+	defer func() {
+		if res.Committed > 0 || res.Repaired > 0 {
+			if err := indexstore.WriteRunCompleted(d.Vault, d.now()); err != nil {
+				slog.Warn("ingest: could not stamp the index-run cooldown marker", "project", o.Project, "error", err)
+			}
+		}
+	}()
 	memo := newMemo()
 	pending := func() ([]string, error) { return inScopePending(d, o) }
 	for {
@@ -951,4 +1011,51 @@ func (d Deps) now() time.Time {
 		return d.Now()
 	}
 	return time.Now()
+}
+
+// maybeConsumeRebuildWants spawns a detached `vp index rebuild <project>` for
+// every in-scope project carrying a pending rebuild-corpus want (ADR-016
+// decision 6, U4 B2). Only `vp index rebuild` serves such a want — a drain
+// never surfaces or clears the rebuild token — so without this a want recorded
+// by a cold search (NoteRebuild) and racing a startup/pull drain would sit on
+// disk unconsumed even after the cooldown expires. It runs on every drain exit
+// (as a deferred call in Run), so the next drain in an inactive window — at
+// latest the next `vp mcp` startup-backstop drain — consumes it.
+//
+// It is throttled and holder-gated:
+//   - it does nothing while the inter-run cooldown is active (one embedding run
+//     per window), so the spawned rebuild runs at most once per window;
+//   - B3 holder guard: it skips a project whose run-lock holder record names a
+//     LIVE pid — a rebuild is already building, and spawning another would only
+//     produce an ErrRunLockHeld loser; left ungated this would storm one loser
+//     per drain trigger for the whole multi-minute run (the cooldown marker is
+//     stamped on completion, so it is not yet set while the holder builds);
+//   - it STILL spawns when the holder record is missing/unparseable
+//     (ErrHolderUnknown) or names a DEAD pid — the crash / stale-takeover case;
+//     the spawned child's own TryRunLock remains the authority.
+//
+// The spawn and the liveness check are injected (RebuildSpawner, HolderAlive)
+// so this package imports no process-spawn machinery and neither internal/tools
+// nor syscall. A caller that wires neither consumes nothing (safe).
+func maybeConsumeRebuildWants(d Deps, o RunOptions) {
+	if d.Vault == nil || d.RebuildSpawner == nil || d.HolderAlive == nil {
+		return
+	}
+	if indexstore.RunCooldownActive(d.Vault, d.now(), o.cooldown()) {
+		return
+	}
+	projects, err := projectOrder(d, o)
+	if err != nil {
+		return
+	}
+	for _, p := range projects {
+		want, err := indexstore.ReadRebuildWanted(d.Vault, p)
+		if err != nil || !want {
+			continue
+		}
+		if h, herr := indexstore.ReadHolder(d.Vault); herr == nil && d.HolderAlive(h.PID) {
+			continue // a live holder is already building; do not storm ErrRunLockHeld losers
+		}
+		d.RebuildSpawner(p)
+	}
 }

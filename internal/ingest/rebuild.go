@@ -80,7 +80,24 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 	if !ok {
 		return res, holderError(d.Vault)
 	}
-	defer held.Release()
+	// U4 site (b-stamp) / NB-1: ONE deferred func that releases the run lock and
+	// THEN, only if this run actually embedded, arms the inter-run cooldown
+	// (ADR-016 decision 6). Release-before-stamp so the marker is never written
+	// while the flock is held. It fires on every return past here — including the
+	// stopEndsRun return below and an error-after-embed — but NOT on the
+	// ErrRunLockHeld path above (:80-82), which returns before this defer exists.
+	// `embedded` is set true by a non---no-embed target that reached
+	// RebuildExplicit, and OR'd with a step-7 rescan embed (NB-5) below; it is NOT
+	// set by --no-embed, a cancelled/ctx-dead target, or a never-acquired run.
+	var embedded bool
+	defer func() {
+		_ = held.Release()
+		if embedded {
+			if err := indexstore.WriteRunCompleted(d.Vault, d.now()); err != nil {
+				slog.Warn("vp index rebuild: could not stamp the index-run cooldown marker", "error", err)
+			}
+		}
+	}()
 
 	// U1/ADR-016 decision 5: extend the target set with every project carrying
 	// the generic rebuild-corpus marker, now that the run lock is held (so no
@@ -109,7 +126,7 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 		if err := held.SetProject(p); err != nil {
 			return res, err
 		}
-		r, served, err := rebuildProject(ctx, d, held, eng, wd, o, p)
+		r, served, emb, err := rebuildProject(ctx, d, held, eng, wd, o, p)
 		res.add(r)
 		res.Passes++
 		if err != nil {
@@ -118,6 +135,7 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 		if served {
 			servedMarkers = append(servedMarkers, p)
 		}
+		embedded = embedded || emb
 		// A watchdog, checkpoint, cancel or --max-archives stop ends the whole
 		// run cleanly: no completion, and no rescan (the next trigger is served
 		// by the next run). The ledger is left consistent.
@@ -136,6 +154,12 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 	if err := rescanAndRelease(ctx, d, held, wd, o, targets, servedMarkers, &res); err != nil {
 		return res, err
 	}
+	// NB-5: a step-7 rescan can embed another project's pending archives even when
+	// every target was --no-embed or stopped before embedding, so a committed or
+	// repaired archive in the run's totals also arms the cooldown. (Committed means
+	// committed/repaired, not strictly embedded — NB-4; a false-arm only delays the
+	// next pass, fail-safe toward less heat.)
+	embedded = embedded || res.Committed > 0 || res.Repaired > 0
 	return res, nil
 }
 
@@ -276,17 +300,19 @@ func stopEndsRun(stopped string) bool {
 // rebuildProject is one project's rebuild: discard (step 3), the explicit
 // archive pass (step 4), the engine rebuild and graph heal (step 5/5b), the
 // rename-pending cleanup (1b), and completion (step 8). It returns the pass's
-// RunResult (the caller aggregates it and reads its Stopped reason) and whether
+// RunResult (the caller aggregates it and reads its Stopped reason), whether
 // it served and cleared a generic rebuild-corpus marker for p (ADR-016 decision
 // 5) — served only on a completed embed build, so a stopped or --no-embed run
-// leaves the want for the next trigger.
-func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string) (RunResult, bool, error) {
+// leaves the want for the next trigger — and whether it embedded (reached
+// RebuildExplicit; U4 site (b-stamp), ORed by the caller to arm the cooldown).
+func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string) (RunResult, bool, bool, error) {
 	var res RunResult
+	var embedded bool
 
 	// Step 3: discard, only here, only what a present-and-different fingerprint
 	// covers, in one commit step. A missing fingerprint discards nothing.
 	if err := discardOnMismatch(ctx, d, p); err != nil {
-		return res, false, err
+		return res, false, embedded, err
 	}
 
 	// Step 4: the explicit archive pass for THIS project alone (Only), entered
@@ -307,7 +333,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	r, err := RunHeld(ctx, d, held, ro)
 	res.add(r)
 	if err != nil {
-		return res, false, err
+		return res, false, embedded, err
 	}
 	stopped := r.Stopped
 
@@ -316,7 +342,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// resumable from the ledger). A watchdog or --max-archives stop leaves the
 	// context alive, so the engine rebuild below still runs for coherence.
 	if stopped == "cancelled" || ctx.Err() != nil {
-		return res, false, nil
+		return res, false, embedded, nil
 	}
 
 	// Step 5: the explicit-mode (or, under --no-embed, the cache-hits-only)
@@ -327,10 +353,15 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	if o.NoEmbed {
 		stats, err = eng.RebuildNoEmbed(ctx, p)
 	} else {
+		// U4 site (b-stamp): reaching RebuildExplicit is the embed this run does
+		// (even a notes-only, zero-archive rebuild embeds the note/decision corpus
+		// here), so the run arms the cooldown. Set before the call, so an
+		// error-after-embed still counts (the stamp defer fires on that return).
+		embedded = true
 		stats, err = eng.RebuildExplicit(ctx, p)
 	}
 	if err != nil {
-		return res, false, err
+		return res, false, embedded, err
 	}
 
 	// U1/ADR-016 decision 5: a generic rebuild-corpus want for p is served the
@@ -348,7 +379,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	if stopped == "" && !o.NoEmbed {
 		if want, werr := indexstore.ReadRebuildWanted(d.Vault, p); werr == nil && want {
 			if err := clearRebuildMarker(ctx, d, p); err != nil {
-				return res, false, err
+				return res, false, embedded, err
 			}
 			served = true
 		}
@@ -366,11 +397,11 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	if stopped == "" && !o.NoEmbed && stats.LocalMisses == 0 {
 		accounted, err := everyLiveArchiveAccounted(d, p, res.FailedSHAs)
 		if err != nil {
-			return res, served, err
+			return res, served, embedded, err
 		}
 		if accounted {
 			if err := completeRebuild(ctx, d, held, p, res.FailedSHAs); err != nil {
-				return res, served, err
+				return res, served, embedded, err
 			}
 			// Requirement from 1b (round 3): only AFTER the rebuild of p
 			// completes, remove every rename-pending record that names p as its
@@ -383,7 +414,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 			}
 		}
 	}
-	return res, served, nil
+	return res, served, embedded, nil
 }
 
 // discardOnMismatch discards, in one commit step, only what a present-and-

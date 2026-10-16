@@ -64,6 +64,20 @@ type Deps struct {
 	GraphHealer GraphHealer
 	// Now is the clock the wall-clock cap reads; nil means time.Now.
 	Now func() time.Time
+	// RebuildSpawner, when set, spawns a detached `vp index rebuild <project>`
+	// WITHOUT acquiring the run lock (ADR-016 decision 6, U4 B2): the ONLY path
+	// that consumes a pending rebuild-corpus want is `vp index rebuild`, so a
+	// drain that finds a want and is not throttled spawns one here. It lives in
+	// cmd/vp so this package imports no process-spawn machinery; nil means the
+	// caller cannot spawn and the want waits for a caller that can.
+	RebuildSpawner func(project string)
+	// HolderAlive reports whether pid names a live run-lock holder (ADR-016 U4
+	// B3): the consumer skips the spawn while a live holder is already building,
+	// so it does not storm ErrRunLockHeld losers for the life of a healthy
+	// holder. It lives in cmd/vp (mirrors tools.pidAlive) so this package imports
+	// neither internal/tools nor syscall; nil means liveness cannot be
+	// determined and the consumer does not spawn (no storm).
+	HolderAlive func(pid int) bool
 }
 
 // IngestOptions controls one IngestArchive.

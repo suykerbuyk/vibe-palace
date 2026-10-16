@@ -151,6 +151,13 @@ type Engine struct {
 	// Only the long-lived MCP serving engine injects one (WithRebuildLauncher from
 	// bootstrap); a CLI/one-shot engine leaves it nil and only serves degraded.
 	rebuildLauncher RebuildLauncher
+
+	// indexRunCooldown is the inter-run cooldown window (ADR-016 decision 6)
+	// consulted by runConvert (decision 3) and the search-path corpus embed
+	// (the cold-corpus gate). NewEngine sets it to indexstore.DefaultRunCooldown;
+	// a value <= 0 disables the throttle (in-package tests set the field). The
+	// check is a lock-free marker read, never a try-lock.
+	indexRunCooldown time.Duration
 }
 
 // RebuildLauncher records a durable corpus-rebuild want and ensures a detached
@@ -222,6 +229,10 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config, 
 		converting:     make(map[string]struct{}),
 		convertBackoff: make(map[string]convBackoff),
 		warmDone:       make(chan struct{}),
+		// ADR-016 decision 6: the inter-run cooldown defaults to the measured
+		// window. There is no engine option for it; in-package tests set the field
+		// directly, so it is set here before opts are applied.
+		indexRunCooldown: indexstore.DefaultRunCooldown,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -474,6 +485,15 @@ func (e *Engine) ensureDetachedRebuild(project string) {
 		return
 	}
 	e.rebuildLauncher(project)
+}
+
+// indexRunCooldownActive reports whether an embedding index run completed for
+// this vault within the cooldown window (ADR-016 decision 6). It is a lock-free
+// marker read — never a try-lock, so it stays legal inside the engine build
+// body (decision 1 / TestLockDiscipline) — and fail-open: a missing or torn
+// marker is not active, so a bad marker never suppresses a build.
+func (e *Engine) indexRunCooldownActive() bool {
+	return indexstore.RunCooldownActive(e.vault, time.Now(), e.indexRunCooldown)
 }
 
 // tryWitnessedLoad consumes a graph another process (the detached
@@ -1705,6 +1725,17 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		if stats.Embedded > budget {
 			return stats, errEmbedRefused
 		}
+		// ADR-016 decision 6, U4 site (d): even a within-budget cold corpus embed
+		// is throttled on the search path during the inter-run cooldown, so N
+		// engines do not keep the host hot embedding note/decision misses on every
+		// search. A warm build (stats.Embedded == 0) still installs — never degrade
+		// a warm search. The degrade reuses the errEmbedRefused path: ensureIndex
+		// then calls ensureDetachedRebuild, whose launcher records the durable
+		// corpus want (NoteRebuild) and itself honours the cooldown. The check is a
+		// lock-free marker read (no try-lock in the build body), fail-open.
+		if stats.Embedded > 0 && e.indexRunCooldownActive() {
+			return stats, errEmbedRefused
+		}
 	}
 
 	commit := func(batch map[string][]float32) { e.commitVectors(ctx, pl, timeout, batch, &chain) }
@@ -2145,6 +2176,18 @@ func (e *Engine) runConvert(project string) {
 	defer e.clearConverting(project)
 	ctx := e.convertCtx
 
+	// ADR-016 decision 6, U4 site (c): the convert is a CPU-heavy build pass, so
+	// it honours the inter-run cooldown. A lock-free marker read before the
+	// TryRunLock below; while an embedding run completed within the window, this
+	// convert defers. Like the decline branch, it records NO backoff and NO
+	// marker and does NOT call convertAbandon (that keys on this project's Gen,
+	// which a cooldown skip never advances, so it would wrongly suppress the
+	// convert until an unrelated write) — it simply re-fires on the next
+	// maybeStartConvert trigger (a later search of this project).
+	if e.indexRunCooldownActive() {
+		return
+	}
+
 	// ADR-016 decision 3: the converter is a corpus-building embed pass, so it
 	// runs under the (host,vault) index run lock — at most one convert per vault.
 	// Taken HERE, before the Step-2 lockProject below, it keeps the documented
@@ -2373,6 +2416,11 @@ func (e *Engine) runConvert(project string) {
 	if written {
 		e.remember(project, &chain, buildStart{gen: builtGen, readable: true, invalidated: invStart})
 		e.convertResetBackoff(project)
+		// ADR-016 decision 6: a completed, persisted convert is an embedding-class
+		// build pass, so it arms the inter-run cooldown for the next trigger.
+		if err := indexstore.WriteRunCompleted(e.vault, time.Now()); err != nil {
+			slog.Warn("hnsw convert: could not stamp the index-run cooldown marker", "project", project, "err", err)
+		}
 	} else {
 		e.buildMu.Lock()
 		delete(e.loaded, project)

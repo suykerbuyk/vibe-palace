@@ -35,6 +35,7 @@ var writePrimitives = map[string]bool{
 var writersOutsideTx = map[string]string{
 	"Lock":                          "creates or replaces the change counter under the commit lock it has just taken",
 	"TryRunLock":                    "writes the run lock's holder record in palace/.local/locks/",
+	"WriteRunCompleted":             "writes the inter-run cooldown marker index-run.lastcompleted in palace/.local/locks/ (ADR-016 decision 6), beside the holder record and outside index/<p>/; it takes no commit lock because it is not a corpus write",
 	"RunLock.SetProject":            "rewrites the holder record",
 	"RunLock.SetProgress":           "rewrites the holder record",
 	"RunLock.Release":               "removes the holder record",

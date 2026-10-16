@@ -1062,6 +1062,16 @@ func NewRebuildLauncher(vault *storage.Vault, launch detachlaunch.LaunchFunc) se
 		if h, herr := indexstore.ReadHolder(vault); herr == nil && pidAlive(h.PID) {
 			return
 		}
+		// 3. ADR-016 decision 6, U4 site (b): honour the inter-run cooldown. The
+		// want is already durable (step 1), so returning here loses nothing — the
+		// drain's consumer (maybeConsumeRebuildWants) or a post-window launcher
+		// re-fire spawns the rebuild once the window passes. Kept AFTER the
+		// holder check (NB-6): during a long run the marker is not yet stamped, so
+		// the cooldown alone would spawn an ErrRunLockHeld loser. Lock-free,
+		// fail-open read.
+		if indexstore.RunCooldownActive(vault, time.Now(), indexstore.DefaultRunCooldown) {
+			return
+		}
 		args := []string{"index", "rebuild", project, "--vault-root", vault.Root}
 		logPath := filepath.Join(vault.VaultLocalDir(), "rebuild.log")
 		if _, err := launch("", args, logPath); err != nil {

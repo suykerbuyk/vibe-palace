@@ -251,6 +251,13 @@ func (v *Vault) IndexRunHolderPath() string {
 	return filepath.Join(v.IndexLocksDir(), "index-run.holder")
 }
 
+// IndexRunCompletedPath returns the inter-run cooldown marker, a host-local
+// timestamp written when an embedding index run completes:
+// {vault}/palace/.local/locks/index-run.lastcompleted (ADR-016 decision 6).
+func (v *Vault) IndexRunCompletedPath() string {
+	return filepath.Join(v.IndexLocksDir(), "index-run.lastcompleted")
+}
+
 // IndexCommitLockPath returns a project's index commit lock:
 // {vault}/palace/.local/locks/index-commit-{project}.lock
 func (v *Vault) IndexCommitLockPath(project string) (string, error) {
