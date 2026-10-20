@@ -705,7 +705,7 @@ func TestHNSWSelectionBruteParity(t *testing.T) {
 	}
 	h.mu.RUnlock()
 	oracle := newBruteIndex(384)
-	if err := oracle.Build(ovecs, oids); err != nil {
+	if err := oracle.Build(context.Background(), ovecs, oids); err != nil {
 		t.Fatal(err)
 	}
 

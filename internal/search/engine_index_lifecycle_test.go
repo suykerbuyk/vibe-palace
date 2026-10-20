@@ -124,7 +124,7 @@ func TestEngineRebuildRunsOffLock(t *testing.T) {
 		vecs[i] = randomUnitVector(rng, embeddingDims)
 		ids[i] = fmt.Sprintf("p1-%d", i)
 	}
-	if err := held.Build(vecs, ids); err != nil {
+	if err := held.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	other := newBruteIndex(embeddingDims)

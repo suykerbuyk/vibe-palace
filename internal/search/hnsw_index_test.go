@@ -5,6 +5,7 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -248,7 +249,7 @@ func TestHNSWSearchFillsKPastTombstones(t *testing.T) {
 		vecs[i] = randomUnitVector(rng, dims)
 		ids[i] = fmt.Sprintf("v%d", i)
 	}
-	if err := idx.Build(vecs, ids); err != nil {
+	if err := idx.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	// Keep only every 50th id: 20 live among 1000 keys, far fewer than the
@@ -386,7 +387,7 @@ func churnBuild(t *testing.T, idx VectorIndex, rng *rand.Rand, vecs [][]float32,
 		replaced[id] = append(replaced[id], live[id])
 		live[id] = v
 	}
-	if err := idx.Build(batchVecs, batchIDs); err != nil {
+	if err := idx.Build(context.Background(), batchVecs, batchIDs); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	return churnResult{live: live, deleted: make(map[string]bool), replaced: replaced, deletedVec: make(map[string][]float32), ids: ids}
@@ -602,7 +603,7 @@ func TestHNSWTombstoneHeavySearchCost(t *testing.T) {
 	for i := range ids {
 		ids[i] = fmt.Sprintf("t%d", i)
 	}
-	if err := idx.Build(vecs, ids); err != nil {
+	if err := idx.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	queries := gen.take(100)

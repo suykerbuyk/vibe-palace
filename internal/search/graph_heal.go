@@ -126,7 +126,7 @@ func (e *Engine) HealGraph(ctx context.Context, vaultRoot, project string) (Heal
 		keepIDs[i] = ids[idx]
 	}
 	h := newHNSWIndex(dims, params)
-	if err := h.Build(keepVecs, keepIDs); err != nil {
+	if err := h.Build(ctx, keepVecs, keepIDs); err != nil {
 		return HealOutcome{}, fmt.Errorf("heal: build graph of %s: %w", project, err)
 	}
 	return e.healSave(ctx, project, h, builtGen, localMisses)

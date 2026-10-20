@@ -482,7 +482,7 @@ func TestReapOrphanVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Build([][]float32{{1, 0, 0}, {0, 1, 0}}, []string{drawerID, "orphan1"}); err != nil {
+	if err := idx.Build(context.Background(), [][]float32{{1, 0, 0}, {0, 1, 0}}, []string{drawerID, "orphan1"}); err != nil {
 		t.Fatal(err)
 	}
 	eng.mu.Lock()

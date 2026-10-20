@@ -96,7 +96,7 @@ func filledIndex(t *testing.T, dims, n int, params hnswParams, rng *rand.Rand) (
 		ids[i] = fmt.Sprintf("v%d", i)
 		live[ids[i]] = vecs[i]
 	}
-	if err := idx.Build(vecs, ids); err != nil {
+	if err := idx.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	return idx, live
@@ -292,7 +292,7 @@ func TestHNSWBuildCancelsARunningRebuild(t *testing.T) {
 	gen := idx.gen
 
 	replacement := randomUnitVector(rng, dims)
-	if err := idx.Build([][]float32{replacement}, []string{"only"}); err != nil {
+	if err := idx.Build(context.Background(), [][]float32{replacement}, []string{"only"}); err != nil {
 		t.Fatal(err)
 	}
 	waitOrDump(t, b.done, "the cancelled rebuild")
@@ -548,7 +548,7 @@ func TestHNSWBuildResetsTheRebuildBackoff(t *testing.T) {
 		vecs[i] = randomUnitVector(rng, dims)
 		ids[i] = fmt.Sprintf("v%d", i)
 	}
-	if err := idx.Build(vecs, ids); err != nil {
+	if err := idx.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	// The threshold alone (≥ 20 tombstones, > 10% of the live ids) is crossed

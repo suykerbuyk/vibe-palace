@@ -172,6 +172,14 @@ func selectKind(res loadResult, n int, converts bool) (indexKind, graphAction) {
 // leaves it nil.
 var insertHook func()
 
+// buildBatchHook, when a test sets it, runs inside hnswIndex.Build after a
+// chunk's ctx.Err() check has passed and before that chunk is added to the
+// graph, holding no lock. TestCloseAbandonsMidBuildAndFreesRunLock uses it to
+// park a build mid-flight and prove Engine.Close cancels it (the next chunk's
+// ctx check then returns context.Canceled). Same shape as convertAfterBuild;
+// production leaves it nil.
+var buildBatchHook func(ctx context.Context)
+
 // liveIDs returns the ids of every live (non-tombstoned) vector. The engine's
 // catchUpGraph compares this to a rebuild's keep-set to decide which ids a
 // loaded graph is missing or must drop when it reconciles to the current corpus.
@@ -443,7 +451,7 @@ func (p hnswParams) newGraph() *hnsw.Graph[uint64] {
 // contents meanwhile. A rebuild in flight is cancelled: its snapshot is of
 // contents Build has just replaced. The rebuild backoff is reset too: it was
 // earned by writes against the graph Build discards.
-func (h *hnswIndex) Build(vectors [][]float32, ids []string) error {
+func (h *hnswIndex) Build(ctx context.Context, vectors [][]float32, ids []string) error {
 	keep, err := dedupBatch(vectors, ids, h.dims)
 	if err != nil {
 		return err
@@ -463,7 +471,24 @@ func (h *hnswIndex) Build(vectors [][]float32, ids []string) error {
 		st.live[ids[i]] = hnswEntry{key: key, vec: vec}
 		st.ids[key] = ids[i]
 	}
-	h.addNodes(st.g, nodes...)
+	// Add the nodes in rebuildBatch-sized chunks, checking ctx before each, so a
+	// minutes-long build can be abandoned (e.g. by Engine.Close cancelling a
+	// converter). The library's g.Add is a plain per-node insert loop with no
+	// bulk heuristic and the level RNG seeded once at graph creation
+	// (third_party/coder-hnsw/graph.go:348-428), so chunking Add on the same
+	// graph in the same order produces the identical completed graph as one bulk
+	// Add — the chunking changes only where cancellation can intervene. Each
+	// check sits before the h.mu.Lock()/h.st = st install below, so a cancelled
+	// build installs nothing and leaves the prior contents intact.
+	for start := 0; start < len(nodes); start += rebuildBatch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if buildBatchHook != nil {
+			buildBatchHook(ctx)
+		}
+		h.addNodes(st.g, nodes[start:min(start+rebuildBatch, len(nodes))]...)
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

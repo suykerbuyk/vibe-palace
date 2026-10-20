@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -23,7 +24,7 @@ func TestBuildAndSearch(t *testing.T) {
 	}
 	ids := []string{"x", "y", "z", "near-x"}
 
-	if err := idx.Build(vectors, ids); err != nil {
+	if err := idx.Build(context.Background(), vectors, ids); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if idx.Len() != 4 {
@@ -65,7 +66,7 @@ func TestExactRecall(t *testing.T) {
 	}
 
 	idx := newBruteIndex(dims)
-	if err := idx.Build(vectors, ids); err != nil {
+	if err := idx.Build(context.Background(), vectors, ids); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,7 +223,7 @@ func TestDimensionMismatch(t *testing.T) {
 
 func TestBuildMismatchedLengths(t *testing.T) {
 	idx := newBruteIndex(3)
-	err := idx.Build([][]float32{{1, 0, 0}}, []string{"a", "b"})
+	err := idx.Build(context.Background(), [][]float32{{1, 0, 0}}, []string{"a", "b"})
 	if err == nil {
 		t.Error("expected error for mismatched vectors/ids lengths")
 	}

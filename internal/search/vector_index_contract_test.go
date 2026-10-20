@@ -5,6 +5,7 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -57,7 +58,7 @@ func distanceTo(results []VectorResult, id string) float32 {
 func TestContractBuildDuplicateIDsLastWins(t *testing.T) {
 	forEachImpl(t, func(t *testing.T, mk func(int) VectorIndex) {
 		idx := mk(3)
-		err := idx.Build(
+		err := idx.Build(context.Background(),
 			[][]float32{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
 			[]string{"a", "b", "a"},
 		)
@@ -89,7 +90,7 @@ func TestContractBuildDuplicateIDsLastWins(t *testing.T) {
 func TestContractDuplicateThenDeleteLeavesNoGhost(t *testing.T) {
 	forEachImpl(t, func(t *testing.T, mk func(int) VectorIndex) {
 		idx := mk(3)
-		if err := idx.Build(
+		if err := idx.Build(context.Background(),
 			[][]float32{{1, 0, 0}, {0, 1, 0}, {0.9, 0.1, 0}},
 			[]string{"a", "b", "a"},
 		); err != nil {
@@ -151,7 +152,7 @@ func TestContractUnusableVectorsAreSkippedAndLogged(t *testing.T) {
 	forEachImpl(t, func(t *testing.T, mk func(int) VectorIndex) {
 		logs := captureLog(t)
 		idx := mk(3)
-		if err := idx.Build(
+		if err := idx.Build(context.Background(),
 			[][]float32{{1, 0, 0}, {0, 0, 0}, {nan, 1, 0}, {0, inf, 0}},
 			[]string{"good", "zero", "nan", "inf"},
 		); err != nil {
@@ -212,7 +213,7 @@ func TestContractUnusableQueryIsError(t *testing.T) {
 func TestContractWrongDimsIsError(t *testing.T) {
 	forEachImpl(t, func(t *testing.T, mk func(int) VectorIndex) {
 		idx := mk(3)
-		if err := idx.Build([][]float32{{1, 0, 0}, {1, 0}}, []string{"a", "b"}); err == nil {
+		if err := idx.Build(context.Background(), [][]float32{{1, 0, 0}, {1, 0}}, []string{"a", "b"}); err == nil {
 			t.Error("Build with a 2-dim vector: nil error")
 		}
 		if err := idx.Insert("a", []float32{1, 0, 0, 0}); err == nil {
@@ -280,7 +281,7 @@ func TestContractImplementationsAgree(t *testing.T) {
 	brute := newBruteIndex(dims)
 	hn := newHNSWIndex(dims, provisionalHNSWParams)
 	for _, idx := range []VectorIndex{brute, hn} {
-		if err := idx.Build(vecs, ids); err != nil {
+		if err := idx.Build(context.Background(), vecs, ids); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -346,7 +347,7 @@ func TestContractExtremeNormVectorsAreUnusable(t *testing.T) {
 		captureLog(t)
 		for name, v := range extremes {
 			idx := mk(3)
-			if err := idx.Build([][]float32{{0, 1, 0}, v}, []string{"ok", name}); err != nil {
+			if err := idx.Build(context.Background(), [][]float32{{0, 1, 0}, v}, []string{"ok", name}); err != nil {
 				t.Fatalf("%s: Build: %v", name, err)
 			}
 			if err := idx.Insert(name+"-ins", v); err != nil {
@@ -404,7 +405,7 @@ func TestContractStoresACopy(t *testing.T) {
 	forEachImpl(t, func(t *testing.T, mk func(int) VectorIndex) {
 		idx := mk(3)
 		built := []float32{1, 0, 0}
-		if err := idx.Build([][]float32{built}, []string{"b"}); err != nil {
+		if err := idx.Build(context.Background(), [][]float32{built}, []string{"b"}); err != nil {
 			t.Fatal(err)
 		}
 		inserted := []float32{0, 1, 0}

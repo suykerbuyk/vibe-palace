@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -190,7 +191,7 @@ func TestHNSWHarnessSlice10k(t *testing.T) {
 	}
 	idx := newHNSWIndex(embeddingDims, noRebuild(provisionalHNSWParams))
 	defer idx.Close()
-	if err := idx.Build(ho.Pool, ho.PoolIDs); err != nil {
+	if err := idx.Build(context.Background(), ho.Pool, ho.PoolIDs); err != nil {
 		t.Fatal(err)
 	}
 	if idx.Len() != len(ho.PoolIDs) || tombstoneCount(idx) != 0 {
@@ -198,7 +199,7 @@ func TestHNSWHarnessSlice10k(t *testing.T) {
 	}
 	live := newLiveSet(zipLive(ho.PoolIDs, ho.Pool))
 	oracle := newBruteIndex(embeddingDims)
-	if err := oracle.Build(ho.Pool, ho.PoolIDs); err != nil {
+	if err := oracle.Build(context.Background(), ho.Pool, ho.PoolIDs); err != nil {
 		t.Fatal(err)
 	}
 	rep, err := measureRecall(idx, oracle, live, ho.Queries)
@@ -406,7 +407,7 @@ func measureGridCell(t *testing.T, c gridCell, ho heldOut) gridResult {
 	}
 	brute, bheap, _, err := retainedHeap(func() (VectorIndex, error) {
 		b := newBruteIndex(embeddingDims)
-		return b, b.Build(vecs, ids)
+		return b, b.Build(context.Background(), vecs, ids)
 	})
 	if err != nil {
 		t.Fatal(err)

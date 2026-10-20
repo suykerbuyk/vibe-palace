@@ -107,7 +107,7 @@ func buildHNSW(t *testing.T, dims, n int, params hnswParams) *hnswIndex {
 		vecs[i] = v
 		ids[i] = fmt.Sprintf("id-%06d", i)
 	}
-	if err := h.Build(vecs, ids); err != nil {
+	if err := h.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	return h

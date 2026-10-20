@@ -69,7 +69,7 @@ func commitGraphFromDrawers(t *testing.T, v *storage.Vault, project string, n, k
 		vecs = append(vecs, vec)
 	}
 	h := newHNSWIndex(384, provisionalHNSWParams)
-	if err := h.Build(vecs, ids); err != nil {
+	if err := h.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	saveBuilt(t, v, project, h) // writes hnsw.idx and bumps the generation

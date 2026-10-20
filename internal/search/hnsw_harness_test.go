@@ -6,6 +6,7 @@ package search
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -137,7 +138,7 @@ func TestHeldOutVectorsToleratesRealDuplicates(t *testing.T) {
 	// duplicate cannot inflate recall — τ being the k-th live distance is what
 	// bounds that, not this fixture.)
 	idx := newBruteIndex(4)
-	if err := idx.Build(ho.Pool, ho.PoolIDs); err != nil {
+	if err := idx.Build(context.Background(), ho.Pool, ho.PoolIDs); err != nil {
 		t.Fatal(err)
 	}
 	live := newLiveSet(zipLive(ho.PoolIDs, ho.Pool))
@@ -649,7 +650,7 @@ func TestHeldOutQueriesNotInCorpus(t *testing.T) {
 	}
 	idx := newHNSWIndex(16, noRebuild(provisionalHNSWParams))
 	defer idx.Close()
-	if err := idx.Build(ho.Pool, ho.PoolIDs); err != nil {
+	if err := idx.Build(context.Background(), ho.Pool, ho.PoolIDs); err != nil {
 		t.Fatal(err)
 	}
 	if idx.Len() != len(ho.PoolIDs) || tombstoneCount(idx) != 0 {

@@ -159,7 +159,7 @@ func TestMapBuildErrServesOnlyNonEmptyIndex(t *testing.T) {
 	}
 
 	full := newBruteIndex(384)
-	if err := full.Build([][]float32{unitVec(0)}, []string{"id-1"}); err != nil {
+	if err := full.Build(context.Background(), [][]float32{unitVec(0)}, []string{"id-1"}); err != nil {
 		t.Fatal(err)
 	}
 	eng.mu.Lock()
@@ -228,7 +228,7 @@ func stallOwnerHoldingBuild(t *testing.T, eng *Engine, be *blockingEmbedder, pro
 func installInMemoryIndex(t *testing.T, eng *Engine, project, id, content string) {
 	t.Helper()
 	idx := newBruteIndex(384)
-	if err := idx.Build([][]float32{unitVec(0)}, []string{id}); err != nil {
+	if err := idx.Build(context.Background(), [][]float32{unitVec(0)}, []string{id}); err != nil {
 		t.Fatal(err)
 	}
 	eng.mu.Lock()

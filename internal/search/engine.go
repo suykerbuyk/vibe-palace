@@ -126,9 +126,10 @@ type Engine struct {
 	// cancelled by Close before it unpublishes the indexes, and convertWG lets
 	// Close wait for every in-flight conversion to return. The converter's
 	// lockProject waits are bounded by searchLockTimeout and honour convertCtx; an
-	// in-progress h.Build (the minutes-long g.Add, which takes no ctx) is awaited
-	// to completion — bounded by one build that runs off all engine locks with no
-	// swap pending (making Build cancellable is a separate wrapper follow-on).
+	// in-progress h.Build observes convertCtx between node-insert batches and
+	// abandons within one batch, returning context.Canceled with no swap — off all
+	// engine locks, and runConvert's deferred run-lock Release still fires, so
+	// Close is bounded by one batch, not one whole build.
 	// converting (guarded by convertMu) is the in-flight set,
 	// and convertBackoff (also convertMu) the per-project write-counted backoff
 	// after an abandoned conversion. runConvert holds the (host,vault) index run
@@ -335,8 +336,9 @@ func (e *Engine) waitEmbedderReady(ctx context.Context, project string, budget t
 }
 
 // mapBuildErr turns a build's raw error into the search path's answer. A "soft"
-// condition — a busy lock, a refused cold-corpus embed, or a build-budget
-// deadline — serves the project's in-memory index as-is when one is actually
+// condition — a busy lock, a refused cold-corpus embed, a build-budget deadline,
+// or a build abandoned on context cancellation (a shutdown in flight) — serves
+// the project's in-memory index as-is when one is actually
 // servable (servableInMemory: a non-empty index in memory, S1), so a healthy
 // index still answers while the project is momentarily unbuildable. The
 // predicate deliberately does NOT require e.loaded (as HasIndex does): a
@@ -350,7 +352,7 @@ func (e *Engine) mapBuildErr(project string, err error) error {
 	if err == nil {
 		return nil
 	}
-	soft := isLockTimeout(err) || errors.Is(err, errEmbedRefused) || errors.Is(err, context.DeadlineExceeded)
+	soft := isLockTimeout(err) || errors.Is(err, errEmbedRefused) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 	if !soft {
 		return err
 	}
@@ -462,7 +464,7 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	// running — never a try-lock from here; the spawn seam is the injected
 	// launcher. A busy lock is transient contention, not a cold corpus, so it does
 	// not coalesce.
-	if errors.Is(rerr, errEmbedRefused) || errors.Is(rerr, context.DeadlineExceeded) {
+	if errors.Is(rerr, errEmbedRefused) || errors.Is(rerr, context.DeadlineExceeded) || errors.Is(rerr, context.Canceled) {
 		e.ensureDetachedRebuild(project)
 	}
 	// Map the raw build outcome once, here, so every joined search receives the
@@ -1834,7 +1836,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 				_ = idx0.Close()
 			}
 			h := newHNSWIndex(dims, params)
-			if err := h.Build(vecs, ids); err != nil {
+			if err := h.Build(ctx, vecs, ids); err != nil {
 				return stats, fmt.Errorf("build index: %w", err)
 			}
 			idx = h
@@ -1845,7 +1847,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 			_ = idx0.Close()
 		}
 		b := newBruteIndex(dims)
-		if err := b.Build(vecs, ids); err != nil {
+		if err := b.Build(ctx, vecs, ids); err != nil {
 			return stats, fmt.Errorf("build index: %w", err)
 		}
 		idx = b
@@ -2275,7 +2277,7 @@ func (e *Engine) runConvert(project string) {
 	// before the save, and never on b0 (a *bruteIndex has no such method).
 	h.beginCatchUp()
 	defer h.finishCatchUp()
-	if err := h.Build(buildVecs, buildIDs); err != nil {
+	if err := h.Build(ctx, buildVecs, buildIDs); err != nil {
 		return
 	}
 	if convertAfterBuild != nil {
@@ -2835,9 +2837,11 @@ func (e *Engine) Close() error {
 	// map is replaced below, so no converter performs its Step-5 swap into a map
 	// this Close has just cleared. convertCtx cancellation unblocks a converter
 	// waiting in lockProject (those waits are also bounded by searchLockTimeout);
-	// a converter already inside h.Build is awaited to completion, because g.Add
-	// takes no ctx — bounded by one build, off all engine locks, with no swap
-	// pending (S3; making Build cancellable is a separate wrapper follow-on).
+	// a converter already inside h.Build observes convertCtx between node-insert
+	// batches and abandons within one batch, returning context.Canceled, off all
+	// engine locks and with no swap pending (S3). The abandoned build installs
+	// nothing, and runConvert's deferred run-lock Release still fires, so Close
+	// waits at most one batch, not one whole build.
 	if e.convertCancel != nil {
 		e.convertCancel()
 	}

@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -50,7 +51,7 @@ func measureTombstones(t *testing.T, n int) {
 	params.distance = countingCosine
 	idx := newHNSWIndex(embeddingDims, params)
 	start := time.Now()
-	if err := idx.Build(vecs, ids); err != nil {
+	if err := idx.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("n=%d build %.1fs", n, time.Since(start).Seconds())

@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -48,8 +49,13 @@ type VectorResult struct {
 //     graph can return fewer (its layer 0 can split into islands on
 //     well-separated clusters).
 //   - Close releases the index. Brute force holds nothing to release.
+//   - Build takes a context so a long build can be abandoned: it checks ctx
+//     between batches of inserts and returns ctx.Err() on cancellation,
+//     installing nothing (the HNSW implementation builds off-lock, so a
+//     cancelled build leaves the prior contents intact). This bounds
+//     Engine.Close when a converter or rebuild is mid-build.
 type VectorIndex interface {
-	Build(vectors [][]float32, ids []string) error
+	Build(ctx context.Context, vectors [][]float32, ids []string) error
 	Insert(id string, vector []float32) error
 	Search(query []float32, k int) ([]VectorResult, error)
 	Delete(id string) bool
@@ -198,8 +204,13 @@ func newBruteIndex(dims int) *bruteIndex {
 	}
 }
 
-// Build bulk-loads vectors into the index, replacing any existing data.
-func (vi *bruteIndex) Build(vectors [][]float32, ids []string) error {
+// Build bulk-loads vectors into the index, replacing any existing data. It
+// honours ctx so a caller (a rebuild) can abandon it; the brute build does all
+// its work up front, so one entry check is the whole cancellation window.
+func (vi *bruteIndex) Build(ctx context.Context, vectors [][]float32, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	keep, err := dedupBatch(vectors, ids, vi.dims)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ package search
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -587,7 +588,7 @@ func TestRealCacheNamespacesIdsByProject(t *testing.T) {
 		t.Errorf("cross-project stems = %d, want 1", corpus.Report.CrossProjectStems)
 	}
 	idx := newBruteIndex(embeddingDims)
-	if err := idx.Build(corpus.Vecs, corpus.IDs); err != nil {
+	if err := idx.Build(context.Background(), corpus.Vecs, corpus.IDs); err != nil {
 		t.Fatal(err)
 	}
 	if idx.Len() != len(corpus.IDs) {

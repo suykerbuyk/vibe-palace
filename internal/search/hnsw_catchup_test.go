@@ -21,7 +21,7 @@ import (
 func catchupIdx(t *testing.T, ids []string, vecs [][]float32) *hnswIndex {
 	t.Helper()
 	h := newHNSWIndex(384, provisionalHNSWParams)
-	if err := h.Build(vecs, ids); err != nil {
+	if err := h.Build(context.Background(), vecs, ids); err != nil {
 		t.Fatal(err)
 	}
 	return h
