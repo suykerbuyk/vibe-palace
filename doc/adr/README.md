@@ -23,6 +23,7 @@ works today, see [doc/ARCHITECTURE.md](../ARCHITECTURE.md); the code is authorit
 | [014](014-search-index-compiled-per-host-from-vault-artifacts.md) | The Vault Holds Authored Artifacts; Each Host Compiles Its Search Index from Them | Accepted 2026-10-02 |
 | [015](015-optional-native-ort-embedder.md) | An Optional, Build-Tag-Gated Native ONNX-Runtime Embedder; the Default Stays Zero-CGO | **Proposed** 2026-10-08 |
 | [016](016-index-build-is-a-host-local-singleton.md) | The Index-Building Embed Pass Is a Host-Local Singleton per (Host, Vault) | Accepted 2026-10-14 |
+| [017](017-worktree-discipline-under-root-wt-slug-convention.md) | vibe-palace Worktrees Live Under `<root>/.wt/<slug>` on a Bare-Slug Branch | Accepted 2026-10-21 |
 
 The Status column summarises each ADR's own **Status:** line; the ADR's line is authoritative.
 To list the status lines: `grep -n '^\*\*Status:\*\*' doc/adr/0*.md`.
