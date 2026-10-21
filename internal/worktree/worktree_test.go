@@ -51,8 +51,23 @@ func isolateGit(t *testing.T) {
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(t.TempDir()))
 }
 
+// runGitT runs a git command in dir for tests, failing on error and returning
+// the trimmed combined output.
+func runGitT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	full := append([]string{"-C", dir,
+		"-c", "user.email=test@example.com", "-c", "user.name=test"}, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // initRepo builds a temp git repo with one commit on `main` and returns its
-// root. The repo is a `repo` subdir of a fresh temp dir, so the sibling `wt/`
+// root. The repo is a `repo` subdir of a fresh temp dir, so the under-root `.wt/`
 // the Manager writes to is isolated per test.
 func initRepo(t *testing.T) string {
 	t.Helper()
@@ -106,42 +121,45 @@ func TestCreate(t *testing.T) {
 	root := initRepo(t)
 	m := New(root)
 
-	res, err := m.Create("my-plan", "", "")
+	res, err := m.Create("my-plan", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if res.Branch != "plan/my-plan" {
-		t.Errorf("branch = %q, want plan/my-plan", res.Branch)
+	if res.Branch != "my-plan" {
+		t.Errorf("branch = %q, want my-plan", res.Branch)
 	}
 	if res.Base != DefaultBase {
 		t.Errorf("base = %q, want %q", res.Base, DefaultBase)
 	}
-	wantPath := filepath.Join(filepath.Dir(root), "wt", "my-plan")
+	wantPath := filepath.Join(root, ".wt", "my-plan")
 	if res.Path != wantPath {
 		t.Errorf("path = %q, want %q", res.Path, wantPath)
 	}
 	if _, err := os.Stat(filepath.Join(res.Path, "README.md")); err != nil {
 		t.Errorf("worktree not checked out: %v", err)
 	}
-	if !m.branchExists("plan/my-plan") {
-		t.Error("branch plan/my-plan should exist after Create")
+	if !m.branchExists("my-plan") {
+		t.Error("branch my-plan should exist after Create")
 	}
 }
 
-func TestCreateCustomBranchAndBase(t *testing.T) {
+func TestCreateCustomBase(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
 
-	res, err := m.Create("feature-x", "main", "wip/feature-x")
+	// An alternate base branch to cut from (the --branch override is gone; base
+	// is the only remaining knob).
+	runGitT(t, root, "branch", "dev")
+	res, err := m.Create("feature-x", "dev")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if res.Branch != "wip/feature-x" {
-		t.Errorf("branch = %q, want wip/feature-x", res.Branch)
+	if res.Branch != "feature-x" {
+		t.Errorf("branch = %q, want feature-x", res.Branch)
 	}
-	if res.Base != "main" {
-		t.Errorf("base = %q, want main", res.Base)
+	if res.Base != "dev" {
+		t.Errorf("base = %q, want dev", res.Base)
 	}
 }
 
@@ -149,7 +167,7 @@ func TestCreateRejectsBadSlug(t *testing.T) {
 	isolateGit(t)
 	m := New(initRepo(t))
 	for _, bad := range []string{"", "Has Space", "../escape", "UPPER"} {
-		if _, err := m.Create(bad, "", ""); err == nil {
+		if _, err := m.Create(bad, ""); err == nil {
 			t.Errorf("Create(%q) should have failed", bad)
 		}
 	}
@@ -159,10 +177,10 @@ func TestCreateRejectsDuplicatePath(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	if _, err := m.Create("dup", "", ""); err != nil {
+	if _, err := m.Create("dup", ""); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
-	_, err := m.Create("dup", "", "")
+	_, err := m.Create("dup", "")
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("second Create err = %v, want already-exists", err)
 	}
@@ -172,15 +190,15 @@ func TestCreateRejectsExistingBranch(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	// A worktree on plan/taken, removed, leaves the branch behind; a fresh
+	// A worktree on branch taken, removed, leaves the branch behind; a fresh
 	// Create for the same slug must refuse rather than collide on the branch.
-	if _, err := m.Create("taken", "", ""); err != nil {
+	if _, err := m.Create("taken", ""); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := m.Remove("taken", RemoveOptions{}); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	_, err := m.Create("taken", "", "")
+	_, err := m.Create("taken", "")
 	if err == nil || !strings.Contains(err.Error(), "branch already exists") {
 		t.Errorf("Create over surviving branch err = %v, want branch-already-exists", err)
 	}
@@ -189,7 +207,7 @@ func TestCreateRejectsExistingBranch(t *testing.T) {
 func TestCreateNonRepo(t *testing.T) {
 	isolateGit(t)
 	m := New(t.TempDir()) // a dir, but not a git repo
-	_, err := m.Create("x", "", "")
+	_, err := m.Create("x", "")
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Errorf("err = %v, want not-a-git-repository", err)
 	}
@@ -242,7 +260,7 @@ func TestIsolateGitDoesNotEscapeIntoAnEnclosingRepo(t *testing.T) {
 
 	isolateGit(t) // must run before any other git call, so its ceiling covers them
 	m := New(t.TempDir())
-	_, err = m.Create("x", "", "")
+	_, err = m.Create("x", "")
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Errorf("Create err = %v, want not-a-git-repository", err)
 	}
@@ -301,7 +319,7 @@ func TestIsolateGitStripsInheritedGitDir(t *testing.T) {
 
 	isolateGit(t) // must strip GIT_DIR before any other git call in the test
 	m := New(t.TempDir())
-	_, err = m.Create("x", "", "")
+	_, err = m.Create("x", "")
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Errorf("Create err = %v, want not-a-git-repository", err)
 	}
@@ -315,7 +333,7 @@ func TestRemove(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	res, err := m.Create("gone", "", "")
+	res, err := m.Create("gone", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -326,7 +344,7 @@ func TestRemove(t *testing.T) {
 		t.Errorf("worktree path still present after Remove: %v", err)
 	}
 	// The merged branch (still at base) survives — DeleteBranch was not set.
-	if !m.branchExists("plan/gone") {
+	if !m.branchExists("gone") {
 		t.Error("branch should survive a Remove without DeleteBranch")
 	}
 }
@@ -335,14 +353,14 @@ func TestRemoveDeleteBranch(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	if _, err := m.Create("clean", "", ""); err != nil {
+	if _, err := m.Create("clean", ""); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// Branch is at base (merged), so a safe delete succeeds.
 	if err := m.Remove("clean", RemoveOptions{DeleteBranch: true}); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if m.branchExists("plan/clean") {
+	if m.branchExists("clean") {
 		t.Error("branch should be gone after DeleteBranch")
 	}
 }
@@ -351,7 +369,7 @@ func TestRemoveDeleteBranchRefusesUnmerged(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	res, err := m.Create("wip", "", "")
+	res, err := m.Create("wip", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -364,7 +382,7 @@ func TestRemoveDeleteBranchRefusesUnmerged(t *testing.T) {
 	if _, statErr := os.Stat(res.Path); !os.IsNotExist(statErr) {
 		t.Errorf("worktree should still be removed: %v", statErr)
 	}
-	if !m.branchExists("plan/wip") {
+	if !m.branchExists("wip") {
 		t.Error("unmerged branch must be preserved")
 	}
 }
@@ -373,7 +391,7 @@ func TestRemoveForce(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	res, err := m.Create("dirty", "", "")
+	res, err := m.Create("dirty", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -393,10 +411,10 @@ func TestList(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
 	m := New(root)
-	if _, err := m.Create("alpha", "", ""); err != nil {
+	if _, err := m.Create("alpha", ""); err != nil {
 		t.Fatalf("Create alpha: %v", err)
 	}
-	if _, err := m.Create("beta", "", ""); err != nil {
+	if _, err := m.Create("beta", ""); err != nil {
 		t.Fatalf("Create beta: %v", err)
 	}
 
@@ -405,7 +423,7 @@ func TestList(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	if len(plans) != 2 {
-		t.Fatalf("plan worktrees = %d, want 2: %+v", len(plans), plans)
+		t.Fatalf(".wt/ worktrees = %d, want 2: %+v", len(plans), plans)
 	}
 	seen := map[string]bool{}
 	for _, e := range plans {
@@ -414,7 +432,7 @@ func TestList(t *testing.T) {
 			t.Errorf("entry %q missing HEAD", e.Branch)
 		}
 	}
-	if !seen["plan/alpha"] || !seen["plan/beta"] {
+	if !seen["alpha"] || !seen["beta"] {
 		t.Errorf("missing expected branches: %+v", plans)
 	}
 
@@ -422,8 +440,174 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
-	if len(all) != 3 { // main checkout + two plan worktrees
+	if len(all) != 3 { // main checkout + two .wt/ worktrees
 		t.Errorf("all worktrees = %d, want 3: %+v", len(all), all)
+	}
+}
+
+// TestListIsPathDiscriminated proves List(false) selects by PARENT DIRECTORY
+// (== <root>/.wt), not by a branch prefix: it includes both the single-task and
+// the two epic tiers, excludes the main checkout, and relies on `git worktree
+// list` reporting the main worktree FIRST (the canonical root for the .wt join).
+func TestListIsPathDiscriminated(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.Create("single", ""); err != nil {
+		t.Fatalf("Create single: %v", err)
+	}
+	if _, err := m.CreateEpicIntegration("ep", ""); err != nil {
+		t.Fatalf("CreateEpicIntegration: %v", err)
+	}
+	if _, err := m.CreateEpicTask("ep", "t1", ""); err != nil {
+		t.Fatalf("CreateEpicTask: %v", err)
+	}
+
+	ours, err := m.List(false)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ours) != 3 {
+		t.Fatalf(".wt/ worktrees = %d, want 3: %+v", len(ours), ours)
+	}
+	got := map[string]bool{}
+	for _, e := range ours {
+		got[e.Branch] = true
+	}
+	for _, b := range []string{"single", "ep", "ep__t1"} {
+		if !got[b] {
+			t.Errorf("List(false) missing %q: %+v", b, ours)
+		}
+	}
+
+	all, err := m.List(true)
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(all) != 4 { // main + three .wt/ worktrees
+		t.Errorf("all worktrees = %d, want 4: %+v", len(all), all)
+	}
+	if all[0].Path != root {
+		t.Errorf("entries[0].Path = %q, want main checkout %q", all[0].Path, root)
+	}
+}
+
+// TestEpicTwoTierLifecycle proves the Fix-B naming: the integration branch
+// <epic> and task branch <epic>__<task> are flat refs that COEXIST (no git D/F
+// ref conflict), and RemoveEpicIntegration enforces decision 6 — it refuses
+// while a task tree/branch remains, and succeeds only once they are gone.
+func TestEpicTwoTierLifecycle(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+
+	ires, err := m.CreateEpicIntegration("ep", "")
+	if err != nil {
+		t.Fatalf("CreateEpicIntegration: %v", err)
+	}
+	if ires.Branch != "ep" {
+		t.Errorf("integration branch = %q, want ep", ires.Branch)
+	}
+	if want := filepath.Join(root, ".wt", "ep"); ires.Path != want {
+		t.Errorf("integration path = %q, want %q", ires.Path, want)
+	}
+
+	tres, err := m.CreateEpicTask("ep", "t1", "")
+	if err != nil {
+		t.Fatalf("CreateEpicTask: %v", err)
+	}
+	if tres.Branch != "ep__t1" {
+		t.Errorf("task branch = %q, want ep__t1", tres.Branch)
+	}
+	if want := filepath.Join(root, ".wt", "ep__t1"); tres.Path != want {
+		t.Errorf("task path = %q, want %q", tres.Path, want)
+	}
+
+	// Both flat refs coexist — the Fix-B property that dodges the D/F conflict a
+	// bare <epic> + <epic>/<task> pair would hit.
+	if !m.branchExists("ep") || !m.branchExists("ep__t1") {
+		t.Fatalf("both ep and ep__t1 branches must coexist")
+	}
+
+	// Integration removal refuses while the task tree/branch remains.
+	if err := m.RemoveEpicIntegration("ep", RemoveOptions{DeleteBranch: true}); err == nil {
+		t.Error("RemoveEpicIntegration should refuse while a task worktree remains")
+	} else if !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("refusal err = %v, want a refusing-to-remove message", err)
+	}
+	// The integration tree must still be present after the refusal.
+	if _, statErr := os.Stat(ires.Path); statErr != nil {
+		t.Errorf("integration worktree must survive a refused removal: %v", statErr)
+	}
+
+	// Remove the task, then the integration succeeds.
+	if err := m.RemoveEpicTask("ep", "t1", RemoveOptions{DeleteBranch: true}); err != nil {
+		t.Fatalf("RemoveEpicTask: %v", err)
+	}
+	if m.branchExists("ep__t1") {
+		t.Error("task branch ep__t1 should be gone after RemoveEpicTask --delete-branch")
+	}
+	if err := m.RemoveEpicIntegration("ep", RemoveOptions{DeleteBranch: true}); err != nil {
+		t.Fatalf("RemoveEpicIntegration after tasks gone: %v", err)
+	}
+	if m.branchExists("ep") {
+		t.Error("integration branch ep should be gone after RemoveEpicIntegration --delete-branch")
+	}
+}
+
+// TestIgnoredPathWorktree re-proves inside the package tests the STEP-0 finding:
+// a worktree created at the gitignored under-root path does NOT dirty the main
+// checkout, and the round-trip (create → remove --delete-branch) is clean.
+func TestIgnoredPathWorktree(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/.wt/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, root, "add", ".gitignore")
+	runGitT(t, root, "commit", "-m", "ignore /.wt/")
+
+	m := New(root)
+	if _, err := m.Create("iso", ""); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if st := runGitT(t, root, "status", "--porcelain"); st != "" {
+		t.Errorf("main checkout dirty after creating an ignored worktree: %q", st)
+	}
+	if err := m.Remove("iso", RemoveOptions{DeleteBranch: true}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if m.branchExists("iso") {
+		t.Error("branch iso should be gone after remove --delete-branch")
+	}
+}
+
+// TestLongComposite proves the composite name is EXEMPT from the 64-char
+// per-component slug cap: each half validates as a bare slug, and the derived
+// <epic>__<task> directory/branch (here > 64 bytes) is accepted by git and the
+// filesystem.
+func TestLongComposite(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	epic := "worktree-discipline-wt-dir-slug-convention-and-lifecycle" // this epic's real 54-char slug
+	task := "core-code-move-rename-and-path-discrimination"
+	want := epic + "__" + task
+	if len(want) <= 64 {
+		t.Fatalf("test composite is %d chars; expected > 64 to exercise the exemption", len(want))
+	}
+	res, err := m.CreateEpicTask(epic, task, "")
+	if err != nil {
+		t.Fatalf("CreateEpicTask long composite: %v", err)
+	}
+	if res.Branch != want {
+		t.Errorf("branch = %q, want %q", res.Branch, want)
+	}
+	if !m.branchExists(want) {
+		t.Error("long composite branch should exist")
+	}
+	if err := m.RemoveEpicTask(epic, task, RemoveOptions{DeleteBranch: true}); err != nil {
+		t.Fatalf("RemoveEpicTask: %v", err)
 	}
 }
 
@@ -441,11 +625,11 @@ func TestParseWorktreeList(t *testing.T) {
 		"HEAD 1111111111111111111111111111111111111111",
 		"branch refs/heads/main",
 		"",
-		"worktree /home/u/code/wt/alpha",
+		"worktree /home/u/code/repo/.wt/alpha",
 		"HEAD 2222222222222222222222222222222222222222",
-		"branch refs/heads/plan/alpha",
+		"branch refs/heads/alpha",
 		"",
-		"worktree /home/u/code/wt/detached",
+		"worktree /home/u/code/repo/.wt/detached",
 		"HEAD 3333333333333333333333333333333333333333",
 		"detached",
 		"",
@@ -457,13 +641,13 @@ func TestParseWorktreeList(t *testing.T) {
 	if entries[0].Branch != "main" {
 		t.Errorf("entries[0].Branch = %q, want main", entries[0].Branch)
 	}
-	if entries[1].Branch != "plan/alpha" {
-		t.Errorf("entries[1].Branch = %q, want plan/alpha", entries[1].Branch)
+	if entries[1].Branch != "alpha" {
+		t.Errorf("entries[1].Branch = %q, want alpha", entries[1].Branch)
 	}
 	if entries[2].Branch != "(detached)" {
 		t.Errorf("entries[2].Branch = %q, want (detached)", entries[2].Branch)
 	}
-	if entries[1].Path != "/home/u/code/wt/alpha" {
+	if entries[1].Path != "/home/u/code/repo/.wt/alpha" {
 		t.Errorf("entries[1].Path = %q", entries[1].Path)
 	}
 }

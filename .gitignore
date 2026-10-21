@@ -3,6 +3,7 @@
 /commit.msg
 /.cache/
 /.claude/
+/.wt/
 /.grok/
 /coverage.out
 /coverage.html

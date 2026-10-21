@@ -34,16 +34,16 @@ creation path (see decision 7).
 via `slug.Validate` (`worktree.go:131-143`) and uses a non-empty `branch` argument **unvalidated**;
 the CLI exposes an unconstrained `--branch` override (`cmd/vp/cmd_worktree.go:42`, passed at `:74`).
 `slug.Validate` requires `^[a-z0-9]+(-[a-z0-9]+)*$`, caps length at 64, and rejects `/`, `\`, `..`
-(`internal/slug/slug.go:15`, `:25-37`). So today's validator rejects **both** the epic branch
-`<epic>/<task>` (contains `/`) **and** the epic directory `<epic>__<task>` (contains `_`). The
-directory key is the only string `Create` may treat as a slug today; the branch is a separate
-argument. Two constraints therefore force both names to be **derived**, not passed through `Validate`
-unchanged: (a) `<epic>/<task>` cannot be a single directory component — a path component may not
-contain `/`; and (b) neither `<epic>__<task>` (contains `_`) nor `<epic>/<task>` (contains `/`) is a
-valid slug. The operator's `__`-in-directory / `/`-in-branch mapping (decision 3) is the chosen
-boundary encoding within those constraints, not the only legal one — `__` is preferred over a hyphen
-because a hyphen is a legal intra-slug separator, so `__` keeps the epic/task boundary distinct from
-hyphens inside either name.
+(`internal/slug/slug.go:15`, `:25-37`). Under Fix B the directory and the branch are the **same
+string** at every tier — `<epic>__<task>` for a task, `<epic>` for the integration tier — and
+`<epic>__<task>` contains `_`, which `slug.Validate` rejects. So the composite name must be
+**derived**, not passed through `Validate`: validate `<epic>` and `<task>` individually (each is a bare
+slug), then compose `<epic>__<task>`. `__` is the boundary encoding (preferred over a hyphen, which is
+a legal intra-slug separator, so `__` keeps the epic/task boundary distinct from hyphens inside either
+name); because `slug.Validate` rejects `_` entirely, neither half can contain `_`, so `<epic>__<task>`
+is unambiguous and splits back cleanly. Keeping branch == directory at every tier is what avoids git's
+directory/file ref conflict — a bare `<epic>` branch cannot coexist with a `<epic>/<task>` branch
+(proven in U2's STEP-0 experiment).
 
 Worktrees-under-root is already an established, tooling-supported pattern: `.gitignore:5` ignores
 `/.claude/` and the Makefile find-sweep prunes `./.claude/*` among others
@@ -71,10 +71,15 @@ machinery.
    branch scheme: `plan/<slug>` (`worktree.go:37`, `:99`) becomes a bare `<slug>`.
 
 3. **Epics keep two tiers, relocated under `.wt/`.** The integration worktree is `.wt/<epic>` on
-   branch `<epic>`; each task worktree is `.wt/<epic>__<task>` on branch `<epic>/<task>`, and
-   fast-forwards into the integration branch. (This mapping is the operator's, verbatim from the
-   plan of record; why `__`-in-directory / `/`-in-branch is the chosen boundary encoding is recorded
-   in Context, not here.)
+   branch `<epic>`; each task worktree is `.wt/<epic>__<task>` on branch `<epic>__<task>`, and
+   fast-forwards into the integration branch. Branch name equals directory name at every tier. (Why
+   `__` is the chosen boundary encoding is recorded in Context, not here.)
+
+   **Correction (2026-10-21, operator-ratified — Fix B):** as first accepted, decision 3 put the task
+   branch at `<epic>/<task>`; U2's STEP-0 experiment proved a bare `<epic>` integration branch cannot
+   coexist with a `<epic>/<task>` task branch (git directory/file ref conflict). The task branch is
+   therefore `<epic>__<task>` — branch name equals directory name at every tier; the integration
+   branch stays bare `<epic>`, and the integration-removal guard checks `<epic>__*`, not `<epic>/*`.
 
 4. **Discrimination is by PATH, not by branch prefix.** A vibe-palace worktree is one whose parent
    directory is exactly `<root>/.wt`. Concretely, `List`'s default (today "only `plan/*`",
@@ -90,7 +95,7 @@ machinery.
    **branch**. It does not own the branch today: `Create` validates only the directory and takes the
    branch as an unvalidated argument, and the CLI `--branch` override (`cmd_worktree.go:42`, `:74`)
    lets any branch sit on a slug-shaped directory. So, as a decided consequence (not a U2 surprise):
-   the branch (`<slug>`, `<epic>`, or `<epic>/<task>`) must be **derived by a helper** from the
+   the branch (`<slug>`, `<epic>`, or `<epic>__<task>`) must be **derived by a helper** from the
    directory key, and the free `--branch` override must be **closed by U2, or explicitly kept with
    `vp worktree reconcile` flagging any directory↔branch mismatch**. A hand-rolled `git worktree
    add` is off-convention and is flagged by `vp worktree reconcile`. ("A guard only an agent can
@@ -100,9 +105,9 @@ machinery.
    is: implement in the worktree → commit → ff-merge local main → operator reviews local main and
    pushes (accepts) → close-out runs `vp worktree remove`, by tier:
    - single-task: remove `.wt/<slug>` and branch `<slug>`;
-   - epic task: remove `.wt/<epic>__<task>` and branch `<epic>/<task>`;
+   - epic task: remove `.wt/<epic>__<task>` and branch `<epic>__<task>`;
    - epic integration: remove `.wt/<epic>` and branch `<epic>` **only when no `.wt/<epic>__*`
-     directory remains and no local branch `<epic>/*` is still checked out**.
+     directory remains and no local branch `<epic>__*` is still checked out**.
 
    Today's `Remove` safe-deletes `branchName(slug)` = `plan/<slug>` (`worktree.go:167-183`, `:99`),
    so U2 must delete the branch it actually **created** (the derived bare/epic branch), not

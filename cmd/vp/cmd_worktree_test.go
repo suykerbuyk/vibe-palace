@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -51,7 +52,7 @@ func TestCmdWorktreeCreateAndList(t *testing.T) {
 	if code := cmdWorktreeCreate().Run([]string{"my-plan"}); code != cli.ExitOK {
 		t.Fatalf("create exit = %d, want ExitOK", code)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "wt", "my-plan")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".wt", "my-plan")); err != nil {
 		t.Errorf("worktree not created: %v", err)
 	}
 
@@ -83,6 +84,86 @@ func TestCmdWorktreeRemoveArgError(t *testing.T) {
 	worktreeTestRepo(t)
 	if code := cmdWorktreeRemove().Run(nil); code != cli.ExitUser {
 		t.Errorf("no-arg remove exit = %d, want ExitUser", code)
+	}
+}
+
+// TestCmdWorktreeEpicFlags drives the epic surface end to end through the CLI:
+// create the integration tier, create a task tier, confirm the integration
+// removal refuses while the task remains, then remove task then integration.
+func TestCmdWorktreeEpicFlags(t *testing.T) {
+	root := worktreeTestRepo(t)
+
+	if code := cmdWorktreeCreate().Run([]string{"--epic", "ep"}); code != cli.ExitOK {
+		t.Fatalf("create --epic exit = %d, want ExitOK", code)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".wt", "ep")); err != nil {
+		t.Errorf("epic integration worktree not created: %v", err)
+	}
+
+	if code := cmdWorktreeCreate().Run([]string{"--epic", "ep", "--task", "t1"}); code != cli.ExitOK {
+		t.Fatalf("create --epic --task exit = %d, want ExitOK", code)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".wt", "ep__t1")); err != nil {
+		t.Errorf("epic task worktree not created: %v", err)
+	}
+
+	// Integration removal refuses (ExitUser) while the task worktree remains.
+	if code := cmdWorktreeRemove().Run([]string{"--epic", "ep", "--delete-branch"}); code != cli.ExitUser {
+		t.Errorf("remove --epic should refuse while task remains (ExitUser), got %d", code)
+	}
+
+	if code := cmdWorktreeRemove().Run([]string{"--epic", "ep", "--task", "t1", "--delete-branch"}); code != cli.ExitOK {
+		t.Errorf("remove epic task exit = %d, want ExitOK", code)
+	}
+	if code := cmdWorktreeRemove().Run([]string{"--epic", "ep", "--delete-branch"}); code != cli.ExitOK {
+		t.Errorf("remove epic integration exit = %d, want ExitOK", code)
+	}
+}
+
+// TestCmdWorktreeTargetErrors pins the mutually-exclusive selection rules.
+func TestCmdWorktreeTargetErrors(t *testing.T) {
+	worktreeTestRepo(t)
+	if code := cmdWorktreeCreate().Run([]string{"--epic", "ep", "slug"}); code != cli.ExitUser {
+		t.Errorf("--epic with a positional slug should be ExitUser, got %d", code)
+	}
+	if code := cmdWorktreeCreate().Run([]string{"--task", "t1"}); code != cli.ExitUser {
+		t.Errorf("--task without --epic should be ExitUser, got %d", code)
+	}
+}
+
+// TestWorktreeCreateHelpHasNoLegacyScheme is the man-page drift backstop (M1):
+// the four vp-worktree*.1 pages are generated from command metadata and carry no
+// sourceaudit check, so this asserts the metadata the generator reads no longer
+// advertises the removed --branch flag or the old plan/ / ../wt/ scheme, and
+// does carry the new --epic/--task flags.
+func TestWorktreeCreateHelpHasNoLegacyScheme(t *testing.T) {
+	c := cmdWorktreeCreate()
+	haveEpic, haveTask := false, false
+	for _, f := range c.Flags {
+		if f.Name == "--branch" {
+			t.Error("create still defines the removed --branch flag")
+		}
+		if f.Name == "--epic" {
+			haveEpic = true
+		}
+		if f.Name == "--task" {
+			haveTask = true
+		}
+	}
+	if !haveEpic || !haveTask {
+		t.Errorf("create must define --epic and --task flags: %+v", c.Flags)
+	}
+	blob := c.Synopsis + "\n" + c.Description
+	for _, f := range c.Flags {
+		blob += "\n" + f.Name + " " + f.Help
+	}
+	for _, ex := range c.Examples {
+		blob += "\n" + ex.Cmd + " " + ex.Comment
+	}
+	for _, bad := range []string{"--branch", "plan/", "../wt/"} {
+		if strings.Contains(blob, bad) {
+			t.Errorf("create help still mentions legacy %q", bad)
+		}
 	}
 }
 
