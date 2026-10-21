@@ -66,6 +66,19 @@ func runGitT(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// tryGitT runs a git command in dir for tests WITHOUT failing on error; it
+// returns the trimmed combined output and the error, for cases git may
+// legitimately reject (e.g. a nested worktree add).
+func tryGitT(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	full := append([]string{"-C", dir,
+		"-c", "user.email=test@example.com", "-c", "user.name=test"}, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // initRepo builds a temp git repo with one commit on `main` and returns its
 // root. The repo is a `repo` subdir of a fresh temp dir, so the under-root `.wt/`
 // the Manager writes to is isolated per test.
@@ -446,9 +459,11 @@ func TestList(t *testing.T) {
 }
 
 // TestListIsPathDiscriminated proves List(false) selects by PARENT DIRECTORY
-// (== <root>/.wt), not by a branch prefix: it includes both the single-task and
-// the two epic tiers, excludes the main checkout, and relies on `git worktree
-// list` reporting the main worktree FIRST (the canonical root for the .wt join).
+// (== <root>/.wt), not by a branch prefix or a loose substring match: it includes
+// the single-task and both epic tiers, and EXCLUDES the main checkout, a
+// harness-owned .claude/worktrees/* tree, and any worktree nested below .wt. The
+// nested case is what a `strings.Contains(e.Path, ".wt")` matcher would wrongly
+// admit.
 func TestListIsPathDiscriminated(t *testing.T) {
 	isolateGit(t)
 	root := initRepo(t)
@@ -463,20 +478,51 @@ func TestListIsPathDiscriminated(t *testing.T) {
 		t.Fatalf("CreateEpicTask: %v", err)
 	}
 
+	// A harness-owned worktree under .claude/worktrees/ must be excluded.
+	harnessPath := filepath.Join(root, ".claude", "worktrees", "agent-x")
+	runGitT(t, root, "worktree", "add", harnessPath, "-b", "agent-x")
+
+	// A worktree nested BELOW .wt (parent != <root>/.wt) must be excluded. Use a
+	// plain (non-worktree) subdir of .wt for a clean nested case; if git refuses
+	// the add, skip the per-path assertion but still assert main + harness absent.
+	nestedPath := filepath.Join(root, ".wt", "grp", "nested")
+	if _, err := tryGitT(t, root, "worktree", "add", nestedPath, "-b", "nested"); err != nil {
+		t.Logf("nested worktree add rejected by git (acceptable): %v", err)
+		nestedPath = ""
+	}
+
 	ours, err := m.List(false)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(ours) != 3 {
-		t.Fatalf(".wt/ worktrees = %d, want 3: %+v", len(ours), ours)
+		t.Fatalf(".wt/ worktrees = %d, want 3 (single, ep, ep__t1): %+v", len(ours), ours)
 	}
 	got := map[string]bool{}
+	byPath := map[string]bool{}
 	for _, e := range ours {
 		got[e.Branch] = true
+		byPath[e.Path] = true
 	}
 	for _, b := range []string{"single", "ep", "ep__t1"} {
 		if !got[b] {
 			t.Errorf("List(false) missing %q: %+v", b, ours)
+		}
+	}
+	// EXCLUSION — the half a loosened matcher or an m.Root swap would miss.
+	if got["agent-x"] {
+		t.Error("List(false) wrongly included the harness .claude/worktrees/ branch")
+	}
+	if got["nested"] {
+		t.Error("List(false) wrongly included a worktree nested below .wt")
+	}
+	excludedPaths := []string{root, harnessPath}
+	if nestedPath != "" {
+		excludedPaths = append(excludedPaths, nestedPath)
+	}
+	for _, p := range excludedPaths {
+		if byPath[p] {
+			t.Errorf("List(false) wrongly included excluded path %q: %+v", p, ours)
 		}
 	}
 
@@ -484,11 +530,53 @@ func TestListIsPathDiscriminated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
-	if len(all) != 4 { // main + three .wt/ worktrees
-		t.Errorf("all worktrees = %d, want 4: %+v", len(all), all)
+	wantAll := 5 // main + single + ep + ep__t1 + agent-x
+	if nestedPath != "" {
+		wantAll = 6
+	}
+	if len(all) != wantAll {
+		t.Errorf("all worktrees = %d, want %d: %+v", len(all), wantAll, all)
 	}
 	if all[0].Path != root {
 		t.Errorf("entries[0].Path = %q, want main checkout %q", all[0].Path, root)
+	}
+}
+
+// TestListThroughSymlinkedRoot proves the discriminator uses git's canonical root
+// (the first porcelain record), not the Manager's possibly-unresolved Root:
+// constructing the Manager on a SYMLINK to the repo still returns the .wt
+// children. This is the case an `m.Root`-for-`entries[0].Path` swap would fail.
+func TestListThroughSymlinkedRoot(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	real := New(root)
+	if _, err := real.Create("single", ""); err != nil {
+		t.Fatalf("Create single: %v", err)
+	}
+	if _, err := real.CreateEpicTask("ep", "t1", ""); err != nil {
+		t.Fatalf("CreateEpicTask: %v", err)
+	}
+
+	link := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	m := New(link)
+	ours, err := m.List(false)
+	if err != nil {
+		t.Fatalf("List via symlink: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range ours {
+		got[e.Branch] = true
+	}
+	for _, b := range []string{"single", "ep__t1"} {
+		if !got[b] {
+			t.Errorf("List(false) via symlinked root missing %q: %+v", b, ours)
+		}
+	}
+	if len(ours) != 2 {
+		t.Errorf(".wt/ worktrees via symlink = %d, want 2: %+v", len(ours), ours)
 	}
 }
 
@@ -608,6 +696,45 @@ func TestLongComposite(t *testing.T) {
 	}
 	if err := m.RemoveEpicTask(epic, task, RemoveOptions{DeleteBranch: true}); err != nil {
 		t.Fatalf("RemoveEpicTask: %v", err)
+	}
+}
+
+// TestCreateEpicTaskRejectsBadComponent proves the epic helpers validate each
+// COMPONENT (never the composite): a bad epic or task is rejected with an error
+// and leaves no .wt directory and no branch behind. Assertions are on the error
+// and the absence of side effects — not on passing the composite through
+// slug.Validate, which would wrongly reject the legal "__" name.
+func TestCreateEpicTaskRejectsBadComponent(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"task has space", func() error { _, e := m.CreateEpicTask("ep", "Bad Task", ""); return e }},
+		{"task has slash", func() error { _, e := m.CreateEpicTask("ep", "a/b", ""); return e }},
+		{"task traversal", func() error { _, e := m.CreateEpicTask("ep", "..", ""); return e }},
+		{"epic bad", func() error { _, e := m.CreateEpicTask("Bad", "t1", ""); return e }},
+		{"integration epic bad", func() error { _, e := m.CreateEpicIntegration("Bad", ""); return e }},
+	}
+	for _, c := range cases {
+		if err := c.call(); err == nil {
+			t.Errorf("%s: expected an error, got nil", c.name)
+		}
+	}
+
+	// No side effects: .wt holds nothing, and only main exists as a branch.
+	if ents, err := os.ReadDir(filepath.Join(root, ".wt")); err == nil && len(ents) != 0 {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Errorf(".wt should be empty after rejected creates, found: %v", names)
+	}
+	if br := runGitT(t, root, "branch", "--format=%(refname:short)"); br != "main" {
+		t.Errorf("branches after rejected creates = %q, want only main", br)
 	}
 }
 

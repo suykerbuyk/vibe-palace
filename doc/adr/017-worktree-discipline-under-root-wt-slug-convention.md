@@ -101,6 +101,11 @@ machinery.
    add` is off-convention and is flagged by `vp worktree reconcile`. ("A guard only an agent can
    trip is not a guard" — a prose-only convention is the anti-pattern this decision closes.)
 
+   **Closed in U2 (`7c59447`):** `--branch` is removed and `Create` is `Create(slug, base)`; the
+   branch is derived (bare `<slug>`, or the composed `<epic>` / `<epic>__<task>`), so the sanctioned
+   path can no longer put a mismatched branch on a directory. (The present-tense "constraint" in
+   Context above describes the pre-U2 code the decision was built on.)
+
 6. **Cleanup happens in close-out, after the operator's push; wrap only REPORTS orphans.** The flow
    is: implement in the worktree → commit → ff-merge local main → operator reviews local main and
    pushes (accepts) → close-out runs `vp worktree remove`, by tier:
