@@ -12,14 +12,14 @@ Before any code changes, create an isolated worktree so this plan never touches 
 
     vp worktree create <slug>
 
-where `<slug>` is the plan's task slug. This creates a sibling worktree at `../wt/<slug>` on a `plan/<slug>` branch cut from `main`, and prints the path. **All subsequent code work — your edits, every subagent's edits, builds, tests — happens inside that worktree, never in the main checkout.** If `vp worktree create` reports that the path or branch already exists, a run for this plan is already in flight: stop and confirm with the human rather than colliding.
+where `<slug>` is the plan's task slug. This creates a worktree at `<root>/.wt/<slug>` on a `<slug>` branch (branch name == directory name) cut from `main`, and prints the path. **All subsequent code work — your edits, every subagent's edits, builds, tests — happens inside that worktree, never in the main checkout.** If `vp worktree create` reports that the path or branch already exists, a run for this plan is already in flight: stop and confirm with the human rather than colliding.
 
 ## 2. Record that the plan is executing
 
 So concurrent runs stay visible and you have a clean merge queue:
 
 - `vp_manage_task update_status` → `in_progress` for the plan's task.
-- `vp_manage_task amend` an `Execution` section onto that task noting the branch (`plan/<slug>`) and the worktree path. `section` takes the heading **text** — `Execution` — never the `##` markup, which the call rejects outright. `amend` converges on the heading, so a re-run updates the section instead of duplicating it.
+- `vp_manage_task amend` an `Execution` section onto that task noting the branch (`<slug>`) and the worktree path. `section` takes the heading **text** — `Execution` — never the `##` markup, which the call rejects outright. `amend` converges on the heading, so a re-run updates the section instead of duplicating it.
 
 The vault task file is the one writer surface for this — the `vp worktree` command itself writes nothing to the vault.
 
@@ -27,7 +27,7 @@ The vault task file is the one writer surface for this — the `vp worktree` com
 
 Sequentially dispatch a subagent to complete each phase or task (your choice depending on size), and verify the deliverable matches the plan in form, fit, and intent. This preserves your — the orchestrating agent's — thread context so you can drive the whole plan to the finish line while staying within a sane boundary for your thread token context (~200K tokens). Let subagents do the work; you verify their work and its conformance to the planned deliverables.
 
-**Every subagent prompt must inline the worktree path** (`../wt/<slug>`) and instruct the subagent to do all its work there — a subagent cannot see this command or your context, so a rule you do not state is a rule it will not follow. Inline the same way: the no-AI-attribution rule (no `Co-Authored-By`, no AI author lines, in commits or code) and the exact gate commands it must pass.
+**Every subagent prompt must inline the worktree path** (`<root>/.wt/<slug>`) and instruct the subagent to do all its work there — a subagent cannot see this command or your context, so a rule you do not state is a rule it will not follow. Inline the same way: the no-AI-attribution rule (no `Co-Authored-By`, no AI author lines, in commits or code) and the exact gate commands it must pass.
 
 Note: when a subagent (or you) reads a task via `vp_get_task`, the body may
 arrive as a `content_uri` (with `include_content=false`) rather than inline.
@@ -49,12 +49,12 @@ Run the gate inside the worktree before declaring the plan ready. No work is don
 
 **Do not merge to `main`. Do not fast-forward anything yourself.** When the branch is ready and gated green, stop and hand the human:
 
-- the branch — `plan/<slug>`, gated green, in `../wt/<slug>`;
-- the merge — `git merge --ff-only plan/<slug>` (run from `main`; if `main` advanced under a concurrent run, rebase the branch onto `main` first, then it fast-forwards);
+- the branch — `<slug>`, gated green, in `<root>/.wt/<slug>`;
+- the merge — `git merge --ff-only <slug>` (run from `main`; if `main` advanced under a concurrent run, rebase the branch onto `main` first, then it fast-forwards);
 - the cleanup, after they merge — `vp worktree remove <slug> --delete-branch`.
 
 **Nothing is done until the human commits the completing work (Rule 0).** Do not retire the task — the human's merge of the completing work is the declaration of done.
 
 ## Concurrency
 
-Multiple `/vpc-execute-plan` runs can proceed at once, each on its own `plan/<slug>` branch and worktree — that is the point of the isolation. The only serialization is the merge: the human fast-forwards the finished branches into `main` one at a time. If two in-flight plans touch the same files, only the first fast-forwards cleanly; the second must rebase onto the new `main` and re-gate. `vp worktree list` shows what is in flight.
+Multiple `/vpc-execute-plan` runs can proceed at once, each on its own `<slug>` branch and worktree — that is the point of the isolation. The only serialization is the merge: the human fast-forwards the finished branches into `main` one at a time. If two in-flight plans touch the same files, only the first fast-forwards cleanly; the second must rebase onto the new `main` and re-gate. `vp worktree list` shows what is in flight.

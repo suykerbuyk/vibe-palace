@@ -33,7 +33,7 @@ once on the aggregate epic branch.
        - cd <WORKTREE_PATH> && make test
        - cd <WORKTREE_PATH> && make vet
        - cd <WORKTREE_PATH> && gopls check -severity=hint \
-           $(find . -name '*.go' -not -path './.git/*' -not -path './.claude/*')
+           $(find . -name '*.go' -not -path './.git/*' -not -path './.claude/*' -not -path './.wt/*')
          Report the count; the bar is ZERO hints IN FILES YOU CHANGED (the tree may carry
          pre-existing hints from a newer gopls — verify your change adds none).
          Use `find`, NOT `git ls-files`: ls-files lists only TRACKED files, so running the
@@ -68,7 +68,7 @@ once on the aggregate epic branch.
 ---
 
 **Integrating a return.** On `STATUS: done` with gates green: `git -C <WORKTREE> rebase
-epic/<EPIC>` then `git -C <epic-worktree> merge --ff-only <EPIC>/<TASK>` (linear history; clean
+<EPIC>` then `git -C <epic-worktree> merge --ff-only <EPIC>__<TASK>` (linear history; clean
 when the Conflict Matrix said the files were disjoint). After a batch is all in, run the
 aggregate gate on the epic branch and confirm exit code 0 + zero FAIL yourself before believing
 it. Do NOT retire the tasks — hold on the epic branch until the human's own commit lands them

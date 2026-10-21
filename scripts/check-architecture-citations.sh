@@ -74,7 +74,7 @@ awk -v root="$root" '
 		return (r == "y")
 	}
 	function find_unique(base,   cmd, line, hits, only) {
-		cmd = "find . -type f -name \"" base "\" -not -path \"./.git/*\" 2>/dev/null"
+		cmd = "find . -type f -name \"" base "\" -not -path \"./.git/*\" -not -path \"./.claude/*\" -not -path \"./.wt/*\" 2>/dev/null"
 		hits = 0; only = ""
 		while ((cmd | getline line) > 0) { hits++; only = line }
 		close(cmd)

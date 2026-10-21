@@ -1657,20 +1657,24 @@ reference a host-local `~/.claude/plans/…` (or the project-root `commit.msg`) 
 ### Plan worktree isolation (`internal/worktree`)
 
 `vp worktree create|remove|list` (`cmd/vp/cmd_worktree.go`) gives
-`/vpc-execute-plan` an isolated tree per plan. `Create` cuts a `plan/<slug>`
-branch from a base branch (`main` by default) and checks it out into a
-**sibling** worktree at `../wt/<slug>` — outside the primary tree, so multiple
-plans can run concurrently without stepping on each other's working state. The
-package operates on the **project repo, never the vault**: the vault has its
-own write disciplines (locks, tidy, sync) and no worktrees.
+`/vpc-execute-plan` an isolated tree per plan. `Create` cuts a `<slug>`
+branch (branch name == directory name) from a base branch (`main` by default) and
+checks it out into a worktree under the project root at `<root>/.wt/<slug>` —
+gitignored, so a live worktree never dirties the main checkout, and the path alone
+identifies the owning project (ADR-017). Epics use two tiers under `.wt/`:
+integration `.wt/<epic>` on `<epic>`, task `.wt/<epic>__<task>` on `<epic>__<task>`,
+created with `vp worktree create --epic <epic> [--task <task>]`. The package
+operates on the **project repo, never the vault**: the vault has its own write
+disciplines (locks, tidy, sync) and no worktrees.
 
 Removal is deliberately safe: `Remove` detaches the worktree and, when asked to
 delete the branch, uses `git branch -d` — the non-forcing form, which refuses
 while the branch carries unmerged commits — so an unlanded plan cannot be
-destroyed by cleanup. Landing is a human act: the human merges `plan/<slug>`
+destroyed by cleanup. Landing is a human act: the human merges `<slug>`
 into the base branch with `merge --ff-only`, mirroring the epic-orchestrator's
-`../wt/<epic>` + ff-only convention one level down, at single-plan granularity.
-`List` enumerates the repo's worktrees, filtered to `plan/*` by default.
+`.wt/<epic>` + ff-only convention one level down, at single-plan granularity.
+`List` enumerates the repo's worktrees, discriminated by path (parent dir ==
+`<root>/.wt`) rather than a branch prefix.
 
 ### Tasks and the board (`internal/taskgraph`)
 

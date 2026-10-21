@@ -50,9 +50,9 @@ that parallelism from turning into a mess.
 These are not style preferences. Each one was paid for in a real run.
 
 **Worktree isolation, always.** Other agents share the code tree. Every code change happens
-in a git worktree at a stable sibling path, **never on `main`**. An `epic/<name>` branch is
-the integration point; task branches FF into the epic; the epic FF-merges to `main` **only on
-explicit human clearance**, at task or epic completion. The vault is a *separate* repo — vault
+in a git worktree under `<root>/.wt/` (created with `vp worktree create`, ADR-017), **never on
+`main`**. An `<epic>` branch is the integration point; task branches FF into the epic; the epic
+FF-merges to `main` **only on explicit human clearance**, at task or epic completion. The vault is a *separate* repo — vault
 writes (task files, this skill, decisions) are not "code work" and need no worktree.
 
 **One writer per file.** Review and implementation subagents write **only their own task
@@ -145,14 +145,14 @@ and an implement session both rewrite the same task's plan at once.
 ## Git mechanics (proven; linear history)
 
     # Phase 0 — epic integration worktree off the pushed main
-    git worktree add ../wt/<epic> -b epic/<epic> <main-sha>
+    vp worktree create --epic <epic> --base <main-sha>          # .wt/<epic> on branch <epic>
 
-    # Phase E — one worktree per task, branched off the epic
-    git worktree add ../wt/<epic>_<task> -b <epic>/<task> epic/<epic>
+    # Phase E — one worktree per task, cut from the epic integration branch
+    vp worktree create --epic <epic> --task <task> --base <epic>  # .wt/<epic>__<task> on branch <epic>__<task>
 
     # Integrate a finished task (in its worktree, then the epic worktree):
-    git -C ../wt/<epic>_<task> rebase epic/<epic>      # clean when files are disjoint
-    git -C ../wt/<epic> merge --ff-only <epic>/<task>  # true fast-forward → linear
+    git -C .wt/<epic>__<task> rebase <epic>           # clean when files are disjoint
+    git -C .wt/<epic> merge --ff-only <epic>__<task>  # true fast-forward → linear
 
 Reviews are **read-only** and run against the epic-worktree snapshot — they need no per-task
 worktree. Only Phase E does. Run the aggregate gate (`make test` + `make integration` + vet +

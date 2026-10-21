@@ -86,14 +86,15 @@ vet: ## Run go vet
 # formatting gate is exactly where it bites: new files are the ones most likely
 # to be unformatted.
 #
-# The .claude prune keeps a subagent worktree's checked-out copy of this module
-# out of the count; without it the gate reports the same file twice and can fail
-# on a tree the developer cannot edit.
+# The .claude and .wt prunes keep a subagent/plan worktree's checked-out copy of
+# this module (under .claude/worktrees/ or, per ADR-017, <root>/.wt/) out of the
+# count; without them the gate reports the same file twice and can fail on a tree
+# the developer cannot edit.
 #
 # The third_party prune keeps `make fmt` from ever rewriting a vendored copy:
 # third_party/coder-hnsw must stay byte-identical to upstream plus its patch,
 # which scripts/check-hnsw-vendor.sh verifies.
-GO_SOURCES = $(shell find . -name '*.go' -not -path './.git/*' -not -path './.claude/*' -not -path './third_party/*')
+GO_SOURCES = $(shell find . -name '*.go' -not -path './.git/*' -not -path './.claude/*' -not -path './.wt/*' -not -path './third_party/*')
 
 .PHONY: fmt
 fmt: ## Rewrite every Go source in place with gofmt

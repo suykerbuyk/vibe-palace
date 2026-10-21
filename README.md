@@ -75,8 +75,8 @@ and vibe-palace enforces that mechanically rather than by convention:
   live under `Projects/<slug>/` in the vault repo, with its own remotes
   and sync — your code repo never sees them.
 - **Agent implementation work is isolated in git worktrees.**
-  `vp worktree create` cuts a `plan/<slug>` branch into a sibling
-  worktree; the orchestrated `/vpc-execute-plan` command implements
+  `vp worktree create` cuts a `<slug>` branch into a worktree under
+  `<root>/.wt/`; the orchestrated `/vpc-execute-plan` command implements
   there, and a human lands the result with a fast-forward-only merge.
   Concurrent agent runs can't trample each other or your checkout.
 - **Even the operating rules ship out-of-band.** The agent doctrine

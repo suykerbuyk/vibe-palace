@@ -335,6 +335,12 @@ Do not treat these as real defects. Verify a worktree's actual state with the
 project's own build/vet/test commands run *inside* that worktree, not by
 trusting the diagnostics feed.
 
+For a project that ships the `vp worktree` convention (vibe-palace, ADR-017),
+create those worktrees with `vp worktree create` — under `<root>/.wt/<name>`, on a
+branch whose name equals the directory name — never a hand-rolled `git worktree add`
+(off-convention, and flagged by `vp worktree reconcile`). Remove a worktree in
+close-out **after** the operator's push, not before.
+
 ---
 
 ## Composer drafts and unsent suggestions
