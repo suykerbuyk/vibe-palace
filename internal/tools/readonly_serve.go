@@ -166,6 +166,7 @@ var ReadOnlyServeToolNames = []string{
 	"vp_vault_read",
 	"vp_vault_sha256",
 	"vp_vault_status",
+	"vp_worktree_reconcile",
 }
 
 // ToolsToStripForReadOnlyServe returns, sorted, every name in registered that is

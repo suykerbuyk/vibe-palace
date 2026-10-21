@@ -248,3 +248,66 @@ func cmdWorktreeList() *cli.Command {
 		},
 	}
 }
+
+var worktreeReconcileFlags = []cli.FlagDef{
+	{Name: "--check-remote", Help: "Probe the live remote (git ls-remote) to confirm local main is pushed — the signal that gates 'reclaimable' (default true; --check-remote=false skips all network and reclaims nothing)"},
+	{Name: "--json", Help: "Output JSON"},
+}
+
+func cmdWorktreeReconcile() *cli.Command {
+	return &cli.Command{
+		Name:     "worktree reconcile",
+		Synopsis: "vp worktree reconcile [--check-remote=false] [--json]",
+		Description: "Read-only: enumerate every worktree, classify each (role, on/off-convention, " +
+			"merged-into-local-main, dirty) plus whether local main is on the LIVE remote, and report a " +
+			"verdict — reclaimable (on-convention, clean, merged, main pushed, and — for an epic " +
+			"integration tree — no task worktree/branch left), keep (with a reason), or skip (the main " +
+			"checkout and harness trees). It NEVER deletes, NEVER fetches, and NEVER reads a tracking " +
+			"ref. The human removes a reclaimable tree after their push.",
+		Flags: worktreeReconcileFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp worktree reconcile", Comment: "Report each worktree's reclaim verdict"},
+			{Cmd: "vp worktree reconcile --json", Comment: "Emit the classified report for scripting"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(worktreeReconcileFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp worktree reconcile: %v\n", err)
+				return cli.ExitUser
+			}
+			checkRemote := true
+			if fv.IsSet("--check-remote") {
+				checkRemote = fv.Bool("--check-remote")
+			}
+			mgr, err := worktreeManager()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp worktree reconcile: %v\n", err)
+				return cli.ExitSystem
+			}
+			rep, err := mgr.Reconcile(worktree.ReconcileOptions{CheckRemote: checkRemote})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp worktree reconcile: %v\n", err)
+				return cli.ExitSystem
+			}
+			if fv.Bool("--json") {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				_ = enc.Encode(rep)
+				return cli.ExitOK
+			}
+			fmt.Printf("main on remote: %s\n", rep.MainOnRemote)
+			any := false
+			for _, e := range rep.Entries {
+				if e.Verdict == "skip" {
+					continue
+				}
+				any = true
+				fmt.Printf("%-28s %-12s %s\n", e.Name, e.Verdict, e.Reason)
+			}
+			if !any {
+				fmt.Println("No .wt/ worktrees to reconcile.")
+			}
+			return cli.ExitOK
+		},
+	}
+}

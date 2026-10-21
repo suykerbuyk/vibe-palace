@@ -523,6 +523,44 @@ Then, for each stray, act **narrowly**:
 The one deletion wrap owns is the redundant-scratch-after-promotion case;
 every other disposition is a **report**, never an action.
 
+## Step 6c: Reconcile Git Worktrees
+
+Wrap runs co-located with the git worktrees this host created, so it is where
+orphaned `.wt/*` trees get caught — the per-unit close-out removal (the
+`chair`/`execute-plan` prose) fires only when a unit LANDS, so a pivot-abandonment
+or a cross-session orphan never trips it. Worktrees are host-local and invisible
+to the vault, so nothing else enumerates them.
+
+**Prefer the MCP reporter.** Call `vp_worktree_reconcile` with `project_path` set
+to this project's checkout (read-only — it never deletes, never fetches, never
+reads a tracking ref). Each entry carries its role, on/off-convention, merged/
+dirty state, and a verdict:
+
+- `reclaimable` — on-convention, clean, merged into local `main`, **and local
+  `main` is on the live remote**, and (for an epic integration tree) no task
+  worktree/branch remains.
+- `keep` — with a reason: uncommitted work; unmerged commits; an unmerged branch
+  that is on the remote (a possible live PR — do not delete); merged but `main` is
+  not yet on the remote (push before removing); or off-convention (hand-rolled).
+- `skip` — the main checkout and harness `.claude/worktrees/*` trees.
+
+- **Fallback:** if `vp_worktree_reconcile` is unavailable (an older binary), run
+  `vp worktree reconcile` in the checkout — same rollout hedge as Step 6b.
+
+**Report, the human confirms, never auto-delete** — the same discipline as Step 6
+(retire) and Step 6b. List every `reclaimable` worktree in the Step 11 report; the
+human removes it **after their push** with `vp worktree remove <name>
+--delete-branch`, or for an epic integration tree `vp worktree remove --epic
+<epic> --delete-branch` (the `--epic` form runs the task-leftover guard; a
+positional `<epic>` routes to the single-task remove and skips it). Wrap removes
+nothing.
+
+**Offline is normal, not a bug.** `reclaimable` requires confirming `main` is on
+the live remote, so with no reachable remote every merged tree reports `keep`
+("main is not on the remote" / could not verify) — that is correct and safe, never
+a false reclaim. Say so in the report rather than treating an all-`keep` result as
+an error.
+
 ## Step 7: Update commit.msg (Two-Copy Workflow)
 
 ### Skip this step entirely when the session wrote no project code

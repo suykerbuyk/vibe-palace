@@ -183,9 +183,25 @@ func TestCmdWorktreeParentHasSubcommands(t *testing.T) {
 	if !slices.Equal(c.Subcommands, want) {
 		t.Errorf("Subcommands = %v, want %v", c.Subcommands, want)
 	}
-	for _, name := range []string{"worktree create", "worktree remove", "worktree list"} {
+	for _, name := range []string{"worktree create", "worktree remove", "worktree list", "worktree reconcile"} {
 		if !slices.Contains(c.Subcommands, name) {
 			t.Errorf("worktree does not list %q", name)
 		}
+	}
+}
+
+// TestCmdWorktreeReconcile smokes the CLI: a repo with one worktree reports
+// without error, and the verdict never promotes to reclaimable with no remote
+// (--check-remote defaults true; main is not on any remote here).
+func TestCmdWorktreeReconcile(t *testing.T) {
+	worktreeTestRepo(t)
+	if code := cmdWorktreeCreate().Run([]string{"solo"}); code != cli.ExitOK {
+		t.Fatalf("create exit = %d, want ExitOK", code)
+	}
+	if code := cmdWorktreeReconcile().Run([]string{"--json"}); code != cli.ExitOK {
+		t.Errorf("reconcile --json exit = %d, want ExitOK", code)
+	}
+	if code := cmdWorktreeReconcile().Run([]string{"--check-remote=false"}); code != cli.ExitOK {
+		t.Errorf("reconcile --check-remote=false exit = %d, want ExitOK", code)
 	}
 }

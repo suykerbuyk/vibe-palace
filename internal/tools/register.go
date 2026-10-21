@@ -154,6 +154,7 @@ func RegisterAll(reg *mcp.Registry, resolver *vpctx.Resolver, vault *storage.Vau
 	reg.MustRegister(SurfaceCheckTool(vault))
 	reg.MustRegister(CheckTool(vault))
 	reg.MustRegister(ScanPlansTool(vault))
+	reg.MustRegister(WorktreeReconcileTool())
 	reg.MustRegister(RepoFreshnessTool())
 	// vp_index_status registers whether or not an engine exists: it never needs
 	// one (its handler builds a no-embedder engine on demand), so a host with no

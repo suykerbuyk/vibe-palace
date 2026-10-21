@@ -400,6 +400,11 @@
       "name": "vp_vault_write",
       "mutating": true,
       "schema_sha256": "78b54bd1686c7d042492c88a032f863d33fb780ba50c54e86269f6052ab5ab43"
+    },
+    {
+      "name": "vp_worktree_reconcile",
+      "mutating": false,
+      "schema_sha256": "d0d0718f274df6de35668869f688727907106306b2f70e414c599b3d016dd7e7"
     }
   ]
 }

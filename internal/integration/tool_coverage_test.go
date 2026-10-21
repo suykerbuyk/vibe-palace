@@ -2357,6 +2357,33 @@ var toolCoverageFixtures = map[string]toolFixture{
 			}
 		},
 	},
+
+	"vp_worktree_reconcile": {
+		build: func(t *testing.T, h *testHarness) any {
+			// A project checkout (not the vault) with no remote. check_remote is
+			// off, so the probe touches no network and main_on_remote is
+			// "unverified" — nothing is reclaimable.
+			dir := t.TempDir()
+			initGitRepo(t, dir)
+			return map[string]any{"project_path": dir, "check_remote": false}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				MainOnRemote string `json:"main_on_remote"`
+				Entries      []struct {
+					Role    string `json:"role"`
+					Verdict string `json:"verdict"`
+				} `json:"entries"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.MainOnRemote != "unverified" {
+				t.Errorf("main_on_remote = %q, want unverified (check_remote=false)", out.MainOnRemote)
+			}
+			if len(out.Entries) == 0 {
+				t.Error("entries empty: the main checkout must be listed")
+			}
+		},
+	},
 }
 
 // TestToolCoverageComplete is the completeness gate: every tool

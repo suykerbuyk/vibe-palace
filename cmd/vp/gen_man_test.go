@@ -101,7 +101,7 @@ func knownCommands() []string {
 		"status", "tasks", "tasks epics", "tasks edit", "tasks read",
 		"vault", "vault pull", "vault push", "vault status", "vault sync", "vault tidy",
 		"version",
-		"worktree", "worktree create", "worktree remove", "worktree list",
+		"worktree", "worktree create", "worktree remove", "worktree list", "worktree reconcile",
 	}
 }
 

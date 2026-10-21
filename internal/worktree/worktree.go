@@ -339,6 +339,271 @@ func (m *Manager) List(all bool) ([]Entry, error) {
 	return ours, nil
 }
 
+// ReconcileOptions tunes Reconcile.
+type ReconcileOptions struct {
+	// CheckRemote enables the single live-remote probe of main that gates
+	// "reclaimable", plus the per-branch live-PR probe for an unmerged tree. It is
+	// the default (callers pass true). When false, no network is touched:
+	// MainOnRemote reports "unverified" and nothing is reclaimable — a deliberate
+	// opt-out that never silently promotes a tree to reclaimable.
+	CheckRemote bool
+}
+
+// ReconcileEntry is one worktree, classified. Merged and Pushed are tri-state
+// strings ("yes"/"no"/"unverified"); Pushed is populated only for an unmerged
+// vibe-palace tree (to distinguish a possible live PR) and is "" otherwise.
+type ReconcileEntry struct {
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	Name         string `json:"name"`
+	Role         string `json:"role"` // "main" | "harness" | "vibe-palace"
+	OnConvention bool   `json:"on_convention"`
+	Merged       string `json:"merged"` // "yes" | "no" | "unverified"
+	Dirty        bool   `json:"dirty"`
+	Pushed       string `json:"pushed,omitempty"` // "yes" | "no" | "unverified"
+	Verdict      string `json:"verdict"`          // "reclaimable" | "keep" | "skip"
+	Reason       string `json:"reason,omitempty"`
+}
+
+// ReconcileReport is the read-only reconcile result: the shared main-on-remote
+// verdict (computed once) and one entry per worktree. Strictly report-only —
+// Reconcile never removes, deletes, or writes anything (it mirrors planscan).
+type ReconcileReport struct {
+	MainOnRemote string           `json:"main_on_remote"` // "yes" | "no" | "unverified"
+	Entries      []ReconcileEntry `json:"entries"`
+}
+
+// Reconcile enumerates every worktree (List(all=true)), classifies each, and
+// reports whether it is safe to reclaim. It is strictly read-only: it shells git
+// only for rev-parse / merge-base / status / ls-remote, and it NEVER fetches,
+// NEVER reads a tracking ref (@{u}) or `git status` ahead-behind, and NEVER
+// removes anything. The acceptance signal for a reclaim is whether local main is
+// on the LIVE remote (one ls-remote), computed once and shared across entries.
+func (m *Manager) Reconcile(opts ReconcileOptions) (ReconcileReport, error) {
+	if err := m.ensureRepo(); err != nil {
+		return ReconcileReport{}, err
+	}
+	entries, err := m.List(true)
+	if err != nil {
+		return ReconcileReport{}, err
+	}
+	report := ReconcileReport{MainOnRemote: "unverified", Entries: []ReconcileEntry{}}
+	if len(entries) == 0 {
+		return report, nil
+	}
+	root := entries[0].Path // canonical root, git's own form (the basis List uses)
+	wtRoot := filepath.Join(root, wtDir)
+	harnessRoot := filepath.Join(root, ".claude", "worktrees")
+
+	// Resolve the base (main) tip once. Empty when main is absent — every tree is
+	// then Merged=unverified / keep (never reclaimable).
+	mainSHA := m.refSHA(DefaultBase)
+
+	// The one acceptance probe: is local main on the live remote? Computed ONCE.
+	if opts.CheckRemote && mainSHA != "" {
+		report.MainOnRemote = m.remoteContains(DefaultBase, mainSHA)
+	}
+
+	for _, e := range entries {
+		report.Entries = append(report.Entries, m.classifyWorktree(e, opts, root, wtRoot, harnessRoot, mainSHA, report.MainOnRemote))
+	}
+	return report, nil
+}
+
+// classifyWorktree applies the ADR-017 decision-6 classification to one worktree.
+// Role and on-convention are pure path classification (no git call); git probes
+// run only when the branch is a real ref, and a failed probe is a classification
+// (unverified), never a hard error.
+func (m *Manager) classifyWorktree(e Entry, opts ReconcileOptions, root, wtRoot, harnessRoot, mainSHA, mainOnRemote string) ReconcileEntry {
+	ent := ReconcileEntry{Path: e.Path, Branch: e.Branch, Name: filepath.Base(e.Path)}
+
+	switch {
+	case e.Path == root:
+		ent.Role, ent.Verdict, ent.Reason = "main", "skip", "main checkout"
+		return ent
+	case filepath.Dir(e.Path) == harnessRoot:
+		ent.Role, ent.Verdict, ent.Reason = "harness", "skip", "harness-owned (.claude/worktrees)"
+		return ent
+	}
+	ent.Role = "vibe-palace"
+
+	realRef := e.Branch != "" && e.Branch != "(detached)"
+	ent.OnConvention = filepath.Dir(e.Path) == wtRoot && realRef && e.Branch == ent.Name
+	ent.Dirty = !m.worktreeClean(e.Path)
+
+	switch {
+	case !realRef || mainSHA == "":
+		ent.Merged = "unverified"
+	default:
+		bSHA := m.refSHA(e.Branch)
+		switch {
+		case bSHA == "":
+			ent.Merged = "unverified"
+		case m.isAncestor(bSHA, mainSHA):
+			ent.Merged = "yes"
+		default:
+			ent.Merged = "no"
+		}
+	}
+
+	if !ent.OnConvention {
+		ent.Verdict, ent.Reason = "keep", "off-convention (hand-rolled?) — vp worktree create owns path+branch"
+		return ent
+	}
+	if ent.Dirty {
+		ent.Verdict, ent.Reason = "keep", "uncommitted work"
+		return ent
+	}
+	switch ent.Merged {
+	case "unverified":
+		ent.Verdict, ent.Reason = "keep", "could not verify against main — keep"
+		return ent
+	case "no":
+		if opts.CheckRemote {
+			ent.Pushed = m.remoteContains(e.Branch, m.refSHA(e.Branch))
+		}
+		if ent.Pushed == "yes" {
+			ent.Verdict, ent.Reason = "keep", "unmerged; branch is on the remote (possible live PR) — do not delete"
+		} else {
+			ent.Verdict, ent.Reason = "keep", "unmerged commits not in main"
+		}
+		return ent
+	}
+
+	// Merged == "yes": the work is in local main. Reclaim only if local main is on
+	// the live remote (ADR-017 decision 6 — remove after the operator's push).
+	if mainOnRemote != "yes" {
+		ent.Verdict, ent.Reason = "keep", "merged into local main; main is not on the remote — push before remove"
+		return ent
+	}
+
+	// Epic-integration guard: a name without epicSep MAY be an epic integration
+	// tree; it is reclaimable only when no task tree/branch remains — the SAME
+	// predicate RemoveEpicIntegration enforces, so the report and
+	// `vp worktree remove --epic` cannot disagree. (For a single-task name this
+	// finds nothing and is a no-op.)
+	if !strings.Contains(ent.Name, epicSep) {
+		if leftovers, lerr := m.epicTaskLeftovers(ent.Name); lerr == nil && len(leftovers) > 0 {
+			ent.Verdict, ent.Reason = "keep", "epic task worktrees/branches still present"
+			return ent
+		}
+	}
+
+	ent.Verdict = "reclaimable"
+	return ent
+}
+
+// refSHA returns the commit a local branch points at, or "" if the ref is
+// missing (rev-parse --verify --quiet exits non-zero, surfaced by runGit as an
+// error — reported here as absence, not failure).
+func (m *Manager) refSHA(branch string) string {
+	out, err := runGit(m.Root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// isAncestor reports whether commit a is an ancestor of commit b. Both SHAs must
+// already be verified-present; a non-zero exit then means "not an ancestor".
+func (m *Manager) isAncestor(a, b string) bool {
+	_, err := runGit(m.Root, "merge-base", "--is-ancestor", a, b)
+	return err == nil
+}
+
+// worktreeClean reports whether the worktree at path has no uncommitted changes.
+// An unreadable status returns false (not confirmed clean) so such a tree is
+// never reclaimed.
+func (m *Manager) worktreeClean(path string) bool {
+	out, err := runGit(path, "status", "--porcelain")
+	return err == nil && strings.TrimSpace(out) == ""
+}
+
+// remoteContains reports whether localSHA is on the live remote for ref: "yes"
+// when a configured/known remote carries the ref at localSHA (or with localSHA a
+// locally-decidable ancestor of the remote tip), "no" when a remote is reachable
+// but does not, and "unverified" when no remote is configured or none could be
+// reached. It uses `git ls-remote` ONLY — never a tracking ref, never a fetch.
+// Worst-of across remotes: any "no" wins, else any "yes", else "unverified".
+func (m *Manager) remoteContains(ref, localSHA string) string {
+	if localSHA == "" {
+		return "unverified"
+	}
+	remotes := m.remotesFor(ref)
+	if len(remotes) == 0 {
+		return "unverified"
+	}
+	anyNo, anyYes := false, false
+	for _, r := range remotes {
+		switch m.remoteRefVerdict(r, ref, localSHA) {
+		case "no":
+			anyNo = true
+		case "yes":
+			anyYes = true
+		}
+	}
+	switch {
+	case anyNo:
+		return "no"
+	case anyYes:
+		return "yes"
+	default:
+		return "unverified"
+	}
+}
+
+// remoteRefVerdict probes one remote for refs/heads/<ref> via ls-remote (live,
+// no fetch). "yes" if the remote tip equals localSHA or localSHA is a
+// locally-decidable ancestor of it; "no" if the remote lacks the ref or carries
+// a tip local cannot prove it is behind; "unverified" if the remote is
+// unreachable.
+func (m *Manager) remoteRefVerdict(remote, ref, localSHA string) string {
+	out, err := runGit(m.Root, "ls-remote", remote, "refs/heads/"+ref)
+	if err != nil {
+		return "unverified"
+	}
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return "no" // remote has no such branch
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "unverified"
+	}
+	remoteSHA := fields[0]
+	if remoteSHA == localSHA {
+		return "yes"
+	}
+	// Differs: say "yes" only if local is provably behind (the remote tip is a
+	// known local object with localSHA as an ancestor). Otherwise "no" — never
+	// falsely reclaim, and never fetch to find out.
+	if m.isAncestor(localSHA, remoteSHA) {
+		return "yes"
+	}
+	return "no"
+}
+
+// remotesFor returns the remotes to probe for a branch: its configured upstream
+// (branch.<b>.remote) if set, else every configured remote.
+func (m *Manager) remotesFor(branch string) []string {
+	if out, err := runGit(m.Root, "config", "--get", "branch."+branch+".remote"); err == nil {
+		if r := strings.TrimSpace(out); r != "" {
+			return []string{r}
+		}
+	}
+	out, err := runGit(m.Root, "remote")
+	if err != nil {
+		return nil
+	}
+	var remotes []string
+	for _, line := range strings.Split(out, "\n") {
+		if r := strings.TrimSpace(line); r != "" {
+			remotes = append(remotes, r)
+		}
+	}
+	return remotes
+}
+
 // parseWorktreeList parses `git worktree list --porcelain` output. Records are
 // separated by blank lines; each has a `worktree <path>` line, a `HEAD <sha>`
 // line, and either `branch refs/heads/<name>` or a bare `detached` marker.

@@ -158,6 +158,7 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdWorktreeCreate())
 	reg.Register(cmdWorktreeRemove())
 	reg.Register(cmdWorktreeList())
+	reg.Register(cmdWorktreeReconcile())
 	reg.Register(cmdVault())
 	// NOT mutates(): `vp vault init` writes only a vault that does not exist
 	// yet, never the served vault, so the served vault's surface fail-stop

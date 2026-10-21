@@ -778,3 +778,346 @@ func TestParseWorktreeList(t *testing.T) {
 		t.Errorf("entries[1].Path = %q", entries[1].Path)
 	}
 }
+
+// --- Reconcile (U5) ---
+
+// addBareRemote creates a bare repo and wires it as `origin` on root, returning
+// its path. Pushing to it is a local-transport op (no network).
+func addBareRemote(t *testing.T, root string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	runGitT(t, root, "init", "--bare", bare)
+	runGitT(t, root, "remote", "add", "origin", bare)
+	return bare
+}
+
+// findEntry returns the reconcile entry for a worktree basename, or nil.
+func findEntry(rep ReconcileReport, name string) *ReconcileEntry {
+	for i := range rep.Entries {
+		if rep.Entries[i].Name == name {
+			return &rep.Entries[i]
+		}
+	}
+	return nil
+}
+
+// TestReconcileReclaimableWhenMergedAndPushed is the load-bearing gate test and
+// the case v1 got wrong (M1/N9): a merged, clean, on-convention tree is NOT
+// reclaimable until local main is on the live remote.
+func TestReconcileReclaimableWhenMergedAndPushed(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.Create("solo", ""); err != nil { // branch solo == main (merged)
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No remote yet ⇒ main is not on a remote ⇒ keep, not reclaimable.
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if rep.MainOnRemote != "unverified" && rep.MainOnRemote != "no" {
+		t.Errorf("MainOnRemote = %q, want unverified/no with no remote", rep.MainOnRemote)
+	}
+	if e := findEntry(rep, "solo"); e == nil || e.Verdict != "keep" {
+		t.Fatalf("solo before push = %+v, want keep (main not on remote)", e)
+	}
+
+	// Push main to the live remote ⇒ now reclaimable.
+	addBareRemote(t, root)
+	runGitT(t, root, "push", "origin", "main")
+	rep2, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile 2: %v", err)
+	}
+	if rep2.MainOnRemote != "yes" {
+		t.Fatalf("MainOnRemote after push = %q, want yes", rep2.MainOnRemote)
+	}
+	e := findEntry(rep2, "solo")
+	if e == nil || e.Verdict != "reclaimable" {
+		t.Fatalf("solo after push = %+v, want reclaimable", e)
+	}
+}
+
+func TestReconcileKeepsDirty(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	res, err := m.Create("dirtywt", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if werr := os.WriteFile(filepath.Join(res.Path, "scratch.txt"), []byte("x\n"), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	e := findEntry(rep, "dirtywt")
+	if e == nil || e.Verdict != "keep" || !e.Dirty {
+		t.Fatalf("dirtywt = %+v, want keep + Dirty", e)
+	}
+	if !strings.Contains(e.Reason, "uncommitted") {
+		t.Errorf("reason = %q, want uncommitted-work", e.Reason)
+	}
+}
+
+func TestReconcileKeepsUnmerged(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	res, err := m.Create("feat", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	commitInWorktree(t, res.Path) // feat diverges from main ⇒ unmerged
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	e := findEntry(rep, "feat")
+	if e == nil || e.Merged != "no" || e.Verdict != "keep" {
+		t.Fatalf("feat = %+v, want Merged=no keep", e)
+	}
+}
+
+// TestReconcileUnmergedPushedIsLivePR covers the N7 "possible live PR" reason: an
+// unmerged branch that IS on the remote.
+func TestReconcileUnmergedPushedIsLivePR(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	res, err := m.Create("pr", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	commitInWorktree(t, res.Path) // unmerged
+	addBareRemote(t, root)
+	runGitT(t, root, "push", "origin", "pr")
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	e := findEntry(rep, "pr")
+	if e == nil || e.Merged != "no" || e.Pushed != "yes" {
+		t.Fatalf("pr = %+v, want Merged=no Pushed=yes", e)
+	}
+	if !strings.Contains(e.Reason, "live PR") {
+		t.Errorf("reason = %q, want a possible-live-PR note", e.Reason)
+	}
+}
+
+// TestReconcilePushedNotStale is the anti-doctrine pin: after pushing a branch and
+// then advancing it WITHOUT pushing, `pushed` must NOT be a stale "yes".
+func TestReconcilePushedNotStale(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	res, err := m.Create("race", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	commitInWorktree(t, res.Path)
+	addBareRemote(t, root)
+	runGitT(t, root, "push", "origin", "race")
+	// Advance the branch locally with a DISTINCT commit, do NOT push.
+	if err := os.WriteFile(filepath.Join(res.Path, "more2.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, res.Path, "add", "-A")
+	runGitT(t, res.Path, "commit", "-m", "advance")
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	e := findEntry(rep, "race")
+	if e == nil {
+		t.Fatal("missing race entry")
+	}
+	if e.Pushed == "yes" {
+		t.Errorf("pushed = %q, must not be a stale yes after an unpushed advance", e.Pushed)
+	}
+}
+
+func TestReconcileFlagsOffConvention(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.Create("ok", ""); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Hand-rolled under .wt with branch != dir name.
+	runGitT(t, root, "worktree", "add", filepath.Join(root, ".wt", "x"), "-b", "other", "main")
+	// Hand-rolled OUTSIDE .wt (a sub dir of the repo).
+	runGitT(t, root, "worktree", "add", filepath.Join(root, "sub", "hand"), "-b", "hand", "main")
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	for _, name := range []string{"x", "hand"} {
+		e := findEntry(rep, name)
+		if e == nil || e.OnConvention || e.Verdict != "keep" {
+			t.Errorf("%s = %+v, want off-convention keep", name, e)
+		}
+	}
+	if e := findEntry(rep, "ok"); e == nil || !e.OnConvention {
+		t.Errorf("ok = %+v, want on-convention", e)
+	}
+}
+
+// TestReconcileDetachedKept (M3): a detached worktree must not crash and is kept.
+func TestReconcileDetachedKept(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	runGitT(t, root, "worktree", "add", "--detach", filepath.Join(root, ".wt", "det"), "main")
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	e := findEntry(rep, "det")
+	if e == nil || e.Verdict != "keep" || e.Merged != "unverified" {
+		t.Fatalf("det = %+v, want keep + Merged=unverified (no crash)", e)
+	}
+}
+
+// TestReconcileMergedFromBranchRef (M5) exercises the branch-ref ancestor check:
+// merged flips no→yes when the branch is ff-merged into main. (git protects a
+// checked-out branch ref, so a worktree's HEAD and its branch tip stay equal in
+// practice; the code reads refs/heads/<branch> deliberately regardless.)
+func TestReconcileMergedFromBranchRef(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	res, err := m.Create("land", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	commitInWorktree(t, res.Path) // land ahead of main
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if e := findEntry(rep, "land"); e == nil || e.Merged != "no" {
+		t.Fatalf("land before merge = %+v, want Merged=no", e)
+	}
+	runGitT(t, root, "merge", "--ff-only", "land") // main advances to land's tip
+	rep2, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile 2: %v", err)
+	}
+	if e := findEntry(rep2, "land"); e == nil || e.Merged != "yes" {
+		t.Fatalf("land after ff = %+v, want Merged=yes", e)
+	}
+}
+
+// TestReconcileEpicIntegrationKeepsWhileTasksRemain (M4): an epic integration tree
+// is not reclaimable while a task tree/branch remains, and the report agrees with
+// RemoveEpicIntegration's refusal.
+func TestReconcileEpicIntegrationKeepsWhileTasksRemain(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.CreateEpicIntegration("ep", ""); err != nil {
+		t.Fatalf("CreateEpicIntegration: %v", err)
+	}
+	if _, err := m.CreateEpicTask("ep", "t1", ""); err != nil {
+		t.Fatalf("CreateEpicTask: %v", err)
+	}
+	addBareRemote(t, root)
+	runGitT(t, root, "push", "origin", "main") // main on remote so merged trees could reclaim
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	integ := findEntry(rep, "ep")
+	if integ == nil || integ.Verdict != "keep" || !strings.Contains(integ.Reason, "task worktree") {
+		t.Fatalf("integration ep = %+v, want keep (tasks remain)", integ)
+	}
+	// Reconcile and RemoveEpicIntegration must agree: removal refuses now.
+	if err := m.RemoveEpicIntegration("ep", RemoveOptions{}); err == nil {
+		t.Error("RemoveEpicIntegration should refuse while ep__t1 remains (must agree with reconcile keep)")
+	}
+	if task := findEntry(rep, "ep__t1"); task == nil || task.Verdict != "reclaimable" {
+		t.Fatalf("task ep__t1 = %+v, want reclaimable even while integration remains", task)
+	}
+
+	// Remove the task ⇒ integration becomes reclaimable.
+	if err := m.RemoveEpicTask("ep", "t1", RemoveOptions{DeleteBranch: true}); err != nil {
+		t.Fatalf("RemoveEpicTask: %v", err)
+	}
+	rep2, err := m.Reconcile(ReconcileOptions{CheckRemote: true})
+	if err != nil {
+		t.Fatalf("Reconcile 2: %v", err)
+	}
+	if e := findEntry(rep2, "ep"); e == nil || e.Verdict != "reclaimable" {
+		t.Fatalf("integration ep after task removed = %+v, want reclaimable", e)
+	}
+}
+
+func TestReconcileMainAndHarnessSkipped(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.Create("solo", ""); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A harness-owned worktree under .claude/worktrees/.
+	runGitT(t, root, "worktree", "add", filepath.Join(root, ".claude", "worktrees", "agent-x"), "-b", "agent-x", "main")
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// The main checkout is reported as role main / skip.
+	sawMain, sawHarness := false, false
+	for _, e := range rep.Entries {
+		if e.Path == root {
+			sawMain = true
+			if e.Role != "main" || e.Verdict != "skip" {
+				t.Errorf("main entry = %+v, want role main / skip", e)
+			}
+		}
+		if e.Name == "agent-x" {
+			sawHarness = true
+			if e.Role != "harness" || e.Verdict != "skip" {
+				t.Errorf("harness entry = %+v, want role harness / skip", e)
+			}
+		}
+	}
+	if !sawMain || !sawHarness {
+		t.Errorf("expected both main and harness entries; main=%v harness=%v", sawMain, sawHarness)
+	}
+}
+
+// TestReconcileCheckRemoteFalseForcesKeep (N7): with CheckRemote off, a merged
+// clean tree is kept, never silently reclaimed.
+func TestReconcileCheckRemoteFalseForcesKeep(t *testing.T) {
+	isolateGit(t)
+	root := initRepo(t)
+	m := New(root)
+	if _, err := m.Create("solo", ""); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	addBareRemote(t, root)
+	runGitT(t, root, "push", "origin", "main") // main IS on the remote…
+
+	rep, err := m.Reconcile(ReconcileOptions{CheckRemote: false}) // …but we opt out
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if rep.MainOnRemote != "unverified" {
+		t.Errorf("MainOnRemote = %q, want unverified with CheckRemote=false", rep.MainOnRemote)
+	}
+	if e := findEntry(rep, "solo"); e == nil || e.Verdict == "reclaimable" {
+		t.Fatalf("solo = %+v, must NOT be reclaimable with CheckRemote=false", e)
+	}
+}
