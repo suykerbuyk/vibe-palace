@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func writeDepartureRecord(t *testing.T, vaultRoot, slug string) {
 // mustBuild builds the snapshot and fails on error.
 func mustBuild(t *testing.T) ProjectVaultSnapshot {
 	t.Helper()
-	snap, err := BuildProjectVaultSnapshot()
+	snap, err := BuildProjectVaultSnapshot(context.Background())
 	if err != nil {
 		t.Fatalf("BuildProjectVaultSnapshot: unexpected error: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestProjectVault_EmptyStartupRoot_Errors(t *testing.T) {
 func TestProjectVault_NoBindings_BuiltEmptyAllowAll(t *testing.T) {
 	t.Run("present_config_no_table", func(t *testing.T) {
 		f := newBindFixture(t) // default config: vault_path only, no table
-		snap, err := BuildProjectVaultSnapshot()
+		snap, err := BuildProjectVaultSnapshot(context.Background())
 		if err != nil {
 			t.Fatalf("build: unexpected error: %v", err)
 		}
@@ -272,7 +273,7 @@ func TestProjectVault_NoBindings_BuiltEmptyAllowAll(t *testing.T) {
 		if err := os.Remove(f.cfg); err != nil {
 			t.Fatal(err)
 		}
-		snap, err := BuildProjectVaultSnapshot()
+		snap, err := BuildProjectVaultSnapshot(context.Background())
 		if err != nil {
 			t.Fatalf("build on absent config: unexpected error: %v", err)
 		}
@@ -296,7 +297,7 @@ func TestProjectVault_BuildFailure_MalformedTable_FailsClosed(t *testing.T) {
 	f := newBindFixture(t)
 	f.writeConfig(t, "\n[project_vaults]\nqa = 3\n")
 
-	snap, err := BuildProjectVaultSnapshot()
+	snap, err := BuildProjectVaultSnapshot(context.Background())
 	if err == nil {
 		t.Fatal("malformed table: want a build error, got nil")
 	}
@@ -331,7 +332,7 @@ func TestProjectVault_BuildFailure_GlobalRootUnresolvable_FailsClosed(t *testing
 		t.Fatal(err)
 	}
 
-	snap, err := BuildProjectVaultSnapshot()
+	snap, err := BuildProjectVaultSnapshot(context.Background())
 	if err == nil {
 		t.Fatal("unresolvable global root with bindings present: want a build error, got nil")
 	}
@@ -386,5 +387,57 @@ func TestProjectVault_CwdIndependent(t *testing.T) {
 	}
 	if vA != VaultBoundElsewhere {
 		t.Fatalf("verdict = %v, want VaultBoundElsewhere", vA)
+	}
+}
+
+// A pre-cancelled context aborts the build: an unbuilt snapshot and an error
+// whose chain is context.Canceled; classifying on it fails closed.
+func TestProjectVault_BuildFailure_CancelledContext_FailsClosed(t *testing.T) {
+	f := newBindFixture(t)
+	here := makeTestVault(t, filepath.Join(f.home, "here"))
+	f.writeConfig(t, "\n[project_vaults]\nqa = \""+here+"\"\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	snap, err := BuildProjectVaultSnapshot(ctx)
+	if err == nil {
+		t.Fatal("cancelled context: want a build error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("build error chain is not context.Canceled: %v", err)
+	}
+	if snap.built {
+		t.Fatal("cancelled build returned built==true; must never be a usable snapshot")
+	}
+	verdict, _, cerr := ClassifyProjectVault("qa", here, snap)
+	if cerr == nil {
+		t.Fatal("classify on an unbuilt (cancelled) snapshot: want an error")
+	}
+	if verdict != VaultVerdictInvalid {
+		t.Fatalf("verdict = %v, want VaultVerdictInvalid (fail closed)", verdict)
+	}
+}
+
+// The context.Background() path is unaffected by the new signature: a normal
+// build succeeds and classifies as before.
+func TestProjectVault_BackgroundContext_Unaffected(t *testing.T) {
+	f := newBindFixture(t)
+	here := makeTestVault(t, filepath.Join(f.home, "here"))
+	f.writeConfig(t, "\n[project_vaults]\nqa = \""+here+"\"\n")
+
+	snap, err := BuildProjectVaultSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("background build: unexpected error: %v", err)
+	}
+	if !snap.built {
+		t.Fatal("background build returned built==false")
+	}
+	verdict, _, err := ClassifyProjectVault("qa", here, snap)
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if verdict != VaultBoundHere {
+		t.Fatalf("verdict = %v, want VaultBoundHere", verdict)
 	}
 }

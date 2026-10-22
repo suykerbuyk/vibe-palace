@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -107,7 +108,18 @@ type ProjectVaultSnapshot struct {
 // succeeded, so a whole-table malformed config is largely unreachable here (the
 // server would have failed to start). This path's real job is robustness to a
 // mid-startup config change.
-func BuildProjectVaultSnapshot() (ProjectVaultSnapshot, error) {
+//
+// ctx is honoured for cancellation/timeout. Today the build does only local
+// reads (config, vault manifests, departure records, bounded git), so ctx just
+// guards those; it is in the signature for the forthcoming network-backed
+// resolver (the vp client/server split, where the vault is a network resource),
+// so that backend gains cancellation without a later signature churn. A
+// cancelled or expired ctx returns an UNBUILT snapshot and the error — fail
+// closed, consistent with every other build failure.
+func BuildProjectVaultSnapshot(ctx context.Context) (ProjectVaultSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return ProjectVaultSnapshot{}, fmt.Errorf("build project-vault snapshot: %w", err)
+	}
 	bindings, cfgPath, err := readProjectVaults()
 	if err != nil {
 		return ProjectVaultSnapshot{}, fmt.Errorf("build project-vault snapshot: %w", err)
@@ -128,6 +140,11 @@ func BuildProjectVaultSnapshot() (ProjectVaultSnapshot, error) {
 
 	entries := make(map[string]snapEntry, len(bindings))
 	for slug, target := range bindings {
+		// A cancel aborts a long multi-slug build (the path a network-backed
+		// resolver will care about); fail closed with the same unbuilt+err.
+		if err := ctx.Err(); err != nil {
+			return ProjectVaultSnapshot{}, fmt.Errorf("build project-vault snapshot: %w", err)
+		}
 		root, berr := boundVaultRoot(cfgPath, slug, target)
 		if berr != nil {
 			entries[slug] = snapEntry{broken: true, reason: berr.Error()}
