@@ -210,6 +210,18 @@ func (h *TestHarness) RecordedLaunches() []RecordedLaunch {
 func (h *TestHarness) RegisterAllTools(t *testing.T) {
 	t.Helper()
 	tools.RegisterAll(h.Server.Registry(), h.Resolver, h.Vault, h.Engine, tools.WithConfig(h.Config), tools.WithLaunch(h.Launch))
+	// U2: install a BUILT [project_vaults] routing snapshot so project-keyed
+	// mutating tools are not fail-closed on the zero/unbuilt snapshot the
+	// dispatch gate would otherwise refuse. In the hermetic env these tests run
+	// in, a project lives in the harness vault with no cross-vault
+	// [project_vaults] binding, so it classifies as VaultUnbound / VaultBoundHere
+	// (allow) — matching pre-U2 behavior. A test that deliberately binds a
+	// project to another vault builds and installs its own snapshot.
+	snap, err := storage.BuildProjectVaultSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("harness: build project-vault snapshot: %v", err)
+	}
+	h.Server.SetProjectVaultSnapshot(snap)
 }
 
 // InitMCP sends the initialize + notifications/initialized handshake.

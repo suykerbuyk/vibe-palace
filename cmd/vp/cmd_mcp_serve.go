@@ -162,6 +162,10 @@ func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) ht
 	// longer-lived than the stdio one, not shorter, and its clients bring no
 	// vault of their own (httpContextFunc injects the server's).
 	srv.WatchVaultBinding(stack.launchCwd)
+	// Same stack, same startup snapshot: install the one bootstrap built, or
+	// this second server's registry keeps a zero (unbuilt) snapshot and
+	// fail-closes every project-keyed mutating write.
+	srv.SetProjectVaultSnapshot(stack.snap)
 	// Every transport now gets the SAME payload. This instance used to default
 	// vp_bootstrap_context to a 4,000-byte resume prefix on the claim that "the
 	// streamable-HTTP channel truncates large inline tool results" — never

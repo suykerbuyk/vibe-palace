@@ -14,6 +14,8 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
 // captureLogs installs a debug-level slog handler that writes to a buffer
@@ -32,7 +34,19 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 func testRegistry(t *testing.T) *Registry {
 	t.Helper()
 	srv := server.NewMCPServer("test", "0.1.0", server.WithToolCapabilities(true))
-	return NewRegistry(srv)
+	reg := NewRegistry(srv)
+	// U2: install a BUILT (empty) [project_vaults] snapshot so project-keyed
+	// mutating dispatch is not fail-closed on the zero/unbuilt snapshot the gate
+	// would otherwise refuse. The hermetic env has no [project_vaults] table, so
+	// this is built-empty: every slug classifies as VaultUnbound (allow),
+	// matching pre-U2 behavior. Tests that exercise the cross-vault refusal
+	// install their own snapshot instead.
+	snap, err := storage.BuildProjectVaultSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("testRegistry: build empty project-vault snapshot: %v", err)
+	}
+	reg.SetProjectVaultSnapshot(snap)
+	return reg
 }
 
 func echoHandler(_ context.Context, params json.RawMessage) (any, error) {

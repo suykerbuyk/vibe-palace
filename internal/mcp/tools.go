@@ -146,6 +146,14 @@ type Registry struct {
 	// a Registry whose vault was injected directly never had a launch
 	// directory, so there is nothing to compare against.
 	launchCwd string
+	// snap is this server's startup snapshot of the host's [project_vaults]
+	// routing table (U1's resolver seam), set by SetProjectVaultSnapshot. The
+	// cross-vault gate (refuseCrossVaultProject) consults it to refuse a
+	// mutating write for a project bound to a vault other than the startup one.
+	// The zero value is UNBUILT and classifies every slug as VaultVerdictInvalid
+	// (fail closed), so a Registry that was never handed a built snapshot
+	// refuses project-keyed mutating writes rather than misrouting them.
+	snap storage.ProjectVaultSnapshot
 	// staleBinaryTold latches the stale-image advisory so it fires ONCE per
 	// server process rather than once per mutating call. A warning on every
 	// write is the ignorable warning this advisory exists to avoid being.
@@ -172,6 +180,18 @@ func (r *Registry) WatchVaultBinding(launchCwd string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.launchCwd = launchCwd
+}
+
+// SetProjectVaultSnapshot installs the startup [project_vaults] routing
+// snapshot the cross-vault gate consults. Called once at startup by the entry
+// points that build it (cmd/vp bootstrap, and `vp mcp serve` from the same
+// stack); mirrors WatchVaultBinding. Installing an unbuilt snapshot (a build
+// failure) is intentional — the gate then fails project-keyed mutating writes
+// closed, never allow-all.
+func (r *Registry) SetProjectVaultSnapshot(snap storage.ProjectVaultSnapshot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snap = snap
 }
 
 // staleBinding reports drift between the vault bound on ctx and what this
@@ -419,6 +439,12 @@ func (r *Registry) gateIfMutating(ctx context.Context, rt *registeredTool, param
 	if err := refuseDepartedProject(root, params); err != nil {
 		return "", err
 	}
+	r.mu.RLock()
+	snap := r.snap
+	r.mu.RUnlock()
+	if err := refuseCrossVaultProject(root, snap, params); err != nil {
+		return "", err
+	}
 	// The write is going to happen. Advise, do not refuse.
 	probe := r.selfImageReplaced
 	if probe == nil {
@@ -481,6 +507,94 @@ func refuseDepartedProject(root string, params json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// refuseCrossVaultProject refuses a mutating call whose `project` (or
+// `to_project`) resolves, through the startup [project_vaults] snapshot, to a
+// vault OTHER than the one this server bound at startup (startupRoot) — the
+// cross-vault write that U1's seam exists to catch. It is the second of the two
+// fail-safe surfaces (U2); the write funnel (U3) is the backstop beneath it.
+//
+// It consults the in-memory snapshot ONLY (storage.ClassifyProjectVault reads
+// no config), so it adds no I/O to the mutating hot path. It mirrors
+// refuseDepartedProject exactly: it keys on the parameter NAMES `project` and
+// `to_project`, classifies each non-empty slug, and refuses on the first that
+// is not clearly allowed. A move is refused if EITHER side is non-allow (M1).
+//
+// Allowed verdicts: VaultBoundHere (the project's vault IS this server's) and
+// VaultUnbound (no [project_vaults] entry — the fail-safe's known coverage
+// limit). Refused: VaultBoundElsewhere (bound to another vault),
+// VaultBindingBroken (a known binding that will not resolve), and
+// VaultVerdictInvalid (an UNBUILT snapshot — fail closed).
+//
+// 🔴 A mutating tool naming NEITHER `project` NOR `to_project` is allowed, even
+// under an unbuilt snapshot: whole-vault tools (vp_vault_sync/commit/tidy) and
+// vp_config_bind (which names its target `slug`, editing the binding registry
+// itself) cannot be misrouted by a [project_vaults] snapshot and must stay
+// invisible here — exactly as they are to refuseDepartedProject. Do NOT refuse
+// on an absent project: that would brick the vault git tools AND config_bind,
+// the very tools that repair a bad binding.
+//
+// startupRoot == "" cannot reach a write (surface.EnforceFailStop refuses an
+// empty root first); it returns nil here defensively. Unparseable params are
+// schema-validated upstream; a cross-vault slug is a CALLER fault, named as one.
+func refuseCrossVaultProject(startupRoot string, snap storage.ProjectVaultSnapshot, params json.RawMessage) error {
+	if startupRoot == "" {
+		return nil
+	}
+	var p struct {
+		Project   string `json:"project"`
+		ToProject string `json:"to_project"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil
+	}
+	for _, slug := range []string{p.Project, p.ToProject} {
+		if slug == "" {
+			continue
+		}
+		verdict, info, _ := storage.ClassifyProjectVault(slug, startupRoot, snap)
+		switch verdict {
+		case storage.VaultBoundHere, storage.VaultUnbound:
+			continue
+		default:
+			return apperr.Caller(newCrossVaultRefusal(slug, verdict, info, startupRoot))
+		}
+	}
+	return nil
+}
+
+// crossVaultRefusal is the typed refusal of a project-keyed mutating write whose
+// project belongs to a different vault than this server's startup vault, or
+// whose routing snapshot is broken/unbuilt. It is NOT storage.StaleBindingError:
+// that error's remedy is "restart the server because its launch directory now
+// resolves elsewhere", the wrong fix here — a cross-vault write is fixed by
+// running under the right project's server or repairing the binding.
+type crossVaultRefusal struct {
+	project     string
+	verdict     storage.ProjectVaultVerdict
+	info        string // the bound vault root (Elsewhere) or the broken reason (Broken)
+	startupRoot string
+}
+
+func newCrossVaultRefusal(project string, verdict storage.ProjectVaultVerdict, info, startupRoot string) *crossVaultRefusal {
+	return &crossVaultRefusal{project: project, verdict: verdict, info: info, startupRoot: startupRoot}
+}
+
+func (e *crossVaultRefusal) Error() string {
+	switch e.verdict {
+	case storage.VaultBoundElsewhere:
+		return fmt.Sprintf("project %q is bound to vault %s on this host, but this MCP server serves %s; "+
+			"refusing to write %q's history into the wrong vault. Run under the server bound to %s, or fix the "+
+			"[project_vaults] binding", e.project, e.info, e.startupRoot, e.project, e.info)
+	case storage.VaultBindingBroken:
+		return fmt.Sprintf("project %q has a [project_vaults] binding that will not resolve (%s); "+
+			"refusing this write (fail-closed). Fix the binding, then reload the MCP server", e.project, e.info)
+	default: // VaultVerdictInvalid: the server could not build its routing snapshot
+		return fmt.Sprintf("this server could not build its [project_vaults] routing snapshot at startup; "+
+			"refusing mutating writes to project %q (fail-closed) until the config is fixed and the host "+
+			"reloads the MCP server", e.project)
+	}
 }
 
 // logStaleBinaryAdvisory records the advisory at WARN with fault="operational".

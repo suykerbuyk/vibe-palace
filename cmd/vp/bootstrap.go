@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -49,6 +50,11 @@ type serverStack struct {
 	// stale-binding gate against the same directory rather than a fresh Getwd
 	// that only happens to match.
 	launchCwd string
+	// snap is the startup snapshot of the host's [project_vaults] routing table,
+	// built once here. Carried on the stack so the second server `vp mcp serve`
+	// builds installs the SAME snapshot (via SetProjectVaultSnapshot) rather than
+	// a fresh, unbuilt one that would fail-close every project-keyed write.
+	snap storage.ProjectVaultSnapshot
 }
 
 // bootstrap opens the vault and initializes the full MCP server stack.
@@ -110,6 +116,20 @@ func bootstrap() (*serverStack, error) {
 	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)
 	srv.WatchVaultBinding(cwd)
+
+	// Build the [project_vaults] routing snapshot ONCE, here, where the config
+	// is readable by construction (the vault just resolved through it).
+	// context.Background(): bootstrap takes no signal ctx, and threading one
+	// would be wrong — on `vp mcp serve` no request ctx exists until after this
+	// runs. An unbuilt snapshot (a mid-startup config change) is installed as-is
+	// and the mutating gate fails project-keyed writes closed; reads still work.
+	snap, serr := storage.BuildProjectVaultSnapshot(context.Background())
+	if serr != nil {
+		slog.Warn("mcp: project-vault routing snapshot unbuilt; project-keyed mutating writes will fail closed",
+			"op", "mcp.snapshot", "fault", "operational", "err", serr)
+	}
+	srv.SetProjectVaultSnapshot(snap)
+
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.
 	tools.RegisterAll(srv.Registry(), resolver, v, eng, tools.WithConfig(cfg))
 	tools.RegisterResources(srv, resolver, v)
@@ -122,6 +142,7 @@ func bootstrap() (*serverStack, error) {
 		resolver:  resolver,
 		srv:       srv,
 		launchCwd: cwd,
+		snap:      snap,
 	}, nil
 }
 

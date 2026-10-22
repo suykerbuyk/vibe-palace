@@ -115,6 +115,15 @@ func (s *Server) WatchVaultBinding(launchCwd string) {
 	s.registry.WatchVaultBinding(launchCwd)
 }
 
+// SetProjectVaultSnapshot installs the startup [project_vaults] routing
+// snapshot on this server's registry, where the cross-vault mutating gate
+// reads it. Both transports call it: stdio via cmd/vp bootstrap, and
+// `vp mcp serve` from the same stack. A server never handed one keeps the zero
+// (unbuilt) snapshot, which fails project-keyed mutating writes closed.
+func (s *Server) SetProjectVaultSnapshot(snap storage.ProjectVaultSnapshot) {
+	s.registry.SetProjectVaultSnapshot(snap)
+}
+
 // Listen starts the MCP server on the provided reader/writer pair. It blocks
 // until the reader is closed or ctx is cancelled.
 func (s *Server) Listen(ctx context.Context, r io.Reader, w io.Writer) error {
