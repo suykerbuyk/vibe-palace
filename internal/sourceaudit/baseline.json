@@ -317,6 +317,14 @@
       "reason": "TEST-ONLY BY CONSTRUCTION, the shape of sourceaudit.RunModule below: this rule RUNS ONLY WITHOUT -short (decision-chunks-in-the-host-local-store, Scope 5), so it is deliberately NOT wired into Run() — which TestSourceAuditGate executes under -short — and its only caller is its own gate test, TestDecisionTrackedWriterReachIsClean (skipUnlessFullSuite). Wiring it into Run() would make it run under `make test`'s -short pass, the very thing the plan keeps it out of. It is a syntactic reachability check over buildCallGraph: a note-time/ingest/import root that reaches a tracked-tree writer. ADR-006 verdict: DECLARE + ENFORCE — declared here, enforced by the baseline ratchet."
     },
     {
+      "id": "uninvoked storage.BuildProjectVaultSnapshot",
+      "reason": "BUILT AHEAD OF ITS CALLER, owned by the epic mcp-vault-routing-per-project. U1 (task mcp-vault-routing-u1-project-vault-resolver-seam) delivers the startup-snapshot resolver seam as a FOUNDATION that lands and merges before its first consumer: U2 wires BuildProjectVaultSnapshot into bootstrap and installs the snapshot on the MCP guard. U1's scope fence deliberately wires into nothing. This entry is TEMPORARY: U2 — the unit that adds the first non-test caller — must delete it, and the gate will then report it as a fixed finding if it is left behind."
+    },
+    {
+      "id": "uninvoked storage.ClassifyProjectVault",
+      "reason": "BUILT AHEAD OF ITS CALLER, owned by the epic mcp-vault-routing-per-project. U1 (task mcp-vault-routing-u1-project-vault-resolver-seam) delivers this classify function as part of the foundation seam that lands before its consumers: U2 (the MCP dispatch refusal) and U3 (the write-funnel backstop) call it; U1 wires into nothing by design. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
+    },
+    {
       "id": "uninvoked storage.RebindCheckout",
       "reason": "BUILT AHEAD OF ITS CALLER, by Chair ruling, owned by the epic project-relocation-rename-and-vault-split. F1 (task checkout-rebind-helper-and-shared-project-inventory) delivers the checkout rebind helper and its tests with NO front end, on the ruling that a front end is a separate decision: its callers are the thin host-side CLI `vp project rebind` (accepted in principle, landing with split-quantum-projects-into-their-own-vault or its own small unit, because the checkout is host-side state an ADR-010 remote server cannot reach) and rename-core-fresh-target-with-digest-bind. This entry is TEMPORARY: the unit that adds the first non-test caller must delete it, and the gate will then report it as a fixed finding if it is left behind."
     },
