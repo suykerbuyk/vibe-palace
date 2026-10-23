@@ -64,9 +64,11 @@ type fakeModel struct {
 	closedCount int
 }
 
-func (f *fakeModel) Embed(context.Context, string) ([]float32, error)          { return []float32{1}, nil }
-func (f *fakeModel) EmbedBatch(_ context.Context, t []string) ([][]float32, error) { return make([][]float32, len(t)), nil }
-func (f *fakeModel) Dimensions() (int, error)                                  { return 384, nil }
+func (f *fakeModel) Embed(context.Context, string) ([]float32, error) { return []float32{1}, nil }
+func (f *fakeModel) EmbedBatch(_ context.Context, t []string) ([][]float32, error) {
+	return make([][]float32, len(t)), nil
+}
+func (f *fakeModel) Dimensions() (int, error) { return 384, nil }
 func (f *fakeModel) Close() error {
 	f.mu.Lock()
 	f.closedCount++

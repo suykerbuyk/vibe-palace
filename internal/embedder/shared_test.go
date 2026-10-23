@@ -167,10 +167,10 @@ func TestSharedT2aKeyDistinctness(t *testing.T) {
 	}
 	keys := []ModelKey{
 		{Backend: "go", Model: "m", MaxSeq: 256},
-		{Backend: "ort", Model: "m", MaxSeq: 256}, // different backend
+		{Backend: "ort", Model: "m", MaxSeq: 256},    // different backend
 		{Backend: "go", Model: "other", MaxSeq: 256}, // different model
-		{Backend: "go", Model: "m", MaxSeq: 512}, // different maxseq
-		{Backend: "go", Model: "m", MaxSeq: 256}, // DUPLICATE of keys[0]
+		{Backend: "go", Model: "m", MaxSeq: 512},     // different maxseq
+		{Backend: "go", Model: "m", MaxSeq: 256},     // DUPLICATE of keys[0]
 	}
 	for _, k := range keys {
 		h, err := c.Acquire(bg(), k, mk(k.Backend, k.Model, k.MaxSeq))
