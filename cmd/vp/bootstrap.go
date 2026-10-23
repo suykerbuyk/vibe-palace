@@ -183,8 +183,18 @@ func bootstrap() (*serverStack, error) {
 	// path is now ctx-first. U5b swaps this body for the routing resolver
 	// (classify the request's project -> StackFor) without touching dispatch or
 	// any handler.
-	srv.Registry().SetStackResolver(func(context.Context, json.RawMessage) (*vaultstack.VaultStack, error) {
-		return stack, nil
+	srv.Registry().SetStackResolver(func(ctx context.Context, params json.RawMessage) (*vaultstack.VaultStack, error) {
+		root, rerr := storage.RouteForRequest(params, stack.Root, snap)
+		if rerr != nil || root == stack.Root {
+			// Serve the startup stack: a read stays open; an unroutable WRITE
+			// (broken/unbuilt binding or a cross-vault move) is refused by the
+			// mutating gate, which consults the SAME RouteForRequest.
+			return stack, nil
+		}
+		// A BoundElsewhere project: route to its bound vault. StackFor's error is
+		// RETURNED (never (nil, nil) — installStack reads a nil stack as "leave
+		// ctx unchanged", a silent fallback to startup this must not do).
+		return reg.StackFor(ctx, root)
 	})
 
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.

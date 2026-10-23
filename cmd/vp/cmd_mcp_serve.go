@@ -170,8 +170,20 @@ func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) ht
 	srv.SetProjectVaultSnapshot(stack.snap)
 	// U5a: same per-request stack resolver as the stdio server — install the one
 	// startup stack bootstrap built. U5b swaps this body for the routing resolver.
-	srv.Registry().SetStackResolver(func(context.Context, json.RawMessage) (*vaultstack.VaultStack, error) {
-		return stack.startupStack, nil
+	srv.Registry().SetStackResolver(func(ctx context.Context, params json.RawMessage) (*vaultstack.VaultStack, error) {
+		if stack.reg == nil || stack.startupStack == nil {
+			// Not a routing-wired stack (a legacy/test serverStack): install
+			// nothing, so handlers fall back to their closed-over startup vault,
+			// exactly as before U5b. This is NOT a StackFor build-failure swallow
+			// (StackFor is never called here); production always wires reg +
+			// startupStack via bootstrap, so production always routes.
+			return nil, nil
+		}
+		root, rerr := storage.RouteForRequest(params, stack.startupStack.Root, stack.snap)
+		if rerr != nil || root == stack.startupStack.Root {
+			return stack.startupStack, nil
+		}
+		return stack.reg.StackFor(ctx, root)
 	})
 	// Every transport now gets the SAME payload. This instance used to default
 	// vp_bootstrap_context to a 4,000-byte resume prefix on the claim that "the

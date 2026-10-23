@@ -23,6 +23,8 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultstack"
 )
 
 func snapWrite(t *testing.T, p, body string) {
@@ -77,13 +79,14 @@ func callToolText(t *testing.T, handler http.Handler, token, name string, args m
 	return res.IsError, b.String()
 }
 
-// TestMCPServeInstallsProjectVaultSnapshot proves `vp mcp serve`'s handler
-// installs the stack's [project_vaults] snapshot on its (second) server's
-// registry: a mutating tools/call for a project bound to ANOTHER vault is
-// refused with the cross-vault message. Were the snapshot not installed, the
-// gate would instead report an unbuilt snapshot — so asserting the "wrong
-// vault" + bound-root message pins the specific built snapshot to the gate.
-func TestMCPServeInstallsProjectVaultSnapshot(t *testing.T) {
+// TestMCPServeRoutesProjectKeyedWriteToBoundVault proves `vp mcp serve`'s
+// handler ROUTES (U5b): a mutating tools/call for `qa`, bound to vault B, is NOT
+// refused — it is served against B. The serve stack carries a real vault-stack
+// registry whose BuildFunc returns a stack over the requested root; the snapshot
+// drives the route (qa→B). Proof of landing: the write succeeds AND vault A — the
+// startup vault — never gains a `qa` tree; a resolver that failed to route would
+// write A (or fail, qa not existing in A).
+func TestMCPServeRoutesProjectKeyedWriteToBoundVault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -92,6 +95,7 @@ func TestMCPServeInstallsProjectVaultSnapshot(t *testing.T) {
 	manifest := fmt.Sprintf("format = %d\n", surface.RequiredDataFormat)
 	snapWrite(t, filepath.Join(vaultA, ".vibe-palace", "vault.toml"), manifest)
 	snapWrite(t, filepath.Join(vaultB, ".vibe-palace", "vault.toml"), manifest)
+	testutil.InitProject(t, vaultB, "qa") // qa exists only in B
 	cfg, err := storage.VaultConfigFilePath()
 	if err != nil {
 		t.Fatal(err)
@@ -103,29 +107,51 @@ func TestMCPServeInstallsProjectVaultSnapshot(t *testing.T) {
 		t.Fatalf("build snapshot: %v", err)
 	}
 
-	v := storage.NewVault(vaultA)
-	cfgVal := storage.Config{SearchDefaultLimit: 10}
-	emb := embedder.NewMock(384)
-	eng := search.NewEngine(emb, v, cfgVal)
-	t.Cleanup(func() { eng.Close() })
-	stack := &serverStack{
-		vault:    v,
-		cfg:      cfgVal,
-		eng:      eng,
-		resolver: vpctx.NewResolver(v.Root),
-		snap:     snap,
+	cfgVal := storage.Config{SearchDefaultLimit: 10, EmbedderModel: "test-model"}
+	reg := vaultstack.NewRegistry(routeTestBuildFunc(t, cfgVal, ""), embedder.NewSharedModelCache())
+	startup, err := reg.StackFor(context.Background(), vaultA)
+	if err != nil {
+		t.Fatalf("build startup stack: %v", err)
 	}
+	stack := &serverStack{
+		vault:        startup.Vault,
+		cfg:          cfgVal,
+		eng:          startup.Engine,
+		resolver:     startup.Resolver,
+		snap:         snap,
+		reg:          reg,
+		startupStack: startup,
+	}
+	t.Cleanup(func() { reg.Close() })
 
 	handler := buildMCPServeHandler(stack, mcpServeTestToken, true /* allowWrites */)
 	isErr, text := callToolText(t, handler, mcpServeTestToken, "vp_update_resume", map[string]any{
 		"project":         "qa",
-		"content":         "x",
+		"content":         "routed resume body",
 		"expected_sha256": "",
 	})
-	if !isErr {
-		t.Fatalf("expected a cross-vault refusal error result, got success: %s", text)
+	if isErr {
+		t.Fatalf("a routed BoundElsewhere write must succeed, got error: %s", text)
 	}
-	if !strings.Contains(text, "wrong vault") || !strings.Contains(text, vaultB) {
-		t.Fatalf("serve handler did not install the cross-vault snapshot; result was: %s", text)
+	if _, statErr := os.Stat(filepath.Join(vaultA, "Projects", "qa")); statErr == nil {
+		t.Fatal("the write landed in the STARTUP vault A (Projects/qa exists there) — it was not routed to B")
+	}
+	if _, statErr := os.Stat(filepath.Join(vaultB, "Projects", "qa", "resume.md")); statErr != nil {
+		t.Fatalf("the routed resume did not land in vault B: %v", statErr)
+	}
+}
+
+// routeTestBuildFunc returns a vaultstack.BuildFunc that builds a stack over any
+// requested root with a mock-embedder engine (no ONNX). If failRoot is non-empty
+// and matches, it returns an error — to exercise the fail-closed StackFor path.
+func routeTestBuildFunc(t *testing.T, cfg storage.Config, failRoot string) vaultstack.BuildFunc {
+	t.Helper()
+	return func(ctx context.Context, root string) (*vaultstack.VaultStack, error) {
+		if failRoot != "" && root == failRoot {
+			return nil, fmt.Errorf("test: refusing to build a stack for %q", root)
+		}
+		v := storage.NewVault(root)
+		eng := search.NewEngine(embedder.NewMock(384), v, cfg)
+		return vaultstack.NewVaultStack(root, v, cfg, eng, vpctx.NewResolver(root), nil), nil
 	}
 }

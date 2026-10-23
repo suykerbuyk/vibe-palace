@@ -66,21 +66,24 @@ func cvRun(t *testing.T, startupRoot string, snap storage.ProjectVaultSnapshot, 
 	return ran, err
 }
 
-// A project bound to a vault OTHER than the startup vault: a mutating write is
-// refused and the handler never runs.
-func TestCrossVault_BoundElsewhere_Refuses(t *testing.T) {
+// U5b: a project bound to a vault OTHER than the startup vault is ROUTED by the
+// resolver, so the GATE no longer refuses a single BoundElsewhere slug — it
+// resolves to ONE vault and is servable. (This harness installs no resolver, so
+// the handler runs against the startup vault; the actual landing-in-R is proven
+// by the routing integration tests in internal/tools.) The gate refuses only an
+// UNROUTABLE request (broken/unbuilt binding, or a cross-vault move), covered
+// below. A later edit that re-adds a BoundElsewhere refusal in the gate fails
+// this test.
+func TestCrossVault_BoundElsewhere_GateAllows(t *testing.T) {
 	vaultA, vaultB, cfg := cvHost(t)
 	snap := cvSnap(t, cfg, "vault_path = \""+vaultA+"\"\n\n[project_vaults]\nqa = \""+vaultB+"\"\n")
 
 	ran, err := cvRun(t, vaultA, snap, `{"project":"qa"}`)
-	if err == nil {
-		t.Fatal("a cross-vault mutating write must be refused")
+	if err != nil {
+		t.Fatalf("a single BoundElsewhere slug resolves to one vault and must not be refused by the gate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "wrong vault") || !strings.Contains(err.Error(), vaultB) {
-		t.Fatalf("refusal must name the wrong vault and the bound root: %v", err)
-	}
-	if ran {
-		t.Fatal("the handler ran despite the cross-vault refusal")
+	if !ran {
+		t.Fatal("the handler should have run for a routable BoundElsewhere project")
 	}
 }
 
@@ -161,16 +164,25 @@ func TestCrossVault_UnbuiltSnapshot_NoProjectToolAllowed(t *testing.T) {
 	}
 }
 
-// M1: a move whose to_project resolves to the wrong vault is refused.
-func TestCrossVault_ToProjectMove_Refuses(t *testing.T) {
+// U5b: a cross-vault MOVE — two slugs that resolve to DIFFERENT vaults — cannot
+// be served by one stack and is REFUSED (RouteTwoRoots), naming both roots. Here
+// `local` is unbound (→ startup vault A) and `qa` is bound to B, so the request
+// spans A and B. This is a documented deferral (a real two-vault move handler is
+// future work); the refusal preserves U2's loud failure. A single to_project
+// bound elsewhere is NOT this case (one root → routed), so the test uses two.
+func TestCrossVault_TwoRoots_Refuses(t *testing.T) {
 	vaultA, vaultB, cfg := cvHost(t)
 	snap := cvSnap(t, cfg, "vault_path = \""+vaultA+"\"\n\n[project_vaults]\nqa = \""+vaultB+"\"\n")
 
-	ran, err := cvRun(t, vaultA, snap, `{"to_project":"qa"}`)
+	ran, err := cvRun(t, vaultA, snap, `{"project":"local","to_project":"qa"}`)
 	if err == nil {
-		t.Fatal("a move into a wrong-vault to_project must be refused")
+		t.Fatal("a cross-vault move (two distinct roots) must be refused")
+	}
+	if !strings.Contains(err.Error(), "cross-vault move") ||
+		!strings.Contains(err.Error(), vaultA) || !strings.Contains(err.Error(), vaultB) {
+		t.Fatalf("refusal must name the cross-vault move and BOTH roots: %v", err)
 	}
 	if ran {
-		t.Fatal("the handler ran despite the cross-vault to_project refusal")
+		t.Fatal("the handler ran despite the cross-vault move refusal")
 	}
 }
