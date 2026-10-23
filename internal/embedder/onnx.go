@@ -5,6 +5,7 @@ package embedder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,6 +93,15 @@ var modelDownloadTimeout = 10 * time.Minute
 // access.
 var downloadModel = hugot.DownloadModel
 
+// ErrEmbedderClosed is returned by Embed, EmbedBatch, and Dimensions once the
+// embedder has been Closed. It makes close-vs-use fail CLOSED: a shared model
+// (the U4 shared-model cache lends ONE *ONNXEmbedder to N engines) whose last
+// handle Closes must not leave a live *pipeline over a destroyed gomlx executor
+// for another caller to run — every method observes this closed state under
+// e.mu and returns this error instead of touching RunPipeline. Callers can test
+// for it with errors.Is.
+var ErrEmbedderClosed = errors.New("embedder: closed")
+
 // ONNXEmbedder implements Embedder using a hugot ONNX backend. Which backend is
 // the pure-Go hugot session (the default, BackendGo) or the native ONNX-Runtime
 // session (BackendORT, only on an -tags ORT build) is chosen at construction;
@@ -106,6 +116,15 @@ type ONNXEmbedder struct {
 	// tokenizer is the Go-path truncation wrapper; nil on the ORT/rust path,
 	// where truncation lives in the rust tokenizer itself (see truncate_ort.go).
 	tokenizer *truncatingTokenizer
+
+	// closed is set once, under mu, by Close. Embed/EmbedBatch/Dimensions check
+	// it under the SAME mu before touching the pipeline, so a Close that races a
+	// use either runs fully before the use (the use then returns
+	// ErrEmbedderClosed) or after it (the in-flight call completes under mu, and
+	// the NEXT call returns ErrEmbedderClosed). This is the precondition for
+	// sharing one model across engines (U4 plan §2.0).
+	closed    bool
+	closeOnce sync.Once
 }
 
 // modelCacheLockPath derives the absolute path NewONNX locks against before
@@ -418,6 +437,13 @@ func (e *ONNXEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Closed check UNDER e.mu (the ctx.Err() fast-path above stays before the
+	// lock; it does not touch the pipeline). A Close holding e.mu cannot
+	// interleave with the RunPipeline below.
+	if e.closed || e.pipeline == nil {
+		return nil, ErrEmbedderClosed
+	}
+
 	result, err := e.pipeline.RunPipeline([]string{text})
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
@@ -445,6 +471,14 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 		end := min(start+e.batchSz, len(texts))
 		chunk := texts[start:end]
 		e.mu.Lock()
+		// Closed check UNDER e.mu, re-checked each chunk: e.mu is released
+		// between chunks (so a second vault's Embed can interleave), which means
+		// a Close can land between chunks — the next chunk must observe it and
+		// fail closed rather than run on a destroyed executor.
+		if e.closed || e.pipeline == nil {
+			e.mu.Unlock()
+			return nil, ErrEmbedderClosed
+		}
 		out, err := e.pipeline.RunPipeline(chunk)
 		e.mu.Unlock()
 		if err != nil {
@@ -456,17 +490,41 @@ func (e *ONNXEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 	return result, nil
 }
 
-// Dimensions returns the embedding dimensionality (384 for all-MiniLM-L6-v2).
-// The model is already loaded, so this never fails.
-func (e *ONNXEmbedder) Dimensions() (int, error) { return e.dims, nil }
-
-// Close releases the hugot session and pipeline resources.
-func (e *ONNXEmbedder) Close() error {
+// Dimensions returns the embedding dimensionality (384 for all-MiniLM-L6-v2),
+// or ErrEmbedderClosed if the embedder has been Closed.
+//
+// The lock here is DELIBERATE and must not be "optimized" away: Dimensions is
+// called off the Embed path (Engine.tryWitnessedLoad, WarmEmbedder, and other
+// engine sites) with no embedder lock held, so a shared model's Close could
+// otherwise destroy the session concurrently with a lock-free dims read. The
+// closed check MUST be taken under e.mu — the SAME mutex Close holds — never
+// before it, or a Close could slip between a pre-lock check and the return.
+func (e *ONNXEmbedder) Dimensions() (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.session != nil {
-		e.session.Destroy()
-		e.session = nil
+	if e.closed || e.pipeline == nil {
+		return 0, ErrEmbedderClosed
 	}
+	return e.dims, nil
+}
+
+// Close releases the hugot session and pipeline resources. It is idempotent: a
+// second Close is a no-op (sync.Once), so it never runs a second
+// session.Destroy. Under e.mu it marks the embedder closed and nils BOTH the
+// session and the pipeline, so a later Embed/EmbedBatch/Dimensions observes the
+// closed state and returns ErrEmbedderClosed instead of calling RunPipeline on a
+// destroyed gomlx executor (use-after-finalize). This is the precondition for
+// sharing one *ONNXEmbedder across N engines (U4 plan §2.0).
+func (e *ONNXEmbedder) Close() error {
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.closed = true
+		if e.session != nil {
+			e.session.Destroy()
+			e.session = nil
+		}
+		e.pipeline = nil
+	})
 	return nil
 }
