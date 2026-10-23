@@ -109,10 +109,17 @@ var ErrEmbedderClosed = errors.New("embedder: closed")
 type ONNXEmbedder struct {
 	session  *hugot.Session
 	pipeline *pipelines.FeatureExtractionPipeline
-	mu       sync.Mutex
-	dims     int
-	batchSz  int
-	backend  string
+	// mu serializes inference. When one model is shared across N routed engines
+	// (SharedModelCache, the per-project routing seam), ALL N engines funnel their
+	// Embed/EmbedBatch through this single mutex — the conservative throughput
+	// posture (U6): correct, and adequate at the measured N (~2–4 vaults per
+	// `vp mcp`). Bounded cross-vault inference parallelism is deferred to task
+	// `bounded-cross-vault-inference-parallelism` until a workload measures
+	// contention here; see internal/embedder/shared.go.
+	mu      sync.Mutex
+	dims    int
+	batchSz int
+	backend string
 	// tokenizer is the Go-path truncation wrapper; nil on the ORT/rust path,
 	// where truncation lives in the rust tokenizer itself (see truncate_ort.go).
 	tokenizer *truncatingTokenizer

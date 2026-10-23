@@ -378,3 +378,122 @@ func TestSharedT7ConcurrentHandlesRaceClean(t *testing.T) {
 		t.Fatalf("entry still present after all handles closed")
 	}
 }
+
+// TestSharedT1bConcurrentConstructOnce (T1b, U6): N handles on ONE key race
+// their FIRST Embed through a start-barrier, so they all hit the shared
+// LazyEmbedder.get()/once.Do simultaneously. construct increments an atomic and
+// sleeps inside the window, so a missing sync.Once reliably double-builds. Proves
+// the first-use construction race builds the ~310 MB model exactly once across N
+// routed engines. Run under -race.
+func TestSharedT1bConcurrentConstructOnce(t *testing.T) {
+	const N = 16
+	c := NewSharedModelCache()
+	k := ModelKey{Backend: "go", Model: "m", MaxSeq: 256}
+
+	var n int32
+	construct := func() (Embedder, error) {
+		atomic.AddInt32(&n, 1)
+		time.Sleep(5 * time.Millisecond) // widen the once-race window
+		return newFakeModel(384), nil
+	}
+
+	handles := make([]Handle, N)
+	for i := range handles {
+		h, err := c.Acquire(bg(), k, construct)
+		if err != nil {
+			t.Fatalf("Acquire %d: %v", i, err)
+		}
+		handles[i] = h
+	}
+	t.Cleanup(func() {
+		for _, h := range handles {
+			_ = h.Close()
+		}
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := range handles {
+		wg.Add(1)
+		go func(i int, h Handle) {
+			defer wg.Done()
+			<-start // all goroutines released together
+			_, errs[i] = h.Embed(bg(), "x")
+		}(i, handles[i])
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&n); got != 1 {
+		t.Fatalf("construct ran %d times, want exactly 1 (the shared model must build once)", got)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Embed on handle %d failed: %v", i, err)
+		}
+	}
+}
+
+// TestSharedT6cSiblingCloseKeepsModelForLiveHandle (T6c, U6): two handles on one
+// key (the N-stack case reduced to N handles). A barrier fires hB.Close()
+// concurrently with a loop of hA.Embed(). Because hA still holds a reference, the
+// shared model must NOT be Destroyed: every hA.Embed succeeds (never errFakeClosed)
+// and the fake's Destroy count stays 0 until hA also closes, then is exactly 1.
+// This is the cross-stack lifecycle guarantee (a sibling stack's Close must not
+// pull the model out from under a live one). Run under -race.
+func TestSharedT6cSiblingCloseKeepsModelForLiveHandle(t *testing.T) {
+	const embeds = 1000
+	c := NewSharedModelCache()
+	k := ModelKey{Backend: "go", Model: "m", MaxSeq: 256}
+
+	var n int32
+	var built *fakeModel
+	hA, err := c.Acquire(bg(), k, countingConstruct(&n, &built, 384))
+	if err != nil {
+		t.Fatalf("Acquire hA: %v", err)
+	}
+	hB, err := c.Acquire(bg(), k, countingConstruct(&n, &built, 384))
+	if err != nil {
+		t.Fatalf("Acquire hB: %v", err)
+	}
+	// Force construction so `built` is populated before the race.
+	if _, err := hA.Embed(bg(), "warm"); err != nil {
+		t.Fatalf("warm Embed: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var embedErr atomic.Value // first non-nil hA.Embed error, if any
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = hB.Close() // sibling closes: refs 2 -> 1, model must survive
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < embeds; i++ {
+			if _, err := hA.Embed(bg(), "x"); err != nil {
+				embedErr.CompareAndSwap(nil, err)
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	if e := embedErr.Load(); e != nil {
+		t.Fatalf("hA.Embed failed while a sibling closed (model destroyed under a live handle): %v", e)
+	}
+	if got := built.getClosedCount(); got != 0 {
+		t.Fatalf("shared model was Destroyed %d time(s) while hA still held a reference, want 0", got)
+	}
+	if err := hA.Close(); err != nil {
+		t.Fatalf("hA.Close: %v", err)
+	}
+	if got := built.getClosedCount(); got != 1 {
+		t.Fatalf("after the LAST handle closed, Destroy count = %d, want exactly 1", got)
+	}
+}
