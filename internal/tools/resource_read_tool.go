@@ -136,7 +136,9 @@ func ReadResourceTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 // it MUST NOT read them from ctx, since the streamable-HTTP transport injects no
 // contextFunc (same trap as the resource providers in resources.go).
 func readResourceHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
+		vault := vaultFromCtx(ctx, vault)
 		var p readResourceParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

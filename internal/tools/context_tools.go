@@ -1378,7 +1378,10 @@ func joinExamples(xs []string) string {
 }
 
 func bootstrapHandler(resolver *vpctx.Resolver, vault *storage.Vault, engine *search.Engine, allowCwdDefault bool) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
+		vault := vaultFromCtx(ctx, vault)
+		engine := engineFromCtx(ctx, engine)
 		var p bootstrapParams
 		// Malformed params are the caller's JSON, not our state.
 		if err := json.Unmarshal(params, &p); err != nil {

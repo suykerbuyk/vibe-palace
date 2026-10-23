@@ -194,7 +194,8 @@ func ListSkillsTool(resolver *vpctx.Resolver) mcp.Tool {
 }
 
 func getResourceHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p getResourceParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
@@ -248,7 +249,8 @@ type listParams struct {
 }
 
 func listResourceHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p listParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err

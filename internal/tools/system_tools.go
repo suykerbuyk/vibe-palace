@@ -165,6 +165,7 @@ func InitProjectTool(vault *storage.Vault) mcp.Tool {
 
 func initProjectHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p initParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -330,7 +331,8 @@ func VaultSyncTool(vault *storage.Vault) mcp.Tool {
 }
 
 func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p vaultSyncParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -687,7 +689,8 @@ func VaultTidyTool(vault *storage.Vault) mcp.Tool {
 }
 
 func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p vaultTidyParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -852,7 +855,8 @@ func VaultStatusTool(vault *storage.Vault) mcp.Tool {
 }
 
 func vaultStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p vaultStatusParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -951,7 +955,9 @@ func RefreshIndexTool(engine *search.Engine, vault *storage.Vault, launch detach
 }
 
 func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		engine := engineFromCtx(ctx, engine)
+		vault := vaultFromCtx(ctx, vault)
 		var p refreshIndexParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

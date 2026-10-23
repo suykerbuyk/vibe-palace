@@ -192,7 +192,8 @@ type traverseResult struct {
 // --- Handlers ---
 
 func palaceStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p palaceStatusParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -247,7 +248,8 @@ func palaceStatusHandler(vault *storage.Vault) mcp.HandlerFunc {
 }
 
 func listWingsHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p projectParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -266,7 +268,8 @@ func listWingsHandler(vault *storage.Vault) mcp.HandlerFunc {
 }
 
 func listRoomsHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p wingParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -319,7 +322,8 @@ func listRoomsHandler(vault *storage.Vault) mcp.HandlerFunc {
 }
 
 func traverseHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p traverseParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -363,7 +367,8 @@ func traverseHandler(vault *storage.Vault) mcp.HandlerFunc {
 }
 
 func findTunnelsHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p projectParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

@@ -302,7 +302,8 @@ func PalaceQueryTool(vault *storage.Vault) mcp.Tool {
 }
 
 func palaceQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p palaceQueryParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)

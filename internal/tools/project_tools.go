@@ -92,7 +92,8 @@ type projectDeparted struct {
 // drift is omitted entirely when the trees agree — silent when healthy, loud when
 // not, like every other signal in this system.
 func listProjectsHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, _ json.RawMessage) (any, error) {
+	return func(ctx context.Context, _ json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		all, err := vault.ListAllProjects()
 		if err != nil {
 			return nil, fmt.Errorf("list projects: %w", err)
@@ -170,7 +171,8 @@ func AppendIterationTool(vault *storage.Vault) mcp.Tool {
 }
 
 func appendIterationHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p appendIterationParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

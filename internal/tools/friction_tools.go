@@ -45,6 +45,7 @@ func FrictionTrendsTool(vault *storage.Vault) mcp.Tool {
 
 func frictionTrendsHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p frictionTrendsParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

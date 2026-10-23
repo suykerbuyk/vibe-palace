@@ -71,7 +71,8 @@ func SurfaceCheckTool(vault *storage.Vault) mcp.Tool {
 			"vault_surface, stamp_dir}. status=\"fail\" means the vault was written " +
 			"by a newer binary; upgrade before writing.",
 		Schema: surfaceCheckSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project string `json:"project"`
 			}

@@ -67,6 +67,7 @@ func CollectWrapStateTool(vault *storage.Vault) mcp.Tool {
 			"the iter narrative inline.",
 		Schema: collectWrapStateSchema,
 		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`
@@ -150,7 +151,8 @@ func StampIterTool(vault *storage.Vault) mcp.Tool {
 			"required and must be absolute. Returns {anchor_path, iter, " +
 			"bytes_written, snapshot_path, snapshot_bytes}.",
 		Schema: stampIterSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`
@@ -212,7 +214,8 @@ func PreflightWrapTool(vault *storage.Vault) mcp.Tool {
 			"work). Returns {ok, warnings[], errors[], notes[]}. Only ok=false " +
 			"halts the wrap; warnings and notes never flip it.",
 		Schema: preflightWrapSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`

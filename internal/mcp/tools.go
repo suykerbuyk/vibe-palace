@@ -24,6 +24,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultstack"
 )
 
 // requestIDKey is a context-key type for optional MCP request IDs that
@@ -167,6 +168,48 @@ type Registry struct {
 	// call: vplog aggregates warn counts by op, and a per-call flood would
 	// swamp vp_health's summary with a single standing fault.
 	lastBindErr string
+	// resolveStack, when non-nil, yields the VaultStack to serve THIS request on;
+	// both dispatch paths install it on the context (vaultstack.WithStack) before
+	// the gate, and the handlers read it (vaultstack.StackFrom). U5a installs a
+	// resolver that always returns the startup stack (inert — the same stack the
+	// handlers already close over, so behavior is unchanged at N=1). U5b swaps in
+	// the routed resolver (classify params -> StackFor) WITHOUT touching the
+	// dispatch code below — this field IS the per-project-routing seam. A nil
+	// resolver (a throwaway registry, a test) installs nothing: handlers then fall
+	// back to their closed-over vault/engine/resolver.
+	resolveStack func(ctx context.Context, params json.RawMessage) (*vaultstack.VaultStack, error)
+}
+
+// SetStackResolver installs the per-request stack resolver both dispatch paths
+// consult (see Registry.resolveStack). cmd/vp wires it at startup; a Registry
+// never handed one installs no stack on ctx and leaves handlers on their
+// closed-over fallback.
+func (r *Registry) SetStackResolver(f func(ctx context.Context, params json.RawMessage) (*vaultstack.VaultStack, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resolveStack = f
+}
+
+// installStack resolves and installs the request's VaultStack on ctx, returning
+// the enriched ctx. A nil resolver (or one yielding no stack) leaves ctx
+// unchanged, so the handler falls back to its closed-over dependencies. The
+// resolver is read under the lock, then called OUTSIDE it (it may do real work
+// under U5b) — mirroring how staleBinding snapshots its inputs under the lock.
+func (r *Registry) installStack(ctx context.Context, params json.RawMessage) (context.Context, error) {
+	r.mu.RLock()
+	resolve := r.resolveStack
+	r.mu.RUnlock()
+	if resolve == nil {
+		return ctx, nil
+	}
+	st, err := resolve(ctx, params)
+	if err != nil {
+		return ctx, err
+	}
+	if st == nil {
+		return ctx, nil
+	}
+	return vaultstack.WithStack(ctx, st), nil
 }
 
 // WatchVaultBinding arms the stale-binding gate with the directory this
@@ -355,6 +398,14 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 
 	if err := validateParams(rt.compiled, params); err != nil {
 		return nil, err
+	}
+
+	// Install the request's VaultStack on ctx (params are validated, so a U5b
+	// resolver can classify them) BEFORE the gate and handler. U5a installs the
+	// startup stack; the gate still reads VaultFromContext, unchanged.
+	ctx, sErr := r.installStack(ctx, params)
+	if sErr != nil {
+		return nil, sErr
 	}
 
 	// params are schema-validated above, so the gate can read a discriminator
@@ -754,6 +805,24 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 				"err", vErr,
 			)
 			return mcplib.NewToolResultError(vErr.Error()), nil
+		}
+
+		// Install the request's VaultStack on ctx (params are validated, so a U5b
+		// resolver can classify them) BEFORE the gate and handler. U5a installs the
+		// startup stack; the gate still reads VaultFromContext, unchanged. On the
+		// live wire path this is where makeHandler owns the per-request stack.
+		var sErr error
+		if ctx, sErr = r.installStack(ctx, params); sErr != nil {
+			slog.Warn("mcp.makeHandler: stack resolution failed",
+				"op", "mcp.makeHandler",
+				"tool", toolName,
+				"request_id", reqID,
+				"session_id", sessionID,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+				"fault", "operational",
+				"err", sErr,
+			)
+			return mcplib.NewToolResultError(sErr.Error()), nil
 		}
 
 		// Resolved ONCE per call and shared by the gate and the result banner, so

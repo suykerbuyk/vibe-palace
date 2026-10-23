@@ -455,6 +455,7 @@ func CaptureSessionTool(vault *storage.Vault, launch detachlaunch.LaunchFunc) mc
 
 func captureSessionHandler(vault *storage.Vault, launch detachlaunch.LaunchFunc) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p captureSessionParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

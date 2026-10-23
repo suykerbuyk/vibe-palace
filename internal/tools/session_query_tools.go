@@ -86,7 +86,8 @@ func SearchSessionsTool(vault *storage.Vault) mcp.Tool {
 }
 
 func searchSessionsHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p searchSessionsParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -223,7 +224,8 @@ func GetSessionDetailTool(vault *storage.Vault) mcp.Tool {
 }
 
 func getSessionDetailHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p getSessionDetailParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -437,7 +439,9 @@ var allSections = map[string]bool{
 }
 
 func getProjectContextHandler(vault *storage.Vault, resolver *vpctx.Resolver) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
+		resolver := resolverFromCtx(ctx, resolver)
 		var p getProjectContextParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -590,7 +594,8 @@ func GetEffectivenessTool(vault *storage.Vault) mcp.Tool {
 }
 
 func getEffectivenessHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p getEffectivenessParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

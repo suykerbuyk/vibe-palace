@@ -291,7 +291,8 @@ func CheckSummarizationQueueTool(vault *storage.Vault) mcp.Tool {
 			"\"info\", summary, details[]} (the only other status " +
 			"check.CheckSummarizationQueue ever produces).",
 		Schema: checkSummarizationQueueSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`

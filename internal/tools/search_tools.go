@@ -126,6 +126,7 @@ func SearchCrossProjectTool(engine *search.Engine) mcp.Tool {
 
 func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		engine := engineFromCtx(ctx, engine)
 		var p searchParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -180,6 +181,7 @@ func searchHandler(engine *search.Engine) mcp.HandlerFunc {
 
 func crossSearchHandler(engine *search.Engine) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		engine := engineFromCtx(ctx, engine)
 		var p crossSearchParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

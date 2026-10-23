@@ -82,7 +82,8 @@ func IngestCommitMsgTool(vault *storage.Vault) mcp.Tool {
 			"set, and never fails the ingest. Returns {project, vault_path, " +
 			"bytes_written, commit_msg_hook{status, detail}}.",
 		Schema: ingestCommitMsgSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`

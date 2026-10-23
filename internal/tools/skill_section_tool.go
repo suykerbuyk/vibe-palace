@@ -71,7 +71,8 @@ func GetSkillSectionTool(resolver *vpctx.Resolver) mcp.Tool {
 }
 
 func skillSectionHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p skillSectionParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err

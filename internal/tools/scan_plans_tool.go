@@ -48,7 +48,8 @@ func ScanPlansTool(vault *storage.Vault) mcp.Tool {
 			"An absent plans dir (Grok/Zed hosts) returns an empty report. Strictly " +
 			"read-only: never promotes, deletes, or writes.",
 		Schema: scanPlansSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project string `json:"project"`
 			}

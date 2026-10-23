@@ -49,7 +49,8 @@ func VaultReadTool(vault *storage.Vault) mcp.Tool {
 			"'Projects/foo/agentctx/notes/x.md'); absolute paths, '..' segments, " +
 			"control characters, and symlinks escaping the vault are rejected.",
 		Schema: vaultReadSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path     string `json:"path"`
 				MaxBytes int64  `json:"max_bytes"`
@@ -107,7 +108,8 @@ func VaultListTool(vault *storage.Vault) mcp.Tool {
 			"`complete`: if you do not see `complete: true`, your host truncated it and `entries` is a " +
 			"PREFIX — do not conclude a file is absent, list a narrower path instead.",
 		Schema: vaultListSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path          string `json:"path"`
 				IncludeSha256 bool   `json:"include_sha256"`
@@ -151,7 +153,8 @@ func VaultExistsTool(vault *storage.Vault) mcp.Tool {
 			"Dangling symlinks and links whose realpath escapes the vault report " +
 			"exists=false.",
 		Schema: vaultExistsSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path string `json:"path"`
 			}
@@ -186,7 +189,8 @@ func VaultSha256Tool(vault *storage.Vault) mcp.Tool {
 			"transferring content over MCP. Returns {sha256, bytes, mtime}. " +
 			"Bandwidth-friendly for large-file compare-and-set flows.",
 		Schema: vaultSha256Schema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path string `json:"path"`
 			}
@@ -226,7 +230,8 @@ func VaultWriteTool(vault *storage.Vault) mcp.Tool {
 			"needed. Pass expected_sha256 for compare-and-set: if the file's " +
 			"current SHA differs, the write is refused and the file is unchanged.",
 		Schema: vaultWriteSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path           string `json:"path"`
 				Content        string `json:"content"`
@@ -270,7 +275,8 @@ func VaultEditTool(vault *storage.Vault) mcp.Tool {
 			"Claude Code Edit semantics). Refuses '.git' paths. Pass " +
 			"expected_sha256 for compare-and-set.",
 		Schema: vaultEditSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path           string `json:"path"`
 				OldString      string `json:"old_string"`
@@ -315,7 +321,8 @@ func VaultDeleteTool(vault *storage.Vault) mcp.Tool {
 			"include '.git' (case-insensitive). Pass expected_sha256 for " +
 			"compare-and-set.",
 		Schema: vaultDeleteSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Path           string `json:"path"`
 				ExpectedSha256 string `json:"expected_sha256"`
@@ -356,7 +363,8 @@ func VaultMoveTool(vault *storage.Vault) mcp.Tool {
 			"destination (caller bug). Parent directories on the destination " +
 			"side are created implicitly.",
 		Schema: vaultMoveSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				FromPath string `json:"from_path"`
 				ToPath   string `json:"to_path"`

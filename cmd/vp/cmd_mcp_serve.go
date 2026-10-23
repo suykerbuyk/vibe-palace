@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	mcpkg "github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultstack"
 )
 
 // defaultBearerTokenEnv is the environment variable consulted for the HTTP
@@ -166,6 +168,11 @@ func buildMCPServeHandler(stack *serverStack, token string, allowWrites bool) ht
 	// this second server's registry keeps a zero (unbuilt) snapshot and
 	// fail-closes every project-keyed mutating write.
 	srv.SetProjectVaultSnapshot(stack.snap)
+	// U5a: same per-request stack resolver as the stdio server — install the one
+	// startup stack bootstrap built. U5b swaps this body for the routing resolver.
+	srv.Registry().SetStackResolver(func(context.Context, json.RawMessage) (*vaultstack.VaultStack, error) {
+		return stack.startupStack, nil
+	})
 	// Every transport now gets the SAME payload. This instance used to default
 	// vp_bootstrap_context to a 4,000-byte resume prefix on the claim that "the
 	// streamable-HTTP channel truncates large inline tool results" — never

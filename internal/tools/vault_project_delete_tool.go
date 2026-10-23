@@ -62,6 +62,7 @@ func VaultProjectDeleteTool(vault *storage.Vault) mcp.Tool {
 
 func vaultProjectDeleteHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p vaultProjectDeleteParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, apperr.Caller(fmt.Errorf("parse params: %w", err))

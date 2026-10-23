@@ -99,7 +99,8 @@ func ManualTool(reg *mcp.Registry, resolver *vpctx.Resolver) mcp.Tool {
 }
 
 func manualHandler(reg *mcp.Registry, resolver *vpctx.Resolver) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p manualParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

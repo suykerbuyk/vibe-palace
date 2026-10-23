@@ -79,7 +79,8 @@ func MemoryWriteTool(vault *storage.Vault) mcp.Tool {
 			"Projects/<project>/memory/<rel>. type must be one of user, " +
 			"feedback, project, reference. scope=global is deferred to v2.",
 		Schema: memoryWriteSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p memoryWriteParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -143,7 +144,8 @@ func MemoryReadTool(vault *storage.Vault) mcp.Tool {
 		Name:        "vp_memory_read",
 		Description: "Read a project-scoped Claude native memory file. Returns {meta, body}.",
 		Schema:      memoryReadSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p memoryReadParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -199,7 +201,8 @@ func MemoryListTool(vault *storage.Vault) mcp.Tool {
 			"project's Claude native memories. Bodies are NOT returned — this is " +
 			"the cheap index; use vp_memory_read for bodies.",
 		Schema: memoryListSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p memoryListParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -280,7 +283,8 @@ func MemoryHarvestTool(vault *storage.Vault) mcp.Tool {
 			"the MEMORY.md index is dropped. dry_run classifies without mutating; push (default " +
 			"true) pushes the commit. A non-Claude host with no native dir is a clean no-op.",
 		Schema: memoryHarvestSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p memoryHarvestParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -321,7 +325,8 @@ func MemoryDeleteTool(vault *storage.Vault) mcp.Tool {
 		Mutating:    true,
 		Description: "Delete a project-scoped Claude native memory file. Idempotent: deleting a missing file is not an error.",
 		Schema:      memoryDeleteSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p memoryDeleteParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)

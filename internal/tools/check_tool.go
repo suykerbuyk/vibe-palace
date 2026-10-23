@@ -170,7 +170,8 @@ func CheckTool(vault *storage.Vault) mcp.Tool {
 			"data — the only file it ever creates is vault-filesystem's transient, " +
 			"self-deleting probe.",
 		Schema: checkSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Checks []string `json:"checks"`
 			}

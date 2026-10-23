@@ -76,7 +76,8 @@ func AuditVaultTool(vault *storage.Vault) mcp.Tool {
 }
 
 func auditVaultHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, raw json.RawMessage) (any, error) {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p auditVaultParams
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &p); err != nil {

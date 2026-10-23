@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,6 +62,10 @@ type serverStack struct {
 	// of its shared-model handle. eng/resolver/vault above are the STARTUP
 	// stack's, kept as direct fields for the existing stdio/serve wiring.
 	reg *vaultstack.Registry
+	// startupStack is the one StackFor built at bootstrap. Carried so `vp mcp
+	// serve`'s dedicated server installs the SAME stack resolver (U5a) the stdio
+	// server does, keeping the ctx-carried stack consistent across transports.
+	startupStack *vaultstack.VaultStack
 }
 
 // vaultStackBuilder is the injected BuildFunc the registry calls to construct one
@@ -172,6 +177,16 @@ func bootstrap() (*serverStack, error) {
 	// the SAME startup snapshot as the dispatch gate (no mid-session drift).
 	storage.SetActiveProjectVaultSnapshot(snap)
 
+	// U5a: install the per-request stack resolver the dispatch seam consults.
+	// At N=1 it always returns the startup stack — the SAME stack the handlers
+	// close over — so every dispatch is behavior-identical, but the handler read
+	// path is now ctx-first. U5b swaps this body for the routing resolver
+	// (classify the request's project -> StackFor) without touching dispatch or
+	// any handler.
+	srv.Registry().SetStackResolver(func(context.Context, json.RawMessage) (*vaultstack.VaultStack, error) {
+		return stack, nil
+	})
+
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.
 	// RegisterAll keeps today's signature and the STARTUP stack's vault + engine;
 	// no vaultstack.Registry crosses into internal/mcp (that is U5).
@@ -179,14 +194,15 @@ func bootstrap() (*serverStack, error) {
 	tools.RegisterResources(srv, stack.Resolver, v)
 
 	return &serverStack{
-		vault:     v,
-		cfg:       cfg,
-		eng:       stack.Engine,
-		resolver:  stack.Resolver,
-		srv:       srv,
-		launchCwd: cwd,
-		snap:      snap,
-		reg:       reg,
+		vault:        v,
+		cfg:          cfg,
+		eng:          stack.Engine,
+		resolver:     stack.Resolver,
+		srv:          srv,
+		launchCwd:    cwd,
+		snap:         snap,
+		reg:          reg,
+		startupStack: stack,
 	}, nil
 }
 

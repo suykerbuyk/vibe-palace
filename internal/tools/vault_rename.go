@@ -82,6 +82,7 @@ type vaultRenameResult struct {
 
 func vaultRenameHandler(vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p vaultRenameParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)

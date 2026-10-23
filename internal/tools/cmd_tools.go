@@ -104,7 +104,8 @@ func SkillCmdTool(resolver *vpctx.Resolver) mcp.Tool {
 // SKILL.md body (frontmatter removed) and appends the list of
 // references callers can fetch on-demand via vp_get_skill_section.
 func skillExecHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p cmdParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
@@ -158,7 +159,8 @@ func buildSkillFrame(p frameParams, refs []string) string {
 }
 
 func cmdExecHandler(resolver *vpctx.Resolver, resourceType string) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p cmdParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err

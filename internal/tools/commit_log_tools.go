@@ -63,6 +63,7 @@ func ArchiveCommitLogTool(vault *storage.Vault) mcp.Tool {
 			"anchor_from, anchor_to, commit_log_path, anchor_path}.",
 		Schema: archiveCommitLogSchema,
 		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var args struct {
 				Project     string `json:"project"`
 				ProjectPath string `json:"project_path"`

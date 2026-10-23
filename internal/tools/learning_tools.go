@@ -48,7 +48,8 @@ func ListLearningsTool(vault *storage.Vault) mcp.Tool {
 			"cheap index; use vp_get_learning for bodies. filter_type optionally narrows " +
 			"to one of user, feedback, reference.",
 		Schema: listLearningsSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p listLearningsParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)
@@ -126,7 +127,8 @@ func GetLearningTool(vault *storage.Vault) mcp.Tool {
 		Name:        "vp_get_learning",
 		Description: "Get full learning detail including metadata and content.",
 		Schema:      getLearningSchema,
-		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
+			vault := vaultFromCtx(ctx, vault)
 			var p getLearningParams
 			if err := json.Unmarshal(params, &p); err != nil {
 				return nil, fmt.Errorf("parse params: %w", err)

@@ -117,6 +117,8 @@ func GetDoctrineTool(resolver *vpctx.Resolver) mcp.Tool {
 }
 
 func getDoctrineHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
+	// base is the resolver-routed resolveHandler; it reads the request stack's
+	// resolver from ctx itself, so this wrapper just passes ctx through.
 	base := resolveHandler(resolver, "doctrine")
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		res, err := base(ctx, params)
@@ -180,6 +182,8 @@ func GetResumeTool(resolver *vpctx.Resolver) mcp.Tool {
 }
 
 func getResumeHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
+	// base is the resolver-routed resolveHandler; it reads the request stack's
+	// resolver from ctx itself, so this wrapper just passes ctx through.
 	base := resolveHandler(resolver, "resume")
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		res, err := base(ctx, params)
@@ -197,7 +201,8 @@ func getResumeHandler(resolver *vpctx.Resolver) mcp.HandlerFunc {
 
 // resolveHandler returns a handler that resolves a named resource for a project.
 func resolveHandler(resolver *vpctx.Resolver, resource string) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		resolver := resolverFromCtx(ctx, resolver)
 		var p projectParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -282,7 +287,8 @@ func resumeConflictError(err error, expected string) error {
 }
 
 func updateResumeHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p updateResumeParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -350,7 +356,8 @@ func GetKnowledgeTool(vault *storage.Vault) mcp.Tool {
 }
 
 func getKnowledgeHandler(vault *storage.Vault) mcp.HandlerFunc {
-	return func(_ context.Context, params json.RawMessage) (any, error) {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		vault := vaultFromCtx(ctx, vault)
 		var p getKnowledgeParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
