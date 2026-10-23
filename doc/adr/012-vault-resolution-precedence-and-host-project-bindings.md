@@ -1,6 +1,6 @@
 # ADR 012: Vault Resolution Precedence and Host-Local Project Bindings
 
-**Status:** Accepted (2026-09-27). **Amended 2026-09-28** — see *Amendment (2026-09-28): older binaries, and the bind surface after the lifecycle commands*; rule 7 is corrected in place, and rules 4 and 6 and the Consequences bind bullet carry dated amendment markers.
+**Status:** Accepted (2026-09-27). **Amended 2026-09-28** — see *Amendment (2026-09-28): older binaries, and the bind surface after the lifecycle commands*; rule 7 is corrected in place, and rules 4 and 6 and the Consequences bind bullet carry dated amendment markers. **Amended 2026-10-23** — see *Amendment (2026-10-23): Option C adopted (per-project MCP routing), delivered fail-safe-first on a startup binding snapshot*; Decision 4 is refined for the MCP routing surface, and §6's "deferred Option C" and the Consequences "born in another vault … parked follow-on" bullet are superseded.
 **Deciders:** Project owner
 **Context:** Epic `project-relocation-rename-and-vault-split`; decision task
 `tracked-vibe-palace-toml-and-per-host-vault-binding` (U3); implementation task
@@ -93,6 +93,9 @@ through to a lower tier, because the lowest tier is the live vault:
 - *(added 2026-09-28)* a tier-2 target that holds none of the project's content
   while this host's default vault records the project's departure or holds
   tracked content for it — the stale binding; see Amendment (2026-09-28) §3.
+- *(added 2026-10-23)* for the MCP routing surface specifically, "fails closed" is
+  applied to a **startup snapshot** of `[project_vaults]`, not a live per-request
+  re-read — see Amendment (2026-10-23) §2. Live CLI resolution (tiers 1–3) is unchanged.
 
 A global config that is present but cannot be read or parsed also fails
 resolution closed (it may hide a binding), with its own error
@@ -132,6 +135,8 @@ naming a non-own-repo path, which `status` still refuses (pre-existing
 fail-stop. **This changes only the CLI:** the MCP `vp_vault_*` tools resolve
 the server's startup-bound vault and are unchanged (per-project MCP routing is the deferred
 Option C); the vault git family prints a parity note to stderr when it resolves a non-global source.
+*(Superseded 2026-10-23 — Option C is adopted; the MCP `vp_vault_*` surface no longer treats
+per-project routing as deferred. See Amendment (2026-10-23).)*
 The fresh-host `vp init` marker write (rule 2) is unchanged; `vp init --vault-path` on an existing
 host writes a tier-2 `[project_vaults]` binding **when the target is a git vault differing from the
 default**; a **no-git / untracked / nested target keeps the existing tier-1 cwd-marker path**
@@ -156,6 +161,10 @@ refusal described here holds only in a v8 or later binary.)**
   lacks the binding: the first write creates it in the global vault. The split
   runbook covers this by ordering (bind on each host before that host's first
   session in the checkout). Closing it in code is a parked follow-on.
+  *(Closed 2026-10-23 — the fail-safe (U2/U3) converts the silent cross-vault write into a
+  loud refusal at the MCP gate and the shared write funnel; see Amendment (2026-10-23) §3.
+  Residual coverage limit — a tier-1 cwd-marker-only project with no `[project_vaults]` entry
+  — stated there.)*
 - Resolution still does not check that a tier-1 or tier-3 root exists. That is a
   whole-binary behaviour change and a parked follow-on.
 - *(Amended 2026-09-28 — see Amendment (2026-09-28) §2; this bullet originally
@@ -223,3 +232,71 @@ in the default vault. Where git cannot answer, the check fails open (an
 undecided target counts as holding the project). A running MCP server reports
 it as `StaleBindingError` and refuses mutating tools (ADR-010, Amendment
 (2026-09-28)). Rule 4's list carries it as a dated bullet.
+
+## Amendment (2026-10-23): Option C adopted — per-project MCP routing, delivered fail-safe-first on a startup binding snapshot
+
+The resolution tiers (Decision 1) are unchanged. This amendment records that **Option C —
+per-project MCP vault routing — is ADOPTED** (operator, 2026-10-22, chaired session), replacing
+the "deferred/parked follow-on" language in §6 and Consequences. It is delivered in two phases;
+phase 1 has landed.
+
+**The exposure Option C closes.** The MCP server binds ONE vault at process startup and injects it
+into every request (`internal/mcp/server.go`); the `project` arg selects only a *subtree* under
+that one vault (`internal/tools/task_write_commit.go`), never a vault. A project-keyed mutating MCP
+write for a project whose vault ≠ the startup vault would land in the wrong vault, silently — the
+latent cross-project hole named in the original Consequences bullet.
+
+**1. Two-phase delivery.**
+
+- **Phase 1 — fail-safe (B), LANDED (iter 500; U1–U3).** A mis-routed project-keyed mutating write
+  now REFUSES (fail-closed) instead of landing in the wrong vault. A safe stopping point, strictly
+  safer than the prior state.
+- **Phase 2 — routing (A), in progress (U4–U6).** Replaces the refusal with a route to the correct
+  vault's stack. Gated on an operator RAM/throughput sign-off (given 2026-10-23) and requires an
+  in-process shared-model seam — see §4.
+
+**2. Decision 4 ("resolution fails closed") is refined for the MCP routing surface: a STARTUP
+SNAPSHOT, not a live re-read.** The `[project_vaults]` routing table is snapshotted ONCE at startup
+— the same moment the server binds its vault, when the config is readable by construction — and the
+guard and router consult that in-memory snapshot, NEVER a live re-read of `config.toml`.
+
+- Mid-session config corruption → guard holds the snapshot → no brick AND no fail-open window.
+- Corrupt at startup → the server cannot resolve its own `vault_path` either → moot.
+- Unbuildable snapshot at startup (config changed in the narrow window after the server's own
+  startup resolution succeeded, e.g. `vp config bind` mid-startup) → mutating MCP writes fail closed
+  (refuse) until a good snapshot builds. The builder NEVER installs an "allow-all empty" snapshot on
+  a build error. Reads and ALL CLI commands are unaffected.
+
+This supersedes the fail-closed recommendation for this surface and refines Decision 4; it is
+consistent with existing behaviour (`vp_config_bind` already requires a host reload — bindings are
+effectively startup-scoped today).
+
+**3. The fail-safe enforces at the layer BOTH CLI and MCP call** (standing rule: a guard only an
+agent can trip is not a guard). Two choke points, fail-closed:
+
+- **U2 — MCP dispatch refusal** (`internal/mcp/tools.go`, `gateIfMutating`): a mutating call whose
+  `project` resolves to a vault ≠ startup vault is refused. On an unbuilt snapshot, only
+  PROJECT-KEYED mutating writes are refused; whole-vault tools are not.
+- **U3 — write-funnel backstop** at the two universal write choke points both surfaces call
+  (`atomicfile.writeAtomic` hook + `storage.appendUnderLock`): a storage-level `ErrCrossVaultWrite`
+  classifies against a process-global snapshot installed EAGERLY (CLI pre-run + MCP bootstrap),
+  never lazy-built inside the write lock.
+- **Per-write-site lifecycle exemption** (`atomicfile.ForMisboundExempt`): legitimate lifecycle
+  cross-vault writes (`vp vault copy/clone/rename` writing a project's content into its newly-bound
+  vault) pass an exemption at the shared storage write site — one exemption covers both the CLI
+  commands and the `vp_vault_copy` MCP tool. Mirrors `ForDepartureRecord`.
+- **Derived-delete sink is ALLOW + WARN:** a pull/sync merge-heal (`dropDerivedPaths` →
+  `vaultfs.Delete`) removing a regenerable `palace/<slug>/…` path from the WRONG vault is corrective
+  cleanup (it can never touch the project's real vault) — it proceeds and logs a cross-vault
+  warning. Distinct from the content write funnel, which still refuses.
+
+**4. Routing (A) requires an in-process shared-model seam (operator, 2026-10-23).** Measured:
+per-vault resident cost is ~310 MB (default go backend), and the model is private anonymous heap,
+not mmap'd — multi-process routing gets zero OS page-cache sharing, so routing N vaults naively
+costs N×310 MB. The vault-stack registry (U4) therefore MUST include a shared model cache keyed on
+the embedder fingerprint (backend, model, max-seq), capping cost to ~310 MB flat in N.
+
+**5. Known coverage limit of the fail-safe (B).** The slug-only backstop catches only projects WITH
+a `[project_vaults]` entry; a project with only a tier-1 cwd-marker `vault_path` and no global
+binding is invisible to it. For the quantum split this is fine — split projects are bound via
+`[project_vaults]` (Decision 1, `clone --bind`). Stated as a known limit.
