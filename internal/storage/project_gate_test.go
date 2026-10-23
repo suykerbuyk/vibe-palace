@@ -204,7 +204,7 @@ func TestCopyProjectTreeEntryCreatesAbsentDestination(t *testing.T) {
 		}
 		sum := sha256.Sum256(body)
 		e := ProjectTreeEntry{Path: rel, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
-		if err := CopyProjectTreeEntry(src, dest, e); err != nil {
+		if err := CopyProjectTreeEntry(src, dest, e, nil); err != nil {
 			t.Fatalf("copy %s into an absent destination project: %v", rel, err)
 		}
 		if got, err := os.ReadFile(filepath.Join(dest, filepath.FromSlash(rel))); err != nil || string(got) != string(body) {

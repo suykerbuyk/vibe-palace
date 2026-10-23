@@ -135,6 +135,12 @@ func (v *Vault) appendUnderLock(absPath string, data []byte) error {
 	if err := departedpath.RefuseRecordAbs(v.Root, absPath); err != nil {
 		return err
 	}
+	// Nor into a vault other than the one this project is bound to (U3): the
+	// append bypasses atomicfile.writeAtomic's injected guard, so it runs the
+	// same cross-vault content check directly.
+	if err := refuseCrossVaultContentWrite(v.Root, absPath); err != nil {
+		return err
+	}
 	// Nor into a project the vault has not initialised: the append would
 	// create the file, and its stamp, in a project nobody committed
 	// (projectdir).

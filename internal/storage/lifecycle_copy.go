@@ -391,7 +391,7 @@ func ApplyCopy(req CopyRequest) (*CopyResult, error) {
 		modes[f.Path] = f.Mode
 	}
 	for i, e := range entries {
-		if err := CopyProjectTreeEntry(wt, req.Vault, e); err != nil {
+		if err := CopyProjectTreeEntry(wt, req.Vault, e, held); err != nil {
 			return fail(err)
 		}
 		if err := restoreExecBit(req.Vault, e.Path, modes[e.Path]); err != nil {

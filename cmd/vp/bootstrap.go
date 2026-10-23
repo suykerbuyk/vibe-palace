@@ -129,6 +129,10 @@ func bootstrap() (*serverStack, error) {
 			"op", "mcp.snapshot", "fault", "operational", "err", serr)
 	}
 	srv.SetProjectVaultSnapshot(snap)
+	// Dual install (U3): the same snapshot also backs the storage-layer write
+	// guard and the derived-delete warning, so the MCP funnel classifies against
+	// the SAME startup snapshot as the dispatch gate (no mid-session drift).
+	storage.SetActiveProjectVaultSnapshot(snap)
 
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.
 	tools.RegisterAll(srv.Registry(), resolver, v, eng, tools.WithConfig(cfg))

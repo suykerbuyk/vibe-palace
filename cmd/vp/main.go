@@ -4,7 +4,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/suykerbuyk/vibe-palace/internal/check"
@@ -31,6 +33,10 @@ func main() {
 	// library build and every test leaves it unset, so they spawn nothing and
 	// never relaunch the test binary (ADR-014 decision 7).
 	storage.SetIncomingIngestLauncher(detachlaunch.Launch)
+	// Arm the cross-vault write guard (U3): the real binary refuses a content
+	// write for a project bound to another vault. Unset in library builds and
+	// tests (like the ingest launcher), so they never fail-close.
+	storage.ArmProjectVaultGuard()
 	reg := cli.NewRegistry(info)
 	reg.SetPreRun(preRun)
 	registerAll(reg, info)
@@ -49,7 +55,38 @@ func main() {
 // that mattered most and the ones most reliably lost.
 func preRun(cmd *cli.Command) int {
 	initLogging()
+	installProjectVaultSnapshot(cmd)
 	return surfaceGate(cmd)
+}
+
+// installProjectVaultSnapshot builds the host's [project_vaults] routing snapshot
+// EAGERLY — before the command runs, before any write lock — and installs it in
+// the storage holder the write guard (U3) and derived-delete warning classify
+// against. The build runs git (staleProjectBinding), which is why it must happen
+// here and never inside the locked write funnel.
+//
+// Uniform predicate: it runs for EVERY write-capable command — MutatesVault (which
+// includes the lifecycle commands vault copy/clone/rename/project-delete) plus the
+// known non-MutatesVault writers (`hook`, and `vault pull`/`vault sync`, which
+// reach the derived-delete sink). The LIFECYCLE exemption is NOT a command here:
+// it is per-write-site, via atomicfile.ForMisboundExempt at the relocating write
+// (storage.CopyProjectTreeEntry), so it covers both the CLI and the MCP tools.
+//
+// On a build failure the (unbuilt) snapshot is installed anyway: the content guard
+// then fail-closes writes (surfacing the broken config). Reads and non-write
+// commands install nothing; the guard is also inert unless armed (main-only).
+func installProjectVaultSnapshot(cmd *cli.Command) {
+	switch {
+	case cmd.MutatesVault, cmd.Name == "hook", cmd.Name == "vault pull", cmd.Name == "vault sync":
+	default:
+		return
+	}
+	snap, err := storage.BuildProjectVaultSnapshot(context.Background())
+	if err != nil {
+		slog.Warn("vault: project-vault routing snapshot unbuilt; cross-vault writes fail closed",
+			"op", "cli.preRun", "fault", "operational", "err", err)
+	}
+	storage.SetActiveProjectVaultSnapshot(snap)
 }
 
 // initLogging attaches logging to the vault this command will act on. Silent

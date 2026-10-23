@@ -63,6 +63,12 @@ type config struct {
 	// recordHeld admits a write under Audits/departures/: the vault root lock
 	// token of a lifecycle command (ForDepartureRecord).
 	recordHeld *vaultlock.Held
+	// misboundHeld admits a cross-vault write (U3): the destination vault root
+	// lock token of a lifecycle command relocating a project's CONTENT into it
+	// (ForMisboundExempt). A copy/relocate writes a project into the vault it is
+	// (newly) bound to, which the cross-vault guard would otherwise refuse while
+	// that vault still holds no content for it.
+	misboundHeld *vaultlock.Held
 }
 
 // Option configures a Write call.
@@ -134,6 +140,55 @@ func notifySync(path string) {
 	if f != nil {
 		f(path)
 	}
+}
+
+// misboundRefuse, when non-nil, is the cross-vault write guard (U3): it refuses
+// a write whose path belongs to a project bound to a vault other than vaultRoot.
+// atomicfile cannot import internal/storage (it is below it), so storage INJECTS
+// the check here — the same observer-injection pattern syncObserver uses. nil in
+// library builds and tests (the real binary arms it via
+// storage.ArmProjectVaultGuard); a nil guard is a no-op, like an unset observer.
+var (
+	misboundRefuseMu sync.Mutex
+	misboundRefuse   func(vaultRoot, absPath string) error
+)
+
+// SetMisboundRefuse installs f as the cross-vault write guard and returns a
+// function that restores the previous one. cmd/vp arms it once in main; tests
+// arm it and restore on cleanup.
+func SetMisboundRefuse(f func(vaultRoot, absPath string) error) (restore func()) {
+	misboundRefuseMu.Lock()
+	prev := misboundRefuse
+	misboundRefuse = f
+	misboundRefuseMu.Unlock()
+	return func() {
+		misboundRefuseMu.Lock()
+		misboundRefuse = prev
+		misboundRefuseMu.Unlock()
+	}
+}
+
+// refuseMisbound runs the installed cross-vault guard (nil-safe). It reads the
+// func under the mutex, UNLOCKS, then calls it — never holding the mutex across
+// the call, so the guard can never re-enter SetMisboundRefuse under the lock.
+func refuseMisbound(vaultRoot, absPath string) error {
+	misboundRefuseMu.Lock()
+	f := misboundRefuse
+	misboundRefuseMu.Unlock()
+	if f == nil {
+		return nil
+	}
+	return f(vaultRoot, absPath)
+}
+
+// ForMisboundExempt admits a cross-vault content write (U3): a lifecycle command
+// relocating a project into the destination vault passes the destination's live
+// root-lock token, and writeAtomic then SKIPS the cross-vault guard for that
+// write. held must be the root commit lock of vaultRoot (the write target), the
+// same shape ForDepartureRecord requires, so the exemption cannot be spoofed by
+// a token for some other vault. Mirrors ForDepartureRecord.
+func ForMisboundExempt(held *vaultlock.Held) Option {
+	return func(c *config) { c.misboundHeld = held }
 }
 
 // ForDepartureRecord admits a write under Audits/departures/. held must be the
@@ -256,6 +311,16 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 	}
 	if err := departedpath.RefuseRecordAbs(vaultRoot, absPath); err != nil {
 		if h := cfg.recordHeld; h == nil || h.RequireRoot() != nil || !sameDir(h.Root(), vaultRoot) {
+			return err
+		}
+	}
+	// Nor into a vault other than the one this project is bound to (U3): the
+	// cross-vault write guard, injected by storage (nil in tests/library builds).
+	// A lifecycle command relocating a project into vaultRoot is exempt when it
+	// passes ForMisboundExempt with vaultRoot's live root-lock token (same shape
+	// the departure-record carve-out uses above).
+	if h := cfg.misboundHeld; h == nil || h.RequireRoot() != nil || !sameDir(h.Root(), vaultRoot) {
+		if err := refuseMisbound(vaultRoot, absPath); err != nil {
 			return err
 		}
 	}

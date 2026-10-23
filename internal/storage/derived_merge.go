@@ -229,7 +229,18 @@ func dropDerivedPaths(vaultPath string, paths []string, deleteFiles bool) error 
 	// Through vaultfs.Delete, the vault's removal primitive: it resolves the
 	// path safely under the vault and takes the path's own advisory lock (a
 	// different key from the commit lock the caller holds).
+	//
+	// Both deleteFiles=true callers reach here — healDerivedConflicts (the
+	// conflicted-pull merge heal) and ApplyAuthoredOnlyMigration. For a DERIVED
+	// path belonging to a project bound to another vault, U3 WARNS and PROCEEDS
+	// (the delete is corrective cleanup of regenerable data from the wrong vault,
+	// never a mislocating write — operator ruling, ALLOW+WARN). Only derived
+	// paths are checked: the migration's entities/triples deletes proceed with no
+	// cross-vault warning.
 	for _, p := range paths {
+		if isDerivedPath(p) {
+			warnCrossVaultDerivedDelete(vaultPath, p)
+		}
 		if _, err := vaultfs.Delete(vaultPath, p, ""); err != nil && !errors.Is(err, vaultfs.ErrFileNotFound) {
 			return fmt.Errorf("delete derived path %s: %w", p, err)
 		}

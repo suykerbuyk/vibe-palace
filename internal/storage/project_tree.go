@@ -15,6 +15,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
 // The project-tree primitives vp_vault_split and vp_vault_merge were built on,
@@ -180,7 +181,12 @@ func HashFile(p string) (string, int64, error) {
 // creates parents, writes a temp file beside the target and renames. Passing
 // vaultRoot = dest makes the DESTINATION stamp itself (atomicfile.go:166), which
 // is why no .surface file ever has to travel.
-func CopyProjectTreeEntry(srcRoot, destRoot string, e ProjectTreeEntry) error {
+// held is the DESTINATION vault's live root-lock token the lifecycle command
+// holds; it exempts this authorized cross-vault relocation from the U3 misbound
+// guard (atomicfile.ForMisboundExempt), which would otherwise refuse writing a
+// project into the vault it is newly bound to while that vault holds no content
+// for it yet. A nil held means no exemption (the guard applies).
+func CopyProjectTreeEntry(srcRoot, destRoot string, e ProjectTreeEntry, held *vaultlock.Held) error {
 	src := filepath.Join(srcRoot, filepath.FromSlash(e.Path))
 
 	st, err := os.Lstat(src)
@@ -208,7 +214,7 @@ func CopyProjectTreeEntry(srcRoot, destRoot string, e ProjectTreeEntry) error {
 		var cerr error
 		n, cerr = io.Copy(io.MultiWriter(w, h), f)
 		return cerr
-	}, atomicfile.CreatingProject()); err != nil {
+	}, atomicfile.CreatingProject(), atomicfile.ForMisboundExempt(held)); err != nil {
 		return fmt.Errorf("copy %s: %w", e.Path, err)
 	}
 
