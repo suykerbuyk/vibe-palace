@@ -44,7 +44,6 @@ func newServeTestStack(t *testing.T) *serverStack {
 	return &serverStack{
 		vault:    v,
 		cfg:      cfg,
-		emb:      emb,
 		eng:      eng,
 		resolver: vpctx.NewResolver(v.Root),
 	}

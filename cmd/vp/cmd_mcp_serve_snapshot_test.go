@@ -111,7 +111,6 @@ func TestMCPServeInstallsProjectVaultSnapshot(t *testing.T) {
 	stack := &serverStack{
 		vault:    v,
 		cfg:      cfgVal,
-		emb:      emb,
 		eng:      eng,
 		resolver: vpctx.NewResolver(v.Root),
 		snap:     snap,

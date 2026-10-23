@@ -17,6 +17,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/tools"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultstack"
 	"github.com/suykerbuyk/vibe-palace/internal/vplog"
 )
 
@@ -41,7 +42,6 @@ func OpenProjectVaultAt(root string) (*storage.Vault, error) {
 type serverStack struct {
 	vault    *storage.Vault
 	cfg      storage.Config
-	emb      embedder.Embedder
 	eng      *search.Engine
 	resolver *vpctx.Resolver
 	srv      *mcpkg.Server
@@ -55,9 +55,69 @@ type serverStack struct {
 	// builds installs the SAME snapshot (via SetProjectVaultSnapshot) rather than
 	// a fresh, unbuilt one that would fail-close every project-keyed write.
 	snap storage.ProjectVaultSnapshot
+	// reg is the vault-stack registry (U4). It owns the startup stack (vault,
+	// engine, resolver, shared-model handle) and, in time, every routed stack.
+	// close() closes it, which closes each stack's engine — the single decrement
+	// of its shared-model handle. eng/resolver/vault above are the STARTUP
+	// stack's, kept as direct fields for the existing stdio/serve wiring.
+	reg *vaultstack.Registry
 }
 
-// bootstrap opens the vault and initializes the full MCP server stack.
+// vaultStackBuilder is the injected BuildFunc the registry calls to construct one
+// vault's stack. It opens the vault at an already-resolved root, loads its
+// config, Acquires a refcounted handle into the ONE shared model cache (so N
+// engines share one resident model), and builds the engine with that SAME handle
+// as its embedder — the engine is the handle's sole owner, so Engine.Close is the
+// single decrement. The engine options match the pre-U4 bootstrap exactly.
+func vaultStackBuilder(models *embedder.SharedModelCache) vaultstack.BuildFunc {
+	return func(ctx context.Context, root string) (*vaultstack.VaultStack, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		v := storage.NewVault(root)
+		cfg, err := v.LoadConfig("")
+		if err != nil {
+			return nil, fmt.Errorf("load config: %w", err)
+		}
+
+		// The model is lazy inside the shared cache: Acquire bumps the refcount
+		// and returns immediately; the ~90MB-cold / tens-of-seconds ONNX load
+		// happens on first use, off the MCP initialize handshake, and is paid
+		// ONCE per key across every vault that shares it.
+		//
+		// newVaultEmbedder is captured as the construct closure; it uses
+		// RequestedBackend (fails loud on an "ort" ask of a default binary),
+		// while sharedModelKey uses the ResolveBackend-masked value so the cache
+		// key matches each engine's embed-cache fingerprint.
+		handle, err := models.Acquire(ctx, sharedModelKey(cfg), func() (embedder.Embedder, error) {
+			e, cerr := newVaultEmbedder(v, cfg)
+			if cerr != nil {
+				return nil, fmt.Errorf("embedder: %w", cerr)
+			}
+			return e, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("acquire shared model: %w", err)
+		}
+
+		// WithBackgroundConverter / WithRebuildLauncher: identical to the pre-U4
+		// long-lived serving engine (the brute→HNSW converter and the detached
+		// `vp index rebuild` seam live only on this engine, never a CLI/one-shot
+		// one). The engine holds `handle` as its embedder; VaultStack.Close ->
+		// Engine.Close -> handle.Close is the single refcount decrement.
+		eng := search.NewEngine(handle, v, cfg,
+			search.WithBackgroundConverter(),
+			search.WithRebuildLauncher(tools.NewRebuildLauncher(v, detachlaunch.Launch)))
+
+		resolver := vpctx.NewResolver(v.Root)
+		return vaultstack.NewVaultStack(root, v, cfg, eng, resolver, handle), nil
+	}
+}
+
+// bootstrap opens the vault and initializes the full MCP server stack. At N=1
+// (every launch today) it binds and serves exactly one vault, as before; the
+// registry + shared-model cache it now builds are the foundation routing (U5)
+// stands on, not a behavior change to the startup path.
 func bootstrap() (*serverStack, error) {
 	// One Getwd, used BOTH to resolve the vault and to arm the stale-binding
 	// gate, so the two can never disagree about which directory this binding
@@ -66,64 +126,42 @@ func bootstrap() (*serverStack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get working directory: %w", err)
 	}
-	v, err := OpenProjectVaultAt(cwd)
+	// Resolve the startup vault from cwd (honoring any .vibe-palace.toml
+	// override) to learn its root and to initialise logging BEFORE the engine is
+	// built, exactly as before. The registry re-opens the vault by that root.
+	startupVault, err := OpenProjectVaultAt(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("open vault: %w", err)
 	}
-
-	cfg, err := v.LoadConfig("")
+	startupCfg, err := startupVault.LoadConfig("")
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	initLoggingFor(startupVault, startupCfg)
 
-	initLoggingFor(v, cfg)
+	// One shared model cache for the whole process; the registry builds stacks
+	// lazily and shares the model across them.
+	models := embedder.NewSharedModelCache()
+	reg := vaultstack.NewRegistry(vaultStackBuilder(models), models)
 
-	// The embedder is lazy: loading the ONNX model can take tens of seconds and
-	// downloads ~90MB on a cold cache. Doing that here would stall the MCP
-	// initialize handshake past the host's timeout, killing the session before
-	// a single tool is registered. The model loads on first use instead — which
-	// means a load failure now surfaces at first search, not at startup.
-	//
-	// The constructor is captured HERE, once, not read from the package
-	// variable at first use: a lazy construction that fires after a test's
-	// cleanup has restored newVaultEmbedder must still run the constructor this
-	// stack was built with.
-	ctor := newVaultEmbedder
-	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
-		e, err := ctor(v, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("embedder: %w", err)
-		}
-		return e, nil
-	})
+	// context.Background(): bootstrap takes no signal ctx; on `vp mcp serve` no
+	// request ctx exists until after this runs.
+	ctx := context.Background()
+	stack, err := reg.StackFor(ctx, startupVault.Root)
+	if err != nil {
+		return nil, fmt.Errorf("build startup stack: %w", err)
+	}
+	v := stack.Vault
+	cfg := stack.Cfg
 
-	// The engine builds each project's index lazily, on the first search that
-	// touches it. Rebuilding all projects up front cost minutes of CPU on every
-	// MCP spawn — most of it for projects the session never searched.
-	// WithBackgroundConverter: this is the long-lived engine that serves searches
-	// (shared by `vp mcp` and `vp mcp serve`), so it is the one process allowed to
-	// run the brute→HNSW background converter and perform the in-memory kind swap.
-	// No CLI invocation or the detached ingester passes this option.
-	// WithRebuildLauncher: on a cold/stale search that serves degraded, this
-	// engine records the durable rebuild-corpus want and ensures a detached
-	// `vp index rebuild` is running (ADR-016 decision 4). The seam lives in the
-	// tools layer, above the engine, so no run-lock or spawn logic enters
-	// internal/search; a CLI/one-shot engine injects none and only serves degraded.
-	eng := search.NewEngine(emb, v, cfg,
-		search.WithBackgroundConverter(),
-		search.WithRebuildLauncher(tools.NewRebuildLauncher(v, detachlaunch.Launch)))
-
-	resolver := vpctx.NewResolver(v.Root)
 	srv := mcpkg.NewServer(v)
 	srv.WatchVaultBinding(cwd)
 
 	// Build the [project_vaults] routing snapshot ONCE, here, where the config
-	// is readable by construction (the vault just resolved through it).
-	// context.Background(): bootstrap takes no signal ctx, and threading one
-	// would be wrong — on `vp mcp serve` no request ctx exists until after this
-	// runs. An unbuilt snapshot (a mid-startup config change) is installed as-is
-	// and the mutating gate fails project-keyed writes closed; reads still work.
-	snap, serr := storage.BuildProjectVaultSnapshot(context.Background())
+	// is readable by construction (the vault just resolved through it). An
+	// unbuilt snapshot (a mid-startup config change) is installed as-is and the
+	// mutating gate fails project-keyed writes closed; reads still work.
+	snap, serr := storage.BuildProjectVaultSnapshot(ctx)
 	if serr != nil {
 		slog.Warn("mcp: project-vault routing snapshot unbuilt; project-keyed mutating writes will fail closed",
 			"op", "mcp.snapshot", "fault", "operational", "err", serr)
@@ -135,25 +173,31 @@ func bootstrap() (*serverStack, error) {
 	storage.SetActiveProjectVaultSnapshot(snap)
 
 	// stdio serves local Claude/Zed — bootstrap slim default stays false.
-	tools.RegisterAll(srv.Registry(), resolver, v, eng, tools.WithConfig(cfg))
-	tools.RegisterResources(srv, resolver, v)
+	// RegisterAll keeps today's signature and the STARTUP stack's vault + engine;
+	// no vaultstack.Registry crosses into internal/mcp (that is U5).
+	tools.RegisterAll(srv.Registry(), stack.Resolver, v, stack.Engine, tools.WithConfig(cfg))
+	tools.RegisterResources(srv, stack.Resolver, v)
 
 	return &serverStack{
 		vault:     v,
 		cfg:       cfg,
-		emb:       emb,
-		eng:       eng,
-		resolver:  resolver,
+		eng:       stack.Engine,
+		resolver:  stack.Resolver,
 		srv:       srv,
 		launchCwd: cwd,
 		snap:      snap,
+		reg:       reg,
 	}, nil
 }
 
-// close shuts down the server stack in reverse order.
+// close shuts down the server stack. Registry.Close closes every stack's engine,
+// and each Engine.Close is the single decrement of its shared-model handle (the
+// shared model Destroys at the last handle) — so there is NO separate embedder
+// close here; a second one would double-decrement.
 func (s *serverStack) close() {
-	s.eng.Close()
-	s.emb.Close()
+	if s.reg != nil {
+		s.reg.Close()
+	}
 	vplog.Close()
 }
 

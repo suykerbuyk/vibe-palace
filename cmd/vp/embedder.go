@@ -41,3 +41,27 @@ var newVaultEmbedder = func(v *storage.Vault, cfg storage.Config) (embedder.Embe
 	}
 	return e, nil
 }
+
+// sharedModelKey is the key under which a vault's embedder model is shared in the
+// process-wide embedder.SharedModelCache (U4). It is byte-aligned with the embed-
+// cache fingerprint each engine stamps — search.NewEngine stores
+// FingerprintBackend(ResolveBackend(cfg.EmbedderBackend), cfg.EmbedderModel,
+// cfg.EmbedderMaxSeqLen) — so a shared model never serves an engine whose cache
+// fingerprint disagrees:
+//   - Backend is the ResolveBackend-MASKED value (ort→go on a default binary),
+//     NOT RequestedBackend. Construction (newVaultEmbedder) still uses
+//     RequestedBackend so an "ort" ask fails loud on a default build; the KEY uses
+//     the resolved value because that is what the fingerprint (and the resulting
+//     vectors) depend on.
+//   - MaxSeq is the CONFIGURED EmbedderMaxSeqLen (pre-clamp), exactly as the
+//     fingerprint keys it.
+//   - NOT the models dir (weights are content-identical per model name, so keying
+//     on the per-vault dir would split one model into N) and NOT BatchSize (it
+//     only slices input, never changes a vector, and is absent from the fingerprint).
+func sharedModelKey(cfg storage.Config) embedder.ModelKey {
+	return embedder.ModelKey{
+		Backend: embedder.ResolveBackend(cfg.EmbedderBackend),
+		Model:   cfg.EmbedderModel,
+		MaxSeq:  cfg.EmbedderMaxSeqLen,
+	}
+}
