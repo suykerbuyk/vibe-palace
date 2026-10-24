@@ -129,7 +129,38 @@ func ReadResourceTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 			"`complete: true` your host truncated the page itself — re-request the same offset with a smaller limit.",
 		Schema:  readResourceSchema,
 		Handler: readResourceHandler(resolver, vault),
+		// vp_read_resource carries the project only inside its `uri`, so it routes
+		// via RouteParams rather than a `project` param. Read-only, so the mutating
+		// gate (which sees the original params) never runs — safe per the field's
+		// mutating-adopter bar.
+		RouteParams: routeParamsFromResourceURI,
 	}
+}
+
+// routeParamsFromResourceURI is vp_read_resource's RouteParams hook: it derives
+// the routing params from the URI's project so installStack routes the read to the
+// project's bound vault — the same {"project":<slug>} shape the native
+// resources/read path synthesizes. CONTRACT: it returns the ORIGINAL params on
+// EVERY failure path — never nil, never empty — so routing never depends on
+// ProjectSlugsFromParams's incidental nil-tolerance. A URI with no project
+// (learning), or an unknown/malformed URI, leaves the params unchanged, so the
+// request routes to the startup vault exactly as before.
+func routeParamsFromResourceURI(params json.RawMessage) json.RawMessage {
+	var p readResourceParams
+	if err := json.Unmarshal(params, &p); err != nil || p.URI == "" {
+		return params
+	}
+	proj, ok := ProjectFromResourceURI(p.URI)
+	if !ok || proj == "" {
+		return params
+	}
+	out, err := json.Marshal(struct {
+		Project string `json:"project"`
+	}{Project: proj})
+	if err != nil {
+		return params
+	}
+	return out
 }
 
 // readResourceHandler reads its resolver/vault ctx-first (the request's bound
@@ -138,10 +169,11 @@ func ReadResourceTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 // in resources.go follow. Both transports DO run a contextFunc (stdio
 // Server.contextFunc, HTTP httpContextFunc in internal/mcp/transport_streamable.go),
 // so the vault is on ctx and installStack can install the routed stack.
-// For vp_read_resource specifically, though, that installed stack is the STARTUP
-// stack: its params carry no project field, so installStack has nothing to route
-// on and it does NOT route on the URI's project — see follow-on task
-// vp-read-resource-does-not-route-on-the-uri-project.
+// vp_read_resource carries the project only inside its `uri`, so it sets a
+// RouteParams hook (routeParamsFromResourceURI) that synthesizes {"project":<slug>}
+// from the URI before installStack runs — routing the read to the SAME bound vault
+// the native resources/read serves. A URI with no project (learning) or a
+// malformed URI leaves the params unchanged, so it serves the startup vault.
 func readResourceHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		resolver := resolverFromCtx(ctx, resolver)

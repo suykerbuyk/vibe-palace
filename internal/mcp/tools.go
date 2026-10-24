@@ -119,6 +119,22 @@ type Tool struct {
 	// per request; the serve filter answers "may this tool be reachable at
 	// all?" once. Only the first can be refined by params.
 	ReadOnlyWhen func(params json.RawMessage) bool
+	// RouteParams, when non-nil, derives the routing params for ONE invocation
+	// from this call's schema-validated params — letting a tool route on a key
+	// its own params carry under a non-`project` name (vp_read_resource routes on
+	// the project embedded in its `uri`). A nil hook is identity.
+	//
+	// 🔴 STACK SELECTION ONLY. The rewritten params are fed to installStack and
+	// nothing else. The handler still receives the ORIGINAL params, and the
+	// mutating gate (gateIfMutating -> refuseDepartedProject, and the cross-vault
+	// RouteForRequest) still classifies the ORIGINAL params. So DO NOT set this
+	// hook on a Mutating tool: it would route the write to the bound vault while
+	// the departed-project and cross-vault refusals — which key on `project`/
+	// `to_project` in the original params — see no slug (an empty slug list is
+	// startup-success) and silently pass, admitting a wrong-vault write. A Mutating
+	// tool may set it only once the gate is taught to classify the SAME rewritten
+	// params.
+	RouteParams func(params json.RawMessage) json.RawMessage
 }
 
 // ToolInfo is a read-only summary returned by Registry.List.
@@ -405,8 +421,14 @@ func (r *Registry) Dispatch(ctx context.Context, name string, params json.RawMes
 
 	// Install the request's VaultStack on ctx (params are validated, so a U5b
 	// resolver can classify them) BEFORE the gate and handler. U5a installs the
-	// startup stack; the gate still reads VaultFromContext, unchanged.
-	ctx, sErr := r.installStack(ctx, params)
+	// startup stack; the gate still reads VaultFromContext, unchanged. A tool's
+	// RouteParams hook (nil = identity) rewrites ONLY the params used to SELECT the
+	// stack — the gate and handler below still get the original params.
+	routeParams := params
+	if rt.tool.RouteParams != nil {
+		routeParams = rt.tool.RouteParams(params)
+	}
+	ctx, sErr := r.installStack(ctx, routeParams)
 	if sErr != nil {
 		return nil, sErr
 	}
@@ -740,9 +762,15 @@ func (r *Registry) makeHandler(rt *registeredTool) server.ToolHandlerFunc {
 		// Install the request's VaultStack on ctx (params are validated, so a U5b
 		// resolver can classify them) BEFORE the gate and handler. U5a installs the
 		// startup stack; the gate still reads VaultFromContext, unchanged. On the
-		// live wire path this is where makeHandler owns the per-request stack.
+		// live wire path this is where makeHandler owns the per-request stack. A
+		// tool's RouteParams hook (nil = identity) rewrites ONLY the params used to
+		// SELECT the stack — the gate and handler still get the original params.
+		routeParams := params
+		if rt.tool.RouteParams != nil {
+			routeParams = rt.tool.RouteParams(params)
+		}
 		var sErr error
-		if ctx, sErr = r.installStack(ctx, params); sErr != nil {
+		if ctx, sErr = r.installStack(ctx, routeParams); sErr != nil {
 			slog.Warn("mcp.makeHandler: stack resolution failed",
 				"op", "mcp.makeHandler",
 				"tool", toolName,

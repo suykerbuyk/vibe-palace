@@ -243,6 +243,38 @@ func ResolveURI(uri string, resolver *vpctx.Resolver, vault *storage.Vault) (tex
 	return body, resourceMIME, nil
 }
 
+// ProjectFromResourceURI extracts the project slug a vibe-palace:// resource URI
+// routes to, reusing the resourceType table + bindVars so "which segment is the
+// project" has ONE source of truth (the same front-half parse ResolveURI does).
+// It returns (slug, true) only when the URI's type carries a non-empty project
+// var; ("", false) for an unknown scheme, an empty/unknown type, a malformed or
+// too-few-segment path, or a type with no project var (learning). Callers route on
+// true and fall back to startup on false; the read itself still surfaces any real
+// parse error through ResolveURI.
+func ProjectFromResourceURI(uri string) (string, bool) {
+	rest, ok := strings.CutPrefix(uri, mcp.ResourceScheme)
+	if !ok {
+		return "", false
+	}
+	segs := strings.Split(rest, "/")
+	if len(segs) == 0 || segs[0] == "" {
+		return "", false
+	}
+	rt := resourceTypeByName(segs[0])
+	if rt == nil {
+		return "", false
+	}
+	vars, err := rt.bindVars(segs[1:], uri)
+	if err != nil {
+		return "", false
+	}
+	proj := vars["project"]
+	if proj == "" {
+		return "", false
+	}
+	return proj, true
+}
+
 // RegisterResources wires every content-resource provider onto srv from the
 // resourceTypes table. Each provider reads its resolver/vault ctx-first — the
 // request's bound VaultStack when the MCP resource dispatch seam installed one,
