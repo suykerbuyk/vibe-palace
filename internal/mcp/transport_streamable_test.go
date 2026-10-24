@@ -225,13 +225,15 @@ func TestStreamableDeleteToolsFiltersListing(t *testing.T) {
 
 // TestStreamableResourceRoundTrip is the highest-value guard for the Phase-2
 // resources layer: it proves a content resource is listed AND readable over the
-// streamable-HTTP transport, which injects NO contextFunc. A handler that read
-// the vault from ctx would nil-panic here; this passes only because the provider
-// CLOSES OVER its body (the same contract internal/tools.RegisterResources must
-// honour). The mcp package cannot import internal/tools (import cycle), so the
-// resource is registered via the package-local AddContentResource primitive with
-// a closure over a captured value — sufficient to assert the closes-over-vault
-// contract holds across the real HTTP wire.
+// streamable-HTTP transport. The provider here CLOSES OVER its body, so the
+// round-trip is independent of ctx; a real RegisterResources provider instead
+// reads its vault/resolver ctx-first. The transport DOES inject a contextFunc
+// (httpContextFunc, transport_streamable.go:29-31) that puts the vault on ctx,
+// and AddContentResource installs the routed VaultStack. The mcp package cannot
+// import internal/tools (import cycle), so the resource is registered via the
+// package-local AddContentResource primitive with a closure over a captured
+// value — sufficient to assert the HTTP resource round-trip holds across the real
+// wire.
 func TestStreamableResourceRoundTrip(t *testing.T) {
 	ts, srv := testStreamableServer(t, testBearerToken)
 

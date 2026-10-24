@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -13,11 +14,12 @@ import (
 // ResourceFunc resolves a content resource from the template-matched URI
 // variables. It returns the resource body, its MIME type, and any error.
 //
-// Handlers MUST NOT read the *storage.Vault or *context.Resolver from ctx.
-// Providers close over the vault/resolver captured at registration time
-// instead. (The vault IS now on the context over both transports — see
-// StreamableHTTPHandler — but the resolver is not, and closing over both keeps
-// one rule rather than two.)
+// Handlers read their *storage.Vault / *context.Resolver ctx-first: the
+// request's bound VaultStack when AddContentResource installed one (keyed on the
+// project var, mirroring tool dispatch), else the vault/resolver they captured at
+// registration. This is the same ctx-first rule the tool handlers follow, so a
+// native resources/read routes to the bound vault on a multi-vault host instead
+// of the startup vault.
 type ResourceFunc func(ctx context.Context, vars map[string]string) (text, mime string, err error)
 
 // AddContentResource registers a read-only content resource template with the
@@ -54,6 +56,28 @@ func (s *Server) AddContentResource(uriTemplate, name, mime string, fn ResourceF
 					}
 				}
 			}
+		}
+
+		// Route the read to the request's bound vault: synthesize the project-keyed
+		// params the dispatch resolver already understands and install the resolved
+		// VaultStack on ctx, exactly as makeHandler/Dispatch do for tool calls. The
+		// provider then reads its vault/resolver ctx-first (resolverFromCtx /
+		// vaultFromCtx). Keyed on the `project` var — the same param-name convention
+		// the mutating gate uses — so a native resources/read agrees with a routed
+		// tool read on a multi-vault host. A read is read-only, so no gate runs here.
+		// learning carries no project var: install is skipped and it serves startup.
+		if proj := vars["project"]; proj != "" {
+			params, merr := json.Marshal(struct {
+				Project string `json:"project"`
+			}{Project: proj})
+			if merr != nil {
+				return nil, merr
+			}
+			enriched, serr := s.registry.installStack(ctx, json.RawMessage(params))
+			if serr != nil {
+				return nil, serr
+			}
+			ctx = enriched
 		}
 
 		text, m, err := fn(ctx, vars)

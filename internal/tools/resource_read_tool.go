@@ -132,9 +132,16 @@ func ReadResourceTool(resolver *vpctx.Resolver, vault *storage.Vault) mcp.Tool {
 	}
 }
 
-// readResourceHandler closes over the resolver/vault captured at registration —
-// it MUST NOT read them from ctx, since the streamable-HTTP transport injects no
-// contextFunc (same trap as the resource providers in resources.go).
+// readResourceHandler reads its resolver/vault ctx-first (the request's bound
+// stack when dispatch installed one), falling back to the values captured at
+// registration otherwise — the same ctx-first rule the native resource providers
+// in resources.go follow. Both transports DO run a contextFunc (stdio
+// Server.contextFunc, HTTP httpContextFunc in internal/mcp/transport_streamable.go),
+// so the vault is on ctx and installStack can install the routed stack.
+// For vp_read_resource specifically, though, that installed stack is the STARTUP
+// stack: its params carry no project field, so installStack has nothing to route
+// on and it does NOT route on the URI's project — see follow-on task
+// vp-read-resource-does-not-route-on-the-uri-project.
 func readResourceHandler(resolver *vpctx.Resolver, vault *storage.Vault) mcp.HandlerFunc {
 	return func(ctx context.Context, params json.RawMessage) (any, error) {
 		resolver := resolverFromCtx(ctx, resolver)

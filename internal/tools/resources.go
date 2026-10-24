@@ -244,16 +244,25 @@ func ResolveURI(uri string, resolver *vpctx.Resolver, vault *storage.Vault) (tex
 }
 
 // RegisterResources wires every content-resource provider onto srv from the
-// resourceTypes table. Each provider closes over the captured resolver/vault
-// (NEVER reads them from ctx — the streamable-HTTP transport injects no
-// contextFunc), validates the template-matched vars, and resolves directly. It
-// does NOT rebuild an URI string and re-parse it through ResolveURI: the vars
-// are already in hand from the matched template, so the dispatch is a direct
-// table lookup.
+// resourceTypes table. Each provider reads its resolver/vault ctx-first — the
+// request's bound VaultStack when the MCP resource dispatch seam installed one,
+// else the resolver/vault captured here at registration (the N=1 / no-resolver
+// fallback). This is the same ctx-first rule the tool handlers follow, so a
+// native resources/read routes to the same vault a routed tool read would. It
+// validates the template-matched vars and resolves directly: it does NOT rebuild
+// an URI string and re-parse it through ResolveURI, since the vars are already in
+// hand from the matched template.
 func RegisterResources(srv *mcp.Server, resolver *vpctx.Resolver, vault *storage.Vault) {
 	for i := range resourceTypes {
 		rt := &resourceTypes[i]
-		handler := func(_ context.Context, vars map[string]string) (string, string, error) {
+		handler := func(ctx context.Context, vars map[string]string) (string, string, error) {
+			// ctx-first: the request's bound stack when dispatch installed one,
+			// else the closed-over registration values (the same helpers
+			// vp_read_resource uses). At N=1 the installed stack IS the startup
+			// stack, so these return the closed-over values and behavior is
+			// unchanged.
+			resolver := resolverFromCtx(ctx, resolver)
+			vault := vaultFromCtx(ctx, vault)
 			for _, name := range rt.vars {
 				if err := slug.Validate(vars[name]); err != nil {
 					return "", "", fmt.Errorf("invalid %s: %w", name, err)
