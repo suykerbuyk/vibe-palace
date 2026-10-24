@@ -685,8 +685,10 @@ roster is the Chair's job, not the operator's. On discovery, rename each unnamed
 pane to the convention `<project-prefix>-<role[N]>` (e.g. `vp-imp1`, `vp-imp2`, `vp-adv-grok`),
 deriving the prefix and role from the pane's existing label or terminal title where one is
 present. A seeding prompt's claimed names are not trusted for this — the live roster is
-discovered and named here, then stated once (see "State the seating once"). So the operator
-does not have to tell the Chair which pane is which; creating the panes is enough.
+discovered and named here, then stated once (see "State the seating once"). A pane already
+named `<project-prefix>-<role>-<datestamp>` (seated via "Seat the subordinate roster") is
+already rostered — leave its name as-is; do not rename it down to `<project-prefix>-<role>`.
+So the operator does not have to tell the Chair which pane is which; creating the panes is enough.
 
 `idle` means ready for input and seen in the focused UI. `done` is the same
 idle after unseen background work. CLI reads do not mark a pane seen.
@@ -764,6 +766,83 @@ is empty and tempting (leave it); the tree is dirty with another pane's unit
    context).
 7. Rediscover; state the new roster once.
 
+### Seat the subordinate roster
+
+When the operator asks for the standard team in one go — "seat imp1, imp2 and a
+grok reviewer", or a role list like `imp1,imp2,review:grok` — do not hand-launch
+the panes one at a time. Seat them in a single pass: for EACH role, run the
+per-pane steps in the "How:" list above, named at `agent start` so there is no
+post-hoc `agent rename`.
+
+Parse each entry as `role[:kind]`. `kind` defaults exactly as in How step 5 (the
+operator's named kind, else the last implementor kind this session, else the
+Chair's own); `review:grok` pins the kind for that one pane. Detect your own
+permission posture **once, up front** by reading your own command line — see
+"Inheriting the operator's permission posture" below — not once per role.
+
+**Build each born name before you start the pane, and keep it legal.** The name is
+`<project-prefix>-<role>-$(date "+%Y%d%H%M%S")` (prefix e.g. `vp`), passed to the
+existing `agent start <NAME>` positional so the pane is born named — no
+`agent rename` afterward (see the reconciliation note at the end).
+- 🔴 **It must match `[a-z][a-z0-9_-]{0,31}`** (How step 5 and "Dynamic
+  discovery") — 32 characters total. A long role overflows: e.g.
+  `vp-adverserial-review-grok-<12-digit stamp>` is 39. **Shorten the role**
+  (`adv-grok`) or refuse that entry BEFORE `agent start`.
+- 🔴 **The stamp is second-resolution, so a fast loop can emit the SAME name
+  twice** — the uniqueness violation the name rule forbids. Capture a FRESH stamp
+  each iteration AND confirm the name is not already in `herdr agent list` before
+  each `agent start`; on a collision, wait for the second to tick (or suffix) and
+  re-check.
+- `+%Y%d%H%M%S` omits the month (year, day-of-month, hour, minute, second), so the
+  stamp repeats on the same day-of-month next month. That is the operator's format
+  — do not change it here; it differentiates resume history within a month, which
+  is its purpose.
+
+Then, per role, in order:
+
+1. **Re-inspect geometry before every split** (`herdr pane layout`, How step 1) —
+   each split changes the layout, so a direction chosen once for the whole list
+   makes a row of thin panes. `herdr pane split --current --direction <right|down>
+   --cwd "$PWD" --no-focus` — wide pane right, narrow/tall pane down. Outside
+   Chair: `--pane <id>`, and prefix every call with `herdr --session <name>`
+   exactly as How step 2.
+2. Read the new pane id from the JSON (`.result.pane.pane_id`).
+3. `herdr agent start <born-name> --kind <kind> --pane <pane-id> [-- <native args>]`.
+   - Native args are **kind-conditional, exactly as How step 5 and the posture
+     rule**: for `--kind claude`, `-- --prompt-suggestions false`; append
+     `--dangerously-skip-permissions` ONLY for `--kind claude` AND only when your
+     own command line carries it (the posture self-detection). Pass neither to a
+     non-claude kind without checking that kind first.
+   - 🔴 **Never pass `--remote-control` to a subordinate.** Per the operator's
+     verbatim convention it is the CHAIR launch flag only (the specimen in
+     "Inheriting the operator's permission posture" is corrected to match). This is
+     a convention match, not a claim about wakers — arm the waker explicitly in
+     step 5.
+4. Bootstrap it as in How step 6: `herdr agent prompt <born-name> "…" --wait`,
+   binding constraints first, then the project's restart command if it needs full
+   context.
+5. **Arm a waker for this subordinate** (see "Learning that a subordinate
+   finished"). The default `notify_when_idle` subscription names a **ListAgents
+   session**, not a herdr pane, so you cannot arm it with the herdr name: resolve
+   this new pane to its ListAgents session (same machine, main conversation) and
+   subscribe on THAT session id. Whether a pane started by `herdr agent start`
+   WITHOUT `--remote-control` appears in ListAgents is unproven; if it is not
+   listed, the measured waker for it is a backgrounded
+   `herdr agent wait <born-name> --until done --until idle` (it names the herdr
+   pane). Do not assume the subscription is armed by the herdr name. Also: a
+   Chair-started pane is permission-mismatched by default, which can WITHHOLD its
+   idle notice (see "Inheriting the operator's permission posture" →
+   mismatch-withholds-the-notice); posture detection up front is the mitigation but
+   is untested for notice delivery, so prefer `herdr agent wait` when in doubt.
+
+After the loop, **rediscover the live roster and state it once** — never treat the
+role list you were handed as the resulting roster (see "Dynamic discovery" and
+"The Chair self-rosters"). A pane this block already named
+`<prefix>-<role>-<datestamp>` is already rostered: leave its name as-is — do NOT
+rename it down to `<prefix>-<role>` (that would drop its resume-history stamp and
+can collide with a live `<prefix>-<role>`). If posture detection failed, **ask
+before seating any pane** — do not guess in either direction (posture section).
+
 ### Inheriting the operator's permission posture
 
 🔴 **A pane the Chair starts does not inherit the operator's permission mode.
@@ -810,11 +889,16 @@ line concrete:
 | | Command line |
 |---|---|
 | **Chair** | `claude --dangerously-skip-permissions --remote-control vp-chair --name vp-chair-…` |
-| **Subordinate** | `claude --dangerously-skip-permissions --remote-control vp-imp1 --name vp-imp1-… --prompt-suggestions=false` |
+| **Subordinate** | `claude --dangerously-skip-permissions --name vp-imp1-… --prompt-suggestions=false` |
 
 The operator never passes `--prompt-suggestions` to a Chair and always passes
 it to a subordinate, so it is ergonomics and does not inherit. They pass
 `--dangerously-skip-permissions` to both, so it is posture and does.
+
+`--remote-control` is the operator's chair-launch flag; per the operator's
+convention it is not passed to a subordinate. That is a convention match, not a
+statement about wakers: see "Seat the subordinate roster" step 5 for how a seated
+subordinate's completion is actually watched.
 
 **Kind-conditional, exactly like `--prompt-suggestions` above:
 `--dangerously-skip-permissions` is CLAUDE CODE ONLY.** Pass it only for

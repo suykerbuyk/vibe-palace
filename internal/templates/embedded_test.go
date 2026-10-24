@@ -737,6 +737,16 @@ func TestHerdrChair_NamedSessionOutsideGate(t *testing.T) {
 	if !strings.Contains(chair, "operator Terminal") && !strings.Contains(herdr, "focused pane of that session") {
 		t.Error("outside Chair must not treat pane current --current as Self")
 	}
+	if !strings.Contains(chair, "Seat the subordinate roster") {
+		t.Error("chair skill: missing the 'Seat the subordinate roster' procedure")
+	}
+	// The subordinate specimen must carry no --remote-control (chair-only flag);
+	// scan every **Subordinate** row so a renamed spelling cannot slip past.
+	for _, line := range strings.Split(chair, "\n") {
+		if strings.Contains(line, "**Subordinate**") && strings.Contains(line, "--remote-control") {
+			t.Errorf("chair skill: subordinate specimen must not carry --remote-control (chair-only): %s", line)
+		}
+	}
 }
 
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
