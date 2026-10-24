@@ -97,6 +97,17 @@ fully applies or it has no effect.`
 		t.Fatalf("ingest the inline archive: %v", err)
 	}
 
+	// Build the index the way the IndexNotBuiltError hint tells a user to
+	// (`vp index rebuild`), in-process. Post-ADR-016 (be6eca2) the lazy search
+	// path refuses a cold-corpus build during the inter-run cooldown that the
+	// ingest.Run above just armed, and it never embeds local-tier chunks anyway;
+	// only an explicit rebuild (modeExplicit, refuse=false) bypasses that gate
+	// and embeds the transcript/local-tier chunks the sawTranscript assertion
+	// below needs.
+	if _, err := h.Engine.RebuildExplicit(context.Background(), "test-proj"); err != nil {
+		t.Fatalf("rebuild index before search: %v", err)
+	}
+
 	// Now the transcript is searchable through its archive's chunks.
 	results, err := h.Engine.Search(context.Background(), "PostgreSQL database migration system",
 		search.SearchFilters{Project: "test-proj"})
