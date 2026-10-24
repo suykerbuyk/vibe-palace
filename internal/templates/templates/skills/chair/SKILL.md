@@ -466,7 +466,9 @@ to it.
 ## Learning that a subordinate finished
 
 **In one line:** arm a waker at dispatch — the default is a `notify_when_idle` subscription
-(observe-only, measured against Herdr panes); a backgrounded `herdr agent wait --until done
+(observe-only, measured against Herdr panes; the measured no-`--remote-control` fire was on a
+raw-`--name` session, and it is the **claude** case only — a grok pane is not a `notify_when_idle`
+target, see "Seat the subordinate roster" step 5); a backgrounded `herdr agent wait --until done
 --until idle` is the measured alternative — then stop watching and never poll; the harness
 starts a turn when it fires. The rest of this section is the measured evidence and the limits
 it does not cover.
@@ -513,9 +515,12 @@ knowing before relying on it:
 - **A target in a different permission mode may hold the traffic for its own
   user's approval**, in which case the notice reaches the operator rather than
   the Chair. Both measured sessions were in the same mode; the mismatched case
-  is untested. **A Chair-started pane is mismatched by default** — see
-  "Inheriting the operator's permission posture" — so the same omission that
-  gets a subordinate's work denied can also keep its idle notice from arriving.
+  is untested. **A Chair-started claude pane is mismatched only when it was seated WITHOUT the Chair's posture
+flag** — see "Inheriting the operator's permission posture" and "Seat the subordinate roster"
+step 3. When it carried that flag, the idle notice was delivered to the Chair on the one 2026-10-24
+trial; when it did not, the same omission that gets a subordinate's work denied can also keep its
+idle notice from arriving — and the withhold itself is still untested (per the permission-mode
+limit above).
 
 **The tested scope, stated because it is narrower than it reads.** Every
 demonstration was session-to-session on one machine, and **every target was a
@@ -822,18 +827,35 @@ Then, per role, in order:
    binding constraints first, then the project's restart command if it needs full
    context.
 5. **Arm a waker for this subordinate** (see "Learning that a subordinate
-   finished"). The default `notify_when_idle` subscription names a **ListAgents
-   session**, not a herdr pane, so you cannot arm it with the herdr name: resolve
-   this new pane to its ListAgents session (same machine, main conversation) and
-   subscribe on THAT session id. Whether a pane started by `herdr agent start`
-   WITHOUT `--remote-control` appears in ListAgents is unproven; if it is not
-   listed, the measured waker for it is a backgrounded
-   `herdr agent wait <born-name> --until done --until idle` (it names the herdr
-   pane). Do not assume the subscription is armed by the herdr name. Also: a
-   Chair-started pane is permission-mismatched by default, which can WITHHOLD its
-   idle notice (see "Inheriting the operator's permission posture" →
-   mismatch-withholds-the-notice); posture detection up front is the mitigation but
-   is untested for notice delivery, so prefer `herdr agent wait` when in doubt.
+   finished", whose limits — same-machine, main-conversation-only, one-shot, and
+   a measured fire lifetime — all still apply here), kind-conditionally:
+   - **claude:** the pane appears in ListAgents by its born name, because
+     `agent start <born-name>` passes `--name <born-name>` through to claude
+     (ps-confirmed on seated agent-start panes). The born name is therefore ONE
+     identity across both subsystems: the same string targets a `notify_when_idle`
+     subscription (harness) AND `herdr agent wait <born-name>` (herdr), with no
+     pane-to-session resolution step. `notify_when_idle` fires end to end even on a
+     pane carrying no `--remote-control` — measured 2026-10-24 (task
+     `measure-notify-when-idle-on-no-remote-control-subordinate`) on a RAW `--name`
+     session (`vp-imp1`), NOT on an agent-start pane; it is inferred to cover an
+     agent-start pane only because that path sets the same `--name` identity, and a
+     self-owned agent-start fire is a trivial future re-confirm. Use it as the
+     default waker, with a backgrounded
+     `herdr agent wait <born-name> --until done --until idle` as the equivalent
+     alternative.
+   - **grok:** the pane does NOT appear in ListAgents (it is not a Claude session),
+     so `notify_when_idle` cannot target it — a backgrounded
+     `herdr agent wait <born-name> --until done --until idle` (it names the herdr
+     pane) is mandatory. For any OTHER non-claude kind, do not assume ListAgents
+     visibility: check that kind before using `notify_when_idle`, and otherwise use
+     `herdr agent wait`.
+   On posture: a Chair-started claude pane is permission-matched only when step 3
+   passed the Chair's own posture flag. On the one inherited-posture trial
+   (2026-10-24) the idle notice was delivered to the Chair; the mismatched-mode
+   withhold case is still untested (see "Learning that a subordinate finished", the
+   permission-mode limit). If this pane's mode is not the Chair's — the operator
+   chose not to inherit, or it is a pane this Chair did not start — also arm
+   `herdr agent wait <born-name> --until done --until idle`.
 
 After the loop, **rediscover the live roster and state it once** — never treat the
 role list you were handed as the resulting roster (see "Dynamic discovery" and
@@ -916,8 +938,9 @@ bypass-off recreates the defect above.
 
 This is a Herdr-mode DISPATCH convenience — how to land a prompt on a pane and wait for that
 one dispatch to settle. It does NOT change the default completion waker: the `notify_when_idle`
-subscription remains the default (see "Learning that a subordinate finished" and the Herdr-mode
-preference in "Waiting on long-running work" below). Reach here when you want to land-and-wait
+subscription remains the default (for a **claude** pane; a grok pane is not a `notify_when_idle`
+target — see "Seat the subordinate roster" step 5) (see "Learning that a subordinate finished" and
+the Herdr-mode preference in "Waiting on long-running work" below). Reach here when you want to land-and-wait
 on a single pane dispatch from inside the harness.
 
 Dispatch (in-pane Chair) — background this call; its settle wakes you:
@@ -960,7 +983,9 @@ Two hazards:
 
 **Prefer the idle subscription** described in "Learning that a subordinate
 finished" above: it costs the target nothing, ties up no backgrounded process,
-and **a Herdr pane is precisely the target it was measured against**. Reach for
+and **a Herdr pane is precisely the target it was measured against** (the
+**claude** case — a grok Herdr pane was measured ABSENT from ListAgents, so it is
+not a `notify_when_idle` target, see "Seat the subordinate roster" step 5). Reach for
 `herdr agent wait` when you specifically want a pane-status predicate rather
 than "that session went idle."
 

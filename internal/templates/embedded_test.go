@@ -747,6 +747,30 @@ func TestHerdrChair_NamedSessionOutsideGate(t *testing.T) {
 			t.Errorf("chair skill: subordinate specimen must not carry --remote-control (chair-only): %s", line)
 		}
 	}
+	// The waker hedge ("appears in ListAgents is unproven") is resolved — the
+	// claude born name is one identity across both subsystems, so the uncertainty
+	// phrasing must be gone.
+	if strings.Contains(chair, "appears in ListAgents is unproven") {
+		t.Error("chair skill: the resolved waker hedge ('appears in ListAgents is unproven') must be gone")
+	}
+	// The measured nuance must be stated without overclaiming: the no-remote-control
+	// fire was measured on a raw --name session, NOT on an agent-start pane.
+	if !strings.Contains(chair, "measure-notify-when-idle-on-no-remote-control-subordinate") ||
+		!strings.Contains(chair, "NOT on an agent-start pane") {
+		t.Error("chair skill: step 5 must cite the measure task and keep the 'NOT on an agent-start pane' nuance")
+	}
+	// The grok mandate (also the claude alternative) must name the herdr wait.
+	if !strings.Contains(chair, "herdr agent wait <born-name> --until done --until idle") {
+		t.Error("chair skill: step 5 must name 'herdr agent wait <born-name> --until done --until idle' (grok mandate / claude alternative)")
+	}
+	// The old coherence sentence is replaced by the posture-conditional one.
+	if strings.Contains(chair, "A Chair-started pane is mismatched by default") {
+		t.Error("chair skill: the old 'mismatched by default' sentence must be replaced")
+	}
+	// The dangling anchor (a heading that never existed) must be gone everywhere.
+	if strings.Contains(chair, "mismatch-withholds-the-notice") {
+		t.Error("chair skill: the dangling 'mismatch-withholds-the-notice' anchor must be gone")
+	}
 }
 
 func TestFS_ContainsTemplatesRoot(t *testing.T) {
