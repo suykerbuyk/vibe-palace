@@ -1,6 +1,6 @@
 # ADR 012: Vault Resolution Precedence and Host-Local Project Bindings
 
-**Status:** Accepted (2026-09-27). **Amended 2026-09-28** — see *Amendment (2026-09-28): older binaries, and the bind surface after the lifecycle commands*; rule 7 is corrected in place, and rules 4 and 6 and the Consequences bind bullet carry dated amendment markers. **Amended 2026-10-23** — see *Amendment (2026-10-23): Option C adopted (per-project MCP routing), delivered fail-safe-first on a startup binding snapshot*; Decision 4 is refined for the MCP routing surface, and §6's "deferred Option C" and the Consequences "born in another vault … parked follow-on" bullet are superseded.
+**Status:** Accepted (2026-09-27). **Amended 2026-09-28** — see *Amendment (2026-09-28): older binaries, and the bind surface after the lifecycle commands*; rule 7 is corrected in place, and rules 4 and 6 and the Consequences bind bullet carry dated amendment markers. **Amended 2026-10-23** — see *Amendment (2026-10-23): Option C adopted (per-project MCP routing), delivered fail-safe-first on a startup binding snapshot*; Decision 4 is refined for the MCP routing surface, and §6's "deferred Option C" and the Consequences "born in another vault … parked follow-on" bullet are superseded. **Amended 2026-10-25** — see *Amendment (2026-10-25): Option (b) structural split*; Decision 1's tier-1 source moves to a gitignored `.vibe-palace/local.toml`, and Decision 2's committed-marker advisory becomes a hard refusal (the latter lands in a later unit).
 **Deciders:** Project owner
 **Context:** Epic `project-relocation-rename-and-vault-split`; decision task
 `tracked-vibe-palace-toml-and-per-host-vault-binding` (U3); implementation task
@@ -300,3 +300,81 @@ the embedder fingerprint (backend, model, max-seq), capping cost to ~310 MB flat
 a `[project_vaults]` entry; a project with only a tier-1 cwd-marker `vault_path` and no global
 binding is invisible to it. For the quantum split this is fine — split projects are bound via
 `[project_vaults]` (Decision 1, `clone --bind`). Stated as a known limit.
+
+## Amendment (2026-10-25): Option (b) structural split — the tracked marker is identity-only by STRUCTURE, the tier-1 override moves to a gitignored file
+
+> STAGED DELIVERY. The operator chose Option (b) (task
+> `adr-012-identity-only-marker-compliance-and-guard`, Decision 2026-10-25, wording
+> signed off 2026-10-25); this section records the amended design, delivered across
+> units U1–U5 of the reviewed plan. **This change ships U1 (this text) + U2 (resolver
+> reads the new file) only.** The hard tracked-marker refusal (U4) and the `vp init`
+> writer changes (U5) are separate, later units and are NOT in force yet.
+
+The resolution tiers (Decision 1) are unchanged in NUMBER and ORDER. What changes
+is the SOURCE of the tier-1 override and the enforcement of Decision 2. The
+2026-09-28 and 2026-10-23 amendments are untouched.
+
+**Why.** Decision 2 made identity-vs-override a CONTENT rule on one file (a tracked
+`.vibe-palace.toml` must not carry `vault_path`; an untracked one may). That rule
+drifted in both directions on live checkouts (a tracked marker carrying a host
+path; an identity marker git-excluded so identity did not travel). A STRUCTURAL
+split — identity in the tracked file, the override in a separate gitignored file —
+removes the content rule the drift kept violating.
+
+**1. Tier-1 source: `.vibe-palace.toml` → `.vibe-palace/local.toml`.** The Decision 1
+tier-1 lever is read from the gitignored `.vibe-palace/local.toml` (top-level
+`vault_path`), found by a `$HOME`-bounded walk identical to the identity-marker
+walk. Source label `cwd-local:<file>`. It is scoped to throwaway/rehearsal trees;
+the normal per-host binding stays the tier-2 global `[project_vaults].<slug>`,
+keyed on the tracked marker's `[project].name` (Decision 3, unchanged).
+
+A **deprecation window** (U2) still honors a legacy top-level `vault_path` in
+`.vibe-palace.toml`, but ONLY when `.vibe-palace/local.toml` sets none; it is
+surfaced as a `Resolution.Warnings` migration nudge, which **both `vp status` and
+`vp check` print** (as `vault binding warning:`), never a new error type (a
+non-sentinel error would fall through `vp hook` to the live vault). The new
+override wins when both are set; **both set and naming different vaults is a
+refusal** (`ErrVaultBindingRejected`).
+
+**2. Decision 2: advisory → hard refusal (U4, not yet in force).** A tracked
+`.vibe-palace.toml` that carries an active `vault_path` moves from the `vp check`
+**advisory (Info)** row to a **hard refusal** at the resolver — the single seam
+both the CLI and the MCP startup bind, and the hook (`OpenVaultFromCwd`), pass
+through. The tracked predicate FAILS CLOSED: when `vault_path` is non-empty and
+git cannot answer (a real failure/timeout/disabled, as distinct from a genuinely
+non-git tree), the resolution refuses rather than honoring the path. The `vp check`
+row remains as a friendly pre-flight that names the fix. This supersedes Decision
+2's last sentence ("`vp check` reports a committed marker that sets `vault_path`,
+as an advisory (Info) row"). The enforcement lands in U4; U2 keeps the legacy
+advisory behavior for tracked markers until then.
+
+**3. The rejected "untracked sibling file" alternative is refined, not overturned.**
+ADR-012's Context rejected an untracked sibling because a fresh `git worktree` /
+`git clone` lacks it, so the hook would resolve the wrong vault and skip capture.
+That rejection STANDS for using such a file as the *normal* per-host binding
+mechanism. Option (b) does not: the normal mechanism is the tier-2 global
+`[project_vaults]` binding, keyed on the identity the TRACKED marker carries (which
+a worktree/clone does carry). The gitignored `.vibe-palace/local.toml` is scoped
+strictly to intentional throwaway trees that are never tier-2-bound — so a fresh
+worktree/clone of a real project resolves on identity via tier-2 and never depends
+on the override's presence. (A fresh clone on a host with NO binding still falls to
+tier 3; that is the pre-existing "bind before first session" hazard in the
+Consequences, not introduced here.)
+
+**4. Decision 4 / 4a.** Unchanged in rule. The tier-1 source file is renamed to
+`.vibe-palace/local.toml`; the found-but-unreadable / swallowed-`vault_path`
+refusals apply to the override file as well as the identity marker. **4a's
+one-walk-one-reader intent is preserved by CO-LOCATION:** when an identity marker
+is found at directory `D`, the override is read ONLY at `D/.vibe-palace/local.toml`
+— never via an independent upward walk that could climb past `D`. So a child
+checkout's own identity marker is never bound to a parent tree's throwaway override,
+and the vault choice and the project label cannot come from disagreeing files. A
+throwaway tree with no identity marker keeps the override's own `$HOME`-bounded
+walk. The new-file-vs-legacy disagreement refusal is added to Decision 4's list.
+
+**5. Decision 6 is explicitly UNCHANGED.** This amendment governs the
+resolver/capture path only. The 7 vault file-CRUD commands, the surface gate
+`vaultRoot()`, the vault lifecycle commands, and the `vp hook` global fallback
+stay on the GLOBAL resolver (`ResolveGlobalVaultPath` / `OpenVaultGlobal`), which
+never reads the marker or the override. Shipping this split is NOT a license to
+point file-CRUD at `ResolveVaultBinding`.

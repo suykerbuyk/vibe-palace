@@ -18,8 +18,19 @@ import (
 	slugpkg "github.com/suykerbuyk/vibe-palace/internal/slug"
 )
 
-// ConfigFileName is the name of the per-project configuration file.
+// ConfigFileName is the name of the per-project configuration file: the TRACKED
+// identity marker. Under ADR-012 Amendment (2026-10-25, Option (b) structural
+// split) it carries identity + version ONLY; the host vault override lives in
+// LocalOverrideName instead.
 const ConfigFileName = ".vibe-palace.toml"
+
+// LocalOverrideName is the per-directory, gitignored tier-1 vault override,
+// relative to the directory it sits in. ADR-012 Amendment (2026-10-25) moved the
+// Tier-1 `vault_path` lever OUT of the tracked identity marker and into this
+// file, so a committed marker never carries a host path. It is scoped to
+// throwaway/rehearsal trees; the normal per-host binding is the global
+// [project_vaults] tier keyed on the marker's identity.
+const LocalOverrideName = ".vibe-palace/local.toml"
 
 // manifestFiles are ecosystem manifest files that mark a directory as a
 // project even without a `.git` directory. Order is stable/alphabetical;
@@ -372,6 +383,33 @@ func findMarkerUpward(dir string, homeBoundaries ...string) (string, error) {
 		if parent == dir {
 			// Reached filesystem root.
 			return "", fmt.Errorf("%s not found", ConfigFileName)
+		}
+		dir = parent
+	}
+}
+
+// findLocalOverrideUpward is findMarkerUpward for LocalOverrideName: the SAME
+// $HOME-bounded walk. Separate from findMarkerUpward only because it looks for a
+// two-segment path (.vibe-palace/local.toml) rather than ConfigFileName.
+//
+// It is used ONLY for a throwaway tree that has no identity marker. When an
+// identity marker exists, the resolver reads the override co-located with it
+// (ReadLocalOverrideInDir), NOT via this walk — so a parent override can never
+// bind a child checkout that has its own marker (ADR-012 rule 4a).
+func findLocalOverrideUpward(dir string, homeBoundaries ...string) (string, error) {
+	for {
+		for _, b := range homeBoundaries {
+			if b != "" && dir == b {
+				return "", fmt.Errorf("%s not found (stopped at home boundary)", LocalOverrideName)
+			}
+		}
+		candidate := filepath.Join(dir, LocalOverrideName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("%s not found", LocalOverrideName)
 		}
 		dir = parent
 	}

@@ -4,7 +4,9 @@
 package project
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +80,74 @@ func LocateMarker(cwd string) (Marker, error) {
 		return Marker{}, err
 	}
 	return ReadMarker(path)
+}
+
+// FindLocalOverride is the walk for the gitignored tier-1 override
+// (LocalOverrideName, .vibe-palace/local.toml), bounded at $HOME EXACTLY like
+// FindMarker (both spellings of home, symlink-resolved start). It returns the
+// override's path, or "" when there is none (a walk that finds nothing is "",
+// nil — only an unresolvable cwd is an error, matching FindMarker).
+//
+// 🔴 USE THIS ONLY WHEN THERE IS NO IDENTITY MARKER (a throwaway tree whose only
+// vibe-palace file is an override). When an identity marker IS found, the resolver
+// consults the override ONLY in the marker's own directory (ReadLocalOverrideInDir),
+// never via this independent upward walk: an independent walk can climb PAST the
+// marker's directory and bind a child checkout to a parent tree's throwaway vault,
+// which is exactly the file-disagreement ADR-012 rule 4a forbids.
+func FindLocalOverride(cwd string) (string, error) {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	start := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		start = filepath.Clean(resolved)
+	}
+	homeBoundary, _ := resolvedHome()
+	homeAsGiven := ""
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if a, err := filepath.Abs(home); err == nil {
+			homeAsGiven = filepath.Clean(a)
+		}
+	}
+	path, err := findLocalOverrideUpward(start, homeBoundary, homeAsGiven)
+	if err != nil {
+		return "", nil
+	}
+	return path, nil
+}
+
+// LocateLocalOverride is FindLocalOverride followed by ReadMarker. A cwd with no
+// override returns a zero Marker and no error. It reuses ReadMarker, so a
+// vault_path swallowed by a table is reported in SwallowedTable exactly as for
+// the identity marker; the override file's [project].name, if any, is read but
+// unused (the identity marker is the one keyed by the resolver). It is the
+// NO-identity-marker path only (see FindLocalOverride's warning).
+func LocateLocalOverride(cwd string) (Marker, error) {
+	path, err := FindLocalOverride(cwd)
+	if err != nil || path == "" {
+		return Marker{}, err
+	}
+	return ReadMarker(path)
+}
+
+// ReadLocalOverrideInDir reads dir/LocalOverrideName (dir/.vibe-palace/local.toml)
+// WITHOUT walking. It is how the override is consulted once an identity marker has
+// fixed the directory: co-located, so the vault and the project label come from
+// the SAME tree (ADR-012 rule 4a). A missing override file is a zero Marker and no
+// error; a file that exists but cannot be read (EACCES, a directory at the path,
+// bad TOML) keeps its Path set and returns the error, so the caller refuses rather
+// than silently fall through. The not-exist case never surfaces fs.ErrNotExist.
+func ReadLocalOverrideInDir(dir string) (Marker, error) {
+	path := filepath.Join(dir, LocalOverrideName)
+	m, err := ReadMarker(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Marker{}, nil
+		}
+		return m, err
+	}
+	return m, nil
 }
 
 // ReadMarker reads one marker file ONCE.

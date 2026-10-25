@@ -121,8 +121,11 @@ func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 		return
 	}
 
-	var source string
-	vaultPath, source, err = storage.ResolveVaultPath(root)
+	// ResolveVaultBinding, not ResolveVaultPath: the latter drops
+	// Resolution.Warnings, and ADR-012 points the operator at `vp check` to see
+	// the resolved vault — so the tier-1 deprecation nudge (ADR-012 Amendment
+	// 2026-10-25, Option (b)) must surface here too, not only in `vp status`.
+	res, err := storage.ResolveVaultBinding(root)
 	if err != nil {
 		r.Status = Fail
 		r.Err = err
@@ -141,12 +144,18 @@ func CheckConfigAt(root string) (configPath, vaultPath string, r Result) {
 		r.Details = []string{err.Error()}
 		return
 	}
+	vaultPath = res.Path
 
 	r.Status = Pass
 	r.Summary = configPath
 	r.Details = []string{
-		fmt.Sprintf("vault_path = %s", vaultPath),
-		fmt.Sprintf("vault_path source = %s", source),
+		fmt.Sprintf("vault_path = %s", res.Path),
+		fmt.Sprintf("vault_path source = %s", res.Source),
+	}
+	// The same prefix `vp status` prints (cmd_status.go), so operators see one
+	// vocabulary across both commands.
+	for _, w := range res.Warnings {
+		r.Details = append(r.Details, "vault binding warning: "+w)
 	}
 	return
 }

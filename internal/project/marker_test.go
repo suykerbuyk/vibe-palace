@@ -114,3 +114,64 @@ func TestFindMarkerStopsAtHome(t *testing.T) {
 		}
 	})
 }
+
+// FindLocalOverride walks up for .vibe-palace/local.toml and stops at $HOME,
+// exactly like FindMarker; LocateLocalOverride reads its vault_path.
+func TestFindLocalOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := filepath.Join(home, "code", "proj")
+	sub := filepath.Join(proj, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("none_is_empty_not_error", func(t *testing.T) {
+		got, err := FindLocalOverride(sub)
+		if err != nil || got != "" {
+			t.Errorf("FindLocalOverride = (%q, %v), want (\"\", nil)", got, err)
+		}
+		m, err := LocateLocalOverride(sub)
+		if err != nil || m.Path != "" || m.VaultPath != "" {
+			t.Errorf("LocateLocalOverride = (%+v, %v), want a zero Marker", m, err)
+		}
+	})
+
+	want := filepath.Join(proj, LocalOverrideName)
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("vault_path = \"/tmp/ov\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("found_walking_up_and_read", func(t *testing.T) {
+		got, err := FindLocalOverride(sub)
+		if err != nil || got != want {
+			t.Errorf("FindLocalOverride = (%q, %v), want %q", got, err, want)
+		}
+		m, err := LocateLocalOverride(sub)
+		if err != nil || m.VaultPath != "/tmp/ov" {
+			t.Errorf("LocateLocalOverride vault_path = (%q, %v), want /tmp/ov", m.VaultPath, err)
+		}
+	})
+
+	t.Run("stops_at_home", func(t *testing.T) {
+		// Plant $HOME/.vibe-palace/local.toml; a checkout under $HOME must not see it.
+		hp := filepath.Join(home, LocalOverrideName)
+		if err := os.MkdirAll(filepath.Dir(hp), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(hp, []byte("vault_path = \"/tmp/home-leak\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		bare := filepath.Join(home, "code", "bare")
+		if err := os.MkdirAll(bare, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := FindLocalOverride(bare)
+		if err != nil || got != "" {
+			t.Errorf("FindLocalOverride = (%q, %v), want no override ($HOME's own must never count)", got, err)
+		}
+	})
+}

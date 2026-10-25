@@ -682,6 +682,42 @@ func TestCheckConfigAt_CwdOverride(t *testing.T) {
 	}
 }
 
+// TestCheckConfigAt_SurfacesDeprecationWarning (F3) asserts `vp check` prints the
+// ADR-012 Option (b) tier-1 deprecation nudge for a legacy-marker tree — the same
+// warning `vp status` prints. MUTATION: revert CheckConfigAt to ResolveVaultPath
+// (which drops Resolution.Warnings) and this goes red.
+func TestCheckConfigAt_SurfacesDeprecationWarning(t *testing.T) {
+	tmp := t.TempDir()
+	configDir := filepath.Join(tmp, "vibe-palace")
+	os.MkdirAll(configDir, 0o755)
+	globalVault := filepath.Join(tmp, "global-vault")
+	os.MkdirAll(globalVault, 0o755)
+	os.WriteFile(filepath.Join(configDir, "config.toml"),
+		[]byte("vault_path = "+`"`+globalVault+`"`+"\n"), 0o644)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	// A legacy .vibe-palace.toml vault_path (no override file) → honored during the
+	// deprecation window, with the migration nudge surfaced.
+	projectDir := filepath.Join(tmp, "proj")
+	os.MkdirAll(projectDir, 0o755)
+	projectVault := filepath.Join(tmp, "proj-vault")
+	os.MkdirAll(projectVault, 0o755)
+	os.WriteFile(filepath.Join(projectDir, ".vibe-palace.toml"),
+		[]byte("vault_path = "+`"`+projectVault+`"`+"\n"), 0o644)
+
+	_, _, r := CheckConfigAt(projectDir)
+	if r.Status != Pass {
+		t.Fatalf("expected Pass, got %v: %s", r.Status, r.Summary)
+	}
+	joined := strings.Join(r.Details, "\n")
+	if !strings.Contains(joined, "vault binding warning:") {
+		t.Errorf("vp check Details missing the `vault binding warning:` nudge:\n%s", joined)
+	}
+	if !strings.Contains(joined, "DEPRECATED") || !strings.Contains(joined, ".vibe-palace/local.toml") {
+		t.Errorf("deprecation nudge missing its substance (DEPRECATED / .vibe-palace/local.toml):\n%s", joined)
+	}
+}
+
 // TestCheckProjectAt_ParityWithCwd verifies that CheckProjectAt(cwd) produces
 // the same result as CheckProject() run from that cwd.
 func TestCheckProjectAt_ParityWithCwd(t *testing.T) {
