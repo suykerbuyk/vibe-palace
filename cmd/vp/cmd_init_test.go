@@ -519,14 +519,25 @@ func TestInitVaultPathFlag(t *testing.T) {
 		t.Errorf("vault directory not created: %v", err)
 	}
 
-	// The cwd .vibe-palace.toml must also carry the vault_path override.
+	// ADR-012 Option (b) / U4 (R3 fold-in): the cwd marker is IDENTITY-ONLY — it
+	// must NOT carry an active vault_path.
 	cwdFile := filepath.Join(projDir, project.ConfigFileName)
 	cwdData, err := os.ReadFile(cwdFile)
 	if err != nil {
 		t.Fatalf("cwd config not created: %v", err)
 	}
-	if !strings.Contains(string(cwdData), "vault_path = \""+vaultDir+"\"") {
-		t.Errorf("cwd config missing vault_path override:\n%s", cwdData)
+	for _, line := range strings.Split(string(cwdData), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "vault_path") {
+			t.Errorf("cwd marker carries an active vault_path (ADR-012 Option (b) forbids it):\n%q\nmarker:\n%s", line, cwdData)
+		}
+	}
+	// U5: the tier-1 override lives in the gitignored .vibe-palace/local.toml.
+	override, err := os.ReadFile(filepath.Join(projDir, ".vibe-palace", "local.toml"))
+	if err != nil {
+		t.Fatalf("U5 must write the override to .vibe-palace/local.toml: %v", err)
+	}
+	if !strings.Contains(string(override), "vault_path = \""+vaultDir+"\"") {
+		t.Errorf("local.toml override missing vault_path = %q:\n%s", vaultDir, override)
 	}
 }
 
@@ -1705,6 +1716,10 @@ func TestInitPositionalValidDirStillWorks(t *testing.T) {
 // template the other does not have, so the assertion is "which vault's commands
 // landed", not "did anything land".
 func TestInitShimVaultFollowsTheProjectDirNotTheProcessCwd(t *testing.T) {
+	// Per-project no-git vault routing moved from the tracked marker (U4/R3) to the
+	// gitignored .vibe-palace/local.toml (U5): each --vault-path --no-git project is
+	// bound via its own co-located override, so shims still come from the PROJECT's
+	// vault, not the process cwd's. This test is unchanged in intent.
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
 	initTestEnv(t, false)
 
@@ -1816,6 +1831,10 @@ func TestInitExitsNonZeroOnVaultSideFailure(t *testing.T) {
 // init must not try, must not report a failed commit, and must exit 0, saying
 // why nothing was committed.
 func TestInitIntoANestedVaultDoesNotFail(t *testing.T) {
+	// Routing init at the nested vault via `--vault-path` on an existing host now
+	// goes through the gitignored .vibe-palace/local.toml override (U5), not the
+	// tracked marker (U4/R3) — so the nested-vault scaffold path is reachable again
+	// and this test is restored unchanged in intent.
 	_, _ = initTestEnv(t, false)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)

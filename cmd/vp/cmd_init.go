@@ -105,6 +105,16 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 					printInitStatus(os.Stdout, info.Version, results)
 					return cli.ExitUser
 				}
+			} else if ovRows, ok := maybeWriteLocalOverride(fv, req); !ok {
+				// U5: --vault-path for a tier-1 case (fresh-host, no-git, untracked,
+				// nested, same-as-default) writes the override to the gitignored
+				// .vibe-palace/local.toml, BEFORE onboarding so the lazy openVault()
+				// resolves tier-1 into it. A write failure is a non-zero exit.
+				results = append(results, ovRows...)
+				printInitStatus(os.Stdout, info.Version, results)
+				return cli.ExitSystem
+			} else {
+				results = append(results, ovRows...)
 			}
 
 			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI)
@@ -570,6 +580,54 @@ func maybeBindProjectVault(fv *cli.FlagValues, req onboard.Request) (rows []chec
 	}}, true, true
 }
 
+// maybeWriteLocalOverride (U5) writes the tier-1 vault override to the gitignored
+// <projectDir>/.vibe-palace/local.toml for an existing/fresh-host `vp init
+// --vault-path X` that is NOT a tier-2 git-vault bind — the fresh-host, no-git,
+// untracked, nested and same-as-default cases the OLD code wrote into the tracked
+// marker (ADR-012 tier-1-for-untracked). It is the faithful relocation of that
+// write: the host path lives in a gitignored file, never the committed marker
+// (R3). Co-location holds — marker and override land in the same directory — so
+// the resolver honors it via ReadLocalOverrideInDir.
+//
+// It returns ([]check.Result, ok). ok=false carries a Fail row for a write error
+// (a non-zero init exit). No --vault-path, or a tier-2 case, is a no-op (nil,true);
+// the caller only reaches here on the non-tier-2 branch, and the --vault-path guard
+// keeps a plain `vp init` untouched.
+//
+// `.vibe-palace/` is gitignored by the existing onboarding reconciler
+// (storage.ReconcileProjectGitignore / CanonicalProjectGitignorePatterns); this
+// does not invent a new ignore path.
+func maybeWriteLocalOverride(fv *cli.FlagValues, req onboard.Request) ([]check.Result, bool) {
+	raw := fv.Get("--vault-path")
+	if strings.TrimSpace(raw) == "" {
+		return nil, true
+	}
+	if _, tier2 := tier2BindApplies(fv); tier2 {
+		return nil, true // the tier-2 bind (maybeBindProjectVault) owns this case
+	}
+	x, err := expandAndAbsPath(raw)
+	if err != nil {
+		// initProject already validated --vault-path, so this is belt-and-braces.
+		return []check.Result{{Name: "Project binding", Status: check.Fail, Summary: "resolve --vault-path: " + err.Error()}}, false
+	}
+	overridePath := filepath.Join(req.ProjectDir, project.LocalOverrideName)
+	if err := os.MkdirAll(filepath.Dir(overridePath), 0o755); err != nil {
+		return []check.Result{{Name: "Project binding", Status: check.Fail, Summary: "create .vibe-palace dir: " + err.Error()}}, false
+	}
+	body := "# Host-local vault override for this checkout (ADR-012 Option (b)).\n" +
+		"# A path is a fact about one host, so this file is gitignored and never committed;\n" +
+		"# the tracked .vibe-palace.toml stays identity-only. Managed by `vp init`.\n" +
+		fmt.Sprintf("vault_path = %q\n", x)
+	if err := os.WriteFile(overridePath, []byte(body), 0o644); err != nil {
+		return []check.Result{{Name: "Project binding", Status: check.Fail, Summary: "write " + project.LocalOverrideName + ": " + err.Error()}}, false
+	}
+	return []check.Result{{
+		Name:    "Project binding",
+		Status:  check.Pass,
+		Summary: "tier-1 override " + project.LocalOverrideName + " = " + x,
+	}}, true
+}
+
 // vaultStepOutcome is initGlobal's reading of the Vault reconciler's Plan and
 // Report.
 type vaultStepOutcome struct {
@@ -722,27 +780,25 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 		return onboard.Request{}, results, cli.ExitUser, false
 	}
 
+	// R3 (ADR-012 Option (b) / U4): vp init NEVER writes vault_path into the
+	// tracked .vibe-palace.toml. A committed marker is identity only, and the U4
+	// resolver refuses a tracked marker that carries vault_path — so writing it
+	// here would brick the checkout the operator just made on its first commit.
+	// --vault-path is still validated and still drives the host default (fresh
+	// host) and the tier-2 git-vault bind (maybeBindProjectVault). The gitignored
+	// .vibe-palace/local.toml override writer for the remaining tier-1 cases is U5;
+	// until it lands, vaultPathOverride stays "" (identity-only marker).
 	var vaultPathOverride string
 	if vp := fv.Get("--vault-path"); vp != "" {
 		// expandAndAbsPath stays CLI-side: --vault-path is a flag, and four
-		// other cmd/vp callers use it.
-		expanded, err := expandAndAbsPath(vp)
-		if err != nil {
+		// other cmd/vp callers use it. Kept for its validation side effect.
+		if _, err := expandAndAbsPath(vp); err != nil {
 			results = append(results, check.Result{
 				Name:    "Project config",
 				Status:  check.Fail,
 				Summary: "resolve --vault-path: " + err.Error(),
 			})
 			return onboard.Request{}, results, cli.ExitUser, false
-		}
-		// A tier-2 git-vault bind (standalone stamped git vault differing from the
-		// host default) is identity-only — the [project_vaults] entry carries the
-		// path, not the marker (ADR-012 rule 2). EVERY other --vault-path target —
-		// fresh host, no-git, untracked, nested, or same-as-default — keeps the
-		// existing tier-1 cwd-marker path and writes vault_path here
-		// (ADR-012 tier-1-for-untracked).
-		if _, tier2 := tier2BindApplies(fv); !tier2 {
-			vaultPathOverride = expanded
 		}
 	}
 

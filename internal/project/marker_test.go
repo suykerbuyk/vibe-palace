@@ -115,6 +115,120 @@ func TestFindMarkerStopsAtHome(t *testing.T) {
 	})
 }
 
+// IsTrackedMarker fails CLOSED: no repo → honor (false,nil); committed → tracked;
+// present-but-not-added → untracked; git unavailable in a repo → error.
+func TestIsTrackedMarker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	git := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = gitenv.SafeGitEnv("GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	t.Run("no_repo_is_untracked_not_error", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ConfigFileName)
+		if err := os.WriteFile(p, []byte("[project]\nname = \"x\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tracked, err := IsTrackedMarker(p)
+		if tracked || err != nil {
+			t.Errorf("got (%v, %v), want (false, nil) for a non-git tree", tracked, err)
+		}
+	})
+
+	repo := t.TempDir()
+	git(t, repo, "init", "-q")
+	p := filepath.Join(repo, ConfigFileName)
+	if err := os.WriteFile(p, []byte("vault_path = \"/x\"\n[project]\nname = \"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("present_but_not_added_is_untracked", func(t *testing.T) {
+		tracked, err := IsTrackedMarker(p)
+		if tracked || err != nil {
+			t.Errorf("got (%v, %v), want (false, nil) for a file not in the index", tracked, err)
+		}
+	})
+
+	t.Run("committed_is_tracked", func(t *testing.T) {
+		git(t, repo, "add", ConfigFileName)
+		git(t, repo, "commit", "-q", "-m", "add marker")
+		tracked, err := IsTrackedMarker(p)
+		if !tracked || err != nil {
+			t.Errorf("got (%v, %v), want (true, nil) for a committed marker", tracked, err)
+		}
+	})
+
+	// F3: a committed marker NOT at the repo root — pins that the basename pathspec
+	// plus cmd.Dir = the marker's directory handles a nested marker (exit 0), rather
+	// than asking from the repo root where the basename pathspec would miss (exit 1).
+	t.Run("nested_committed_marker_is_tracked", func(t *testing.T) {
+		sub := filepath.Join(repo, "sub")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		np := filepath.Join(sub, ConfigFileName)
+		if err := os.WriteFile(np, []byte("[project]\nname = \"nested\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", filepath.Join("sub", ConfigFileName))
+		git(t, repo, "commit", "-q", "-m", "add nested marker")
+		tracked, err := IsTrackedMarker(np)
+		if !tracked || err != nil {
+			t.Errorf("got (%v, %v), want (true, nil) for a committed NESTED marker", tracked, err)
+		}
+	})
+
+	t.Run("git_unavailable_in_a_repo_is_an_error", func(t *testing.T) {
+		t.Setenv("PATH", "") // git is now unfindable; the .git dir still exists
+		tracked, err := IsTrackedMarker(p)
+		if err == nil {
+			t.Errorf("got (%v, nil) with no git on PATH; want an error (fail closed), not \"untracked\"", tracked)
+		}
+		if tracked {
+			t.Errorf("fail-closed must not report tracked=true: %v", err)
+		}
+	})
+
+	// F3: an UNSTATABLE .git (the marker's directory is mode 000, so os.Stat of its
+	// .git candidate returns EACCES, not ErrNotExist) must FAIL CLOSED — a non-nil
+	// error, never (false, nil). RED against the old findFileUpward probe (which
+	// treats EACCES as "keep climbing" → honor); GREEN after findGitTreeFailClosed.
+	t.Run("unstatable_git_fails_closed", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory mode bits; EACCES cannot be provoked")
+		}
+		base := t.TempDir()
+		child := filepath.Join(base, "child")
+		if err := os.MkdirAll(child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mp := filepath.Join(child, ConfigFileName)
+		if err := os.WriteFile(mp, []byte("vault_path = \"/x\"\n[project]\nname = \"x\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(child, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(child, 0o755) }) // let TempDir cleanup succeed
+
+		tracked, err := IsTrackedMarker(mp)
+		if err == nil {
+			t.Errorf("got (%v, nil) for an unstatable .git path; want a non-nil error (fail closed)", tracked)
+		}
+		if tracked {
+			t.Errorf("fail-closed must not report tracked=true: %v", err)
+		}
+	})
+}
+
 // FindLocalOverride walks up for .vibe-palace/local.toml and stops at $HOME,
 // exactly like FindMarker; LocateLocalOverride reads its vault_path.
 func TestFindLocalOverride(t *testing.T) {

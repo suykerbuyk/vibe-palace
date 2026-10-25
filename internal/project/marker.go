@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 
@@ -134,15 +135,23 @@ func LocateLocalOverride(cwd string) (Marker, error) {
 // ReadLocalOverrideInDir reads dir/LocalOverrideName (dir/.vibe-palace/local.toml)
 // WITHOUT walking. It is how the override is consulted once an identity marker has
 // fixed the directory: co-located, so the vault and the project label come from
-// the SAME tree (ADR-012 rule 4a). A missing override file is a zero Marker and no
-// error; a file that exists but cannot be read (EACCES, a directory at the path,
-// bad TOML) keeps its Path set and returns the error, so the caller refuses rather
-// than silently fall through. The not-exist case never surfaces fs.ErrNotExist.
+// the SAME tree (ADR-012 rule 4a).
+//
+// "No override" (zero Marker, nil) covers every way the override cannot exist:
+//   - fs.ErrNotExist — no .vibe-palace directory, or no local.toml inside it;
+//   - syscall.ENOTDIR — a non-directory component on the path, i.e. `.vibe-palace`
+//     is a plain FILE (a stray sentinel), so it can hold no local.toml. A file that
+//     cannot be a directory must not brick resolution.
+//
+// Only an override that EXISTS but cannot be TRUSTED (EACCES, a directory at the
+// local.toml path, bad TOML) keeps its Path set and returns the error, so the
+// caller refuses rather than silently fall through. The error never surfaces
+// fs.ErrNotExist.
 func ReadLocalOverrideInDir(dir string) (Marker, error) {
 	path := filepath.Join(dir, LocalOverrideName)
 	m, err := ReadMarker(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			return Marker{}, nil
 		}
 		return m, err

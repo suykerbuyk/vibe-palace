@@ -174,7 +174,12 @@ func TestInitVaultPath_RefusesUnstampedExistingDir(t *testing.T) {
 // target is NOT a tier-2 bind; it keeps the existing tier-1 cwd-marker path
 // (ADR-012 tier-1-for-untracked). So init succeeds, writes the marker
 // vault_path, and writes NO [project_vaults] binding.
-func TestInitVaultPath_NoGitTargetFallsThroughToTier1(t *testing.T) {
+// TestInitVaultPath_NoGitTargetWritesLocalOverride (U5): a no-git `--vault-path`
+// target writes the tier-1 override into the gitignored .vibe-palace/local.toml,
+// NOT the tracked marker (ADR-012 Option (b): the committed marker stays identity
+// only), and no [project_vaults] binding. MUTATION: drop maybeWriteLocalOverride's
+// os.WriteFile and this goes red (no override file).
+func TestInitVaultPath_NoGitTargetWritesLocalOverride(t *testing.T) {
 	home, cfg, _ := existingHostEnv(t)
 	x := filepath.Join(t.TempDir(), "throwaway") // absent; --no-git ⇒ tier 1
 	projDir := filepath.Join(home, "code", "alpha")
@@ -185,14 +190,25 @@ func TestInitVaultPath_NoGitTargetFallsThroughToTier1(t *testing.T) {
 
 	code, out := runInit(t, projDir, "--name", "alpha", "--vault-path", x, "--no-git")
 	if code != cli.ExitOK {
-		t.Fatalf("a no-git target must fall through to the tier-1 marker (ExitOK); got %d\n%s", code, out)
+		t.Fatalf("a no-git target must write the tier-1 override (ExitOK); got %d\n%s", code, out)
 	}
+	// The override lives in the gitignored local.toml.
+	override, err := os.ReadFile(filepath.Join(projDir, ".vibe-palace", "local.toml"))
+	if err != nil {
+		t.Fatalf("no-git target must write .vibe-palace/local.toml: %v", err)
+	}
+	if !strings.Contains(string(override), "vault_path = \""+x+"\"") {
+		t.Errorf("local.toml override missing vault_path = %q:\n%s", x, override)
+	}
+	// The tracked marker stays identity-only — no active vault_path.
 	marker, err := os.ReadFile(filepath.Join(projDir, ".vibe-palace.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(marker), "vault_path = \""+x+"\"") {
-		t.Errorf("no-git target must write the tier-1 marker vault_path:\n%s", marker)
+	for _, line := range strings.Split(string(marker), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "vault_path") {
+			t.Errorf("tracked marker carries an active vault_path (forbidden):\n%q", line)
+		}
 	}
 	body, err := os.ReadFile(cfg)
 	if err != nil {
@@ -246,10 +262,15 @@ func TestInitVaultPath_NameFlagVsExistingMarkerName(t *testing.T) {
 	}
 }
 
-// TestInitVaultPath_FreshHostUnchanged: with no global config, --vault-path sets
-// the host default and writes the tracked marker vault_path (tier 1) — NO
-// [project_vaults] entry.
-func TestInitVaultPath_FreshHostUnchanged(t *testing.T) {
+// TestInitVaultPath_FreshHost_IdentityOnlyMarker: with no global config,
+// --vault-path sets the host default (tier 3) and writes an IDENTITY-ONLY marker —
+// NO vault_path in the tracked marker (ADR-012 Option (b) / U4, R3 fold-in) and NO
+// [project_vaults] entry. Resolution still works because X is the host default.
+//
+// This UPDATES the former TestInitVaultPath_FreshHostUnchanged, which pinned the
+// now-removed behavior of writing vault_path into the tracked marker. MUTATION:
+// restore the vaultPathOverride write in cmd_init.go and this goes red.
+func TestInitVaultPath_FreshHost_IdentityOnlyMarker(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -285,8 +306,26 @@ func TestInitVaultPath_FreshHostUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(marker), "vault_path") {
-		t.Errorf("fresh host must still write the tracked marker vault_path (tier 1):\n%s", marker)
+	// ADR-012 Option (b) / U4 (R3 fold-in): vp init must NOT write an active
+	// vault_path into the tracked marker. The template's COMMENTED "# vault_path"
+	// example is fine; an uncommented `vault_path = ...` line is the hazard.
+	for _, line := range strings.Split(string(marker), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "vault_path") {
+			t.Errorf("fresh host wrote an ACTIVE vault_path into the tracked marker (ADR-012 Option (b) forbids it):\n%q\nfull marker:\n%s", line, marker)
+		}
+	}
+	if !strings.Contains(string(marker), "alpha") {
+		t.Errorf("the identity-only marker must still carry the project name:\n%s", marker)
+	}
+	// U5: --vault-path's tier-1 override lands in the gitignored local.toml (fresh
+	// host is in the non-tier-2 set, so it gets the override too, redundant with the
+	// global default it also set but faithful to the old marker-vault_path write).
+	override, err := os.ReadFile(filepath.Join(projDir, ".vibe-palace", "local.toml"))
+	if err != nil {
+		t.Fatalf("U5 must write the override to .vibe-palace/local.toml: %v", err)
+	}
+	if !strings.Contains(string(override), "vault_path = \""+x+"\"") {
+		t.Errorf("local.toml override missing vault_path = %q:\n%s", x, override)
 	}
 	_ = surface.RequiredDataFormat
 }

@@ -69,6 +69,9 @@ func ResolveVaultPath(cwd string) (path string, source string, err error) {
 // to a lower tier, because the lowest tier is the LIVE vault:
 //   - a found identity marker OR override that cannot be read or parsed, or whose
 //     vault_path is not a string or is swallowed by a table;
+//   - a git-TRACKED identity marker that carries vault_path (ADR-012 Option (b):
+//     the committed marker is identity only), including the fail-closed case where
+//     it sets vault_path and git cannot be asked whether it is tracked;
 //   - the override and the legacy marker both setting vault_path to different
 //     vaults;
 //   - a malformed [project_vaults] table (a case-variant key, a non-slug key,
@@ -94,6 +97,29 @@ func ResolveVaultBinding(cwd string) (Resolution, error) {
 		return Resolution{}, err
 	}
 	cwdFile := marker.Path
+
+	// U4 (ADR-012 Option (b)): a git-TRACKED identity marker must NEVER carry
+	// vault_path — a committed host path is false on every other host sharing the
+	// repo. A HARD refusal, fail-closed: when the marker sets vault_path and git
+	// cannot be asked, refuse rather than risk honoring it. An UNTRACKED marker's
+	// vault_path stays the deprecation-window tier-1 lever (resolveTier1). The git
+	// call is scoped to a non-empty VaultPath (cost bound); a commented or empty
+	// vault_path decodes to "" and never reaches git.
+	if marker.VaultPath != "" {
+		tracked, terr := markerIsTracked(marker.Path)
+		if terr != nil {
+			return Resolution{}, fmt.Errorf("%w: %s sets vault_path, and git could not be asked whether it is "+
+				"tracked (%v). Refusing rather than risk honoring a committed host path; the host override belongs in %s",
+				ErrVaultBindingRejected, marker.Path, terr, project.LocalOverrideName)
+		}
+		if tracked {
+			return Resolution{}, fmt.Errorf("%w: %s is git-tracked and sets vault_path %q. A committed marker is "+
+				"identity only (ADR-012 Option (b) structural split): the path is true on this host and false on every "+
+				"other host sharing the repo. Remove vault_path from the tracked marker, then bind the project in this "+
+				"host's [project_vaults], or put the override in the gitignored %s",
+				ErrVaultBindingRejected, marker.Path, marker.VaultPath, project.LocalOverrideName)
+		}
+	}
 
 	// Tier 1's vault_path now lives in the gitignored .vibe-palace/local.toml
 	// (ADR-012 Amendment 2026-10-25, Option (b)). When an identity marker was
@@ -371,6 +397,11 @@ func CwdMarker(cwd string) (path, vaultPath string, err error) {
 // prove the resolver never runs git on a host that binds nothing, and can make
 // the lookup fail.
 var gitRemoteSlug = project.GitRemoteSlugChecked
+
+// markerIsTracked is project.IsTrackedMarker behind a seam, so a test can force
+// the tracked verdict (and the fail-closed git-can't-answer case) without a git
+// fixture. Tests MUST restore it (the SetMisboundRefuse restore pattern).
+var markerIsTracked = project.IsTrackedMarker
 
 // ResolveGlobalVaultPath returns the vault root from the global config only
 // (no cwd walk). Use this for machine-wide artifacts such as user-global host

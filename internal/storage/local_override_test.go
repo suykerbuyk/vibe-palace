@@ -266,6 +266,29 @@ func TestResolveTier1_OverrideOnlyNoMarkerHonored(t *testing.T) {
 	}
 }
 
+// Test (C1): a tree whose .vibe-palace is a plain FILE (a stray sentinel, not the
+// override directory) must resolve WITHOUT a vault-binding refusal — ENOTDIR means
+// the override cannot exist, which is "no override", not a hidden lever. MUTATION:
+// drop the syscall.ENOTDIR arm in ReadLocalOverrideInDir and this goes red (the
+// resolver refuses instead of falling through to tier-3).
+func TestResolveTier1_DotVibePalaceFileIsNotAnOverride(t *testing.T) {
+	f := newBindFixture(t)
+	dir := f.checkout(t, "loose", "[project]\nname = \"loose\"\n")
+	// Occupy .vibe-palace with a regular file, so .vibe-palace/local.toml is ENOTDIR.
+	if err := os.WriteFile(filepath.Join(dir, ".vibe-palace"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubGitSlug(t, "")
+
+	r, err := ResolveVaultBinding(dir)
+	if err != nil {
+		t.Fatalf("a .vibe-palace FILE must not refuse resolution (ENOTDIR = no override): %v", err)
+	}
+	if r.Path != f.global || !strings.HasPrefix(r.Source, "global:") {
+		t.Errorf("got (%q, %q), want the global vault (tier-3; the stray file is not an override)", r.Path, r.Source)
+	}
+}
+
 // Test: a vault_path swallowed by a table in the OVERRIDE file is refused, the
 // same defence the identity marker has — it must never silently fall through to
 // the live vault.

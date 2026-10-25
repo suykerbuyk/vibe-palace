@@ -4,9 +4,11 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -415,6 +417,30 @@ func findLocalOverrideUpward(dir string, homeBoundaries ...string) (string, erro
 	}
 }
 
+// findGitTreeFailClosed reports whether a `.git` exists at or above dir, failing
+// CLOSED. Unlike the shared findFileUpward — whose "any stat error = keep
+// climbing" leniency gitRemoteName depends on — a `.git` candidate whose os.Stat
+// fails with anything other than fs.ErrNotExist (EACCES on a parent the process
+// cannot traverse, etc.) is returned as (false, error), so IsTrackedMarker
+// refuses rather than honor a tracked marker's vault_path in a tree it cannot
+// inspect. (true, nil) on the first `.git` found; (false, nil) ONLY when the walk
+// reaches the filesystem root with every candidate cleanly absent.
+func findGitTreeFailClosed(dir string) (found bool, err error) {
+	for {
+		candidate := filepath.Join(dir, ".git")
+		if _, serr := os.Stat(candidate); serr == nil {
+			return true, nil
+		} else if !errors.Is(serr, fs.ErrNotExist) {
+			return false, fmt.Errorf("stat %s: %w", candidate, serr)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false, nil // reached the filesystem root; genuinely no .git
+		}
+		dir = parent
+	}
+}
+
 // findFileUpward walks from dir toward the filesystem root looking for a file
 // with the given name. Returns the full path if found, or an error.
 func findFileUpward(dir, filename string) (string, error) {
@@ -431,6 +457,65 @@ func findFileUpward(dir, filename string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// IsTrackedMarker reports whether the .vibe-palace.toml at markerPath is tracked
+// by the git repository that contains it.
+//
+// 🔴 FAIL CLOSED. This is the predicate behind ADR-012 Option (b)'s hard refusal
+// of a tracked marker that carries vault_path, and the fallback if the resolver
+// guesses wrong is the LIVE vault. So:
+//   - no git repository above the marker (no .git) → (false, nil): a genuinely
+//     non-git tree (a rehearsal fixture, a cp -r scratch) is honored, not refused.
+//   - `git ls-files --error-unmatch` exit 0 → (true, nil): tracked. It is the
+//     INDEX view, so a force-added gitignored marker counts as tracked — the right
+//     call; check-ignore would miss it.
+//   - exit 1 → (false, nil): in a repo but not in the index — genuinely untracked.
+//   - ANY other outcome (git missing/failed/timed out/disabled, a non-0/non-1
+//     exit) → (false, error): the caller REFUSES. This is deliberately NOT the
+//     GitPathIsTracked shape (internal/storage/vaultsync.go), which collapses a
+//     git fault to (false, nil) and fails open. It mirrors UntrackedAmong's split.
+func IsTrackedMarker(markerPath string) (bool, error) {
+	dir := filepath.Dir(markerPath)
+	base := filepath.Base(markerPath)
+	// Establish a git tree at all, FAIL CLOSED. A .git found at or above the
+	// marker (a dir for a normal repo, a file for a linked worktree / submodule)
+	// means proceed to the index check. The walk honors (false, nil) ONLY when it
+	// reaches the filesystem root with every candidate cleanly absent — a
+	// genuinely non-git tree. A candidate the process cannot stat (EACCES on a
+	// parent it cannot traverse) is NOT "absent": it is (false, error), the same
+	// fail-closed branch as a git fault below, so a tracked marker is never honored
+	// in a tree we cannot inspect. This is why the shared, LENIENT findFileUpward
+	// (any stat error = keep climbing — gitRemoteName relies on that) must NOT be
+	// used here.
+	found, gerr := findGitTreeFailClosed(dir)
+	if gerr != nil {
+		return false, gerr
+	}
+	if !found {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitRemoteTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", base)
+	cmd.Dir = dir
+	cmd.Env = gitenv.SafeGitEnv("GIT_TERMINAL_PROMPT=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil // exit 0: tracked
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("git ls-files --error-unmatch -- %s in %s: timed out after %s", base, dir, gitRemoteTimeout)
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil // exit 1: in a repo, not in the index — untracked
+	}
+	// git missing from PATH, a disabled/failed exec, or any other exit (e.g. 128
+	// "dubious ownership"): fail closed.
+	return false, fmt.Errorf("git ls-files --error-unmatch -- %s in %s: %w: %s", base, dir, err, strings.TrimSpace(stderr.String()))
 }
 
 // GitRemoteSlug is the slug the origin remote of the git repository containing
