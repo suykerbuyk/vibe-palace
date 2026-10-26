@@ -249,6 +249,9 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// vault copy writes project content into the served vault and commits it.
 		"vault copy":   true,
 		"vault rename": true,
+		// vault migrate-to is a CLI-only staged wrapper that writes vault content
+		// (copy into dest, delete from source) and the host config (bind).
+		"vault migrate-to": true,
 		// runDrainSummaries (cmd_drain.go) resolves the project's own
 		// [summarization] config and, when enabled/resolvable, constructs a
 		// real itersummary.IterationSummarizer that writes vault-committed

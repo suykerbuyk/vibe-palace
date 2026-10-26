@@ -238,6 +238,12 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// mutates(): `vault copy` writes project content into the served vault and
 	// commits it, so it fail-stops against a vault written by a newer binary.
 	reg.Register(mutates(cmdVaultCopy()))
+	// mutates(): `vault migrate-to` is a CLI-only staged wrapper that writes vault
+	// content (copy into dest, delete from source) and the host config (bind). The
+	// hard stop between the reversible copy and the partially-irreversible delete
+	// is enforced here in the CLI (separate --copy/--delete invocations, refused
+	// together), never by a storage helper that performs both.
+	reg.Register(mutates(cmdVaultMigrateTo()))
 	// mutates(): `vault rename` moves a project's footprint, rewrites its stored
 	// identifiers and commits them, so it fail-stops against a newer-binary vault.
 	reg.Register(mutates(cmdVaultRename()))
