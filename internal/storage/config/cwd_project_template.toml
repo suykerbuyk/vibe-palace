@@ -1,22 +1,26 @@
 # Per-directory vibe-palace project config. Managed by 'vp init'.
 #
-# Two roles:
-#   1. Identify this source directory's project.
-#   2. Optionally override vault_path for this directory tree.
+# This file is the project's IDENTITY MARKER: it names the project, and
+# nothing else. It MAY be committed to the project repository — a committed
+# copy carries identity + schema version ONLY. It must NEVER set a
+# vault_path: a path is a fact about one host, and under ADR-012 Option (b)
+# the resolver REFUSES a git-tracked marker that carries one (fail-closed —
+# the checkout will not resolve its vault until the key is removed).
 #
-# Only 'vault_path' is honored as an override at this layer. All other
-# settings (search, chunker, palace, embedder, etc.) come from the
+# Which vault this project uses on a given host is that host's own binding:
+#   - Normal case (tier 2): bind in the global config under [project_vaults],
+#     keyed on the [project].name below. Run:
+#         vp config bind <name> --vault <this host's vault path>
+#   - Throwaway / rehearsal trees only (tier 1): put a top-level vault_path
+#     in the gitignored, co-located '.vibe-palace/local.toml' — never here.
+#     'vp init --vault-path <path>' writes that file for you; it is gitignored
+#     and never committed.
+#
+# All other settings (search, chunker, palace, embedder, etc.) come from the
 # global config (~/.config/vibe-palace/config.toml) or the per-project
-# host-local config (~/.config/vibe-palace/projects/{slug}.toml). Edit
-# those to customize; run 'vp status' to see which per-project config
-# files this project actually reads.
-
-# Override the palace vault for this source-dir and descendants. The
-# walk stops at $HOME; a file at $HOME/.vibe-palace.toml is ignored.
-# If this file is COMMITTED to the project repo, do not set vault_path
-# here: a path is a fact about one host. Bind the project to its vault in
-# each host's global config instead, under [project_vaults] (ADR-012).
-# vault_path = "~/work-palace-vault"
+# host-local config (~/.config/vibe-palace/projects/{slug}.toml). Edit those
+# to customize; run 'vp status' to see which per-project config files this
+# project reads, and the resolved vault and its source.
 
 # Managed by vp. The version fields drive schema migration — do not
 # hand-edit unless you know what you're doing. Run 'vp config upgrade

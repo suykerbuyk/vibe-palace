@@ -18,7 +18,7 @@ covers how a host resolves a project's vault, and
 [ADR-013](adr/013-vault-project-lifecycle-and-departure-records.md)
 covers the lifecycle commands and departure records. `vp <command> --help`
 is the authoritative flag reference. This guide describes behaviour as of
-v10.2.0.
+v10.2.1.
 
 ## How a host finds a project's vault
 
@@ -26,11 +26,13 @@ Every vp entry point (CLI, MCP server, hooks) resolves the vault in three
 tiers. The first tier that matches wins
 ([ADR-012](adr/012-vault-resolution-precedence-and-host-project-bindings.md) § Decision 1):
 
-1. **The `.vibe-palace.toml` marker.** This is the nearest marker at or above
-   the working directory (the search stops at `$HOME`), if it sets a
-   top-level `vault_path`.
+1. **A throwaway-tree override.** This is a top-level `vault_path` in the
+   gitignored `.vibe-palace/local.toml`, co-located with the identity marker and
+   found by the same `$HOME`-bounded walk. It is scoped to throwaway/rehearsal
+   trees; `vp init --vault-path` writes it, and it is never committed.
 2. **A per-host binding.** This is the `[project_vaults]` entry in the global
-   config for the `[project].name` in that same marker.
+   config for the `[project].name` in the tracked `.vibe-palace.toml` identity
+   marker. This is the normal per-host mechanism (`vp config bind`).
 3. **The global default.** This is `vault_path` in the global config.
 
 ```toml
@@ -41,14 +43,19 @@ vault_path = "~/vibe-palace-vault"
 my-team-project = "~/team-vault"
 ```
 
-A committed `.vibe-palace.toml` names the project and must not set
-`vault_path`. A path belongs to one host, so each host binds the project in
-its own global config instead. `vp check` flags a committed marker that sets
-one.
+The tracked `.vibe-palace.toml` names the project and is **identity only**: it
+must never set `vault_path`. A path belongs to one host, so each host binds the
+project in its own global config instead. The resolver **refuses** a git-tracked
+marker that carries `vault_path` (fail-closed) — the checkout will not resolve
+its vault until the key is removed — and `vp check` flags one as a friendly
+pre-flight before you hit that refusal. (A legacy *untracked* `.vibe-palace.toml`
+`vault_path` is still honored during a deprecation window, warned in both
+`vp status` and `vp check`; prefer `.vibe-palace/local.toml`.)
 
 Resolution **fails closed**. The following refuse instead of falling through
 to the default vault:
-- an unreadable marker
+- an unreadable marker or override
+- a git-tracked marker carrying `vault_path`
 - tiers 1 and 2 naming different vaults
 - a binding whose target is not an existing vault
 - a malformed `[project_vaults]` table

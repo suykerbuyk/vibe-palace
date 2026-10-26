@@ -2240,11 +2240,13 @@ max_tokens = 4096
 ### Multiple vaults and moving projects
 
 One host can use several vaults. For each project the vault is resolved in
-three tiers, first match wins: a `vault_path` in the nearest
-`.vibe-palace.toml` (meant for untracked trees; `vp check` flags a
-committed marker that sets one), then the global config's `[project_vaults]` entry for that
-marker's project name, then the global `vault_path`. Resolution fails
-closed: a bad marker or conflicting tiers refuse rather than fall through.
+three tiers, first match wins: a `vault_path` in the gitignored
+`.vibe-palace/local.toml` (for throwaway/rehearsal trees), then the global
+config's `[project_vaults]` entry for the tracked marker's project name, then
+the global `vault_path`. The tracked `.vibe-palace.toml` is identity only — the
+resolver refuses (fail-closed) a git-tracked marker that carries `vault_path`,
+and `vp check` flags one as a pre-flight. Resolution also fails closed on a bad
+marker or conflicting tiers rather than falling through.
 
 ```toml
 # ~/.config/vibe-palace/config.toml

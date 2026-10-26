@@ -463,11 +463,14 @@ hash to different sidecar files).
 Which vault a command reads and writes is resolved separately from the settings
 below, by `storage.ResolveVaultBinding` (`ResolveVaultPath` wraps it):
 
-1. **Checkout override** — the nearest `.vibe-palace.toml` at or above the
-   working directory (the walk stops at `$HOME`), if it sets a top-level
-   `vault_path`. Source `cwd:<file>`. For untracked trees only: a committed
-   `.vibe-palace.toml` is identity only and never carries `vault_path`
-   (`vp check` reports one that does).
+1. **Throwaway-tree override** — a top-level `vault_path` in the gitignored
+   `.vibe-palace/local.toml`, co-located with the identity marker and found by
+   the same `$HOME`-bounded walk. Source `cwd-local:<file>`. Scoped to
+   throwaway/rehearsal trees. The tracked `.vibe-palace.toml` is **identity only**
+   and never carries `vault_path`: the resolver REFUSES (fail-closed) a git-tracked
+   marker that does, and `vp check` reports one as a pre-flight. (A legacy
+   *untracked* `.vibe-palace.toml` `vault_path` is honored only during a
+   deprecation window, warned in `vp status` and `vp check`.)
 2. **Host binding** — the global config's `[project_vaults].<slug>`, keyed on
    the `[project].name` of that same file. Source `binding:<config>#<slug>`.
 3. **Host default** — the global config's `vault_path`. Source `global:<config>`.
@@ -475,7 +478,8 @@ below, by `storage.ResolveVaultBinding` (`ResolveVaultPath` wraps it):
 Resolution fails closed, with one error type (`storage.ErrVaultBindingRejected`)
 that `vp hook` treats as "capture nothing", never as "fall back to the global
 vault". It refuses when:
-- a found `.vibe-palace.toml` cannot be read or parsed;
+- a found `.vibe-palace.toml` or `.vibe-palace/local.toml` cannot be read or parsed;
+- a git-tracked `.vibe-palace.toml` carries `vault_path`;
 - tiers 1 and 2 name different vaults;
 - a binding's target is not an absolute path to an existing vault;
 - the table is malformed;
@@ -1139,7 +1143,7 @@ injects the vault reference into every request context.
 
 ```
 cmd/vp/cmd_mcp.go serveMCP → bootstrap() in cmd/vp/bootstrap.go
-├── storage.OpenVaultFromCwd(cwd) # resolve vault (3 tiers, ADR-012: cwd vault_path, [project_vaults], global)
+├── storage.OpenVaultFromCwd(cwd) # resolve vault (3 tiers, ADR-012: .vibe-palace/local.toml vault_path, [project_vaults], global)
 ├── embedder.NewLazy(NewONNX...)  # DEFER the ONNX model load — no I/O here
 ├── search.NewEngine(emb, v, cfg) # create search engine (no indexes built yet)
 ├── context.NewResolver(v.Root)   # template resolver

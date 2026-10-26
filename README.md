@@ -153,13 +153,16 @@ them explicitly.
 A host can hold several vaults, for example a personal vault and a team
 vault. Each project resolves to exactly one vault in three tiers
 ([ADR-012](doc/adr/012-vault-resolution-precedence-and-host-project-bindings.md)):
-1. a `vault_path` in the checkout's untracked `.vibe-palace.toml`;
+1. a `vault_path` in the checkout's gitignored `.vibe-palace/local.toml` (for
+   throwaway/rehearsal trees);
 2. this host's `[project_vaults].<slug>` binding in the global config;
 3. the global `vault_path`.
 
 A committed `.vibe-palace.toml` names only the project, because a vault
-path belongs to one host. Resolution fails closed: a conflict or a broken
-binding refuses rather than falling back to the default vault.
+path belongs to one host — it must never carry `vault_path`, and the resolver
+refuses (fail-closed) a git-tracked marker that does. Resolution also fails
+closed on a conflict or a broken binding, rather than falling back to the
+default vault.
 
 Moving projects between vaults uses these commands:
 

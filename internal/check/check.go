@@ -470,11 +470,17 @@ func CheckAgentDrift(projectRoot string) Result {
 // other host that shares the repo; the per-host binding belongs in the global
 // config's [project_vaults].
 //
-// Advisory (Info), never Fail, like CheckProjectGitignore, and for the same
-// reason it is CLI-only: it inspects the caller's checkout, which the MCP
-// vp_check (bound to the server's vault) cannot see. The marker is found by
-// the resolver's own walk (storage.CwdMarker), so the file reported is the
-// file that binds the vault.
+// This row is a FRIENDLY PRE-FLIGHT, not the enforcement point. Under ADR-012
+// Option (b) the resolver REFUSES a git-tracked marker that carries vault_path
+// (fail-closed, in CLI + MCP startup + vp hook): such a checkout will not
+// resolve its vault at all until the key is removed. This row names the fix
+// before the caller hits that refusal.
+//
+// Info, never Fail, like CheckProjectGitignore, and for the same reason it is
+// CLI-only: it inspects the caller's checkout, which the MCP vp_check (bound to
+// the server's vault) cannot see. The marker is found by the resolver's own
+// walk (storage.CwdMarker), so the file reported is the file that binds the
+// vault.
 func CheckTrackedMarkerVaultPath(cwd string) Result {
 	r := Result{Name: "Tracked marker vault_path", Status: Pass}
 	marker, vaultPath, err := storage.CwdMarker(cwd)
@@ -506,10 +512,12 @@ func CheckTrackedMarkerVaultPath(cwd string) Result {
 	r.Details = []string{
 		fmt.Sprintf("  %s: vault_path = %q", marker, vaultPath),
 		"A committed marker is identity only (ADR-012): the path is true on this host and false on every other " +
-			"host that shares the repository. Remove vault_path from it and bind the project on each host in the " +
-			"global config instead:",
+			"host that shares the repository. The resolver now REFUSES a git-tracked marker that carries vault_path " +
+			"(fail-closed) — this checkout will not resolve its vault until you remove the key. Remove it and bind " +
+			"the project on each host in the global config instead:",
 		"  [project_vaults]",
 		"  <project> = \"<this host's vault path>\"",
+		"For a throwaway/rehearsal tree, put vault_path in the gitignored .vibe-palace/local.toml instead (tier 1).",
 	}
 	return r
 }

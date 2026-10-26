@@ -108,15 +108,16 @@ func TestGenerateCwdProjectTOML_NameOnly(t *testing.T) {
 	if !strings.Contains(out, `name = "my-proj"`) {
 		t.Errorf("missing active name: %s", out)
 	}
-	// Domain, tags, vault_path must remain commented.
+	// Domain and tags must remain commented.
 	if !strings.Contains(out, `# domain = ""`) {
 		t.Error("domain should stay commented when empty")
 	}
 	if !strings.Contains(out, "# tags = []") {
 		t.Error("tags should stay commented when empty")
 	}
-	if !strings.Contains(out, `# vault_path = "~/work-palace-vault"`) {
-		t.Error("vault_path should stay commented when empty")
+	// Identity-only marker (ADR-012 Option (b)): no active vault_path key.
+	if strings.Contains(out, "\nvault_path = ") {
+		t.Errorf("tracked marker must not carry an active vault_path: %s", out)
 	}
 
 	// Must round-trip as valid TOML.
@@ -138,6 +139,9 @@ func TestGenerateCwdProjectTOML_NameOnly(t *testing.T) {
 }
 
 func TestGenerateCwdProjectTOML_AllOptionals(t *testing.T) {
+	// Identity-only marker (ADR-012 Option (b)): name/domain/tags are honored;
+	// a passed vault_path is IGNORED — the tracked marker never carries one, so
+	// the resolver's fail-closed guard has nothing to refuse.
 	out := GenerateCwdProjectTOML("alpha", "work", []string{"go", "cli"}, "/tmp/work-vault")
 
 	if !strings.Contains(out, `name = "alpha"`) {
@@ -149,8 +153,8 @@ func TestGenerateCwdProjectTOML_AllOptionals(t *testing.T) {
 	if !strings.Contains(out, `tags = ["go", "cli"]`) {
 		t.Errorf("tags not uncommented: %s", out)
 	}
-	if !strings.Contains(out, `vault_path = "/tmp/work-vault"`) {
-		t.Errorf("vault_path not uncommented: %s", out)
+	if strings.Contains(out, "\nvault_path = ") {
+		t.Errorf("tracked marker must not carry an active vault_path even when one is passed: %s", out)
 	}
 
 	var raw map[string]any
@@ -161,8 +165,8 @@ func TestGenerateCwdProjectTOML_AllOptionals(t *testing.T) {
 	if proj["domain"] != "work" {
 		t.Errorf("parsed domain = %v, want work", proj["domain"])
 	}
-	if raw["vault_path"] != "/tmp/work-vault" {
-		t.Errorf("parsed vault_path = %v, want /tmp/work-vault", raw["vault_path"])
+	if _, hasVault := raw["vault_path"]; hasVault {
+		t.Errorf("tracked marker must not decode a vault_path: %v", raw["vault_path"])
 	}
 }
 

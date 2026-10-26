@@ -36,11 +36,18 @@ func GenerateConfigTOML(vaultPath string, gitEnabled bool) string {
 	return out
 }
 
-// GenerateCwdProjectTOML produces a cwd-project .vibe-palace.toml with
-// the supplied project identity and optional vault_path override.
-// Derived from the embedded cwd-project template as the single source
-// of truth. Empty values leave the corresponding keys commented.
-func GenerateCwdProjectTOML(name, domain string, tags []string, vaultPath string) string {
+// GenerateCwdProjectTOML produces a cwd-project .vibe-palace.toml carrying the
+// project's identity (name, domain, tags) only. Derived from the embedded
+// cwd-project template as the single source of truth. Empty values leave the
+// corresponding keys commented.
+//
+// The tracked marker is identity-only (ADR-012 Option (b)): it NEVER carries a
+// vault_path, because the resolver refuses a git-tracked marker that does. The
+// vaultPath argument is therefore ignored here and retained only for signature
+// stability with the onboarding seed; a host-local tier-1 override is written
+// to the gitignored .vibe-palace/local.toml by maybeWriteLocalOverride (U5),
+// and the normal per-host binding lives in the global config's [project_vaults].
+func GenerateCwdProjectTOML(name, domain string, tags []string, _ string) string {
 	out := strings.Replace(cwdProjectTemplate, "__VP_NAME__", name, 1)
 
 	if domain != "" {
@@ -57,12 +64,6 @@ func GenerateCwdProjectTOML(name, domain string, tags []string, vaultPath string
 		out = strings.Replace(out,
 			"# tags = []",
 			"tags = ["+strings.Join(quoted, ", ")+"]", 1)
-	}
-
-	if vaultPath != "" {
-		out = strings.Replace(out,
-			`# vault_path = "~/work-palace-vault"`,
-			fmt.Sprintf("vault_path = %q", vaultPath), 1)
 	}
 
 	return out

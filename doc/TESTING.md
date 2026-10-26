@@ -875,11 +875,11 @@ MCP handler coverage in `internal/tools/system_tools_test.go`:
 
 ### `internal/storage/`, `internal/check/`, `cmd/vp/` — Vault Resolution Tiers (ADR-012)
 
-Covers `storage.ResolveVaultBinding`: the checkout `vault_path`, then the host's
-`[project_vaults]` binding, then the global `vault_path`, and the single typed
-refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
-`$HOME`/`XDG_CONFIG_HOME` fixtures; the git-origin derivation is a seam
-(`gitRemoteSlug`) so a test can count its calls.
+Covers `storage.ResolveVaultBinding`: the tier-1 `.vibe-palace/local.toml`
+`vault_path` override, then the host's `[project_vaults]` binding, then the
+global `vault_path`, and the single typed refusal (`ErrVaultBindingRejected`)
+every rejected binding carries. Hermetic `$HOME`/`XDG_CONFIG_HOME` fixtures; the
+git-origin derivation is a seam (`gitRemoteSlug`) so a test can count its calls.
 
 | Test | What it proves |
 |------|----------------|
@@ -897,7 +897,7 @@ refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
 | `TestHookRejectedBindingCapturesNothing` (`cmd/vp`) | A rejected binding captures nothing: no global-vault fallback |
 | `TestSkillsShowDoesNotDegradeARejectedBinding` (`cmd/vp`) | A rejected binding stays a usage error, never "no vault configured" |
 | `TestCheckConfigReportsRejectedBindingNotMissing` (`internal/check`) | `vp check` reports a rejected binding, never "not found / run vp init" |
-| `TestCheckTrackedMarkerVaultPath` (`internal/check`) | The CLI-only row flags a committed marker that sets `vault_path`, and only that |
+| `TestCheckTrackedMarkerVaultPath` (`internal/check`) | The CLI-only pre-flight row (Info) flags a committed marker that sets `vault_path`, and only that — the enforcing refusal is the resolver's (below) |
 | `TestResolveRefusesABrokenMarker` | A found marker with a syntax error, a wrong-typed `vault_path` or EACCES is a typed refusal, with or without bindings |
 | `TestResolveWhenGitCannotRuleOutABinding` | With `PATH=""` on a binding host: an unnamed marker refuses, a named one warns, a non-repo needs no git |
 | `TestResolveRefusesARelativeBindingTarget` | A relative target is refused even when a vault exists at that path relative to cwd |
@@ -913,6 +913,38 @@ refusal (`ErrVaultBindingRejected`) every rejected binding carries. Hermetic
 | `TestGatherCheckResultsSkipsSurfaceOnRejectedBinding` (`cmd/vp`) | The full `vp check` skips the Surface row for a rejected binding |
 | `TestPlansScanStatesARejectedBinding` (`cmd/vp`) | `vp plans scan --json` states the rejected binding |
 | `TestVaultPlanNamesARejectedBinding` (`internal/reconcile`) | `vp config sync`'s vault tier names the rejection, not the `vp init` remedy |
+
+### `internal/storage/`, `internal/project/`, `cmd/vp/` — ADR-012 Option (b): the tier-1 override file and the tracked-marker guard
+
+Covers the structural split (ADR-012 Amendment 2026-10-25): the tier-1 override
+moves from the tracked `.vibe-palace.toml` to the gitignored, co-located
+`.vibe-palace/local.toml`, and a git-tracked marker that carries `vault_path`
+becomes a hard, fail-closed refusal at the resolver (the seam the CLI, the MCP
+startup bind, and `vp hook` all pass through). The legacy untracked
+`.vibe-palace.toml` `vault_path` stays honored during a deprecation window.
+
+| Test | What it proves |
+|------|----------------|
+| `TestResolveTier1_LocalOverrideWins` (`internal/storage`) | A `.vibe-palace/local.toml` `vault_path` resolves tier 1, source `cwd-local:<file>` |
+| `TestResolveTier1_OverrideWinsOverLegacySameRoot` | When both the override and a legacy marker `vault_path` are set, the override wins |
+| `TestResolveTier1_LegacyHonoredWithDeprecationWarning` | A legacy untracked-marker `vault_path`, with no override, still resolves but emits the migration warning |
+| `TestResolveTier1_OverrideVsLegacyDisagreementRefuses` | Override and legacy marker naming different vaults refuse |
+| `TestResolveTier1_OverrideVsTier2Disagreement` | A tier-1 override and a tier-2 binding naming different vaults refuse |
+| `TestResolveTier1_OverrideHomeBoundaryStopsWalk` | The override walk stops at `$HOME` |
+| `TestResolveTier1_OverrideFoundWalkingUp` | The override is found at an ancestor directory |
+| `TestResolveTier1_OverrideEmptyVaultPathIsUnset` | An empty override `vault_path` is unset, not a refusal |
+| `TestResolveTier1_UnexpandableTildeRefuses` | An override path whose `~` cannot expand refuses |
+| `TestResolveTier1_ParentOverrideDoesNotBindChildMarker` | With an identity marker present, the override is read only co-located with it — a parent's override never binds a child's marker |
+| `TestResolveTier1_OverrideOnlyNoMarkerHonored` | A throwaway tree with no identity marker keeps the override's own `$HOME`-bounded walk |
+| `TestResolveTier1_DotVibePalaceFileIsNotAnOverride` | A `.vibe-palace` plain file is not mistaken for the override |
+| `TestResolveTier1_OverrideSwallowedVaultPathRefused` | A `vault_path` swallowed by a table in the override refuses |
+| `TestResolveRefusesTrackedMarkerWithVaultPath` (`internal/storage`) | A git-tracked `.vibe-palace.toml` carrying `vault_path` is a fail-closed refusal |
+| `TestResolveRefusesWhenTrackednessUnknown` | When git cannot answer trackedness and `vault_path` is set, the resolver refuses (fails closed) |
+| `TestResolveHonorsUntrackedMarkerWithVaultPath` | An untracked marker `vault_path` is still honored (deprecation window) |
+| `TestResolveSkipsTrackednessWhenNoVaultPath` | A marker with no `vault_path` never triggers the trackedness check |
+| `TestHookRefusesTrackedMarkerWithVaultPath` (`cmd/vp`) | `vp hook` captures nothing for a tracked marker carrying `vault_path`, never falling back to the global vault |
+| `TestIsTrackedMarker` (`internal/project`) | `IsTrackedMarker` fails closed: no repo → honor (false); committed → tracked; the trackedness predicate behind the guard |
+| `TestFindLocalOverride` (`internal/project`) | The `$HOME`-bounded walk that locates `.vibe-palace/local.toml` |
 
 ### `internal/storage/`, `internal/tools/`, `cmd/vp/` — Binding a Project to a Vault (`vp config bind`)
 

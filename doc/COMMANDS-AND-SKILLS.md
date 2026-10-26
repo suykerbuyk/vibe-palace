@@ -96,10 +96,13 @@ from room subdirectories. Without it, a file at `commands/backend/deploy.md`
 would be ambiguous — is `backend` a wing or a room?
 
 **`{vault}`** is the vault this project resolves to: a `vault_path` in the
-nearest `.vibe-palace.toml`, else the project's `[project_vaults]` binding in
-`~/.config/vibe-palace/config.toml`, else that file's `vault_path`
+gitignored `.vibe-palace/local.toml` (throwaway trees), else the project's
+`[project_vaults]` binding in `~/.config/vibe-palace/config.toml`, else that
+file's `vault_path`
 ([ADR-012](adr/012-vault-resolution-precedence-and-host-project-bindings.md));
-a malformed or conflicting tier refuses rather than falling through.
+the tracked `.vibe-palace.toml` is identity only, and a malformed or conflicting
+tier — or a git-tracked marker carrying `vault_path` — refuses rather than
+falling through.
 
 **`{project}`** is the project slug detected from the working directory or
 passed explicitly via the `project` parameter.

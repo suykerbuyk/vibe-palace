@@ -200,9 +200,10 @@ func TestInitCreatesConfig(t *testing.T) {
 	if !strings.Contains(content, "version_major = 1") {
 		t.Errorf("cwd config missing version_major: %s", content)
 	}
-	// vault_path example line must remain commented when flag not passed.
-	if !strings.Contains(content, `# vault_path = "~/work-palace-vault"`) {
-		t.Errorf("cwd config missing commented vault_path example: %s", content)
+	// Identity-only marker (ADR-012 Option (b)): the tracked marker must carry
+	// no active vault_path — the resolver refuses a git-tracked marker that does.
+	if strings.Contains(content, "\nvault_path = ") {
+		t.Errorf("tracked marker must be identity-only (no active vault_path): %s", content)
 	}
 }
 
