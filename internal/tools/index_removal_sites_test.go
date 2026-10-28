@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/index"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -292,12 +292,18 @@ func TestVaultProjectDeleteToolWaitsForABusyLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer release() // idempotent; cleans up if the barrier below never fires
+
+	// Wall-clock-free handshake (no time.AfterFunc): hand the lock over EXACTLY
+	// when the delete's acquire finds it held and is about to wait — vaultlock's
+	// SetWaitHook fires only on that transition (pollExclusive, after a failed try,
+	// before the sleep), never on a try-once acquire that gives up at a zero
+	// deadline without waiting. So a WAITING removal releases-then-acquires and
+	// reports "removed"; a try-once removal never trips the hook, never gets the
+	// lock, and reports the store kept — which is exactly the regression this test
+	// pins. The guard runs once so only the first waiter hands the lock over.
 	var once sync.Once
-	restore := indexstore.ObserveCommitLocks(func(project string, ev indexstore.CommitLockEvent) {
-		if project == "p" && ev == indexstore.CommitWait {
-			once.Do(func() { time.AfterFunc(200*time.Millisecond, func() { _ = release() }) })
-		}
-	})
+	restore := vaultlock.SetWaitHook(func() { once.Do(func() { _ = release() }) })
 	defer restore()
 
 	res := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "apply", Slugs: []string{"p"}, Discard: true, Expect: digest})
@@ -310,5 +316,210 @@ func TestVaultProjectDeleteToolWaitsForABusyLock(t *testing.T) {
 	}
 	if removalStoreExists(t, v, "p") {
 		t.Fatal("index/p/ survived")
+	}
+}
+
+// firstRemoval decodes the single index_removal entry of an apply result.
+func firstRemoval(t *testing.T, res map[string]any) map[string]any {
+	t.Helper()
+	removal := anySlice(res["index_removal"])
+	if len(removal) != 1 {
+		t.Fatalf("index_removal = %v, want one entry", res["index_removal"])
+	}
+	entry, _ := removal[0].(map[string]any)
+	return entry
+}
+
+// Gap 3: the index-store removal that BOTH the CLI (`vp vault project delete`)
+// and the MCP tool reach — storage.ApplyDelete, which takes and RELEASES the
+// vault root lock, then indexstore.RemoveGoneProjects — must run the removal with
+// the vault root lock NOT held. This drives the real MCP apply end to end (not a
+// unit test of the indexstore helper) and asserts, at the instant the removal's
+// index commit lock is acquired, that the vault root lock is free.
+func TestVaultProjectDeleteToolRunsIndexRemovalWithoutTheVaultRootLock(t *testing.T) {
+	root, _ := removalRemoteVault(t, "p", "q")
+	v := storage.NewVault(root)
+	removalSeedStore(t, v, "p")
+	plan := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "plan", Slugs: []string{"p"}, Discard: true})
+	digest, _ := plan["digest"].(string)
+
+	var mu sync.Mutex
+	var sawRemoval, rootFree bool
+	restore := indexstore.ObserveCommitLocks(func(project string, ev indexstore.CommitLockEvent) {
+		if project != "p" || ev != indexstore.CommitAcquired {
+			return
+		}
+		// We are inside the removal, holding p's index commit lock. The vault root
+		// lock must already be released by ApplyDelete: a non-blocking try proves it.
+		rel, ok, err := vaultlock.TryAcquire(v.Root, v.Root)
+		mu.Lock()
+		sawRemoval = true
+		rootFree = err == nil && ok
+		mu.Unlock()
+		if ok {
+			_ = rel()
+		}
+	})
+	defer restore()
+
+	res := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "apply", Slugs: []string{"p"}, Discard: true, Expect: digest})
+	if entry := firstRemoval(t, res); entry["outcome"] != "removed" {
+		t.Fatalf("index_removal outcome = %v, want removed", entry["outcome"])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawRemoval {
+		t.Fatal("the removal's index commit lock was never acquired: the removal did not run")
+	}
+	if !rootFree {
+		t.Fatal("the vault root lock was HELD while the index store was removed; ApplyDelete must release it before the removal")
+	}
+}
+
+// Gap 4: a crash BETWEEN the vault-side delete and the host-local index removal
+// (the process dies after storage.ApplyDelete commits and before
+// indexstore.RemoveGoneProjects runs) leaves an orphaned index store. The next
+// index sweep (indexstore.ReapGoneProjects) must converge: the orphan is removed
+// and none is left behind.
+func TestIndexStoreConvergesAfterACrashBetweenDeleteAndRemoval(t *testing.T) {
+	root, _ := removalRemoteVault(t, "p", "q")
+	v := storage.NewVault(root)
+	removalSeedStore(t, v, "p")
+	removalSeedStore(t, v, "q") // a live sibling whose store the sweep must keep
+	plan := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "plan", Slugs: []string{"p"}, Discard: true})
+	digest, _ := plan["digest"].(string)
+
+	// ApplyDelete lands; the process crashes before RemoveGoneProjects — so the
+	// index store is left behind as an orphan.
+	if _, err := storage.ApplyDelete(v.Root, storage.DeleteRequest{Projects: []string{"p"}, Discard: true, Expect: digest}); err != nil {
+		t.Fatalf("ApplyDelete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Projects", "p")); err == nil {
+		t.Fatal("ApplyDelete did not remove Projects/p/")
+	}
+	if !removalStoreExists(t, v, "p") {
+		t.Fatal("precondition: the index store should still exist (the removal was skipped by the crash)")
+	}
+
+	// The next sweep converges.
+	rep := indexstore.ReapGoneProjects(context.Background(), v)
+	if len(rep.Errors) > 0 {
+		t.Fatalf("sweep errors: %v", rep.Errors)
+	}
+	if !slices.Contains(rep.Removed, "p") {
+		t.Fatalf("the sweep did not remove the orphaned store: %+v", rep)
+	}
+	if removalStoreExists(t, v, "p") {
+		t.Fatal("an orphaned index store survived the sweep")
+	}
+	if !removalStoreExists(t, v, "q") {
+		t.Fatal("the sweep removed a live project's store")
+	}
+}
+
+// Gap 5: a slug deleted and then RE-CREATED must start with a clean host-local
+// index — no stale chunks from the old project surface, because the removal took
+// the store and bumped the generation so the fingerprint reads missing.
+func TestReCreatedSlugStartsWithACleanIndex(t *testing.T) {
+	root, _ := removalRemoteVault(t, "p", "q")
+	v := storage.NewVault(root)
+	removalSeedStore(t, v, "p")
+
+	// Prove the store really held a chunk before the delete.
+	if before, err := indexstore.ReadStore(v, "p"); err != nil || len(before.Chunks(false)) == 0 {
+		t.Fatalf("precondition: p's store should hold a chunk (chunks=%d err=%v)", func() int {
+			if before == nil {
+				return -1
+			}
+			return len(before.Chunks(false))
+		}(), err)
+	}
+
+	plan := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "plan", Slugs: []string{"p"}, Discard: true})
+	digest, _ := plan["digest"].(string)
+	res := deleteToolCall(t, v, vaultProjectDeleteParams{Action: "apply", Slugs: []string{"p"}, Discard: true, Expect: digest})
+	if entry := firstRemoval(t, res); entry["outcome"] != "removed" {
+		t.Fatalf("index_removal outcome = %v, want removed", entry["outcome"])
+	}
+	if removalStoreExists(t, v, "p") {
+		t.Fatal("the delete did not remove p's index store")
+	}
+
+	// Re-create the SAME slug.
+	removalWrite(t, root, "Projects/p/resume.md", "# p\n")
+
+	// The host-local index starts clean: fingerprint missing (unbuilt) and no
+	// stale chunks readable.
+	recipe := index.ChunkRecipe{IndexerVersion: index.IndexerVersion}
+	if st, err := indexstore.ReadFingerprint(v, "p", recipe); err != nil || st != indexstore.FingerprintMissing {
+		t.Fatalf("re-created slug fingerprint = %v (err %v), want missing (unbuilt)", st, err)
+	}
+	after, err := indexstore.ReadStore(v, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(after.Chunks(false)); n != 0 {
+		t.Fatalf("re-created slug surfaced %d stale chunk(s); want a clean index", n)
+	}
+}
+
+// goneStoreMoved seeds an index store for slug (Projects/<slug> present so Lock
+// admits it), then removes the Projects/ side and records the slug as departed to
+// another vault, optionally leaving palace residue. With residue the slug is a
+// store the sweep must KEEP; bare (only palace/<slug>/.local/) it is reapable.
+func goneStoreMoved(t *testing.T, v *storage.Vault, slug string, residue bool) {
+	t.Helper()
+	removalWrite(t, v.Root, "Projects/"+slug+"/resume.md", "# "+slug+"\n")
+	removalSeedStore(t, v, slug)
+	if err := os.RemoveAll(filepath.Join(v.Root, "Projects", slug)); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := (departure.Record{Slug: slug, Kind: departure.MovedToVault, To: "git@example.test:x/other.git", Date: "2026-09-27"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removalWrite(t, v.Root, departure.RelPath(slug), string(rec))
+	if residue {
+		removalWrite(t, v.Root, "palace/"+slug+"/kg/entities.jsonl", "{}\n")
+	} else {
+		removalWrite(t, v.Root, "palace/"+slug+"/.local/x", "x\n")
+	}
+}
+
+// Gap 6: the moved-to-vault and residue cases were tested only at the predicate
+// level (storage.Vault.IndexReapable). This runs them END TO END through the
+// removal site (indexstore.ReapGoneProjects): a moved-to-vault slug whose palace
+// side holds only .local/ is reaped, while one with palace residue (a regular
+// non-derived file) is kept — the store stays for the vault it moved to.
+func TestReapSweepHonoursMovedToVaultAndResidueEndToEnd(t *testing.T) {
+	root, _ := removalRemoteVault(t, "live")
+	v := storage.NewVault(root)
+	// .gitignore must carry the lines the presence rule reads so a derived file
+	// does not count as residue and palace/.local/ is ignored.
+	removalWrite(t, root, ".gitignore", ".vp-locks/\npalace/.local/\n*.bak\n")
+
+	goneStoreMoved(t, v, "movedbare", false) // reapable: palace holds only .local/
+	goneStoreMoved(t, v, "movedres", true)   // kept: palace residue is a store
+
+	// Predicate controls, so a mis-seeded fixture cannot make the e2e vacuous.
+	if ok, _, err := v.IndexReapable("movedbare"); err != nil || !ok {
+		t.Fatalf("fixture: movedbare should be reapable (%v, %v)", ok, err)
+	}
+	if ok, _, err := v.IndexReapable("movedres"); err != nil || ok {
+		t.Fatalf("fixture: movedres should be kept (%v, %v)", ok, err)
+	}
+
+	rep := indexstore.ReapGoneProjects(context.Background(), v)
+	if len(rep.Errors) > 0 {
+		t.Fatalf("sweep errors: %v", rep.Errors)
+	}
+	if !slices.Contains(rep.Removed, "movedbare") {
+		t.Fatalf("the moved-to-vault bare slug was not reaped end to end: %+v", rep)
+	}
+	if removalStoreExists(t, v, "movedbare") {
+		t.Fatal("movedbare's store survived the sweep")
+	}
+	if slices.Contains(rep.Removed, "movedres") || !removalStoreExists(t, v, "movedres") {
+		t.Fatalf("movedres's store was reaped despite palace residue: %+v", rep)
 	}
 }

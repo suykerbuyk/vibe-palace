@@ -30,11 +30,21 @@ func goneStore(t *testing.T, v *storage.Vault, project string) {
 	if err := tx.Append(NoteOwner("notes/n.md"), withDay([]OwnedChunk{ownedChunk("chunk of "+project, project, "general")}, "2026-05-01")); err != nil {
 		t.Fatal(err)
 	}
+	// Gap 2: seed a REAL ledger. The old fixture did touch(ledgerFile) — an EMPTY
+	// file — so every store-tree / "ledger without its chunks" assertion was
+	// vacuous (empty == empty, and the content of a preserved ledger could never
+	// be checked). EnsureLedger writes a genuine baseline record through the
+	// production path, so those assertions now have content to catch.
+	if _, err := tx.EnsureLedger(nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	dir, _ := v.IndexDir(project)
-	touch(t, filepath.Join(dir, ledgerFile))
+	if b, err := os.ReadFile(filepath.Join(dir, ledgerFile)); err != nil || len(b) == 0 {
+		t.Fatalf("fixture ledger is empty (len %d, err %v): the real-ledger seed did not take", len(b), err)
+	}
 	if err := os.RemoveAll(filepath.Join(v.Root, "Projects", project)); err != nil {
 		t.Fatal(err)
 	}
@@ -216,9 +226,14 @@ func TestRemoveProjectCrashPoints(t *testing.T) {
 					t.Fatal("the tombstone is not the whole store")
 				}
 			}
-			// Never a ledger without its chunks, at any point.
-			if tr := treeOf(t, dir); tr[ledgerFile] != "" || (len(tr) > 0 && tr[chunksFile] == "") {
-				t.Fatalf("store after the crash holds %v", tr)
+			// Never a ledger without its chunks, at any point. (Gap 2: the old form
+			// `tr[ledgerFile] != "" || ...` could only pass because the fixture
+			// ledger was empty — with a real ledger seeded it would wrongly fire at
+			// the pre-rename crash points, where the store legitimately holds both.
+			// The real invariant is the conjunction: a ledger present with its
+			// chunks gone.)
+			if tr := treeOf(t, dir); tr[ledgerFile] != "" && tr[chunksFile] == "" {
+				t.Fatalf("store after the crash holds a ledger without its chunks: %v", tr)
 			}
 
 			removeProjectHook = nil
