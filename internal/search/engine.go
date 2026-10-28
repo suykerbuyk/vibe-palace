@@ -142,6 +142,14 @@ type Engine struct {
 	convertMu      sync.Mutex
 	converting     map[string]struct{}
 	convertBackoff map[string]convBackoff
+	// convertDecline records, per project, the vault-run-lock holder a convert was
+	// declined against (holder pid, or 0 when the record was unreadable), plus the
+	// time of that decline. maybeStartConvert uses it to re-fire the convert at
+	// most once per declineRecheckInterval while a foreign holder keeps the lock,
+	// instead of once per search. Guarded by convertMu. Keyed on the HOLDER's pid,
+	// never on the project's Gen — reusing the Gen-keyed convertBackoff was the
+	// round-1 F1 bug (a foreign release never advances this project's Gen).
+	convertDecline map[string]declineMark
 
 	// rebuildLauncher, when set, ensures a detached `vp index rebuild <project>`
 	// is running after a cold/stale search degraded (ADR-016 decision 4). It is
@@ -176,6 +184,26 @@ type convBackoff struct {
 	abandonedAt indexstore.Gen
 	abandons    int
 }
+
+// declineMark records a convert declined against a foreign holder of the
+// vault-wide run lock. pid is the holder's pid at decline time (0 when the
+// holder record was unreadable — a wrapped ReadHolder error, NOT a missing
+// record); lastTry is when the decline happened. It is keyed on holder liveness,
+// never on the project's Gen (see convertDecline).
+type declineMark struct {
+	pid     int
+	lastTry time.Time
+}
+
+// declineRecheckInterval bounds the holder-liveness skip: while a mark looks
+// live, maybeStartConvert still allows ONE runConvert (a single non-blocking
+// TryRunLock) per interval. This is the backstop the holder record's own comment
+// (runlock.go, "it never decides who holds the lock: only a try-lock is
+// authoritative") requires — it keeps a reused pid, or a persistently-unreadable
+// record, from suppressing conversion for the engine's whole lifetime. 30s: the
+// per-interval cost is one flock syscall (no embed), negligible against a convert
+// cadence measured in minutes, while capping worst-case suppression at ~30s.
+const declineRecheckInterval = 30 * time.Second
 
 // EngineOption configures a new Engine.
 type EngineOption func(*Engine)
@@ -229,6 +257,7 @@ func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config, 
 		convertCancel:  convertCancel,
 		converting:     make(map[string]struct{}),
 		convertBackoff: make(map[string]convBackoff),
+		convertDecline: make(map[string]declineMark),
 		warmDone:       make(chan struct{}),
 		// ADR-016 decision 6: the inter-run cooldown defaults to the measured
 		// window. There is no engine option for it; in-package tests set the field
@@ -2004,6 +2033,26 @@ func (e *Engine) maybeStartConvert(project string) {
 			}
 		}
 	}
+	// Holder-liveness decline bound (converter-decline-needs-holder-liveness-bound).
+	// A convert previously declined because a foreign holder held the vault run
+	// lock. Re-fire at most once per declineRecheckInterval while that holder looks
+	// live, and immediately once it is demonstrably gone — never once per search.
+	// The delete and the e.converting set below stay in ONE critical section: the
+	// converting set is the exactly-once guard (a racing search sees it and
+	// returns). declineHolderStillLive reads only the holder file (no e.mu, no
+	// lock-order flip).
+	if dm, marked := e.convertDecline[project]; marked {
+		if time.Since(dm.lastTry) < declineRecheckInterval && e.declineHolderStillLive(dm) {
+			e.convertMu.Unlock()
+			return // holder still looks live and the interval has not elapsed: skip
+		}
+		// Interval elapsed (bounded backstop, fires even for a reused pid or an
+		// unreadable record) OR the marked holder is demonstrably gone: clear and
+		// allow exactly one spawn. If the lock is in fact still held, runConvert
+		// re-declines and re-marks with a fresh lastTry — one TryRunLock per
+		// interval, not per search.
+		delete(e.convertDecline, project)
+	}
 	e.converting[project] = struct{}{}
 	e.convertMu.Unlock()
 
@@ -2038,6 +2087,41 @@ func (e *Engine) convertResetBackoff(project string) {
 	e.convertMu.Lock()
 	delete(e.convertBackoff, project)
 	e.convertMu.Unlock()
+}
+
+// setDeclineMark records that a convert for project was declined against the
+// vault-run-lock holder named by pid (0 when the holder record was unreadable),
+// stamping lastTry = now. Separate from convertBackoff (that keys on the
+// project's Gen; this keys on holder liveness — see convertDecline).
+func (e *Engine) setDeclineMark(project string, pid int) {
+	e.convertMu.Lock()
+	e.convertDecline[project] = declineMark{pid: pid, lastTry: time.Now()}
+	e.convertMu.Unlock()
+}
+
+// clearDeclineMark drops project's decline mark (after a successful acquire).
+func (e *Engine) clearDeclineMark(project string) {
+	e.convertMu.Lock()
+	delete(e.convertDecline, project)
+	e.convertMu.Unlock()
+}
+
+// declineHolderStillLive reports whether the exact holder the mark named still
+// holds the vault run lock and is alive. Called under convertMu; ReadHolder is a
+// single file read and pidSignalAlive a signal-0 — neither takes an engine lock,
+// so there is no lock-order flip with e.mu. A pid of 0 means the holder record
+// was unreadable at decline time (a wrapped ReadHolder error, lock still held):
+// treat as live so the mark survives to the interval backstop rather than
+// thrashing a per-search re-fire.
+func (e *Engine) declineHolderStillLive(dm declineMark) bool {
+	if dm.pid == 0 {
+		return true
+	}
+	h, err := indexstore.ReadHolder(e.vault)
+	if err != nil {
+		return false // ErrHolderUnknown (missing/unparseable) or a read error → gone
+	}
+	return h.PID == dm.pid && pidSignalAlive(h.PID)
 }
 
 // convertVecsFromCache reads the embed-cache vector of each id. ok is false if
@@ -2176,6 +2260,9 @@ func sameIDSet(a []string, b map[string]struct{}) bool {
 func (e *Engine) runConvert(project string) {
 	defer e.convertWG.Done()
 	defer e.clearConverting(project)
+	if convertAttempt != nil {
+		convertAttempt(project) // test seam: counts runConvert entries; nil in production
+	}
 	ctx := e.convertCtx
 
 	// ADR-016 decision 6, U4 site (c): the convert is a CPU-heavy build pass, so
@@ -2213,21 +2300,31 @@ func (e *Engine) runConvert(project string) {
 	}
 	if !ok {
 		// Declined: a detached rebuild/ingest, or an in-process lifecycle/rename,
-		// holds the vault run lock. Per ADR-016 decision 3, re-fire on the NEXT
+		// holds the vault run lock. Per ADR-016 decision 3, re-fire on a LATER
 		// maybeStartConvert trigger — record NO backoff and write NO inbox marker.
 		// (convertAbandon is WRONG here: it keys the backoff on THIS project's Gen,
 		// which a convert that lost the vault-wide lock to another project's build
-		// never advances.) While a foreign holder keeps the vault lock, each search
-		// of a brute-over-threshold project re-fires a fresh runConvert that does one
-		// cheap non-blocking TryRunLock-and-return (a single flock syscall — no
-		// lockProject, no build/embed), so a persistent holder means repeated CHEAP
-		// re-attempts, not repeated embeds. (clearConverting runs on the way out and
-		// `converting` only collapses CONCURRENT launches, so it does NOT bound these
-		// sequential per-search re-fires; a bounded holder-liveness decline mark —
-		// re-fire once, then wait until the holder is gone — is the filed follow-on
-		// `converter-decline-needs-holder-liveness-bound`.)
+		// never advances.)
+		//
+		// To bound the re-fire (converter-decline-needs-holder-liveness-bound), set
+		// a holder-liveness decline mark so maybeStartConvert skips the spawn while
+		// this holder looks live, re-firing at most once per declineRecheckInterval
+		// instead of once per search. ReadHolder names the current holder:
+		//   - valid record (pid>0): mark that pid;
+		//   - wrapped error (record unreadable, lock still held): mark pid 0, which
+		//     declineHolderStillLive treats as live until the interval backstop —
+		//     NOT a per-search thrash;
+		//   - ErrHolderUnknown (record missing): record NO mark. Release removes the
+		//     record before it drops the flock, so a missing record means the holder
+		//     likely just let go — re-fire on the next search.
+		if h, herr := indexstore.ReadHolder(e.vault); herr == nil {
+			e.setDeclineMark(project, h.PID)
+		} else if !errors.Is(herr, indexstore.ErrHolderUnknown) {
+			e.setDeclineMark(project, 0)
+		}
 		return
 	}
+	e.clearDeclineMark(project)           // acquired the lock: drop any stale decline mark
 	defer func() { _ = held.Release() }() // panic-safe: Release returns an error
 
 	// Step 2: snapshot b0 and its id set under the project mutex, then release.

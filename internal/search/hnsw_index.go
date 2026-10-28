@@ -245,12 +245,13 @@ var (
 // insertHook / catchUpErrHook), nil in production, and never fire on the
 // runRebuild path (that path has afterSnapshot/beforeCatchUpRound instead).
 var (
-	convertAfterBuild  func()             // after Step 3 builds the detached graph, off all locks
-	convertEachRound   func(round int)    // inside each off-lock Step-4 round, holding no lock
-	convertBeforeFinal func()             // after the off-lock rounds, before Step 5 re-takes the project mutex
-	convertBeforeGate  func(h *hnswIndex) // in the critical section, after the final reconcile, before the gate
-	convertBeforeSwap  func()             // in the critical section, after the gate passes, before the e.mu swap
-	convertBeforeSave  func()             // in the critical section, after the swap, before the gen-guarded save
+	convertAfterBuild  func()               // after Step 3 builds the detached graph, off all locks
+	convertEachRound   func(round int)      // inside each off-lock Step-4 round, holding no lock
+	convertBeforeFinal func()               // after the off-lock rounds, before Step 5 re-takes the project mutex
+	convertBeforeGate  func(h *hnswIndex)   // in the critical section, after the final reconcile, before the gate
+	convertBeforeSwap  func()               // in the critical section, after the gate passes, before the e.mu swap
+	convertBeforeSave  func()               // in the critical section, after the swap, before the gen-guarded save
+	convertAttempt     func(project string) // at the top of runConvert, before the cooldown/try-lock (decline-bound test oracle)
 )
 
 // distanceName is the name cosineNaNGuard is registered under. A saved graph

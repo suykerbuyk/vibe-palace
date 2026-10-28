@@ -5,10 +5,13 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +57,7 @@ func clearConvertHooks(t *testing.T) {
 		convertBeforeGate = nil
 		convertBeforeSwap = nil
 		convertBeforeSave = nil
+		convertAttempt = nil
 	})
 }
 
@@ -806,7 +810,13 @@ func TestConvertDeclineReleasesThenRetries(t *testing.T) {
 	const project = "u3retry"
 	e := NewEngine(embedder.NewMock(384), v, selCfg(), WithBackgroundConverter())
 	t.Cleanup(func() { _ = e.Close() })
+	e.indexRunCooldown = 0 // isolate the decline behaviour from the cooldown gate
 	seedBruteProject(t, v, e, project, 5)
+
+	// Count every runConvert entry, so the holder-liveness bound (one re-fire per
+	// holder, not one per search) is assertable.
+	var attempts int64
+	convertAttempt = func(string) { atomic.AddInt64(&attempts, 1) }
 
 	// Hold the vault-wide run lock for a different run. Releasing it later does NOT
 	// advance `project`'s Gen — the whole point of F1.
@@ -822,16 +832,36 @@ func TestConvertDeclineReleasesThenRetries(t *testing.T) {
 	}()
 
 	// Decline deterministically (synchronous): no swap, and F1's hard oracle — no
-	// backoff recorded.
+	// backoff recorded. This first decline is the ONE attempt that sets the mark.
 	convertSync(e, project)
 	if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
 		t.Fatal("declined convert swapped anyway")
 	}
+	if got := atomic.LoadInt64(&attempts); got != 1 {
+		t.Fatalf("first decline: attempts=%d, want 1", got)
+	}
 	e.convertMu.Lock()
 	abandons := e.convertBackoff[project].abandons
+	_, marked := e.convertDecline[project]
 	e.convertMu.Unlock()
 	if abandons != 0 {
 		t.Fatalf("decline recorded a backoff (abandons=%d); with the vault-wide lock this suppresses the convert until THIS project's Gen advances, which a foreign release never does (decision 3 is re-fire on the next trigger)", abandons)
+	}
+	if !marked {
+		t.Fatal("decline did not record a holder-liveness mark")
+	}
+
+	// PRE-RELEASE no-respawn: while the foreign holder is live and inside the
+	// re-check interval, repeated triggers must NOT re-fire runConvert. Poll across
+	// a window so a wrongly-spawned goroutine has time to tick the counter (a single
+	// sample races the `go runConvert`).
+	noRespawn := time.Now().Add(2 * time.Second)
+	for time.Now().Before(noRespawn) {
+		e.maybeStartConvert(project)
+		if got := atomic.LoadInt64(&attempts); got != 1 {
+			t.Fatalf("pre-release: runConvert re-fired while the holder was live (attempts=%d, want 1) — the decline mark did not bound the re-fire", got)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	// Foreign holder gone; project's Gen is UNCHANGED (nothing was written to it).
@@ -840,9 +870,9 @@ func TestConvertDeclineReleasesThenRetries(t *testing.T) {
 	}
 	released = true
 
-	// The next NATURAL trigger (maybeStartConvert — the gate that consults the
-	// backoff) must retry and now convert. With a stale backoff it would be gated
-	// out, because project's Gen did not advance.
+	// The next NATURAL trigger (maybeStartConvert — the gate) must retry and now
+	// convert: ReadHolder is ErrHolderUnknown (record gone), the fast path clears
+	// the mark and re-fires even inside the interval.
 	e.maybeStartConvert(project)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -851,6 +881,152 @@ func TestConvertDeclineReleasesThenRetries(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("convert did not retry after the foreign holder released (decline left durable suppression?)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&attempts); got != 2 {
+		t.Fatalf("after release: attempts=%d, want exactly 2 (one decline + one successful re-fire)", got)
+	}
+}
+
+// TestConvertDeclineDeadHolderRefires pins the dead-pid fast path: a decline mark
+// naming a holder whose pid is dead (a crash leftover — flock gone, stale record)
+// must clear and re-fire at once, inside the interval. The planted record is a
+// PARSEABLE Holder (pid>0, kind set) so ReadHolder returns it (a Kind-less file is
+// ErrHolderUnknown and would prove the wrong row); the pid is one the test killed
+// and reaped, never a magic number (which can flake red on a shared host).
+func TestConvertDeclineDeadHolderRefires(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3dead"
+	e := NewEngine(embedder.NewMock(384), v, selCfg(), WithBackgroundConverter())
+	t.Cleanup(func() { _ = e.Close() })
+	e.indexRunCooldown = 0
+	seedBruteProject(t, v, e, project, 5)
+
+	// A pid the test started, killed, and REAPED: provably dead.
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn a helper process: %v", err)
+	}
+	deadPID := cmd.Process.Pid
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait() // reap, so the pid is not merely signalled but gone
+	if pidSignalAlive(deadPID) {
+		t.Skipf("killed pid %d still reports alive (reused?)", deadPID)
+	}
+
+	// Plant a parseable, OS-lock-free stale holder record naming the dead pid.
+	if err := os.MkdirAll(v.IndexLocksDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := json.Marshal(indexstore.Holder{PID: deadPID, Kind: indexstore.KindRebuild, StartTime: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(v.IndexRunHolderPath(), append(rec, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Police the plant: it must parse as a valid Holder (pid+kind), so this test
+	// exercises the dead-pid row and not the ErrHolderUnknown row. A future edit
+	// that drops Kind would otherwise false-green through ErrHolderUnknown.
+	if h, herr := indexstore.ReadHolder(v); herr != nil || h.PID != deadPID || h.Kind != indexstore.KindRebuild {
+		t.Fatalf("planted holder did not parse as a valid record (ReadHolder=%+v, err=%v) — the dead-pid branch is not actually exercised", h, herr)
+	}
+
+	// Arm a decline mark against the dead holder, lastTry = now so ONLY the
+	// dead-holder fast path (not the interval backstop) can clear it.
+	e.convertMu.Lock()
+	e.convertDecline[project] = declineMark{pid: deadPID, lastTry: time.Now()}
+	e.convertMu.Unlock()
+
+	var attempts int64
+	convertAttempt = func(string) { atomic.AddInt64(&attempts, 1) }
+
+	e.maybeStartConvert(project)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("convert did not re-fire against a dead holder (attempts=%d)", atomic.LoadInt64(&attempts))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&attempts); got != 1 {
+		t.Fatalf("dead-holder re-fire: attempts=%d, want 1", got)
+	}
+}
+
+// TestConvertDeclineIntervalRefiresWhileLive pins the operator-decided bounded
+// backstop: while the marked holder is genuinely live, the convert still re-fires
+// ONE attempt once declineRecheckInterval has elapsed (so a reused pid or an
+// unreadable record cannot suppress forever), then re-arms — the next immediate
+// trigger does NOT re-fire. The live holder is this process (TryRunLock writes
+// os.Getpid()); the elapsed interval is injected via lastTry.
+func TestConvertDeclineIntervalRefiresWhileLive(t *testing.T) {
+	withThresholds(t, 4, 2)
+	withConvertBounds(t, 64, 8)
+	clearConvertHooks(t)
+	v := testVault(t)
+	const project = "u3interval"
+	e := NewEngine(embedder.NewMock(384), v, selCfg(), WithBackgroundConverter())
+	t.Cleanup(func() { _ = e.Close() })
+	e.indexRunCooldown = 0
+	seedBruteProject(t, v, e, project, 5)
+
+	var attempts int64
+	convertAttempt = func(string) { atomic.AddInt64(&attempts, 1) }
+
+	// A LIVE foreign holder (this process holds the vault lock).
+	rl, ok, err := indexstore.TryRunLock(v, indexstore.KindRebuild, "")
+	if err != nil || !ok {
+		t.Fatalf("pre-acquire: ok=%v err=%v", ok, err)
+	}
+	defer func() { _ = rl.Release() }()
+
+	// Arm a mark whose interval has ELAPSED, against the live self-holder.
+	e.convertMu.Lock()
+	e.convertDecline[project] = declineMark{pid: os.Getpid(), lastTry: time.Now().Add(-2 * declineRecheckInterval)}
+	e.convertMu.Unlock()
+
+	// Interval elapsed ⇒ exactly one re-fire even though the holder is live.
+	e.maybeStartConvert(project)
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&attempts) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("interval backstop did not re-fire against a still-live holder")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Wait for the goroutine to finish (converting cleared ⇒ it re-declined and
+	// re-marked with a fresh lastTry).
+	for {
+		e.convertMu.Lock()
+		_, running := e.converting[project]
+		e.convertMu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("convert goroutine did not finish")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, isHNSW := installedIndex(t, e, project).(*hnswIndex); isHNSW {
+		t.Fatal("convert swapped while the lock was held by a live holder")
+	}
+
+	// Re-armed: a fresh mark (lastTry ≈ now) + live holder ⇒ skip, no new attempt.
+	stay := time.Now().Add(2 * time.Second)
+	for time.Now().Before(stay) {
+		e.maybeStartConvert(project)
+		if got := atomic.LoadInt64(&attempts); got != 1 {
+			t.Fatalf("interval re-arm failed: a fresh mark re-fired while the holder was live (attempts=%d, want 1)", got)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
