@@ -334,6 +334,14 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 		claimDir = filepath.Join(payload.CWD, ".vibe-palace")
 	}
 
+	// 3b. Opportunistic claim-sentinel sweep: purge claimed-<id> sentinels whose
+	// host session is no longer live, so a crashed host does not leave a sentinel
+	// that short-circuits a later real capture of a reused id. Best-effort and
+	// bounded; sweepClaimsBestEffort swallows every error and panic, so it can
+	// never fail the hook. The current session (payload.SessionID) is live by
+	// definition, so its own claim is never a sweep target.
+	sweepClaimsBestEffort(claimDir, payload.SessionID)
+
 	// 4. Archive transcript at the "preserve now" events — SessionEnd (the
 	// complete transcript) and PreCompact (before compaction discards history) —
 	// but NOT on Stop. Stop fires once per assistant turn, and archive's dedup
