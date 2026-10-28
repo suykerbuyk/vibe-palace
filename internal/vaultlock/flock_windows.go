@@ -68,6 +68,47 @@ func flockTryExclusive(f *os.File) (ok bool, err error) {
 	return false, err
 }
 
+// flockShared acquires a SHARED lock on f, blocking until it is available.
+// Omitting LOCKFILE_EXCLUSIVE_LOCK requests a shared lock; without
+// LOCKFILE_FAIL_IMMEDIATELY it blocks, matching unix LOCK_SH. Shared locks are
+// mutually compatible and block, and are blocked by, an exclusive lock on the
+// same byte range. Used on the .vp-locks/.gc coordination file (ADR-003
+// amendment 2026-10-27).
+func flockShared(f *os.File) error {
+	var overlapped windows.Overlapped
+	return windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		0, // shared: neither LOCKFILE_EXCLUSIVE_LOCK nor LOCKFILE_FAIL_IMMEDIATELY
+		0,
+		lockRangeLow,
+		lockRangeHigh,
+		&overlapped,
+	)
+}
+
+// flockTryShared is the non-blocking companion to flockShared. Adding
+// LOCKFILE_FAIL_IMMEDIATELY makes LockFileEx return at once; on contention with an
+// exclusive holder it fails with ERROR_LOCK_VIOLATION, which maps to ok=false,
+// exactly as flockTryExclusive maps it.
+func flockTryShared(f *os.File) (ok bool, err error) {
+	var overlapped windows.Overlapped
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_FAIL_IMMEDIATELY, // shared (no EXCLUSIVE), non-blocking
+		0,
+		lockRangeLow,
+		lockRangeHigh,
+		&overlapped,
+	)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return false, err
+}
+
 // funlock releases the exclusive lock on f over the same offset 0 / length 1
 // range taken by flockExclusive. It must run before the handle closes; the OS
 // also drops the lock implicitly when the handle closes or the process exits.

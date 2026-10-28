@@ -392,6 +392,7 @@ func TestVaultFlagSurfaceGatesTheNamedRoot(t *testing.T) {
 		"vault sync":    {"--dry-run"},
 		"vault commit":  {"--paths", flagTestArtifact, "--message", "rehearse"},
 		"vault tidy":    {"--no-push"},
+		"vault gc":      {"--dry-run"},
 		"vault status":  {"--no-fetch"},
 		"vault project": {"delete", "vibe-palace", "--discard"},
 		"vault copy":    {"p", "--from", "git@example.invalid:x/src.git", "--dry-run"},

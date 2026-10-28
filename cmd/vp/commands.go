@@ -235,6 +235,12 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// question again.
 	reg.Register(mutates(cmdVaultCommit()))
 	reg.Register(mutates(cmdVaultTidy()))
+	// NOT mutates(): `vault gc` runs no git and writes no vault content — it only
+	// os.Removes empty, provably-unheld .vp-locks advisory-lock sidecars under a
+	// quiescence-gated coordination lock. It reaches no vault-write funnel sink, so
+	// it derives non-mutating and is declared ungated (ADR-003 amendment 2026-10-27;
+	// enforced by the derived-gate check in internal/sourceaudit).
+	reg.Register(cmdVaultGC())
 	// mutates(): `vault copy` writes project content into the served vault and
 	// commits it, so it fail-stops against a vault written by a newer binary.
 	reg.Register(mutates(cmdVaultCopy()))

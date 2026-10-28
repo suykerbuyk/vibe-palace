@@ -865,6 +865,134 @@ reverse. This order lives entirely inside ADR-014; it does not interact with thi
 ADR's *Sequential locks, never nested* rule, the ordered-pair acquisition
 (`AcquirePair`), or the repo-root key. See ADR-014 for its own deadlock argument.
 
+## Amendment (2026-10-27): a `.vp-locks` GC coordination lock (quiescence-gated)
+
+The *Consequences* above accepted the `.lock` sidecars as "empty and harmless
+litter … not garbage-collected." They now have a garbage collector (`vp vault
+gc`), and collecting them safely required closing the hazard this package's own
+doc comment names: *removing a lock file while another process may have it open
+would let two holders lock two different files.* The unguarded window is
+`openLockFile`'s `O_CREATE` open followed by the caller's `flock`.
+
+### Decision
+
+A single coordination lock file, `<vaultRoot>/.vp-locks/.gc` (named without a
+`.lock` suffix so the sweep's `*.lock` enumeration never sees it, and so it can
+never collide with a `<sha256(key)>.lock` sidecar name).
+
+- **Writers take `.gc` SHARED** across their sidecar's open→flock window. This is
+  done inside `openLockFile` (split into a `.gc`-shared wrapper over the raw
+  `openLockFileNoGC`), which returns a `gcRelease` the acquire path calls *after*
+  its per-path flock succeeds — so the shared hold spans exactly the open→flock
+  window and no longer. The timeout path (`AcquireWithTimeout` →
+  `pollExclusive`) holds `.gc` shared across the **whole** poll loop, because its
+  open→flock window is the entire loop, not a single attempt. **No key is
+  exempt** — the vault root's own key takes `.gc` shared like every other.
+- **GC takes `.gc` EXCLUSIVE via a BOUNDED NON-BLOCKING POLL** (repeated
+  `flockTryExclusive` + a short sleep, up to a bounded timeout) — never a blocking
+  or pending exclusive. On success it sweeps; **on timeout it aborts and unlinks
+  nothing** ("busy, retry").
+- **GC sweeps sidecar files directly:** it enumerates `.vp-locks/*.lock` (never
+  `.gc`), opens each with `flockTryExclusiveFile` — `O_RDWR` **without**
+  `O_CREATE`, taking no `.gc` (it already holds `.gc` exclusive; taking it shared
+  would self-deadlock) — and `os.Remove`s the unheld ones, **closing the fd
+  before the remove** (so Windows's default share mode, which lacks
+  `FILE_SHARE_DELETE`, does not refuse the delete). All removals happen inside the
+  exclusive hold. New primitives `flockShared`/`flockTryShared` are added on both
+  platforms.
+
+### Why it is deadlock-free on both platforms
+
+The deadlock class that an earlier (blocking/pending-exclusive) GC design would
+have had — a *pending* exclusive `.gc` request blocking a nested shared acquire
+while that acquire's owner holds a sidecar a writer-in-its-window is blocked on —
+cannot form, because **GC never issues a pending exclusive request.** A
+non-blocking try either succeeds (and then, by flock semantics, at that instant
+there are **zero** shared holders — so nobody is mid open→flock, and GC waits on
+nothing: it has no outgoing wait edge) or fails immediately, leaving no queued
+request to block any shared acquirer. On **Windows** this is the decisive point:
+a *pending* `LockFileEx` exclusive *does* block later shared requests, so GC uses
+`LOCKFILE_FAIL_IMMEDIATELY` and never pends. On **unix** a pending `flock`
+exclusive does not block new shared acquires in the first place; the non-blocking
+poll is still used so the two platforms share one argument.
+
+This holds even though vault writes pervasively nest a `.vp-locks` acquire under
+an outer `.vp-locks` lock: a committer holding the repo-root key then calling
+`vaultfs.Delete` (`pruneMirrors`, the merge heal, `ApplyDelete`) or
+`WriteDepartureRecord`, and a non-root nest where `UpsertSessionByKey` holds the
+sessions-**directory** lock and then takes a note-path lock. Each such nested
+acquire simply takes `.gc` shared again; none can deadlock GC, because GC has no
+outgoing wait edge. They only make the vault **non-quiescent**, which makes GC
+abort — the intended behaviour.
+
+> **Correction to the 2026-09-27 amendment's audit.** That amendment stated a
+> root-key holder "never acquires a per-path key, with the one existing exception
+> of `pruneMirrors`." That is stale: `vaultfs.Delete` under the merge heal and
+> under `ApplyDelete`, and `WriteDepartureRecord`/`RemoveDepartureRecord` under a
+> lifecycle root token, all acquire a non-root per-path key while holding the
+> root key. This does not affect the pre-existing deadlock argument (those nests
+> take their outer lock first and the inner key is strictly a leaf), and it does
+> not affect the GC argument (GC has no outgoing wait edge regardless).
+
+### Why the split is closed
+
+GC unlinks a sidecar only while holding `.gc` exclusive, which it obtains only at
+an instant with **zero** shared holders — i.e. no process is in any sidecar's
+open→flock window. So `flockTryExclusiveFile` returning `ok=true` proves the
+sidecar is unheld **and** not mid-creation, and the `os.Remove` cannot race an
+`O_CREATE`+flock. The vault root's own sidecar is swept like any other, and this
+is safe because `.gc` separates *mid-acquire* from *finished-acquire*: a holder
+still INSIDE `openLockFile`/`flockExclusive` (the open→flock window) keeps `.gc`
+shared, so GC cannot take `.gc` exclusive and aborts; a holder that has FINISHED
+its acquire — a committer mid-`git fetch`, say — holds ONLY its sidecar and NO
+`.gc`, so GC takes `.gc`, finds that sidecar held (`flockTryExclusiveFile`
+returns `ok=false`), SKIPS it, and may still sweep OTHER unheld sidecars. GC
+never waits on a network-holding lock. A swept, unheld root sidecar is recreated
+by the next committer cleanly, as *Consequences* already notes a crash-left
+marker is recreated. This closes "two holders on two inodes for one **key**" —
+not "one **file**", which the
+`canonicalKey` symlink residual still permits and which is out of scope here.
+
+### Scope and limits
+
+- **Named-path lock openers are out of GC scope.** `TryAcquireFile` (the clone
+  lock) and `AcquireFileWithTimeout` (the host-local `palace/.local/locks/` index
+  locks) open caller-named paths **outside** `<vaultRoot>/.vp-locks/`, so GC never
+  unlinks them and they take no `.gc`. The model-cache download lock holds across
+  the network on purpose, but its sidecar lives under `modelCacheDir/.vp-locks/`,
+  **not** the vault's — also out of scope. A future "sweep every lock dir" must
+  not inherit this amendment's quiescence argument for those directories.
+- **Quiescence is the chosen trade-off.** GC is a no-op/abort whenever the vault
+  is active (a long `git fetch`/merge holding the root lock, an in-flight capture
+  holding the sessions-dir lock, any writer mid open→flock). This is accepted
+  deliberately over the invasive alternative — threading a lock-held inner-flock
+  variant through every nested writer so GC could run concurrently — which would
+  reintroduce "GC waits on a network-holding lock." The litter is empty and
+  harmless, and GC is an occasional operator action, so a correct no-op beats any
+  removal under concurrency.
+- **🔴 Never promote `.gc` from shared to exclusive on one fd.** `flock` converts
+  a same-fd lock by drop-then-reacquire (a visible window); Windows `LockFileEx`
+  refuses the in-place upgrade with `ERROR_LOCK_VIOLATION`. Close and reopen, or
+  use a distinct fd.
+- **Platform/NFS.** The argument is local-filesystem `flock`/`LockFileEx` only.
+  `flock` over NFS is unreliable across clients, so a shared-filesystem vault root
+  is outside what `.gc` promises — the same caveat the *Platform scope* section
+  makes for the per-path locks.
+
+### Pins
+
+`internal/vaultlock`: the shared-primitive and `flockTryExclusiveFile` unit
+tests; the `SweepDeadLocks` tests (removes an unheld sidecar, skips a held one,
+aborts removing nothing while a `.gc` shared holder exists, no-op on timeout); the
+split-revert test (coordination present ⇒ GC aborts and no split; coordination
+absent ⇒ unlink + a fresh `O_CREATE` yield two inodes for one key, and both
+holders' exclusive flocks succeed at once — mutual exclusion lost); the
+blocking-revert leg (a blocking `.gc` exclusive stays blocked while a shared
+holder exists, so a blocking GC would hang and remove nothing — which is why the
+production acquire is a non-blocking poll). `internal/storage`: `GCLocks`.
+`cmd/vp`: `cmdVaultGC` registered **without** `mutates()`; `internal/sourceaudit`
+asserts it is declared ungated (it reaches no vault-write funnel sink).
+
 ## References
 
 - Lock primitive: `internal/vaultlock/` (`vaultlock.go`, `flock_unix.go`,

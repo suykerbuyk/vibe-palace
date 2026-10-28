@@ -55,14 +55,19 @@ func Acquire(vaultRoot, targetAbsPath string) (release func() error, err error) 
 
 // acquireByKey is Acquire for a key already computed by canonicalKey.
 func acquireByKey(vaultRoot, key string) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, key)
+	f, gcRelease, err := openLockFile(vaultRoot, key)
 	if err != nil {
 		return nil, err
 	}
 	if err := flockExclusive(f); err != nil {
+		_ = gcRelease()
 		f.Close()
 		return nil, fmt.Errorf("vaultlock: acquire lock: %w", err)
 	}
+	// The per-path lock is held: a GC sweep can no longer see this sidecar as
+	// unheld, so the .gc coordination hold has done its job and is released. The
+	// per-path lock stays held for the caller's whole read-modify-write.
+	_ = gcRelease()
 	return releaser(f), nil
 }
 
@@ -134,19 +139,22 @@ func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err erro
 // to ok=false exactly as unix EWOULDBLOCK does. A caller that refuses on
 // ok=false refuses for the same reason everywhere.
 func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool, err error) {
-	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
+	f, gcRelease, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, false, err
 	}
 	got, err := flockTryExclusive(f)
 	if err != nil {
+		_ = gcRelease()
 		f.Close()
 		return nil, false, fmt.Errorf("vaultlock: try acquire lock: %w", err)
 	}
 	if !got {
+		_ = gcRelease()
 		f.Close()
 		return nil, false, nil
 	}
+	_ = gcRelease()
 	return releaser(f), true, nil
 }
 
@@ -188,7 +196,7 @@ func TryAcquireFile(lockPath string) (release func() error, ok bool, err error) 
 // ErrLockWaitTimeout. (AcquireFileWithTimeout differs: there a negative
 // timeout waits until its ctx is done.)
 func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) (release func() error, err error) {
-	f, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
+	f, gcRelease, err := openLockFile(vaultRoot, canonicalKey(targetAbsPath))
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +205,11 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 	if timeout < 0 {
 		timeout = 0
 	}
-	return pollExclusive(context.Background(), f, timeout, targetAbsPath)
+	// The .gc hold MUST span the WHOLE poll: this opened the sidecar fd and will
+	// keep retrying flock on it across 50ms sleeps, so the open→flock window is the
+	// entire loop, not just the first attempt. pollExclusive releases gcRelease on
+	// whichever way it exits.
+	return pollExclusive(context.Background(), f, gcRelease, timeout, targetAbsPath)
 }
 
 // AcquireFileWithTimeout is AcquireWithTimeout on a lock file the caller
@@ -225,7 +237,10 @@ func AcquireFileWithTimeout(ctx context.Context, lockPath string, timeout time.D
 	if err != nil {
 		return nil, fmt.Errorf("vaultlock: open lock file: %w", err)
 	}
-	return pollExclusive(ctx, f, timeout, lockPath)
+	// Named-path opener: lockPath is NOT a <vaultRoot>/.vp-locks hashed sidecar
+	// (it is the clone lock, or palace/.local/locks/), so it is OUT of GC's sweep
+	// scope and takes no .gc coordination — gcRelease is nil.
+	return pollExclusive(ctx, f, nil, timeout, lockPath)
 }
 
 // waitHook, when a test sets it with SetWaitHook, runs each time
@@ -257,23 +272,37 @@ func SetWaitHook(f func()) (restore func()) {
 // every attempt, so a cancelled caller never takes the lock, and a cancel is
 // noticed during the wait, not only at the next attempt. A negative timeout
 // never expires; what names the lock in a timeout error.
-func pollExclusive(ctx context.Context, f *os.File, timeout time.Duration, what string) (func() error, error) {
+// pollExclusive takes the exclusive lock on f. gcRelease, when non-nil, is the
+// .gc shared-coordination release for a <vaultRoot>/.vp-locks sidecar: it is held
+// across the ENTIRE poll (the open→flock window is the whole loop here, not a
+// single attempt) and released on whichever way this returns — success, timeout,
+// ctx cancellation, or error. A named-path caller (out of GC scope) passes nil.
+func pollExclusive(ctx context.Context, f *os.File, gcRelease func() error, timeout time.Duration, what string) (func() error, error) {
+	releaseGC := func() {
+		if gcRelease != nil {
+			_ = gcRelease()
+		}
+	}
 	deadline := time.Now().Add(timeout)
 	const pollInterval = 50 * time.Millisecond
 	for {
 		if err := ctx.Err(); err != nil {
+			releaseGC()
 			f.Close()
 			return nil, err
 		}
 		ok, err := flockTryExclusive(f)
 		if err != nil {
+			releaseGC()
 			f.Close()
 			return nil, fmt.Errorf("vaultlock: try acquire lock: %w", err)
 		}
 		if ok {
+			releaseGC()
 			return releaser(f), nil
 		}
 		if timeout >= 0 && !time.Now().Before(deadline) {
+			releaseGC()
 			f.Close()
 			return nil, fmt.Errorf("%w: %s after %s", ErrLockWaitTimeout, what, timeout)
 		}
@@ -292,14 +321,78 @@ func pollExclusive(ctx context.Context, f *os.File, timeout time.Duration, what 
 	}
 }
 
-// openLockFile validates the root and opens (creating if needed) the sidecar
-// lock file named by key, which every caller computes with canonicalKey. It
-// performs no locking.
+// gcCoordName is the fixed name of the .vp-locks GC coordination lock file. It
+// deliberately has NO .lock suffix so the GC sweep's "*.lock" enumeration never
+// treats it as a sweepable sidecar, and so it can never collide with a
+// <sha256(key)>.lock sidecar name (ADR-003 amendment 2026-10-27).
+const gcCoordName = ".gc"
+
+// gcLockPath is the absolute path of the .vp-locks/.gc coordination lock.
+func gcLockPath(vaultRoot string) string {
+	return filepath.Join(vaultRoot, ".vp-locks", gcCoordName)
+}
+
+// acquireGCShared opens and SHARED-locks the .vp-locks/.gc coordination file,
+// blocking until it is available. Every writer takes this across its sidecar's
+// open→flock window; a GC sweep takes the same file EXCLUSIVE, so while GC holds
+// it no writer can be mid open→flock, and while any writer holds it shared GC's
+// non-blocking exclusive poll fails and aborts (ADR-003 amendment 2026-10-27).
+//
+// 🔴 NEVER convert this shared lock to exclusive on the same fd: flock promotion
+// drops-then-reacquires (a visible window), and Windows LockFileEx refuses the
+// in-place upgrade with ERROR_LOCK_VIOLATION. Close and reopen, or use a distinct
+// fd.
+func acquireGCShared(vaultRoot string) (release func() error, err error) {
+	if vaultRoot == "" {
+		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
+	}
+	if !filepath.IsAbs(vaultRoot) {
+		return nil, fmt.Errorf("vaultlock: vaultRoot must be absolute, got %q", vaultRoot)
+	}
+	lockDir := filepath.Join(vaultRoot, ".vp-locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("vaultlock: create lock dir: %w", err)
+	}
+	f, err := os.OpenFile(gcLockPath(vaultRoot), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("vaultlock: open gc coordination lock: %w", err)
+	}
+	if err := flockShared(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("vaultlock: acquire gc coordination (shared): %w", err)
+	}
+	return releaser(f), nil
+}
+
+// openLockFile takes the .gc coordination lock SHARED and opens (creating if
+// needed) the sidecar named by key. It returns the open sidecar file AND a
+// gcRelease the caller MUST call AFTER its per-path flock succeeds (or on any
+// failure path) — the shared .gc hold spans the open→flock window so a GC sweep
+// cannot unlink the sidecar between the open and the flock.
 //
 // It takes the KEY, not the path, because AcquirePair must compute each key
 // once: the value that orders the pair has to be the value that names the
-// sidecar, or the order and the lock identity could disagree.
-func openLockFile(vaultRoot, key string) (*os.File, error) {
+// sidecar, or the order and the lock identity could disagree. NO key is exempt —
+// the vault root's own key takes .gc shared like every other.
+func openLockFile(vaultRoot, key string) (f *os.File, gcRelease func() error, err error) {
+	gcRelease, err = acquireGCShared(vaultRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err = openLockFileNoGC(vaultRoot, key)
+	if err != nil {
+		_ = gcRelease()
+		return nil, nil, err
+	}
+	return f, gcRelease, nil
+}
+
+// openLockFileNoGC validates the root and opens (creating if needed) the sidecar
+// lock file named by key. It performs NO locking and takes NO .gc coordination —
+// it is the raw opener. The GC sweep is the one caller that opens a sidecar
+// without .gc: it already holds .gc EXCLUSIVE, so taking .gc shared here would
+// self-deadlock against its own exclusive hold.
+func openLockFileNoGC(vaultRoot, key string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}

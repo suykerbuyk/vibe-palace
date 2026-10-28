@@ -306,4 +306,15 @@ func TestDerivedGateSeesEveryRegisteredCommand(t *testing.T) {
 	if gated, ok := declared["cmdArchiveCreate"]; !ok || !gated {
 		t.Errorf("cmdArchiveCreate parsed as gated=%v present=%v; it is written mutates(cmdArchiveCreate(info)) and IS gated", gated, ok)
 	}
+
+	// `vault gc` (cmdVaultGC) must be REGISTERED and UNGATED. The derived-gate run
+	// passes vacuously green for a command it never sees, so assert registration
+	// here; and gc reaches no vault-write funnel sink (it only os.Removes empty
+	// lock sidecars), so it must be declared ungated or the derivation would flag a
+	// divergence (ADR-003 amendment 2026-10-27).
+	if gated, ok := declared["cmdVaultGC"]; !ok {
+		t.Error("cmdVaultGC is not registered in cmd/vp/commands.go — a derived-gate run would pass vacuously for it")
+	} else if gated {
+		t.Error("cmdVaultGC parsed as gated; `vault gc` reaches no vault-write sink and must be registered WITHOUT mutates()")
+	}
 }

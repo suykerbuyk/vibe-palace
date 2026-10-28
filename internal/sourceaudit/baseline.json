@@ -469,6 +469,10 @@
       "reason": "DELIBERATE TEST SEAM, declared in non-test code because tests in other packages need it (internal/indexstore cancels a Lock while it is known to be waiting). It runs when a timed acquire finds its lock held and is about to wait, so a test can act during the wait instead of sleeping. Production never sets it. Task host-local-index-store-ledger-and-fingerprint (slice 1 review, D2)."
     },
     {
+      "id": "uninvoked vaultlock.flockTryShared",
+      "reason": "DECLARED COMPANION PRIMITIVE — the non-blocking shared counterpart to flockShared, added on both platforms by the ADR-003 2026-10-27 amendment (the .vp-locks GC coordination lock) so the shared pair mirrors the exclusive pair flockExclusive/flockTryExclusive exactly, with the same EWOULDBLOCK/ERROR_LOCK_VIOLATION mapping. Production's .gc writers take flockShared (blocking) and GC takes flockTryExclusive (non-blocking poll), so the non-blocking SHARED form has no production caller today; it is exercised by the vaultlock tests (TestFlockSharedCompatibility) that pin the shared primitive's semantics. Same disposition as the vaultlock.SetWaitHook entry above. ADR-006 verdict: DECLARE."
+    },
+    {
       "id": "uninvoked zed.ListThreadIDs",
       "reason": "REAL FINDING, owned by the existing task zed-pane-capture-parity (Phase 1). This is the missing half of the documented Zed failure: zedAdapter.ResolveSource requires a Zed thread UUID, ListThreadIDs is the ONLY code in the tree that can enumerate one, and nothing calls it — so a thread cannot be found without hand-querying SQLite. Its doc comment cites a `--detect` smoke mode that DOES NOT EXIST anywhere in the tree. The gate rediscovered that task's root cause from source alone. ADR-006 verdict: REPORT + DEFER (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — the fix is deferred to the owning task named above; this reason is the DECLARE channel recording it."
     },
@@ -513,8 +517,12 @@
       "reason": "TEST-ONLY BY DESIGN: a fixture writes the two scaffold markers with os.WriteFile, deliberately not through atomicfile: a fixture is not a project-creating writer and must not hold the creating-project option (task untracked-project-stamps-from-writers-that-never-commit)."
     },
     {
-      "id": "vault-write-outside-funnel vaultlock.openLockFile",
-      "reason": "STRUCTURALLY EXEMPT — the lock primitive cannot take the lock. internal/vaultlock/vaultlock.go:99,107 creates <vault>/.vp-locks/<sha>.lock, which IS the advisory-lock file the whole discipline (ADR-003) is built on. Routing it through atomicfile.Write would require acquiring the lock in order to create the lock, and atomicfile does not lock anyway. Census row 20. Exempt with rationale, not deferred work."
+      "id": "vault-write-outside-funnel vaultlock.openLockFileNoGC",
+      "reason": "STRUCTURALLY EXEMPT — the lock primitive cannot take the lock. openLockFileNoGC (the raw opener, formerly the body of openLockFile; split out by the ADR-003 2026-10-27 .gc-coordination amendment) creates <vault>/.vp-locks/<sha>.lock with os.OpenFile, which IS the advisory-lock file the whole discipline (ADR-003) is built on. Routing it through atomicfile.Write would require acquiring the lock in order to create the lock, and atomicfile does not lock anyway. Renamed from the prior vaultlock.openLockFile entry (same op, same rationale). Exempt with rationale, not deferred work."
+    },
+    {
+      "id": "vault-write-outside-funnel vaultlock.sweepDeadLocks",
+      "reason": "STRUCTURALLY EXEMPT — GC of the lock files themselves. sweepDeadLocks (behind SweepDeadLocks / vp vault gc, ADR-003 2026-10-27 amendment) os.Removes empty, provably-unheld <vault>/.vp-locks/<sha>.lock advisory-lock sidecars — the lock litter, NOT vault content. vaultfs.Delete cannot route it: it would take a per-path lock to delete a lock file, and the removal writes no content and must not raise the surface version floor. The unlink is safe (and this is not an opt-out of ADR-003): it runs only while holding the .gc coordination lock EXCLUSIVE, which proves no concurrent writer is mid open→flock. Exempt with rationale, not deferred work."
     },
     {
       "id": "vault-write-outside-funnel wrapstate.StampIter",
