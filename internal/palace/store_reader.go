@@ -21,6 +21,14 @@ import (
 // section. It is never a private dedup in this package.
 var glideDedup = indexstore.GlideDedup
 
+// drawerHitSeam is the tracked-fallback hit seam. The default is IDENTITY — it
+// returns the hit unchanged, so production does no recompute, no extra hash and
+// no reassignment of the drawer's id (the glideDedup / SetWaitHook idiom: a var
+// that is the real/no-op behaviour by default). The C1(c) test overrides it to
+// rewrite the returned hit's 32-bit id, forcing two DIFFERENT contents onto one
+// id to prove the glide dedup keys on index.ChunkID(content), never that id.
+var drawerHitSeam = func(h storage.DrawerHit) storage.DrawerHit { return h }
+
 // visibleDrawers is THE reader every palace-navigation surface uses — the
 // graph, the list tools, the room audit, tune and discover — so none of them
 // can disagree about a chunk's wing, room, hall or date (Scope 1, Design).
@@ -85,7 +93,10 @@ func trackedDrawerFallback(vault *storage.Vault, project string, storeIDs map[st
 				if glideDedup(storeIDs, d.Content) {
 					continue
 				}
-				out = append(out, storage.DrawerHit{Drawer: d, Wing: wing, Room: room})
+				// drawerHitSeam is identity in production (the hit is appended
+				// unchanged). Nothing downstream dedups on the 32-bit id; the
+				// C1(c) test overrides the seam to force a collision and prove it.
+				out = append(out, drawerHitSeam(storage.DrawerHit{Drawer: d, Wing: wing, Room: room}))
 			}
 		}
 	}
