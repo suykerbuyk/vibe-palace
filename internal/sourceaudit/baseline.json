@@ -361,6 +361,10 @@
       "reason": "DELIBERATE, NOT DEAD: BurntSushi/toml calls it through its toml.Unmarshaler interface whenever a vault.toml carrying authored_only is decoded (surface.ReadVaultManifest, so storage.VaultMigrated and WriteFormat's read-modify-write), which no static call graph sees. It accepts the quoted date and the unquoted TOML local date a hand edit leaves, and rejects anything else naming the key. task index-fingerprints-project-lifecycle-and-migration-marker Scope 2."
     },
     {
+      "id": "uninvoked surface.SetGateWriter",
+      "reason": "DELIBERATE TEST SEAM, the shape of uninvoked atomicfile.SetSyncObserver, declared in non-test code (internal/surface/gate.go) because tests in another package need it: cmd/vp's hook surface tests observe the warn-only gate output that runHook and surfaceGate emit through the package-private gateStderr sink, which no cmd/vp test can reach otherwise. It swaps only gateStderr and writes nothing to the vault. Production never calls it. Task surface-warn-only-path-needs-a-test-seam."
+    },
+    {
       "id": "uninvoked testinfra.CLIResult.Must",
       "reason": "TEST-ONLY BY DESIGN, cross-package so it cannot live in a _test.go — same shape as testutil.ProjectCacheDir above. Added by task test-infra-e2e-migration-to-go-runcli alongside RunCLI/RetainOnFailure below as the fatal-on-nonzero convenience the retired runVP (template_reconcile_test.go) used to provide inline. Takes *testing.T, so by design its only callers are test files: internal/integration/e2e_init_test.go, e2e_githook_test.go, e2e_walkthrough_test.go, e2e_workflows_test.go, and cli_dispatch_test.go. Accepted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line')."
     },

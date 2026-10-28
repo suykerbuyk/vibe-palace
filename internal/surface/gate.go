@@ -6,12 +6,38 @@ package surface
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
 // gateStderr is the destination for gate diagnostic output. Tests override it
-// to capture stderr; production uses os.Stderr.
-var gateStderr = os.Stderr
+// to capture stderr; production uses os.Stderr. It is an io.Writer (not an
+// *os.File) so SetGateWriter can point it at a *bytes.Buffer across the package
+// boundary.
+var gateStderr io.Writer = os.Stderr
+
+// SetGateWriter swaps the sink for gate diagnostics (gateStderr) and returns a
+// func that restores the PREVIOUS writer. It is a TEST SEAM: production never
+// calls it, so the default sink (os.Stderr) is unchanged and gate behaviour is
+// unaffected.
+//
+// It swaps ONLY gateStderr — the sink shared by EnforceWarnOnly, EnforceFailStop
+// and the format gate (format.go). It deliberately does NOT cover the other
+// os.Stderr writes in this package (e.g. version.go's unrecognized-path
+// warning); do not "fix" it to.
+//
+// Not safe for concurrent use: it mutates a package global. A test that uses it
+// must NOT t.Parallel with another that writes the gate, and must restore via
+// the returned closure (t.Cleanup). A nil writer is rejected here — left to
+// reach Fprintln it would panic later, at a confusing place.
+func SetGateWriter(w io.Writer) func() {
+	if w == nil {
+		panic("surface.SetGateWriter: nil writer")
+	}
+	old := gateStderr
+	gateStderr = w
+	return func() { gateStderr = old }
+}
 
 // EnforceFailStop checks compatibility and returns the error directly. Used by
 // CLI write entry points and write-tool handlers.
