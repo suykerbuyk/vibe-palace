@@ -38,10 +38,17 @@ const (
 	// archive until an explicit rebuild. Pure policy — no measurement sets it;
 	// mirrored by search.coverageFailureLimit (TestCoverageFailureLimitMatchesIngest).
 	DefaultFailureLimit = 3
-	// DefaultMaxSourceBytes is the largest archive (manifest source_bytes) an
-	// automatic run ingests; a larger one is left to `vp index rebuild` (a
-	// backstop; Scope 6 found even 1.3 MiB exceeds the wall-clock cap).
-	DefaultMaxSourceBytes int64 = 32 << 20
+	// DefaultMaxSourceBytes is the largest archive (manifest source_bytes,
+	// UNCOMPRESSED) an automatic run ingests; a larger one is left to
+	// `vp index rebuild`. Set from this vault's archive-size distribution
+	// (2026-10-28, 1509 manifests, uncompressed source_bytes): p50 1.03 MiB,
+	// p90 4.49 MiB, p99 10.21 MiB, max 77.6 MiB. 8 MiB admits 1484/1509 = 98.34%;
+	// the 25 archives (1.66%) over the cap fall to explicit `vp index rebuild`.
+	// This cap bounds only the extreme tail: Scope 6 found even a ~1.3 MiB archive
+	// exceeds the 10-min wall-clock, and `admit` always takes the first archive, so
+	// without a cap a single huge archive (up to the 77.6 MiB seen) runs for hours
+	// in one automatic pass; above 8 MiB that work is deferred to the manual path.
+	DefaultMaxSourceBytes int64 = 8 << 20
 )
 
 // RunBudget bounds one automatic run (ADR-014 decision 7, "The per-run

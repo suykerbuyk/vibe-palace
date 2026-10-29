@@ -241,14 +241,16 @@ func TestRunWallClockCap(t *testing.T) {
 	}
 }
 
-// TestRunDefaultsAreSmallAndStated (R5): the UNMEASURED defaults stay small.
+// TestRunDefaultsAreSmallAndStated (R5): the per-run defaults stay small, and the
+// size cap is pinned to its measured value (8 MiB; see DefaultMaxSourceBytes's
+// comment for the archive-size distribution it is set from).
 func TestRunDefaultsAreSmallAndStated(t *testing.T) {
 	b := RunOptions{}.budget()
 	if b.Archives > 3 || b.Archives < 1 || b.WallClock > 10*time.Minute || (RunOptions{}).failureLimit() != 3 {
 		t.Fatalf("defaults %+v, N %d", b, RunOptions{}.failureLimit())
 	}
-	if DefaultMaxSourceBytes <= 0 || DefaultMaxSourceBytes > 64<<20 {
-		t.Fatalf("size cap %d", DefaultMaxSourceBytes)
+	if DefaultMaxSourceBytes != 8<<20 {
+		t.Fatalf("size cap %d, want 8 MiB (8<<20)", DefaultMaxSourceBytes)
 	}
 }
 
