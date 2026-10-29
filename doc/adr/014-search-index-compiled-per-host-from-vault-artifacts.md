@@ -782,6 +782,7 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   | tier | built on the search path? |
   |---|---|
   | session notes (with decision chunks from their frontmatter, persisted in the store) and iterations | yes |
+  | the authored `commit-log.md`, split per `## commit <sha>` entry (owned by `search-index-completeness-and-build-serialization`) | yes; misses embedded (lazy, like notes/iterations — no `chunks.fingerprint` part), built on explicit rebuild |
   | host-local chunks of ledgered sources (archives and import batches) | yes, **embed-cache hits only**; a miss marks the project `stale` (missing-vector reason) and waits for the ingester's repair or an explicit rebuild |
   | the glide-path lazy embed and the notes embed | embedded outside the index commit lock, committed in batches under it |
   | tracked drawers (the glide path) | yes, only while the vault carries no migration marker (decision 11) |
@@ -860,7 +861,7 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   | `stale` | the persistent `stale` flag is set, with its reason: a `chunks.fingerprint` or embed-cache mismatch (decision 3; "present and different"), which only a completed `vp index rebuild` clears; or an embed-cache miss on a chunk of a ledgered source (decision 7), which the ingester's repair pass or a rebuild clears |
   | `legacy` | the vault carries no migration marker, and tracked drawers exist |
   | `unbuilt` | the project has content, but `completeness.json` records no built tier on this host, for example a fresh clone before its first search. A missing fingerprint lands here, never in `stale` |
-  | `notes` | notes and iterations are built, and the project has no archive with a live session (decision 7) |
+  | `notes` | notes, iterations and commit-log are built, and the project has no archive with a live session (decision 7) |
   | `partial` | the project has archives with live sessions, and n of the m sessions are in the ledger with their live archive's `source_sha256`, with n < m. This includes n = 0, a pending supersede, and a live baseline archive not yet ingested |
   | `current` | the project has archives, and every live session is in the ledger with its live archive's `source_sha256` |
 
@@ -889,8 +890,8 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
       (decision 3).
   - **the "truly empty" predicate**, which the search error and `absent` both read.
 - **Search result shape.** `vp_search` keeps its result-array shape.
-- **"Truly empty" is defined** as no session notes, no iterations, no tracked transcript
-  archives, no local chunks and, on a vault without the marker, no tracked drawers.
+- **"Truly empty" is defined** as no session notes, no iterations, no archived commit-log, no
+  tracked transcript archives, no local chunks and, on a vault without the marker, no tracked drawers.
   - A search of a truly empty project is an **error that names `vp index rebuild`**.
   - **This changes the contract.** Today the same call succeeds with `{"items":[]}`, and the CLI
     prints "No results found." and exits 0 (`cmd/vp/cmd_search.go:187`).

@@ -666,6 +666,9 @@ func TestTrulyEmpty(t *testing.T) {
 		{"an iteration", func(t *testing.T, v *storage.Vault) {
 			writeIterationsMD(t, v.Root, "proj", "## Iteration 1 — one\n\nbody\n\n---\n")
 		}, false},
+		{"a commit-log", func(t *testing.T, v *storage.Vault) {
+			writeCommitLog(t, v.Root, "proj", [][2]string{{"abc123abc123abc123abc123abc123abc123abcd", "feat: a thing"}})
+		}, false},
 		{"one tracked archive", func(t *testing.T, v *storage.Vault) {
 			dir := filepath.Join(v.Root, "Projects", "proj", "transcripts")
 			if err := os.MkdirAll(dir, 0o755); err != nil {

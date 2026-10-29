@@ -114,7 +114,8 @@ func SearchCrossProjectTool(engine *search.Engine) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_search_cross_project",
 		Description: "Cross-project semantic search across every project in the vault — the union of " +
-			"palace/ stores and Projects/ history, so a project captured as session notes only is " +
+			"palace/ stores and Projects/ history, so a project captured as session notes only, or " +
+			"with only an archived commit-log, is " +
 			"covered. Builds any project's index on first use. Projects with nothing indexable are " +
 			"skipped and the search still answers from the rest; it is a tool error naming `vp index " +
 			"rebuild` only when every project in the vault is empty. Writes only host-local " +

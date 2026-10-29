@@ -174,9 +174,9 @@ func (e *Engine) cachedDims(project string) (int, bool, error) {
 	return dims, have, nil
 }
 
-// gatherCachedCorpus walks the same four corpus sources as rebuild — the
-// host-local store, the glide-path tracked drawers, iterations, and note
-// bodies — READ-ONLY and WITHOUT embedding, and WITHOUT regenerating decision
+// gatherCachedCorpus walks the same five corpus sources as rebuild — the
+// host-local store, the glide-path tracked drawers, iterations, note bodies,
+// and commit-log — READ-ONLY and WITHOUT embedding, and WITHOUT regenerating decision
 // chunks (that writes under the commit lock; the heal re-saves only the
 // graph). It returns the cache HITS as equal-length ids/vecs (so dedupBatch
 // never sees a nil vector), the count of EXPECTED ids across all sources
@@ -258,14 +258,16 @@ func (e *Engine) gatherCachedCorpus(ctx context.Context, project string) (ids []
 		}
 	}
 
-	// Third source: iterations.md. Fourth source: session note bodies. Both are
-	// read from the vault, not the store; a cache miss is left out.
+	// Third source: iterations.md. Fourth source: session note bodies. Fifth
+	// source: commit-log.md. All read from the vault, not the store; a cache
+	// miss is left out.
 	for _, src := range []struct {
 		name    string
 		collect func(*storage.Vault, string) ([]string, []string, []drawerMeta, error)
 	}{
 		{"iteration", collectIterationCorpus},
 		{"note", collectNoteCorpus},
+		{"commit", collectCommitLogCorpus},
 	} {
 		cids, _, _, cerr := src.collect(e.vault, project)
 		if cerr != nil {

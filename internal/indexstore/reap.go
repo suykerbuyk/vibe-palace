@@ -40,7 +40,7 @@ import (
 // Because the lock is held, no commit step is between writing a vector and
 // writing the chunk that makes its id durable (the .vec rule), so no vector of
 // a STORE chunk that is durable, or in flight, can be reaped. Every other
-// vector (the search engine's drawers, notes and iterations) is written only
+// vector (the search engine's drawers, notes, iterations and commit-log) is written only
 // under the commit lock too, through the embed cache's Writer, so none can
 // land between otherLive's read and the unlink.
 //

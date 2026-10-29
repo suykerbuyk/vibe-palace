@@ -536,7 +536,7 @@ func (e *Engine) indexRunCooldownActive() bool {
 //  1. load hnsw.idx off-lock (newHNSWIndexFromDisk → indexstore.ReadGraph, which
 //     is atomic-rename-safe, CRC-checked and lock-free); a no-graph / mismatch /
 //     corrupt file installs nothing, so a never-built project stays notes-only;
-//  2. walk the four corpus sources with NO embed (walkCorpus, the exact walk
+//  2. walk the five corpus sources with NO embed (walkCorpus, the exact walk
 //     rebuild uses) to produce the metadata rows search needs — this populates
 //     e.metadata for the graph's ids so the installed graph serves REAL hits, not
 //     empty rows, on a long-lived engine whose embed cache is cold;
@@ -550,7 +550,7 @@ func (e *Engine) indexRunCooldownActive() bool {
 //     writer legitimately omitted (a heal's cache miss, an unusable vector, a
 //     not-yet-built addition), so the graph is still correctly paired → consume
 //     degraded. It is stronger than a Gen stamp, which is blind to the vault-tree
-//     edits notes and iterations are, and it cannot straddle the two-file (graph +
+//     edits notes, iterations and commit-log are, and it cannot straddle the two-file (graph +
 //     counter) rename window because it compares the loaded graph against the
 //     freshly-walked corpus, not against a proxy.
 //
@@ -661,10 +661,10 @@ func (e *Engine) endBuild(project string, b *projectBuild) {
 // silently return no results.
 //
 // "Every known project" is the union of both trees (ListAllProjects), not just
-// the palace/ stores. Rebuild reads two Projects/-resident corpora —
-// iterations.md and session-note bodies — that need no palace/ store, so a
-// project captured as notes only is searchable, and a cross-project search that
-// enumerated palace/ alone never reached it. (It used to reach one only on a
+// the palace/ stores. Rebuild reads Projects/-resident corpora — iterations.md,
+// session-note bodies and commit-log.md — that need no palace/ store, so a
+// project captured as notes only (or with only a commit-log) is searchable, and
+// a cross-project search that enumerated palace/ alone never reached it. (It used to reach one only on a
 // host where someone had searched that project directly first, because that
 // search conjured a palace/<slug>/ holding the embed cache. The cache no longer
 // lives there.)
@@ -1273,10 +1273,11 @@ func (e *Engine) evictMemory(project, id string) {
 
 // Rebuild rebuilds the index for a project from scratch. It walks palace
 // drawers; as a second source, Projects/<project>/iterations.md split on
-// wrapstate H2 entries; and as a third, the BODIES of
-// Projects/<project>/sessions/*.md (both sub-chunked at 800/100). Vectors
-// absent from the embed cache are embedded in batches — per-item embedding is
-// roughly 7x slower on the ONNX backend.
+// wrapstate H2 entries; as a third, the BODIES of
+// Projects/<project>/sessions/*.md; and as a fifth (the fourth being tracked
+// drawers), Projects/<project>/commit-log.md split per `## commit <sha>` entry
+// (all sub-chunked at 800/100). Vectors absent from the embed cache are embedded
+// in batches — per-item embedding is roughly 7x slower on the ONNX backend.
 // RebuildStats reports what a Rebuild actually did. It exists because
 // `{"status":"rebuilt"}` was returned identically after a full re-embed and
 // after walking nothing at all, so a caller could not tell an index from an
@@ -1293,10 +1294,17 @@ type RebuildStats struct {
 	IterationChunks int
 	// NoteChunks is how many chunks came from Projects/<p>/sessions/*.md
 	// bodies, the third corpus source. Like the iteration corpus it needs no
-	// palace store; unlike the drawer corpus it is not written by capture, so
-	// it is the only thing that makes a project captured as NOTES ONLY — no
-	// transcript, no archive — reachable from `vp search`.
+	// palace store; unlike the drawer corpus it is not written by capture. It,
+	// the iteration corpus, and CommitChunks below are the palace-store-less
+	// corpora: any one of them makes a project with no transcript and no
+	// archive reachable from `vp search`.
 	NoteChunks int
+	// CommitChunks is how many chunks came from Projects/<p>/commit-log.md,
+	// the fifth corpus source, split per `## commit <sha>` entry. Like notes
+	// and iterations it needs no palace store, so a project that has ONLY a
+	// commit-log (no notes, no iterations, no archive) is searchable because of
+	// it. The break-it-to-red test asserts this is > 0 after a real Rebuild.
+	CommitChunks int
 	// Indexed is the total number of entries in the built index.
 	Indexed int
 	// Embedded is how many entries missed the vector cache and were embedded.
@@ -1460,8 +1468,8 @@ func (c *genChain) final(start indexstore.Gen) indexstore.Gen {
 	return c.cur
 }
 
-// corpusWalk is the result of reading a project's four corpus sources (the
-// host-local store, tracked drawers, iterations, session notes) into the
+// corpusWalk is the result of reading a project's five corpus sources (the
+// host-local store, tracked drawers, iterations, session notes, commit-log) into the
 // parallel id/vec/meta slices a build or a witnessed load installs. It is the
 // LOCK-FREE half of a rebuild — it takes no commit lock and no e.mu — so the
 // witnessed consume (tryWitnessedLoad) can reuse the exact same walk rather than
@@ -1476,7 +1484,7 @@ type corpusWalk struct {
 	stats    RebuildStats
 }
 
-// walkCorpus reads a project's four corpus sources into a corpusWalk, using only
+// walkCorpus reads a project's five corpus sources into a corpusWalk, using only
 // embed-cache hits (never embedding) and never taking the commit lock or e.mu.
 // It is called by rebuild (which then embeds the misses and installs under the
 // locks) and by tryWitnessedLoad (which uses only ids+metas, taking the vectors
@@ -1687,6 +1695,42 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 
 	if n := distinctSources(noteMetas, "/summary"); n > 0 {
 		facts.tiers[tierNotes] = indexstore.TierRecord{Sources: n}
+	}
+
+	// Fifth corpus source: Projects/<p>/commit-log.md split per `## commit
+	// <sha>` entry. Authored/tracked like iterations and notes; it rides the
+	// same lazy embed-cache path (cachedVector → embed on miss), so it needs no
+	// store, no ledger, and no fingerprint. MUST be mirrored in liveSet, or the
+	// reaper deletes these .vec files on the next rebuild.
+	commitIDs, commitTexts, commitMetas, err := collectCommitLogCorpus(e.vault, project)
+	if err != nil {
+		return corpusWalk{stats: stats}, fmt.Errorf("commit corpus: %w", err)
+	}
+	stats.CommitChunks = len(commitIDs)
+	for i, id := range commitIDs {
+		if err := ctx.Err(); err != nil {
+			return corpusWalk{stats: stats}, err
+		}
+		vec, err := e.cachedVector(project, id)
+		if err != nil {
+			return corpusWalk{stats: stats}, err
+		}
+		if vec == nil {
+			if !mode.embedOthers {
+				continue // --no-embed: cache hits only
+			}
+			missIdx = append(missIdx, len(vecs))
+			missText = append(missText, commitTexts[i])
+		}
+		ids = append(ids, id)
+		vecs = append(vecs, vec)
+		metas = append(metas, commitMetas[i])
+	}
+
+	// One SourceRef per commit (bare "commit/<sha>"), so pass "" — never
+	// "/raw"/"/summary", which would wrongly trim a SHA ending in those letters.
+	if n := distinctSources(commitMetas, ""); n > 0 {
+		facts.tiers[tierCommitLog] = indexstore.TierRecord{Sources: n}
 	}
 
 	stats.Indexed = len(ids)
@@ -2807,8 +2851,8 @@ func (e *Engine) reapLocked(tx *indexstore.Tx, project string) (int, error) {
 
 // liveSet is the orphan reaper's live set (Scope 2, XC3b): the union of the
 // ids every tier would contain on an explicit rebuild, re-read from disk under
-// the commit lock: notes and iterations, and tracked drawers while the vault
-// carries no migration marker. Tx.Reap adds every chunk id in the host-local
+// the commit lock: notes, iterations and commit-log, and tracked drawers while
+// the vault carries no migration marker. Tx.Reap adds every chunk id in the host-local
 // store itself, ledgered or not, which covers decision chunks and the local
 // tier, and keeps the vectors of a source whose ledger entry is not written
 // yet. It is never the subset a lazy build happened to embed. It embeds
@@ -2850,7 +2894,11 @@ func (e *Engine) liveSet(project string) (map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("note corpus: %w", err)
 	}
-	for _, id := range append(iterIDs, noteIDs...) {
+	commitIDs, _, _, err := collectCommitLogCorpus(e.vault, project)
+	if err != nil {
+		return nil, fmt.Errorf("commit corpus: %w", err)
+	}
+	for _, id := range append(append(iterIDs, noteIDs...), commitIDs...) {
 		live[id] = true
 	}
 	return live, nil

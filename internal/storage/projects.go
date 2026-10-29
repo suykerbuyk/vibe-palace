@@ -37,7 +37,8 @@ import (
 // "what is in this vault?" got a subset and could not tell — which is how a
 // vault-global audit reports a clean bill of health for a corpus it never looked
 // at. Cross-project search was its last caller; it now enumerates the union too,
-// because two of search's three corpora live under Projects/.
+// because several of search's corpora — iterations.md, session notes and
+// commit-log.md — live under Projects/, not in a palace/ store.
 //
 // # What counts as a palace store
 //

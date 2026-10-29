@@ -30,7 +30,7 @@ import (
 //	tier                                   search path                     explicit vp index rebuild
 //	session notes, decision chunks          yes; misses are embedded        built
 //	  (persisted in the store, note-owned),
-//	  iterations
+//	  iterations, commit-log
 //	host-local chunks of ledgered sources   yes, embed-cache hits only;     built; misses embedded
 //	  (archives, import batches)              a miss sets missing_vectors
 //	tracked drawers (the glide path)        yes, only while the vault       built while there is
@@ -47,6 +47,7 @@ const (
 	tierNotes          = "notes"
 	tierDecisions      = "decisions"
 	tierIterations     = "iterations"
+	tierCommitLog      = "commit_log"
 	tierLocal          = "local"
 	tierTrackedDrawers = "tracked_drawers"
 )
@@ -262,11 +263,11 @@ func ClearMissingVectors(tx *indexstore.Tx, proof RepairProof) error {
 }
 
 // TrulyEmpty reports whether project has nothing any tier could ever index:
-// no session notes, no iterations, no tracked transcript archives (ledgered
-// or not), no host-local chunks, and, while the vault carries no migration
-// marker, no tracked drawers (ADR-014 decision 8). It is the one definition;
-// the search-first answer and the coverage instrument call it. It loads no
-// embedder.
+// no session notes, no iterations, no archived commit-log, no tracked transcript
+// archives (ledgered or not), no host-local chunks, and, while the vault carries
+// no migration marker, no tracked drawers (ADR-014 decision 8). It is the one
+// definition; the search-first answer and the coverage instrument call it. It
+// loads no embedder.
 func (e *Engine) TrulyEmpty(project string) (bool, error) {
 	sessions, err := e.vault.SessionDir(project)
 	if err != nil {
@@ -277,6 +278,10 @@ func (e *Engine) TrulyEmpty(project string) (bool, error) {
 	}
 	iterIDs, _, _, err := collectIterationCorpus(e.vault, project)
 	if err != nil || len(iterIDs) > 0 {
+		return false, err
+	}
+	commitIDs, _, _, err := collectCommitLogCorpus(e.vault, project)
+	if err != nil || len(commitIDs) > 0 {
 		return false, err
 	}
 	pdir, err := e.vault.ProjectDir(project)

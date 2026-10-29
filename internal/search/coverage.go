@@ -44,8 +44,9 @@ const (
 	// CoverageUnbuilt: content exists but completeness.json records no built
 	// tier on this host (a fresh clone; an ingest-only host).
 	CoverageUnbuilt CoverageState = "unbuilt"
-	// CoverageNotes: notes and iterations are built and the project has no
-	// archive with a live session (m = 0).
+	// CoverageNotes: the palace-store-less tiers (notes, iterations,
+	// commit-log) are built and the project has no archive with a live session
+	// (m = 0).
 	CoverageNotes CoverageState = "notes"
 	// CoveragePartial: the project has live sessions and n < m (includes n = 0,
 	// pending archives and a non-empty baseline set).
@@ -248,7 +249,7 @@ func (e *Engine) CoverageState(project string) (Coverage, error) {
 	// 5. notes — built, and the project has no archive with a live session.
 	if m == 0 {
 		cov.State = CoverageNotes
-		cov.Reason = "notes and iterations built; the project has no archives"
+		cov.Reason = "notes, iterations and commit-log built; the project has no archives"
 		return cov, nil
 	}
 

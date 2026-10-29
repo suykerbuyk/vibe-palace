@@ -33,25 +33,79 @@ func (v *Vault) ReadCommitLogAnchor(project string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// archivedSHAs returns the set of commit SHAs already recorded in an
-// already-read commit-log.md body, by scanning for the "## commit <sha>"
-// headers ArchiveCommitBodies writes.
+// CommitLogEntry is one `## commit <sha>` entry parsed out of a commit-log.md
+// body: the SHA from the header and the verbatim message body beneath it (up to
+// the next header or EOF). ParseCommitLog returns these; the search-path
+// collectCommitLogCorpus consumes them.
+type CommitLogEntry struct {
+	SHA  string
+	Body string
+}
+
+// ParseCommitLog splits an already-read commit-log.md body into its
+// `## commit <sha>` entries. It is the ONE source of truth for the header rule
+// that both the writer-side archivedSHAs (SHA set) and the search-path commit
+// corpus read, so the two can never drift.
 //
-// It anchors on a line START so a "## commit <sha>" quoted inside an archived
-// commit MESSAGE — this project's own messages discuss commits routinely —
-// cannot be mistaken for a real entry. Everything after the SHA token on the
-// header line is ignored, so a future header that grows a suffix still matches.
-func archivedSHAs(body string) map[string]struct{} {
-	seen := map[string]struct{}{}
+// The rule: a header is a line that STARTS with "## commit " (anchored on line
+// start so a "## commit <sha>" quoted inside a message body — this project's own
+// messages discuss commits routinely — is never mistaken for an entry). The SHA
+// is the first whitespace-delimited token after that prefix; anything after it
+// on the header line is ignored, so a future header that grows a suffix still
+// matches. A header with an empty SHA token is skipped (not an entry), matching
+// archivedSHAs. The body is every line after the header up to (not including)
+// the next header or EOF, with one leading and one trailing blank line trimmed
+// (ArchiveCommitBodies writes "\n## commit <sha>\n\n<body>\n").
+//
+// Duplicate-SHA headers are NOT merged: each produces its own entry with its own
+// body. The search collector keys its cache id on (sha, chunkIndex, content), so
+// two entries sharing a SHA but differing in body get distinct ids rather than
+// one silently shadowing the other.
+func ParseCommitLog(body string) []CommitLogEntry {
+	var entries []CommitLogEntry
+	var cur *CommitLogEntry
+	var buf []string
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		cur.Body = strings.Trim(strings.Join(buf, "\n"), "\n")
+		entries = append(entries, *cur)
+		cur = nil
+		buf = buf[:0]
+	}
 	for line := range strings.SplitSeq(body, "\n") {
 		rest, ok := strings.CutPrefix(line, "## commit ")
 		if !ok {
+			if cur != nil {
+				buf = append(buf, line)
+			}
 			continue
 		}
 		sha, _, _ := strings.Cut(strings.TrimSpace(rest), " ")
-		if sha != "" {
-			seen[sha] = struct{}{}
+		if sha == "" {
+			// An empty SHA token is not a real entry (matches archivedSHAs);
+			// treat the line as body of the current entry, if any.
+			if cur != nil {
+				buf = append(buf, line)
+			}
+			continue
 		}
+		flush()
+		cur = &CommitLogEntry{SHA: sha}
+	}
+	flush()
+	return entries
+}
+
+// archivedSHAs returns the set of commit SHAs already recorded in an
+// already-read commit-log.md body. It is ParseCommitLog reduced to the SHA set,
+// kept as a helper for the writer path (ArchiveCommitBodies) so there is one
+// header rule, shared with the search-path corpus.
+func archivedSHAs(body string) map[string]struct{} {
+	seen := map[string]struct{}{}
+	for _, e := range ParseCommitLog(body) {
+		seen[e.SHA] = struct{}{}
 	}
 	return seen
 }

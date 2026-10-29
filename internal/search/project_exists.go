@@ -47,9 +47,10 @@ func (e *UnknownProjectError) Error() string {
 }
 
 // NothingIndexableError reports that Project exists but has nothing any search
-// tier could ever index — no session notes, no iterations, no tracked
-// transcript archives, no host-local chunks, and (while the vault carries no
-// migration marker) no tracked drawers: (*Engine).TrulyEmpty is true. A search
+// tier could ever index — no session notes, no iterations, no archived
+// commit-log, no tracked transcript archives, no host-local chunks, and (while
+// the vault carries no migration marker) no tracked drawers:
+// (*Engine).TrulyEmpty is true. A search
 // of such a project is an error that names `vp index rebuild`, never zero hits
 // dressed as success — the same silent-skip-as-success shape UnknownProjectError
 // refuses (ADR-014 decision 8). A project with tracked archives and nothing else
