@@ -419,13 +419,25 @@ func TestIntegrationPhantomUnpushedCommit(t *testing.T) {
 
 	root, bare := vsNewVaultWithOrigin(t)
 
-	// Commit, then publish by URL so the push succeeds without updating origin/main.
+	// The tracking ref starts at the seed commit (push -u in the helper). Capture
+	// it as the stale value we will deterministically pin the cache to, below.
+	seed := strings.TrimSpace(vsGit(t, root, "rev-parse", "origin/main"))
+
+	// Commit and genuinely publish the work to the bare origin.
 	if err := os.WriteFile(filepath.Join(root, "second.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	vsGit(t, root, "add", "-A")
 	vsGit(t, root, "commit", "-m", "second")
 	vsGit(t, root, "push", bare, "main")
+
+	// Force the stale cache DETERMINISTICALLY instead of relying on git's push-url
+	// side effects. Older git left refs/remotes/origin/main untouched by a push to
+	// the remote's URL; ubuntu-26.04's newer git updates it, which used to trip the
+	// "no stale cache to test" guard below. Pin the tracking ref back to the seed so
+	// the "the work is published but the cache does not know" state holds on EVERY
+	// git version — this is exactly what a vault with an unfetched remote looks like.
+	vsGit(t, root, "update-ref", "refs/remotes/origin/main", seed)
 
 	// Precondition: the work IS on the remote, and the cache does NOT know.
 	head := strings.TrimSpace(vsGit(t, root, "rev-parse", "HEAD"))
@@ -436,6 +448,9 @@ func TestIntegrationPhantomUnpushedCommit(t *testing.T) {
 	}
 	if cached == head {
 		t.Fatalf("fixture broken: origin/main already advanced to %s, so there is no stale cache to test", cached)
+	}
+	if cached != seed {
+		t.Fatalf("fixture broken: stale-cache pin failed, origin/main=%s want seed %s", cached, seed)
 	}
 
 	// The pre-fix behaviour, still observable through the raw primitive: counting
