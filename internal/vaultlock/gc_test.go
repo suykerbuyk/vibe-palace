@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -304,6 +305,15 @@ func TestSweepDeadLocksSplitRevert(t *testing.T) {
 	})
 
 	t.Run("coordination absent: split observed", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("POSIX-only: this subcase exhibits the split via unlink-while-open " +
+				"(it opens an uncoordinated sidecar with openLockFileNoGC and keeps the " +
+				"handle open). On Windows that handle (opened without FILE_SHARE_DELETE) " +
+				"blocks the uncoordinated os.Remove, so the removal-driven split cannot " +
+				"occur; production is unaffected because the only non-test opener is the " +
+				".gc-coordinated openLockFile. Split-prevention is covered platform-" +
+				"neutrally by the 'coordination present: no split' subcase above.")
+		}
 		root := t.TempDir()
 		target := filepath.Join(root, "x.md")
 		key := canonicalKey(target)
