@@ -4321,3 +4321,19 @@ auto-capture hooks, and the Zed transcript adapter).
 | Phase | Goal |
 |-------|------|
 | 11. Pluggable Embedding Backends | Swap ONNX embedder for API-based alternatives |
+
+## Codex host lifecycle
+
+`internal/mcphost.CodexHost` writes the shared Codex TOML MCP entry with a span
+editor so every byte outside the owned `command`, `args`, and `enabled` values
+survives reconciliation. Native skills live in `.agents/skills/` and carry
+`agents/openai.yaml` with `policy.allow_implicit_invocation: false`.
+
+The user `hooks.json` layer installs a trusted SessionStart instruction and a
+3-second SessionEnd handler. SessionEnd archives Codex's supplied transcript
+path through the `codex-raw` adapter and `archive.Create`; a narrow typed capture
+writer creates an auto-capture receipt and links it through storage accessors.
+The receipt never causes the manifest to point at its own stub note. A second
+source hash is a best-effort stability check, not a snapshot proof. A missing,
+changing, over-limit, or timed-out file is reported as incomplete. Codex does not
+provide a semantic summary in the SessionEnd event, so the receipt says so.

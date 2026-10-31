@@ -810,3 +810,25 @@ backslashes).
 
 - **`internal/scopetoken/`** — the placeholder vocabulary and the
   write-back guard (see [Placeholders](#placeholders)).
+
+## Codex
+
+- `vp mcp install --codex` adds or enables `[mcp_servers.vibe-palace]` in
+  Codex's shared `config.toml`; `vp mcp uninstall --codex` disables that entry
+  while retaining the operator's approval tables. Reinstall to re-enable it.
+- `vp commands upgrade` generates project skills in `.agents/skills/`. Invoke
+  a command explicitly as `$vpc-<name>` and a persona as `$vps-<name>`; generated
+  `agents/openai.yaml` disables implicit invocation. The managed AGENTS.md
+  dispatch rule remains the MCP `vp_cmd` / `vp_skill` path.
+- Review and trust the installed hooks in Codex. SessionStart asks the model to
+  call `vp_bootstrap_context` with the explicit marker slug before responding.
+  SessionEnd archives the supplied transcript path as `codex-raw` and writes a
+  fixed-summary receipt. The hook has a 3-second ceiling and archives up to the
+  18 MiB compressed cap; if it cannot finish, it exits with an incomplete
+  diagnostic and leaves the source available for retry with
+  `vp archive create --adapter codex-raw --session-id <id> --project <slug>
+  --source <transcript_path>`.
+- “Complete transcript unavailable” means Codex did not hand Vibe-Palace a
+  usable regular, non-empty file, or the file changed during the read. The
+  second hash is best-effort and does not prove a stable snapshot or semantic
+  completeness. Raw Codex archives are not claimed searchable.

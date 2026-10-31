@@ -4,6 +4,7 @@
 package archive
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -27,6 +28,10 @@ import (
 // SessionID and Adapter are optional; the adapter fills in what it
 // can from its own environment.
 type CreateOptions struct {
+	// Context cancels source hashing and compression. Hook callers use it to
+	// honor the host's hard lifecycle deadline; empty selects Background.
+	Context context.Context
+
 	// Adapter identifies the source format. It must name a registered
 	// adapter; RegisteredAdapterNames() is the live set — claude-code,
 	// zed, and inline today. Required.
@@ -149,6 +154,12 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	if err := opts.Context.Err(); err != nil {
+		return nil, err
+	}
 
 	a, err := LookupAdapter(opts.Adapter)
 	if err != nil {
@@ -162,7 +173,7 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 
 	// Hash + size the source up-front so idempotency decisions work
 	// whether or not a prior archive exists.
-	srcSum, srcBytes, err := hashFile(sourcePath)
+	srcSum, srcBytes, err := HashSource(opts.Context, sourcePath)
 	if err != nil {
 		return nil, err
 	}
@@ -255,9 +266,19 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	// re-compresses (idempotent, atomic rename), .bak's the OLD manifest, and
 	// writes the NEW one. compressFile stays inside the manifest lock taken
 	// above, so concurrency behaviour is unchanged.
-	compressedBytes, err := compressFile(opts.VaultRoot, sourcePath, archivePath, ceiling)
+	compressedBytes, err := compressFileContext(opts.Context, opts.VaultRoot, sourcePath, archivePath, ceiling)
 	if err != nil {
 		return nil, err
+	}
+	// Best-effort stability check: compare a second source hash before committing
+	// the manifest so a file changed during compression is not certified by the
+	// earlier hash. This is not an atomic snapshot or semantic-completeness proof.
+	stableSum, _, err := HashSource(opts.Context, sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("stability check source: %w", err)
+	}
+	if stableSum != srcSum {
+		return nil, fmt.Errorf("source changed while archive was being created")
 	}
 
 	// The new blob is durably in place and the source changed: NOW preserve the
@@ -336,16 +357,38 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	}, nil
 }
 
-func hashFile(path string) (string, int64, error) {
+// HashSource computes the SHA256 and byte size of a regular source file while
+// checking ctx between reads. The digest is over the exact source bytes.
+func HashSource(ctx context.Context, path string) (string, int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, fmt.Errorf("open source: %w", err)
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, f)
-	if err != nil {
-		return "", 0, fmt.Errorf("hash source: %w", err)
+	buf := make([]byte, 128*1024)
+	var n int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", n, err
+		}
+		read, rerr := f.Read(buf)
+		if read > 0 {
+			written, werr := h.Write(buf[:read])
+			n += int64(written)
+			if werr != nil {
+				return "", n, fmt.Errorf("hash source: %w", werr)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return "", n, fmt.Errorf("hash source: %w", rerr)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
@@ -413,7 +456,22 @@ func (c *capWriter) Write(p []byte) (int, error) {
 // the primitive's ".vp-atomic-*" in the destination directory rather than
 // dst+".tmp" — which is inherent in the primitive owning the rename, and
 // nothing reads that name.
-func compressFile(vaultRoot, src, dst string, maxBytes int64) (int64, error) {
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+func compressFileContext(ctx context.Context, vaultRoot, src, dst string, maxBytes int64) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
@@ -428,7 +486,7 @@ func compressFile(vaultRoot, src, dst string, maxBytes int64) (int64, error) {
 		if err != nil {
 			return fmt.Errorf("init zstd: %w", err)
 		}
-		if _, err := io.Copy(enc, in); err != nil {
+		if _, err := io.Copy(enc, contextReader{ctx: ctx, r: in}); err != nil {
 			// Both Close() calls are load-bearing: the default encoder runs
 			// one goroutine per GOMAXPROCS, and Close joins them and flushes
 			// the final frame. Dropping it here leaks those goroutines on a

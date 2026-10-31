@@ -76,6 +76,90 @@ func TestWriteSessionHappyPath(t *testing.T) {
 	}
 }
 
+func TestWriteCodexArchiveReceiptUsesCanonicalLinkerInsteadOfStubPath(t *testing.T) {
+	v := testVault(t)
+	canonical, err := v.WriteSessionRef("test-proj", storage.SessionMeta{Date: "2026-10-30", ArchiveSessionID: "thr_receipt", Host: storage.HostCodex, HostSource: storage.HostSourceDerived, Tag: "implementation", Summary: "canonical"}, "canonical session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "codex.jsonl")
+	if err := os.WriteFile(source, []byte("raw transcript\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := archive.Create(archive.CreateOptions{Adapter: archive.CodexRawAdapterName, SessionID: "thr_receipt", SourcePath: source, VaultRoot: v.Root, ProjectSlug: "test-proj", LockPosture: archive.LockNonBlocking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := WriteCodexArchiveReceipt(v, "test-proj", "thr_receipt", created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := archive.ReadManifest(created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.VaultRelSessionNote != canonical.NotePath {
+		t.Fatalf("manifest backlink = %q, want canonical %q (receipt %q)", manifest.VaultRelSessionNote, canonical.NotePath, receipt.NotePath)
+	}
+}
+
+func TestWriteCodexArchiveReceiptUsesReturnedManifestPath(t *testing.T) {
+	v := testVault(t)
+	source := filepath.Join(t.TempDir(), "codex.jsonl")
+	if err := os.WriteFile(source, []byte("exact source bytes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := archive.Create(archive.CreateOptions{Adapter: archive.CodexRawAdapterName, SessionID: "thr_manifest", SourcePath: source, VaultRoot: v.Root, ProjectSlug: "test-proj", LockPosture: archive.LockNonBlocking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := WriteCodexArchiveReceipt(v, "test-proj", "thr_manifest", created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := v.ReadSession("test-proj", ref.Date, ref.Fingerprint, ref.Iteration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := archive.VaultRelPath(v.Root, created.ManifestPath)
+	if meta.Archive != want {
+		t.Fatalf("receipt archive = %q, want returned manifest path %q", meta.Archive, want)
+	}
+	manifest, err := archive.ReadManifest(created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.VaultRelSessionNote != "" {
+		t.Fatalf("stub receipt became manifest backlink: %q", manifest.VaultRelSessionNote)
+	}
+}
+
+func TestWriteCodexArchiveReceiptUsesAutoCaptureWithoutEnrichmentOrSummaryQueue(t *testing.T) {
+	v := testVault(t)
+	source := filepath.Join(t.TempDir(), "codex.jsonl")
+	if err := os.WriteFile(source, []byte("receipt only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := archive.Create(archive.CreateOptions{Adapter: archive.CodexRawAdapterName, SessionID: "thr_receipt_only", SourcePath: source, VaultRoot: v.Root, ProjectSlug: "test-proj", LockPosture: archive.LockNonBlocking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := WriteCodexArchiveReceipt(v, "test-proj", "thr_receipt_only", created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, body, err := v.ReadSession("test-proj", ref.Date, ref.Fingerprint, ref.Iteration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Tag != storage.TagAutoCapture || meta.Summary != codexReceiptSummary || meta.Host != storage.HostCodex || meta.HostSource != storage.HostSourceCodexHookEvent {
+		t.Fatalf("receipt metadata = %+v", meta)
+	}
+	if body == "" {
+		t.Fatal("receipt note body is empty")
+	}
+}
+
 // TestWriteSessionNotePathNamesARealFile is the regression test for the bug this
 // suite was structurally unable to see: WriteSession returned note_path: "" on
 // EVERY session ever captured, and reported status "ok" while doing it.

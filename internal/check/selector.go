@@ -109,6 +109,12 @@ var Producers = map[string]func(vaultRoot string) []Result{
 	"template-drift": func(vaultRoot string) []Result { return []Result{CheckTemplateDrift(vaultRoot)} },
 	// host-surfaces does not need a vault — it inspects $HOME plugin trees.
 	"host-surfaces": func(string) []Result { return CheckHostSurfaces() },
+	"codex-host": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: "Codex host", Status: Skip, Summary: "no vault configured"}}
+		}
+		return CheckCodexHost()
+	},
 	// writer-identity needs the root only to HASH it — it reports the resulting
 	// fingerprint and never the path itself.
 	"writer-identity": func(vaultRoot string) []Result {
@@ -157,6 +163,7 @@ var ProducerOrder = []string{
 	"iteration-headings",
 	"template-drift",
 	"host-surfaces",
+	"codex-host",
 	"writer-identity",
 	"stale-mcp",
 	"release-version",

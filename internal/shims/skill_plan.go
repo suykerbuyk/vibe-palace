@@ -36,7 +36,7 @@ type SkillChange struct {
 // Prefer PlanSkillsAt when the skills parent is not project-relative
 // (user-global plugin package).
 func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]SkillChange, error) {
-	if target != ClaudeSkill && target != CursorRule && target != GrokSkill {
+	if target != ClaudeSkill && target != CursorRule && target != GrokSkill && target != CodexSkill {
 		return nil, fmt.Errorf("PlanSkills: unsupported target %s", target)
 	}
 	var rootDir string
@@ -45,6 +45,8 @@ func PlanSkills(target TargetKind, items []SkillItem, projectRoot string) ([]Ski
 		rootDir = filepath.Join(projectRoot, ClaudeSkillsDir)
 	case GrokSkill:
 		rootDir = filepath.Join(projectRoot, GrokSkillsDir)
+	case CodexSkill:
+		rootDir = filepath.Join(projectRoot, CodexSkillsDir)
 	default:
 		rootDir = filepath.Join(projectRoot, CursorRulesDir)
 	}
@@ -75,15 +77,22 @@ func planSkillsAt(target TargetKind, items []SkillItem, rootDir string, pathFor 
 	}
 	for _, ent := range entries {
 		switch target {
-		case ClaudeSkill, GrokSkill:
+		case ClaudeSkill, GrokSkill, CodexSkill:
 			if !ent.IsDir() {
 				continue
 			}
 			dirname := ent.Name()
-			if !strings.HasPrefix(dirname, SkillFilePrefix) {
+			if target == CodexSkill {
+				if !strings.HasPrefix(dirname, "vpc-") && !strings.HasPrefix(dirname, "vps-") {
+					continue
+				}
+			} else if !strings.HasPrefix(dirname, SkillFilePrefix) {
 				continue
 			}
 			name := strings.TrimPrefix(dirname, SkillFilePrefix)
+			if target == CodexSkill {
+				name = dirname
+			}
 			path := filepath.Join(rootDir, dirname, "SKILL.md")
 			scan, err := ScanShim(path)
 			if err != nil {
@@ -136,7 +145,8 @@ func planSkillsAt(target TargetKind, items []SkillItem, rootDir string, pathFor 
 			return nil, fmt.Errorf("rescan %s: %w", existing, err)
 		}
 		expected := ExpectedSkillSha(target, it)
-		if scan.Sha == expected && scan.Version == skillShimVersion {
+		policyOK := target != CodexSkill || codexSkillPolicyMatches(existing)
+		if scan.Sha == expected && scan.Version == skillShimVersion && policyOK {
 			changes = append(changes, SkillChange{
 				Kind: UnchangedChange, Target: target, Name: it.Name,
 				Path: existing, Item: it, PrevSha: scan.Sha,
@@ -233,6 +243,31 @@ func sortSkillChanges(changes []SkillChange) {
 // Writes are atomic (tmp + fsync + rename) so a crash mid-write cannot
 // leave a half-written shim visible to the editor's file watcher.
 func WireSkill(path string, target TargetKind, item SkillItem) (Result, error) {
+	if target == CodexSkill {
+		return wireCodexSkill(path, item)
+	}
+	return wireSkillFile(path, target, item)
+}
+
+func wireCodexSkill(path string, item SkillItem) (Result, error) {
+	res, err := wireSkillFile(path, CodexSkill, item)
+	if err != nil || res.Kind == Custom {
+		return res, err
+	}
+	policyPath := filepath.Join(filepath.Dir(path), "agents", "openai.yaml")
+	policy, err := os.ReadFile(policyPath)
+	if err != nil || string(policy) != CodexSkillPolicy() {
+		if err := atomicWrite(policyPath, []byte(CodexSkillPolicy())); err != nil {
+			return Result{}, err
+		}
+		if res.Kind == Unchanged {
+			res.Kind = Updated
+		}
+	}
+	return res, nil
+}
+
+func wireSkillFile(path string, target TargetKind, item SkillItem) (Result, error) {
 	rendered := RenderSkill(target, item)
 	expected := ExpectedSkillSha(target, item)
 
@@ -260,6 +295,11 @@ func WireSkill(path string, target TargetKind, item SkillItem) (Result, error) {
 		}
 		return Result{Kind: Updated, PrevSha: scan.Sha}, nil
 	}
+}
+
+func codexSkillPolicyMatches(skillPath string) bool {
+	policy, err := os.ReadFile(filepath.Join(filepath.Dir(skillPath), "agents", "openai.yaml"))
+	return err == nil && string(policy) == CodexSkillPolicy()
 }
 
 // SkillOutcome pairs a SkillChange with its Result for Apply-style
@@ -329,6 +369,9 @@ func ApplySkills(changes []SkillChange, opts ApplyOptions) (Report, []SkillOutco
 				// the remove fails and we leave it alone.
 				if ch.Target == ClaudeSkill || ch.Target == GrokSkill {
 					_ = os.Remove(filepath.Dir(ch.Path))
+				} else if ch.Target == CodexSkill {
+					// A managed SKILL.md marker proves this directory is ours.
+					_ = os.RemoveAll(filepath.Dir(ch.Path))
 				}
 			} else {
 				rep.Custom++

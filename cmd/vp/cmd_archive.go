@@ -43,7 +43,7 @@ var archiveCreateFlags = []cli.FlagDef{
 	{Name: "--adapter", Arg: "NAME", Help: adapterFlagHelp(), Default: archive.ClaudeCodeAdapterName},
 	{Name: "--session-id", Arg: "ID", Help: "Session identifier within the adapter (thread id for zed)"},
 	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project slug (default: auto-detect)"},
-	{Name: "--source", Arg: "PATH", Help: "Override source path (JSONL for claude-code, threads.db for zed)"},
+	{Name: "--source", Arg: "PATH", Help: "Override source path (JSONL for claude-code/codex-raw, threads.db for zed)"},
 	{Name: "--cwd", Arg: "DIR", Help: "Working directory for path resolution (claude-code only)"},
 	{Name: "--quiet", Short: "-q", Help: "Suppress non-error output"},
 }

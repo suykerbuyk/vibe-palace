@@ -52,6 +52,7 @@ var decisionTrackedWriterRoots = []string{
 	// The decision-chunk writers.
 	"capture.fileDecisionDrawers",
 	"capture.WriteSession",
+	"capture.WriteCodexArchiveReceipt",
 	"capture.DrainEnrichmentQueue",
 	// The MCP handlers that drive them.
 	"tools.refreshIndexHandler",   // vp_refresh_index

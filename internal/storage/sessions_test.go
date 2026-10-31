@@ -4,15 +4,86 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
+
+func TestTryUpsertSessionByKeyReturnsWhenSessionsDirectoryLocked(t *testing.T) {
+	v := testVault(t)
+	dir, err := v.SessionDir("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.EnsureVaultDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	release, err := vaultlock.Acquire(v.Root, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	started := time.Now()
+	_, _, err = v.TryUpsertSessionByKey("proj", "codex-session-end:thr_test", SessionMeta{Date: "2026-10-30"}, "receipt", nil)
+	if !errors.Is(err, ErrSessionsDirLocked) {
+		t.Fatalf("error = %v, want ErrSessionsDirLocked", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("lock refusal took %s; want one prompt TryAcquire", elapsed)
+	}
+}
+
+func TestTryUpsertSessionByKeyReturnsWhenNotePathLocked(t *testing.T) {
+	v := testVault(t)
+	date, fp := "2026-10-30", surface.WriterFingerprint(v.Root)
+	path, err := v.SessionFile("proj", date, fp, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	release, err := vaultlock.Acquire(v.Root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	started := time.Now()
+	_, _, err = v.TryUpsertSessionByKey("proj", "codex-session-end:thr_test", SessionMeta{Date: date}, "receipt", nil)
+	if err == nil || !strings.Contains(err.Error(), "session note is locked") {
+		t.Fatalf("error = %v, want note-lock refusal", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("note lock refusal took %s", elapsed)
+	}
+}
+
+func TestTryUpsertSessionByKeyPersistsCodexHostAndProvenance(t *testing.T) {
+	v := testVault(t)
+	meta := SessionMeta{Date: "2026-10-30", Host: HostCodex, HostSource: HostSourceCodexHookEvent, ArchiveSessionID: "thr_test", ArchiveSessionIDSource: ArchiveIDSourceCodexSessionEnd, Tag: TagAutoCapture, Summary: "Codex transcript archived"}
+	ref, updated, err := v.TryUpsertSessionByKey("proj", "codex-session-end:thr_test", meta, "receipt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated {
+		t.Fatal("first write unexpectedly updated")
+	}
+	got, _, err := v.ReadSession("proj", ref.Date, ref.Fingerprint, ref.Iteration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != HostCodex || got.HostSource != HostSourceCodexHookEvent || got.ArchiveSessionIDSource != ArchiveIDSourceCodexSessionEnd || got.Tag != TagAutoCapture {
+		t.Fatalf("persisted receipt provenance = %+v", got)
+	}
+}
 
 func TestWriteAndReadSession(t *testing.T) {
 	v := testVault(t)

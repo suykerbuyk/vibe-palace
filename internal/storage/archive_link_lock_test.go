@@ -70,13 +70,10 @@ func TestTryLinkArchiveToSessions_RefusesUnderContention(t *testing.T) {
 	if !errors.Is(err, ErrSessionsDirLocked) {
 		t.Fatalf("err = %v, want it to wrap ErrSessionsDirLocked", err)
 	}
-	// Upper bound only — proves this NEVER degrades into the blocking wait
-	// LinkArchiveToSessions would take (which would hang here forever, since
-	// this test never releases the lock). The exact retry/backoff constants
-	// are re-derived from the function's own doc comment, never hardcoded
-	// here, so tightening them later does not require touching this bound.
-	if elapsed > 2*time.Second {
-		t.Fatalf("took %s to give up — expected a bounded, sub-second retry budget, not a near-blocking wait", elapsed)
+	// This hook is budgeted 0.4s for receipt/link. Refusal must be one
+	// non-blocking attempt, not the former ~350ms retry helper.
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("took %s to refuse a held directory lock; want one prompt attempt under 100ms", elapsed)
 	}
 }
 

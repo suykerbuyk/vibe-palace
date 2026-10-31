@@ -59,7 +59,7 @@ func PlanSkillsAt(items []SkillItem, surface SkillSurface) ([]SkillChange, error
 	if surface.SkillsDir == "" {
 		return nil, fmt.Errorf("PlanSkillsAt: empty SkillsDir")
 	}
-	if surface.Render != ClaudeSkill && surface.Render != CursorRule && surface.Render != GrokSkill {
+	if surface.Render != ClaudeSkill && surface.Render != CursorRule && surface.Render != GrokSkill && surface.Render != CodexSkill {
 		return nil, fmt.Errorf("PlanSkillsAt: unsupported render %s", surface.Render)
 	}
 	render := surface.Render
@@ -89,6 +89,8 @@ func skillFilePath(skillsDir string, render TargetKind, name string) string {
 			return filepath.Join(skillsDir, GrokHubName, "SKILL.md")
 		}
 		return filepath.Join(skillsDir, SkillDirName(name), "SKILL.md")
+	case CodexSkill:
+		return filepath.Join(skillsDir, name, "SKILL.md")
 	default:
 		return ""
 	}

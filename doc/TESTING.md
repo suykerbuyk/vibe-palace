@@ -4006,3 +4006,17 @@ any test that needs an embedder. Use `t.TempDir()` for vault roots.
 
 Same as above but use `newHarness(t, false)` — gets a MockEmbedder.
 These tests run in all modes including `make test`.
+
+### Codex host coverage
+
+Codex TOML unit tests assert the span editor preserves every non-owned line,
+comment order, all 14 approval values, and byte-idempotent repeat installation.
+The CLI integration test skips only when `codex` is absent and otherwise uses an
+isolated `CODEX_HOME`. Hook and session-end tests assert the actual archive hash,
+receipt provenance, note-to-archive link, no self-backlink from a stub receipt,
+prompt lock refusal, and failure output without a success-shaped archive line.
+`internal/codexhook` has a hermetic `TestMain`. Run
+`go test ./internal/sourceaudit -count=1` separately because `make test` uses
+`-short` and skips the derived writer gate. Live IDE discovery and trusted
+SessionStart ordering remain release smokes; a skipped or unrun smoke is not a
+passing acceptance observation.

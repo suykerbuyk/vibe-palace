@@ -129,6 +129,23 @@ func TestDispatchTwoWord(t *testing.T) {
 	}
 }
 
+func TestDispatchNestedThreeWordCommand(t *testing.T) {
+	reg, out, _ := newTestRegistry()
+	var gotArgs []string
+	reg.Register(&Command{Name: "codex"})
+	reg.Register(&Command{Name: "codex hook"})
+	reg.Register(&Command{Name: "codex hook session-end", Run: func(args []string) int { gotArgs = args; return ExitOK }})
+	if code := reg.Dispatch([]string{"codex", "hook", "session-end", "--flag"}); code != ExitOK {
+		t.Fatalf("exit=%d", code)
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "--flag" {
+		t.Fatalf("args=%v", gotArgs)
+	}
+	if got := reg.Dispatch([]string{"codex", "hook"}); got != ExitOK || !strings.Contains(out.String(), "session-end") {
+		t.Fatalf("nested parent help code=%d output=%q", got, out.String())
+	}
+}
+
 func TestDispatchTwoWordOverridesSingle(t *testing.T) {
 	reg, _, _ := newTestRegistry()
 	var singleCalled, twoCalled bool

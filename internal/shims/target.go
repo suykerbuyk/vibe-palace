@@ -43,6 +43,9 @@ const (
 	// The reserved name "vpc" renders the single command hub at
 	// .grok/skills/vpc/SKILL.md instead of a vps-* persona shim.
 	GrokSkill
+	// CodexSkill emits explicit-invocation command/persona skills under
+	// .agents/skills/<vpc-or-vps-name>/ with an OpenAI policy file.
+	CodexSkill
 )
 
 // String gives each kind a short stable name for logs and tests.
@@ -56,6 +59,8 @@ func (k TargetKind) String() string {
 		return "cursor-rule"
 	case GrokSkill:
 		return "grok-skill"
+	case CodexSkill:
+		return "codex-skill"
 	default:
 		return fmt.Sprintf("target(%d)", int(k))
 	}
@@ -89,6 +94,8 @@ const (
 	// /vpc command hub at .grok/skills/vpc/SKILL.md (literal dir "vpc", no
 	// vps- prefix), rather than a per-persona vps-* shim.
 	GrokHubName = "vpc"
+	// CodexSkillsDir is the repo-relative Codex Agent Skills root.
+	CodexSkillsDir = ".agents/skills"
 )
 
 // SkillDirName returns the directory name (under .claude/skills/) that
@@ -144,6 +151,8 @@ func TargetFile(kind TargetKind, projectRoot, name string) string {
 		return skillFilePath(filepath.Join(projectRoot, CursorRulesDir), CursorRule, name)
 	case GrokSkill:
 		return skillFilePath(filepath.Join(projectRoot, GrokSkillsDir), GrokSkill, name)
+	case CodexSkill:
+		return skillFilePath(filepath.Join(projectRoot, CodexSkillsDir), CodexSkill, name)
 	default:
 		return ""
 	}
@@ -198,9 +207,46 @@ func renderSkillWithSha(kind TargetKind, item SkillItem, sha string) string {
 			return renderGrokHub(item, sha)
 		}
 		return renderGrokSkill(item, sha)
+	case CodexSkill:
+		return renderCodexSkill(item, sha)
 	default:
 		return ""
 	}
+}
+
+const codexSkillPolicy = "policy:\n  allow_implicit_invocation: false\n"
+
+// CodexSkillPolicy returns the policy required to prevent automatic skill use.
+func CodexSkillPolicy() string { return codexSkillPolicy }
+
+func renderCodexSkill(item SkillItem, sha string) string {
+	marker := fmt.Sprintf(shimOpenFmt, skillShimVersion, sha)
+	var sb strings.Builder
+	sb.WriteString("---\nname: ")
+	sb.WriteString(item.Name)
+	sb.WriteString("\ndescription: ")
+	sb.WriteString(yamlDoubleQuoted(skillLabel(item)))
+	sb.WriteString("\n---\n\n")
+	sb.WriteString(marker)
+	sb.WriteString("\n")
+	if strings.HasPrefix(item.Name, "vpc-") {
+		name := strings.TrimPrefix(item.Name, "vpc-")
+		sb.WriteString("Use only when the user explicitly invokes `$vpc-")
+		sb.WriteString(name)
+		sb.WriteString("`. Call `vp_cmd` with `name=\"")
+		sb.WriteString(name)
+		sb.WriteString("\"` and follow its returned instructions.\n")
+	} else {
+		name := strings.TrimPrefix(item.Name, "vps-")
+		sb.WriteString("Use only when the user explicitly invokes `$vps-")
+		sb.WriteString(name)
+		sb.WriteString("`. Call `vp_skill` with `name=\"")
+		sb.WriteString(name)
+		sb.WriteString("\"` and adopt the returned persona as standing instruction.\n")
+	}
+	sb.WriteString(shimCloseDelim)
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 // skillFallback is the MCP-less fallback every persona shim (ClaudeSkill,

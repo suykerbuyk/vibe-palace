@@ -28,6 +28,7 @@ func TestTargetKindString(t *testing.T) {
 		ClaudeCommand: "claude-command",
 		ClaudeSkill:   "claude-skill",
 		CursorRule:    "cursor-rule",
+		CodexSkill:    "codex-skill",
 	}
 	for k, want := range cases {
 		if got := k.String(); got != want {
@@ -46,6 +47,7 @@ func TestTargetFilePaths(t *testing.T) {
 		{ClaudeCommand, "restart", filepath.Join(root, ".claude/commands", "vpc-restart.md")},
 		{ClaudeSkill, "pairing", filepath.Join(root, ".claude/skills", "vps-pairing", "SKILL.md")},
 		{CursorRule, "pairing", filepath.Join(root, ".cursor/rules", "vps-pairing.mdc")},
+		{CodexSkill, "vpc-restart", filepath.Join(root, ".agents/skills", "vpc-restart", "SKILL.md")},
 	}
 	for _, c := range cases {
 		if got := TargetFile(c.kind, root, c.name); got != c.want {

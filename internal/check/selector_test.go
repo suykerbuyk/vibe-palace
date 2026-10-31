@@ -191,7 +191,7 @@ func TestProducersSkipContractNamesAreStable(t *testing.T) {
 	got := names(mustRunAll(t))
 	sort.Strings(got)
 	// Host surfaces may be Skip or present depending on $HOME; always one row.
-	want := []string{"Host surfaces", "Iteration headings", "Palace local-only", "Release version", "Resume caps",
+	want := []string{"Codex host", "Host surfaces", "Iteration headings", "Palace local-only", "Release version", "Resume caps",
 		"Resume refs", "Stale MCP", "Stray scaffolds", "Surface", "Surface merge driver", "Template drift",
 		"Vault abs paths", "Vault filesystem", "Vault project config", "Writer identity"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

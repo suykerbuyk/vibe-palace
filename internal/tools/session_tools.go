@@ -97,6 +97,7 @@ var hostVocabulary = map[string]struct {
 	"claude": {host: storage.HostClaudeCode, hookless: false},
 	"grok":   {host: storage.HostGrok, hookless: true},
 	"zed":    {host: storage.HostZed, hookless: true},
+	"codex":  {host: storage.HostCodex, hookless: false},
 	"xai":    {host: storage.HostXAI, hookless: true},
 }
 
@@ -499,9 +500,11 @@ func captureSessionHandler(vault *storage.Vault, launch detachlaunch.LaunchFunc)
 		// note stays honestly unlinked. Deriving here (not trusting the caller)
 		// is what lets the SessionEnd hook find the agent's wrap note and link
 		// it to the transcript once the archive exists.
-		if id := hostSessionID(); id != "" {
-			sp.ArchiveSessionID = id
-			sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
+		if sp.Host != storage.HostCodex {
+			if id := hostSessionID(); id != "" {
+				sp.ArchiveSessionID = id
+				sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
+			}
 		}
 
 		// INLINE TRANSCRIPT ARCHIVE — transcript-archive parity for hook-less

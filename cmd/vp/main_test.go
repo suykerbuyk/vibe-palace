@@ -344,10 +344,24 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 		// there is.
 		"migrate authored-only-palace": true,
 	}
+	// Codex SessionEnd is deliberately unwrapped: Codex kills the hook at its
+	// three-second ceiling; the handler uses context-aware archive work and
+	// non-blocking typed note/link writes, and reports archive-created/note-link
+	// incomplete honestly instead of waiting behind the surface gate.
+	allowedUnwrapped := map[string]string{
+		"codex hook session-end": "Codex's 3s hook ceiling requires bounded cancellation and non-blocking receipt/link writes",
+	}
+	seenAllowedUnwrapped := map[string]bool{}
 
 	reg, _, _ := testRegistry()
 	reg.Each(func(cmd *cli.Command) {
 		want := wantMutating[cmd.Name]
+		if reason, ok := allowedUnwrapped[cmd.Name]; ok && cmd.MutatesVault {
+			t.Errorf("command %q must remain unwrapped: %s", cmd.Name, reason)
+		}
+		if _, ok := allowedUnwrapped[cmd.Name]; ok {
+			seenAllowedUnwrapped[cmd.Name] = true
+		}
 		if cmd.MutatesVault != want {
 			if want {
 				t.Errorf("command %q must be registered mutates() (it writes the vault) but MutatesVault=false", cmd.Name)
@@ -356,6 +370,11 @@ func TestMutatingCommandsAreGated(t *testing.T) {
 			}
 		}
 	})
+	for name := range allowedUnwrapped {
+		if !seenAllowedUnwrapped[name] {
+			t.Errorf("expected explicitly unwrapped command %q was not registered", name)
+		}
+	}
 }
 
 // Command-specific tests are in cmd_*_test.go files.
@@ -383,8 +402,16 @@ func subcommandOmissions(reg *cli.Registry) map[string][]string {
 
 	omissions := map[string][]string{}
 	for _, name := range order {
-		parent, _, ok := strings.Cut(name, " ")
-		if !ok || !registered[parent] {
+		parent := ""
+		parts := strings.Fields(name)
+		for n := len(parts) - 1; n > 0; n-- {
+			candidate := strings.Join(parts[:n], " ")
+			if registered[candidate] {
+				parent = candidate
+				break
+			}
+		}
+		if parent == "" {
 			continue
 		}
 		if !listed[parent][name] {

@@ -133,14 +133,19 @@ func firstWord(name string) string {
 // clears what a caller supplied: an out-of-tree caller that still declares a
 // literal keeps it, and a duplicate is not added.
 func (r *Registry) linkSubcommands(cmd *Command) {
-	if parent, _, ok := strings.Cut(cmd.Name, " "); ok {
-		if p, registered := r.commands[parent]; registered {
-			p.Subcommands = appendUnique(p.Subcommands, cmd.Name)
+	if _, _, ok := strings.Cut(cmd.Name, " "); ok {
+		parts := strings.Fields(cmd.Name)
+		for n := len(parts) - 1; n > 0; n-- {
+			prefix := strings.Join(parts[:n], " ")
+			if p, registered := r.commands[prefix]; registered {
+				p.Subcommands = appendUnique(p.Subcommands, cmd.Name)
+				break
+			}
 		}
 		return
 	}
 	for _, name := range r.order {
-		if parent, _, ok := strings.Cut(name, " "); ok && parent == cmd.Name {
+		if strings.HasPrefix(name, cmd.Name+" ") {
 			cmd.Subcommands = appendUnique(cmd.Subcommands, name)
 		}
 	}
@@ -229,14 +234,18 @@ func (r *Registry) Dispatch(args []string) int {
 
 	args = r.resolveAlias(args)
 
-	// Try two-word lookup first (e.g. "vault sync").
-	if len(args) >= 2 {
-		twoWord := args[0] + " " + args[1]
-		if cmd, ok := r.commands[twoWord]; ok {
-			remaining := args[2:]
+	// Match the longest registered command phrase (e.g. "vault sync" or
+	// "codex hook session-end") before falling back to a one-word parent.
+	for n := len(args); n >= 2; n-- {
+		name := strings.Join(args[:n], " ")
+		if cmd, ok := r.commands[name]; ok {
+			remaining := args[n:]
 			if hasHelpFlag(remaining) {
 				fmt.Fprint(r.out, r.formatHelp(cmd))
 				return ExitOK
+			}
+			if len(cmd.Subcommands) > 0 {
+				return r.dispatchCommand(cmd, remaining)
 			}
 			return r.runCmd(cmd, remaining)
 		}

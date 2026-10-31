@@ -680,6 +680,39 @@ func TestRunCommandsUpgrade_SkillShimsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunCommandsUpgrade_CodexSkillsDoNotImplicitlyInvoke(t *testing.T) {
+	grokOff(t)
+	vault := t.TempDir()
+	seedMatchingVault(t, vault)
+	projectRoot := t.TempDir()
+	var out, errb bytes.Buffer
+	code := runCommandsUpgrade(commandsUpgradeOpts{
+		Overwrite:           true,
+		Stdin:               strings.NewReader(""),
+		Stdout:              &out,
+		Stderr:              &errb,
+		VaultRootOverride:   vault,
+		ProjectRootOverride: projectRoot,
+	})
+	if code != cli.ExitOK {
+		t.Fatalf("overwrite: exit=%d\nstderr: %s", code, errb.String())
+	}
+	for _, name := range []string{"vpc-wrap", "vps-chair"} {
+		dir := filepath.Join(projectRoot, shims.CodexSkillsDir, name)
+		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+			t.Fatalf("Codex skill %s not generated: %v", name, err)
+		}
+		policy, err := os.ReadFile(filepath.Join(dir, "agents", "openai.yaml"))
+		if err != nil || string(policy) != shims.CodexSkillPolicy() {
+			t.Fatalf("Codex skill %s policy = %q err=%v", name, policy, err)
+		}
+	}
+	agents, err := os.ReadFile(filepath.Join(projectRoot, "AGENTS.md"))
+	if err == nil && !strings.Contains(string(agents), "vp_cmd") {
+		t.Fatalf("managed vpc dispatch rule was lost:\n%s", agents)
+	}
+}
+
 // TestRunCommandsUpgrade_DryRunShowsSkillShimsNoWrite verifies the dry-run
 // surfaces skill-shim drift in the plan and summary but writes nothing.
 func TestRunCommandsUpgrade_DryRunShowsSkillShimsNoWrite(t *testing.T) {
@@ -1010,6 +1043,13 @@ func seedMatchingShims(t *testing.T, vault, projectRoot string) {
 		if _, _, err := shims.ApplySkills(sp, shims.ApplyOptions{}); err != nil {
 			t.Fatalf("skill shim apply: %v", err)
 		}
+	}
+	codexPlan, err := planCodexSkillShims(r, projectRoot, "")
+	if err != nil {
+		t.Fatalf("Codex skill shim plan: %v", err)
+	}
+	if _, _, err := shims.ApplySkills(codexPlan, shims.ApplyOptions{}); err != nil {
+		t.Fatalf("Codex skill shim apply: %v", err)
 	}
 }
 

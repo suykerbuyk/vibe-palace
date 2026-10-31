@@ -588,3 +588,20 @@ Dual-licensed under
 
 The vector index uses [coder/hnsw](https://github.com/coder/hnsw), dedicated to
 the public domain under [CC0 1.0](third_party/coder-hnsw/LICENSE).
+
+## Codex CLI and IDE
+
+Install or disable the shared Codex MCP entry with `vp mcp install --codex` and
+`vp mcp uninstall --codex`. The installer edits only `command`, `args`, and
+`enabled` in `[mcp_servers.vibe-palace]`; it preserves tool-approval tables and
+unrelated TOML bytes. Codex CLI and its IDE extension share this configuration.
+Reinstall to set `enabled = true` again.
+
+`vp commands upgrade` renders explicit Codex skills beneath
+`.agents/skills/`; use `$vpc-<name>` for commands and `$vps-<name>` for
+personas. Generated skills disable implicit invocation. Codex hook setup is
+trust-gated: review Vibe-Palace's hooks in Codex before relying on bootstrap or
+SessionEnd archival. The SessionEnd archive preserves the exact Codex-supplied
+file as `codex-raw`; the 3-second hook and 18 MiB compressed-archive limits can
+produce an honest incomplete result. See `doc/COMMANDS-AND-SKILLS.md` for the
+full lifecycle and recovery command.

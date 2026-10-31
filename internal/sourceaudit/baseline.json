@@ -113,6 +113,10 @@
       "reason": "FALSE POSITIVE via closure attribution, and the SAME artifact the sibling entry `ungated-vault-writer main.cmdCheck` records — reproduced here independently by a type-checked call graph, which is worth noting: two analyses with different anchor sets and different resolution models produce the same wrong answer for the same structural reason. The witness runs cmdCheck -> runCheck -> binaryInfo -> registeredToolCount -> tools.RegisterAll -> IngestCommitMsgTool -> [closure] -> atomicfile.Write. `vp check` COUNTS registered tools; it never invokes one. The derivation cannot tell registration from invocation because it deliberately attributes a closure's calls to the function that BUILDS it — without that edge no MCP handler is visible at all (see reachesSink). DECLARED WINS: the only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-*, and gating a diagnostic against a newer vault removes the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
     },
     {
+      "id": "derived-gate-divergence cli.cmdCodexHookSessionEnd",
+      "reason": "Derived TRUE: the SessionEnd closure reaches archive.Create and the typed capture receipt's vault sinks. Declared UNWRAPPED by the accepted Codex host plan because this command runs under Codex's hard 3-second SessionEnd ceiling; mutates() adds a surface fail-stop before the only automatic transcript archival opportunity. This is capture rather than ordinary authorship: canceled, over-limit, contended, and incomplete work is reported honestly, while the source remains available for explicit retry. Project-vault routing snapshot is still installed by cmd/vp/main.go before the writer runs. Task codex-first-class-mcp-host, accepted plan v3."
+    },
+    {
       "id": "derived-gate-divergence cli.cmdConfigBind",
       "reason": "HOST-LOCAL WRITER, DECLARED GATED ON PURPOSE — the same shape as `derived-gate-divergence cli.cmdConfigSync`. Derived FALSE because `vp config bind` reaches no vault funnel primitive: storage.BindProjectVault writes exactly one [project_vaults] line into the HOST's global config (compare-and-set on bytes, then WriteHostLocalWithBackup, the raw backup+temp+rename path ADR-003 leaves outside the funnel) and never writes a vault file. DECLARED WINS: that line decides which vault every later write on this host lands in (ADR-012 tier 2), so a binary older than the vault's surface must not write it — the same reason MutatingToolNames lists vp_config_bind. Task checkout-rebind-entry-point (U2b)."
     },
@@ -195,6 +199,10 @@
     {
       "id": "ungated-vault-writer main.cmdCheck",
       "reason": "FALSE POSITIVE via closure attribution, and separately a considered exemption. The reported path is main.cmdCheck -> main.runCheck -> main.binaryInfo -> main.registeredToolCount -> tools.RegisterAll -> a tool constructor's handler closure -> atomicfile.Write: `vp check` COUNTS registered tools, it does not invoke them. The only vault write `vp check` performs is the transient, self-deleting .vp-fs-probe-* that CheckVaultFilesystem creates to test whether the filesystem accepts ':' in a filename — internal/check/vaultfs.go records the matching decision that the MCP-side vp_check stays Mutating:false for it. Gating a diagnostic against a newer vault would remove the tool an operator reaches for precisely when the surface mismatch is what they are diagnosing. Accepted."
+    },
+    {
+      "id": "ungated-vault-writer main.cmdCodexHookSessionEnd",
+      "reason": "DELIBERATELY UNWRAPPED for Codex's documented 3-second SessionEnd ceiling. This writer archives the host-supplied transcript and writes a typed auto-capture receipt; wrapping it in mutates() can spend the timeout on a surface fail-stop before the archival attempt, losing the only hook opportunity. The command uses context-bounded archive creation, non-blocking manifest locking, one-shot sessions-directory and note locks, and reports archive-created/note-link-incomplete honestly. Project-vault routing is still installed before dispatch by cmd/vp/main.go. Task codex-first-class-mcp-host, accepted plan v3."
     },
     {
       "id": "ungated-vault-writer main.cmdDrainArchives",

@@ -399,8 +399,11 @@ func gatherCheckResults() []check.Result {
 	results = append(results, check.CheckGitPostCommitHook(cwd))
 
 	// --- MCP host registration (advisory — one row per detected host:
-	// Claude/Grok/Zed, reporting whether vibe-palace is registered). ---
+	// Claude/Grok/Zed/Codex, reporting whether vibe-palace is registered). ---
 	results = append(results, check.CheckMCPHosts(mcpHostRegistry())...)
+	// Codex hook/skill policy is distinct from executable MCP registration;
+	// this read-only check reports only the user-global Codex layer it owns.
+	results = append(results, check.CheckCodexHost()...)
 
 	// --- User-global slash surfaces (advisory — vp mcp install emit). ---
 	results = append(results, check.CheckHostSurfaces()...)

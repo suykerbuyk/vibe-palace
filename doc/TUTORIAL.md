@@ -2356,3 +2356,19 @@ terminal; the `Embedder` row reports it (see
 Content must be captured first. Run a session capture with a transcript, then
 search should find the indexed content. Check that the project slug in your
 query matches the one in `.vibe-palace.toml`.
+
+### Codex setup
+
+Run `vp mcp install --codex`, then restart Codex CLI or its IDE extension. After
+reviewing and trusting the configured hooks, a project session receives the
+explicit-project bootstrap instruction before its first response. Run
+`vp commands upgrade` to generate native skills; invoke them explicitly with
+`$vpc-<name>` or `$vps-<name>`. Codex's shared skill root is also used by other
+tools, so unmarked sibling skills are left intact.
+
+At SessionEnd, Codex supplies a transcript path. Vibe-Palace archives those
+exact bytes and writes a non-semantic receipt. If the file is unavailable,
+changes during the read, exceeds the compressed archive cap, or cannot finish
+within the hook deadline, the hook reports the failure rather than claiming an
+archive. Retry an available file with `vp archive create --adapter codex-raw
+--session-id <id> --project <slug> --source <transcript_path>`.

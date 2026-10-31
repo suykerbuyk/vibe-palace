@@ -17,6 +17,7 @@ import (
 	vpctx "github.com/suykerbuyk/vibe-palace/internal/context"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/shims"
+	"github.com/suykerbuyk/vibe-palace/internal/skills"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -750,16 +751,51 @@ func planSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims
 		}
 		plan = append(plan, hub)
 	}
+	codexChanges, err := planCodexSkillShims(resolver, projectRoot, only)
+	if err != nil {
+		return nil, err
+	}
+	plan = append(plan, codexChanges...)
 	if only == "" {
 		return plan, nil
 	}
 	filtered := plan[:0]
 	for _, c := range plan {
-		if c.Name == only {
+		if c.Name == only || strings.TrimPrefix(strings.TrimPrefix(c.Name, "vpc-"), "vps-") == only {
 			filtered = append(filtered, c)
 		}
 	}
 	return filtered, nil
+}
+
+func planCodexSkillShims(resolver *vpctx.Resolver, projectRoot, only string) ([]shims.SkillChange, error) {
+	if projectRoot == "" {
+		return nil, nil
+	}
+	items, err := skillShimItems(resolver)
+	if err != nil {
+		return nil, err
+	}
+	codexItems := make([]shims.SkillItem, 0, len(items))
+	for _, item := range items {
+		item.Name = "vps-" + item.Name
+		codexItems = append(codexItems, item)
+	}
+	slug, _ := project.DetectProject(projectRoot)
+	summaries, err := commands.List(resolver, "command", slug, "", "", 60)
+	if err != nil {
+		return nil, err
+	}
+	for _, summary := range summaries {
+		if only != "" && only != summary.Name && only != summary.Alias {
+			continue
+		}
+		codexItems = append(codexItems, shims.SkillItem{
+			Name:        summary.Alias,
+			Frontmatter: skills.SkillFrontmatter{Description: summary.Brief},
+		})
+	}
+	return shims.PlanSkills(shims.CodexSkill, codexItems, projectRoot)
 }
 
 // skillShimItems resolves the skill set into the SkillItem inputs the

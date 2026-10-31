@@ -67,7 +67,7 @@ func preRun(cmd *cli.Command) int {
 //
 // Uniform predicate: it runs for EVERY write-capable command — MutatesVault (which
 // includes the lifecycle commands vault copy/clone/rename/project-delete) plus the
-// known non-MutatesVault writers (`hook`, and `vault pull`/`vault sync`, which
+// known non-MutatesVault writers (`hook`, Codex's bounded SessionEnd hook, and `vault pull`/`vault sync`, which
 // reach the derived-delete sink). The LIFECYCLE exemption is NOT a command here:
 // it is per-write-site, via atomicfile.ForMisboundExempt at the relocating write
 // (storage.CopyProjectTreeEntry), so it covers both the CLI and the MCP tools.
@@ -77,7 +77,7 @@ func preRun(cmd *cli.Command) int {
 // commands install nothing; the guard is also inert unless armed (main-only).
 func installProjectVaultSnapshot(cmd *cli.Command) {
 	switch {
-	case cmd.MutatesVault, cmd.Name == "hook", cmd.Name == "vault pull", cmd.Name == "vault sync":
+	case cmd.MutatesVault, cmd.Name == "hook", cmd.Name == "codex hook session-end", cmd.Name == "vault pull", cmd.Name == "vault sync":
 	default:
 		return
 	}

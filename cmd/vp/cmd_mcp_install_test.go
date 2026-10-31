@@ -4,6 +4,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
@@ -34,6 +35,20 @@ func TestMCPInstallConstructors(t *testing.T) {
 	}
 	if got := cmdMCPUninstall().Name; got != "mcp uninstall" {
 		t.Errorf("name = %q, want \"mcp uninstall\"", got)
+	}
+}
+
+func TestMCPInstallHelpDocumentsCodex(t *testing.T) {
+	cmd := cmdMCPInstall(cli.BuildInfo{Version: "test"})
+	if !strings.Contains(cmd.Synopsis+cmd.Description, "--codex") {
+		t.Fatal("install help does not document --codex")
+	}
+}
+
+func TestMCPUninstallHelpDocumentsCodex(t *testing.T) {
+	cmd := cmdMCPUninstall()
+	if !strings.Contains(cmd.Synopsis+cmd.Description, "--codex") {
+		t.Fatal("uninstall help does not document --codex")
 	}
 }
 

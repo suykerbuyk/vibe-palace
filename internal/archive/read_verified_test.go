@@ -4,6 +4,7 @@
 package archive
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -90,7 +91,7 @@ func TestReadVerifiedRefusesAHashMismatch(t *testing.T) {
 	if err := os.WriteFile(src, []byte(other), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := compressFile(vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
+	n, err := compressFileContext(context.Background(), vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +150,7 @@ func TestReadVerifiedTellsARewriteMidReadFromCorruption(t *testing.T) {
 	}
 	old := readArchiveFile
 	readArchiveFile = func(p string) ([]byte, error) {
-		n, err := compressFile(vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
+		n, err := compressFileContext(context.Background(), vault, src, e.ArchivePath, DefaultMaxArchiveBytes)
 		if err != nil {
 			t.Fatal(err)
 		}

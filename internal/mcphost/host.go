@@ -8,7 +8,7 @@
 // where the "run vp mcp" pointer is written and in what shape. The registry
 // captures exactly that difference and nothing else.
 //
-// Three registration kinds are deliberately represented so the abstraction is
+// Four registration kinds are deliberately represented so the abstraction is
 // proven to span them, rather than collapsing into a Claude-shaped interface
 // with bolt-ons:
 //
@@ -19,6 +19,8 @@
 //     shell out and never model it ourselves (lowest coupling). See GrokHost.
 //   - Zed     — a JSON-with-comments settings.json edited surgically via
 //     tailscale/hujson so the operator's comments survive. See ZedHost.
+//   - Codex   — config.toml edited with assignment spans so comments and tool
+//     approval tables survive. See CodexHost.
 //
 // Neovim, Cursor, and OpenCode remain documented-manual for now; the Host
 // interface is shaped to absorb them later without restructuring.
@@ -37,10 +39,10 @@ import (
 // registered with it. Implementations span file-writer (Zed), command-driven
 // (Grok), and marketplace (Claude) registration kinds.
 type Host interface {
-	// Name is the stable lowercase identifier ("claude", "grok", "zed").
+	// Name is the stable lowercase identifier ("claude", "grok", "zed", "codex").
 	Name() string
 	// Flag is the `vp mcp install` selector flag ("--claude-plugin", "--grok",
-	// "--zed").
+	// "--zed", "--codex").
 	Flag() string
 	// Detected reports whether this host is present on the machine (config dir
 	// or CLI). Registration and status reporting are gated on it.
@@ -81,6 +83,7 @@ func Registry() []Host {
 		ClaudeHost{},
 		NewGrokHost(),
 		NewZedHost(),
+		NewCodexHost(),
 	}
 }
 

@@ -63,6 +63,7 @@ func TestResolveCaptureHost(t *testing.T) {
 		wantSource string
 	}{
 		{"derived only", "Zed", "", storage.HostZed, storage.HostSourceDerived},
+		{"Codex handshake", "Codex CLI", "", storage.HostCodex, storage.HostSourceDerived},
 		{"derived wins over declared", "Zed", `{"name":"grok-cli"}`, storage.HostZed, storage.HostSourceDerived},
 		{"derived wins over matching declared", "Zed", `{"name":"Zed"}`, storage.HostZed, storage.HostSourceDerived},
 		{"declared fallback", "", `{"name":"grok-cli"}`, storage.HostGrok, storage.HostSourceDeclared},
@@ -105,6 +106,35 @@ func TestResolveCaptureHost(t *testing.T) {
 					host, source, tc.wantHost, tc.wantSource)
 			}
 		})
+	}
+}
+
+func TestResolveHostNameCodex(t *testing.T) {
+	stubClientInfoHost(t, "Codex CLI")
+	host, source := resolveCaptureHost(context.Background(), nil)
+	if host != storage.HostCodex || source != storage.HostSourceDerived {
+		t.Fatalf("Codex host = (%q,%q)", host, source)
+	}
+}
+
+func TestCaptureSessionAttributesCodexFromHandshake(t *testing.T) {
+	stubHostSessionID(t, "")
+	stubClientInfoHost(t, "Codex CLI")
+	meta := captureAndReadMeta(t, `{"project":"test-proj","summary":"Codex MCP capture.","client_info":{"name":"other","version":"1"}}`)
+	if meta.Host != storage.HostCodex || meta.HostSource != storage.HostSourceDerived {
+		t.Fatalf("persisted host attribution = %q/%q", meta.Host, meta.HostSource)
+	}
+}
+
+func TestCaptureSessionCodexDoesNotUseClaudeSessionMap(t *testing.T) {
+	stubHostSessionID(t, "claude-session-map-value")
+	stubClientInfoHost(t, "Codex CLI")
+	meta := captureAndReadMeta(t, `{"project":"test-proj","summary":"Codex does not inherit Claude host session identity."}`)
+	if meta.Host != storage.HostCodex || meta.HostSource != storage.HostSourceDerived {
+		t.Fatalf("persisted host attribution = %q/%q", meta.Host, meta.HostSource)
+	}
+	if meta.ArchiveSessionID != "" {
+		t.Fatalf("Codex note used Claude session map: archive_session_id=%q", meta.ArchiveSessionID)
 	}
 }
 

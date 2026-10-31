@@ -8,13 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -114,11 +112,13 @@ type SessionMeta struct {
 	// WIRE DIALECT of the hook payload it was handed — a signal that arrives on
 	// the wire and therefore cannot leak across a process boundary — and
 	// recording the explicit "unknown" when the dialect is indeterminate.
+	// Codex SessionEnd records the host from that explicit lifecycle event.
 	//
 	// ONE VOCABULARY: Host names a host APPLICATION, and both writers close onto
-	// the declared set below — HostClaudeCode, HostGrok, HostZed, HostXAI, or
-	// HostUnknown. The hook reaches only the first two (its signal is the payload
-	// dialect); the MCP path normalizes the vendor-chosen clientInfo.name onto
+	// the declared set below — HostClaudeCode, HostGrok, HostZed, HostCodex, HostXAI, or
+	// HostUnknown. Claude/Grok hooks reach the first two from their payload
+	// dialect; Codex SessionEnd reaches HostCodex from explicit event provenance.
+	// The MCP path normalizes the vendor-chosen clientInfo.name onto
 	// the set and fails closed to HostUnknown. It must never carry an answer to a
 	// different question — not the model, and not "how was the host invoked",
 	// which is what Entrypoint below is for.
@@ -458,6 +458,98 @@ func (v *Vault) UpsertSessionByKey(project, sessionKey string, meta SessionMeta,
 	return ref, false, err
 }
 
+// TryUpsertSessionByKey is the single-attempt, non-blocking counterpart used by
+// short-lived host hooks. It takes the sessions-directory lock once, then the
+// target note lock once; the note bytes are written directly while that lock is
+// held, never through RewriteSession/lockedWrite (which would acquire it again).
+func (v *Vault) TryUpsertSessionByKey(project, sessionKey string, meta SessionMeta, body string, merge MergeSessionFunc) (SessionRef, bool, error) {
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return SessionRef{}, false, err
+	}
+	if err := v.EnsureVaultDir(dir); err != nil {
+		return SessionRef{}, false, fmt.Errorf("ensure sessions dir: %w", err)
+	}
+	release, ok, err := vaultlock.TryAcquire(v.Root, dir)
+	if err != nil {
+		return SessionRef{}, false, fmt.Errorf("storage: lock sessions dir: %w", err)
+	}
+	if !ok {
+		return SessionRef{}, false, fmt.Errorf("%w: %s", ErrSessionsDirLocked, dir)
+	}
+	defer func() { _ = release() }()
+
+	var ref SessionRef
+	updated := false
+	if sessionKey != "" {
+		foundRef, found, ferr := v.findSessionByKey(project, sessionKey)
+		if ferr != nil {
+			return SessionRef{}, false, ferr
+		}
+		if found {
+			if merge == nil {
+				return SessionRef{}, false, fmt.Errorf("merge function is required when updating a session key")
+			}
+			oldMeta, oldBody, rerr := v.ReadSession(project, foundRef.Date, foundRef.Fingerprint, foundRef.Iteration)
+			if rerr != nil {
+				return SessionRef{}, false, fmt.Errorf("read session for update: %w", rerr)
+			}
+			meta, body = merge(oldMeta, oldBody, meta)
+			ref, err = v.tryWriteSessionAt(project, foundRef.Date, foundRef.Fingerprint, foundRef.Iteration, meta, body)
+			if err != nil {
+				return SessionRef{}, false, err
+			}
+			return ref, true, nil
+		}
+	}
+
+	if !datePattern.MatchString(meta.Date) {
+		return SessionRef{}, false, fmt.Errorf("date %q must be in YYYY-MM-DD format", meta.Date)
+	}
+	fp := surface.WriterFingerprint(v.Root)
+	iteration, err := v.NextIteration(project, meta.Date, fp)
+	if err != nil {
+		return SessionRef{}, false, err
+	}
+	ref, err = v.tryWriteSessionAt(project, meta.Date, fp, iteration, meta, body)
+	return ref, updated, err
+}
+
+// tryWriteSessionAt writes to a path while holding exactly one non-blocking
+// note-path lock. The caller already holds the sessions-directory lock.
+func (v *Vault) tryWriteSessionAt(project, date, fp string, iteration int, meta SessionMeta, body string) (SessionRef, error) {
+	path, err := v.SessionFile(project, date, fp, iteration)
+	if err != nil {
+		return SessionRef{}, err
+	}
+	if err := v.EnsureVaultDir(filepath.Dir(path)); err != nil {
+		return SessionRef{}, fmt.Errorf("ensure sessions dir: %w", err)
+	}
+	meta.Project, meta.Date, meta.Iteration = project, date, iteration
+	meta.ID = SessionStem(date, fp, iteration)
+	rel, err := v.SessionRelPath(project, date, fp, iteration)
+	if err != nil {
+		return SessionRef{}, err
+	}
+	meta.NotePath = rel
+	data, normalized, err := marshalSessionFile(meta, body)
+	if err != nil {
+		return SessionRef{}, err
+	}
+	release, ok, err := vaultlock.TryAcquire(v.Root, path)
+	if err != nil {
+		return SessionRef{}, fmt.Errorf("storage: try lock session note: %w", err)
+	}
+	if !ok {
+		return SessionRef{}, fmt.Errorf("storage: session note is locked: %s", path)
+	}
+	defer func() { _ = release() }()
+	if err := atomicfile.Write(v.Root, path, data, atomicfile.WithFsync()); err != nil {
+		return SessionRef{}, fmt.Errorf("write session file: %w", err)
+	}
+	return SessionRef{ID: meta.ID, NotePath: rel, Date: date, Fingerprint: fp, Iteration: iteration, Normalized: normalized}, nil
+}
+
 // TagAutoCapture marks the note the hook writes unattended at the first Stop — a
 // git-log summary of recent commits, not a narrative of the session.
 //
@@ -500,6 +592,10 @@ const (
 	// that information does not exist on hook-less hosts (ADR-006
 	// correct-or-absent).
 	ArchiveIDSourceInline = "inline"
+
+	// ArchiveIDSourceCodexSessionEnd identifies the id supplied by Codex's
+	// SessionEnd lifecycle event.
+	ArchiveIDSourceCodexSessionEnd = "codex-session-end"
 )
 
 // Values of SessionMeta.HostSource, plus the explicit unknown-host value.
@@ -545,7 +641,8 @@ const HostUnknown = "unknown"
 // "capture-oneshot") in a field that names a host APPLICATION, so the two
 // writers disagreed about what the value meant and any per-host count silently
 // split. HostZed and HostXAI are reachable only from the MCP path: no hook
-// payload dialect names them.
+// payload dialect names them. Codex is reachable from its MCP handshake and
+// from explicit SessionEnd hook provenance.
 //
 // 🔴 HostClaudeCode is a DERIVATION, never a fallback. ADR-006 forbids defaulting
 // to Claude Code when nothing was measured — that default is what made the Zed
@@ -558,8 +655,13 @@ const (
 	HostClaudeCode = "claude-code"
 	HostGrok       = "grok"
 	HostZed        = "zed"
+	HostCodex      = "codex"
 	HostXAI        = "xai"
 )
+
+// HostSourceCodexHookEvent records host identity supplied by Codex's
+// SessionEnd lifecycle event rather than inferred from an MCP handshake.
+const HostSourceCodexHookEvent = "codex-hook-event"
 
 // EntrypointUnknown is the SessionMeta.Entrypoint value written when
 // CLAUDE_CODE_ENTRYPOINT was absent from the writing process's environment.
@@ -578,8 +680,9 @@ type ArchiveLinkResult struct {
 	// whether any note for this session exists at all. A session with no notes is
 	// an ordinary, expected outcome (the hook archives before it captures), NOT an
 	// error: Found is false and the caller simply does not write a back-link.
-	Canonical SessionRef
-	Found     bool
+	Canonical       SessionRef
+	Found           bool
+	CanonicalIsStub bool
 }
 
 // TryLinkArchiveToSessions closes the note <-> transcript loop for one host session:
@@ -617,7 +720,7 @@ type ArchiveLinkResult struct {
 // one UpsertSessionByKey documents and is safe; INVERTING it is a permanent hang,
 // because vaultlock.Acquire is a blocking LOCK_EX with no LOCK_NB and no timeout.
 //
-// # WHY THIS IS NON-BLOCKING, WITH BOUNDED RETRY, AND HAS NO BLOCKING SIBLING
+// # WHY THIS IS NON-BLOCKING AND HAS NO BLOCKING SIBLING
 //
 // internal/hook is this function's ONLY caller, once per SessionEnd, and that
 // hook has no timeout and no cancellation of its own (cmd/vp/cmd_hook.go passes
@@ -633,12 +736,8 @@ type ArchiveLinkResult struct {
 // that WOULD have derived cleanly (an exact session_key match, per ADR-007)
 // never got the chance to try.
 //
-// This trades a blocking wait for a bounded number of short, jittered
-// non-blocking attempts (sessionsDirLockAttempts, starting at
-// sessionsDirLockBaseWait and doubling), enough to absorb the sub-second
-// contention of several hooks landing together without ever approaching a hook
-// timeout. If every attempt finds the lock held, it gives up and returns an
-// error wrapping ErrSessionsDirLocked — a contention outcome, never a
+// This trades a blocking wait for one non-blocking attempt. If the lock is
+// already held, it returns an error wrapping ErrSessionsDirLocked — a contention outcome, never a
 // corruption, exactly like archive.ErrManifestLocked. Nothing here weakens the
 // exact-match predicate ADR-007 requires; it only changes whether a hook that
 // hits a slow moment gets a logged miss instead of no chance at all. A session
@@ -665,9 +764,12 @@ func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel s
 		return ArchiveLinkResult{}, err
 	}
 
-	release, err := acquireSessionsDirLockNonBlocking(v.Root, dir)
+	release, ok, err := vaultlock.TryAcquire(v.Root, dir)
 	if err != nil {
-		return ArchiveLinkResult{}, err
+		return ArchiveLinkResult{}, fmt.Errorf("storage: lock sessions dir: %w", err)
+	}
+	if !ok {
+		return ArchiveLinkResult{}, fmt.Errorf("%w: %s", ErrSessionsDirLocked, dir)
 	}
 	defer func() { _ = release() }()
 
@@ -704,18 +806,19 @@ func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel s
 		// history on every SessionEnd for no gain.
 		if meta.Archive != archiveRel {
 			meta.Archive = archiveRel
-			norm, werr := v.RewriteSession(project, date, fp, iteration, meta, body)
+			written, werr := v.tryWriteSessionAt(project, date, fp, iteration, meta, body)
 			if werr != nil {
 				return ArchiveLinkResult{}, fmt.Errorf("link session %s: %w", stem, werr)
 			}
-			if len(norm) > 0 {
-				return ArchiveLinkResult{}, fmt.Errorf("link session %s: %w", stem, errRewriteWouldNormalize(norm))
+			if len(written.Normalized) > 0 {
+				return ArchiveLinkResult{}, fmt.Errorf("link session %s: %w", stem, errRewriteWouldNormalize(written.Normalized))
 			}
 			res.Updated = append(res.Updated, ref)
 		}
 
 		if !res.Found || preferCanonical(canonicalMeta, res.Canonical, meta, ref) {
 			res.Canonical, canonicalMeta = ref, meta
+			res.CanonicalIsStub = meta.Tag == TagAutoCapture
 		}
 		res.Found = true
 	}
@@ -723,48 +826,11 @@ func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel s
 	return res, nil
 }
 
-// sessionsDirLockAttempts and sessionsDirLockBaseWait bound
-// TryLinkArchiveToSessions's retry: 3 attempts at 50ms/100ms/200ms (each plus up
-// to 50% jitter) is worst-case ~350ms of added latency, chosen to clear the
-// sub-second contention window of several SessionEnd hooks landing together
-// without meaningfully risking a hook-execution timeout budget (typically many
-// seconds). Re-derive, never assume, before changing either constant: they are a
-// deliberate trade against a timeout this package does not own or control.
-const (
-	sessionsDirLockAttempts = 3
-	sessionsDirLockBaseWait = 50 * time.Millisecond
-)
-
-// ErrSessionsDirLocked reports that TryLinkArchiveToSessions found the
-// project's sessions-directory lock already held by another writer through
-// every retry, and gave up rather than waiting further. A contention outcome,
+// ErrSessionsDirLocked reports that a non-blocking session operation found the
+// project's sessions-directory lock already held. A contention outcome,
 // never a corruption — nothing was read and nothing written. Mirrors
 // archive.ErrManifestLocked one layer up.
 var ErrSessionsDirLocked = errors.New("storage: sessions directory is locked by another writer")
-
-// acquireSessionsDirLockNonBlocking is the one place TryLinkArchiveToSessions
-// takes the sessions-directory lock: a bounded number of non-blocking attempts
-// with short, jittered backoff, never a plain blocking Acquire — see
-// TryLinkArchiveToSessions's doc comment for why no blocking form exists here.
-func acquireSessionsDirLockNonBlocking(root, dir string) (release func() error, err error) {
-	var lastErr error
-	for attempt := 0; attempt < sessionsDirLockAttempts; attempt++ {
-		rel, ok, terr := vaultlock.TryAcquire(root, dir)
-		if terr != nil {
-			return nil, fmt.Errorf("storage: lock sessions dir: %w", terr)
-		}
-		if ok {
-			return rel, nil
-		}
-		lastErr = fmt.Errorf("%w: %s", ErrSessionsDirLocked, dir)
-		if attempt < sessionsDirLockAttempts-1 {
-			wait := sessionsDirLockBaseWait << attempt
-			wait += time.Duration(rand.Int63n(int64(wait)/2 + 1))
-			time.Sleep(wait)
-		}
-	}
-	return nil, lastErr
-}
 
 // preferCanonical reports whether candidate (nextMeta, next) should displace the
 // incumbent (curMeta, cur) as the note a transcript points back at. A real note

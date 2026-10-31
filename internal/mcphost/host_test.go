@@ -16,6 +16,7 @@ func TestRegistryFlags(t *testing.T) {
 		"claude": "--claude-plugin",
 		"grok":   "--grok",
 		"zed":    "--zed",
+		"codex":  "--codex",
 	}
 	got := map[string]string{}
 	for _, h := range Registry() {

@@ -4,8 +4,11 @@
 package archive
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,6 +122,98 @@ func TestCreate_WritesPairAndHashesPreCompression(t *testing.T) {
 	// Manifest should be readable back.
 	if _, err := ReadManifest(res.ManifestPath); err != nil {
 		t.Errorf("ReadManifest: %v", err)
+	}
+}
+
+func TestCreateCodexRawArchiveStoresExactHashAndUnknownTurnCount(t *testing.T) {
+	tmp := t.TempDir()
+	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
+	src := filepath.Join(tmp, "codex.jsonl")
+	content := []byte("{\"type\":\"response_item\",\"payload\":{\"x\":1}}\n")
+	if err := os.WriteFile(src, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(content)
+	res, err := Create(CreateOptions{Adapter: CodexRawAdapterName, SessionID: "thr_test", SourcePath: src, VaultRoot: vault, ProjectSlug: "demo", LockPosture: LockNonBlocking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Manifest.SourceSHA256 != hex.EncodeToString(want[:]) || res.Manifest.TurnCount != 0 || res.Manifest.Model != "" {
+		t.Fatalf("manifest = %+v", res.Manifest)
+	}
+}
+
+func TestCreateCodexRawArchiveEnforces18MiBCompressedLimit(t *testing.T) {
+	tmp := t.TempDir()
+	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
+	src := filepath.Join(tmp, "large.jsonl")
+	content := make([]byte, DefaultMaxArchiveBytes+1)
+	if _, err := rand.Read(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Create(CreateOptions{Adapter: CodexRawAdapterName, SessionID: "thr_large", SourcePath: src, VaultRoot: vault, ProjectSlug: "demo", LockPosture: LockNonBlocking})
+	if !errors.Is(err, ErrArchiveTooLarge) {
+		t.Fatalf("Create error = %v, want ErrArchiveTooLarge", err)
+	}
+}
+
+func TestCodexRawArchiveDeduplicatesOnSessionAdapterAndSourceHash(t *testing.T) {
+	tmp := t.TempDir()
+	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
+	src := filepath.Join(tmp, "source.jsonl")
+	if err := os.WriteFile(src, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := CreateOptions{Adapter: CodexRawAdapterName, SessionID: "thr_same", SourcePath: src, VaultRoot: vault, ProjectSlug: "demo", LockPosture: LockNonBlocking}
+	first, err := Create(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Create(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Skipped != true {
+		t.Fatal("same session/adapter/source hash was not deduplicated")
+	}
+	if err := os.WriteFile(src, []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := Create(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Skipped || third.Manifest.SourceSHA256 == first.Manifest.SourceSHA256 {
+		t.Fatal("changed source hash was incorrectly deduplicated")
+	}
+}
+
+func TestCreateCodexRawArchiveStopsAtDeadlineBeforeManifestCommit(t *testing.T) {
+	tmp := t.TempDir()
+	vault := filepath.Join(tmp, "vault")
+	testutil.InitProject(t, vault, "demo")
+	src := filepath.Join(tmp, "source.jsonl")
+	if err := os.WriteFile(src, []byte("transcript\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Create(CreateOptions{Context: ctx, Adapter: CodexRawAdapterName, SessionID: "thr_cancel", SourcePath: src, VaultRoot: vault, ProjectSlug: "demo", LockPosture: LockNonBlocking})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create error = %v, want context.Canceled", err)
+	}
+	entries, err := ListEntries(vault, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("manifest committed after cancellation: %+v", entries)
 	}
 }
 

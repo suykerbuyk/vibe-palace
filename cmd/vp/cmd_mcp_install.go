@@ -33,25 +33,27 @@ func selectHosts(args []string) []mcphost.Host {
 func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 	return &cli.Command{
 		Name:     "mcp install",
-		Synopsis: "vp mcp install [--claude-plugin] [--grok] [--zed]",
+		Synopsis: "vp mcp install [--claude-plugin] [--grok] [--zed] [--codex]",
 		Description: "Register the vibe-palace MCP server with one or more AI coding hosts, " +
 			"making the vp_* tools available in every session. Re-running --claude-plugin " +
 			"refreshes on-disk plugin files even when already enabled (cache stamp uses " +
 			"build commit, not the bare product version — two builds of the same tagged " +
 			"release share the same version). Pass one or more host flags: " +
 			"--claude-plugin (Claude Code local plugin/marketplace), --grok (xAI Grok Build " +
-			"via `grok mcp add`), --zed (Zed editor context_servers). The same MCP server " +
+			"via `grok mcp add`), --zed (Zed editor context_servers), --codex (Codex CLI/IDE " +
+			"shared config). The same MCP server " +
 			"backs every host; only the registration differs. Restart the host to activate.",
 		Examples: []cli.Example{
 			{Cmd: "vp mcp install --claude-plugin", Comment: "Register the Claude Code plugin"},
 			{Cmd: "vp mcp install --grok", Comment: "Register with Grok Build via grok mcp add"},
 			{Cmd: "vp mcp install --zed", Comment: "Add a Zed context_servers entry (comment-safe)"},
+			{Cmd: "vp mcp install --codex", Comment: "Register in Codex config.toml"},
 			{Cmd: "vp mcp install --grok --zed", Comment: "Register with multiple hosts at once"},
 		},
 		Run: func(args []string) int {
 			hosts := selectHosts(args)
 			if len(hosts) == 0 {
-				fmt.Fprintln(os.Stderr, "vp mcp install: pass one or more host flags: --claude-plugin, --grok, --zed")
+				fmt.Fprintln(os.Stderr, "vp mcp install: pass one or more host flags: --claude-plugin, --grok, --zed, --codex")
 				return cli.ExitUser
 			}
 			cwd, _ := os.Getwd()
@@ -77,19 +79,20 @@ func cmdMCPInstall(info cli.BuildInfo) *cli.Command {
 func cmdMCPUninstall() *cli.Command {
 	return &cli.Command{
 		Name:     "mcp uninstall",
-		Synopsis: "vp mcp uninstall [--claude-plugin] [--grok] [--zed]",
+		Synopsis: "vp mcp uninstall [--claude-plugin] [--grok] [--zed] [--codex]",
 		Description: "Remove the vibe-palace MCP registration from one or more hosts " +
-			"(--claude-plugin, --grok, --zed). Idempotent: a host with nothing " +
+			"(--claude-plugin, --grok, --zed, --codex). Idempotent: a host with nothing " +
 			"registered is reported, not an error.",
 		Examples: []cli.Example{
 			{Cmd: "vp mcp uninstall --claude-plugin", Comment: "Remove the Claude Code plugin"},
 			{Cmd: "vp mcp uninstall --grok", Comment: "Remove the Grok registration"},
 			{Cmd: "vp mcp uninstall --zed", Comment: "Remove the Zed context_servers entry"},
+			{Cmd: "vp mcp uninstall --codex", Comment: "Disable the Codex server, retaining its approval policy"},
 		},
 		Run: func(args []string) int {
 			hosts := selectHosts(args)
 			if len(hosts) == 0 {
-				fmt.Fprintln(os.Stderr, "vp mcp uninstall: pass one or more host flags: --claude-plugin, --grok, --zed")
+				fmt.Fprintln(os.Stderr, "vp mcp uninstall: pass one or more host flags: --claude-plugin, --grok, --zed, --codex")
 				return cli.ExitUser
 			}
 			failed := false
