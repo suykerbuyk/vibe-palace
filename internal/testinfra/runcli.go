@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -87,12 +88,15 @@ type CLIResult struct {
 	ExitCode int
 }
 
-// RunCLI execs BuildVPBinary(t) with args in dir, using env verbatim as
-// cmd.Env (build it via (*Env).Environ(extra...), or by hand for cases that
-// need something Environ doesn't produce — e.g. a dead HTTPS_PROXY). stdin
-// may be nil. RunCLI never falls back to os.Environ() implicitly: callers own
-// isolation, and a nil/empty env is passed through as-is rather than silently
-// widened.
+// RunCLI execs BuildVPBinary(t) with args in dir, using env as cmd.Env after
+// prepending the built binary's directory to PATH. This makes child `vp`
+// invocations resolve to the same test-built binary even when env puts
+// testinfra.SentinelPATH first; all other host CLI sentinels remain after it.
+// The rest of env is kept isolated and unchanged. Build it via
+// (*Env).Environ(extra...), or by hand for cases that need something Environ
+// doesn't produce — e.g. a dead HTTPS_PROXY. stdin may be nil. RunCLI never
+// falls back to os.Environ() implicitly: callers own isolation, and a
+// nil/empty env gets only the built vp directory in PATH.
 //
 // A non-zero exit is not a Go test failure by itself — cases that expect a
 // non-zero exit (e.g. ExitUser on bad input) need CLIResult.ExitCode to stay
@@ -104,7 +108,7 @@ func RunCLI(t *testing.T, env []string, dir string, stdin []byte, args ...string
 	bin := BuildVPBinary(t)
 
 	cmd := exec.Command(bin, args...)
-	cmd.Env = env
+	cmd.Env = withBuiltVPOnPath(env, bin)
 	cmd.Dir = dir
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -124,6 +128,26 @@ func RunCLI(t *testing.T, env []string, dir string, stdin []byte, args ...string
 		}
 	}
 	return CLIResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode}
+}
+
+func withBuiltVPOnPath(env []string, bin string) []string {
+	updated := append([]string(nil), env...)
+	for i := len(updated) - 1; i >= 0; i-- {
+		key, value, ok := strings.Cut(updated[i], "=")
+		if !ok || !isPathEnvKey(key) {
+			continue
+		}
+		updated[i] = key + "=" + filepath.Dir(bin) + string(os.PathListSeparator) + value
+		return updated
+	}
+	return append(updated, "PATH="+filepath.Dir(bin))
+}
+
+func isPathEnvKey(key string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(key, "PATH")
+	}
+	return key == "PATH"
 }
 
 // Must fails the test if ExitCode != 0, echoing stdout+stderr, and returns r

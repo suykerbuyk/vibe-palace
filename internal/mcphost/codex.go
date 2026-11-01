@@ -18,19 +18,24 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
-const codexBinary = "codex"
+const (
+	codexBinary = "codex"
+	vpBinary    = "vp"
+)
 
 // CodexHost registers the MCP server in Codex CLI/IDE's shared config.toml.
 type CodexHost struct {
-	configPath string
-	homeDir    func() (string, error)
-	lookPath   func() (string, error)
-	runner     func(args ...string) ([]byte, error)
+	configPath    string
+	homeDir       func() (string, error)
+	codexLookPath func() (string, error)
+	vpLookPath    func() (string, error)
+	runner        func(args ...string) ([]byte, error)
 }
 
 func NewCodexHost() *CodexHost {
 	h := &CodexHost{configPath: defaultCodexConfigPath(), homeDir: os.UserHomeDir}
-	h.lookPath = func() (string, error) { return exec.LookPath(h.Executables()[0]) }
+	h.codexLookPath = func() (string, error) { return exec.LookPath(h.Executables()[0]) }
+	h.vpLookPath = func() (string, error) { return exec.LookPath(h.Executables()[1]) }
 	h.runner = func(args ...string) ([]byte, error) {
 		return exec.Command(h.Executables()[0], args...).CombinedOutput()
 	}
@@ -47,14 +52,14 @@ func defaultCodexConfigPath() string {
 
 func (*CodexHost) Name() string          { return "codex" }
 func (*CodexHost) Flag() string          { return "--codex" }
-func (*CodexHost) Executables() []string { return []string{codexBinary} }
+func (*CodexHost) Executables() []string { return []string{codexBinary, vpBinary} }
 
 func (h *CodexHost) Detected() bool {
 	if _, err := os.Stat(filepath.Dir(h.configPath)); err == nil {
 		return true
 	}
-	if h.lookPath != nil {
-		_, err := h.lookPath()
+	if h.codexLookPath != nil {
+		_, err := h.codexLookPath()
 		return err == nil
 	}
 	return false
@@ -182,11 +187,11 @@ func (h *CodexHost) installCodexHooks(projectRoot string, out io.Writer) {
 	} else if unknown {
 		fmt.Fprintln(out, "Codex hook status unknown at a higher configuration layer; install only the Vibe-Palace user hook.")
 	}
-	if h.lookPath == nil {
+	if h.vpLookPath == nil {
 		fmt.Fprintln(out, "warning: Codex hooks not installed: vp executable could not be resolved")
 		return
 	}
-	vpPath, err := h.lookPath()
+	vpPath, err := h.vpLookPath()
 	if err != nil {
 		fmt.Fprintf(out, "warning: Codex hooks not installed: resolve vp executable: %v\n", err)
 		return
@@ -259,10 +264,10 @@ func (h *CodexHost) ownsCommand(command string) bool {
 	if command == "vp" {
 		return true
 	}
-	if command == "" || h.lookPath == nil {
+	if command == "" || h.vpLookPath == nil {
 		return false
 	}
-	want, err := h.lookPath()
+	want, err := h.vpLookPath()
 	if err != nil {
 		return false
 	}

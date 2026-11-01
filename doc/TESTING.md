@@ -1130,7 +1130,10 @@ promoted from `buildVPBinary`/`runVP` (`template_reconcile_test.go`) and the
 hand-rolled runner `cli_dispatch_test.go` already had. Every case still
 execs the real built `vp` binary — none of this runs in-process — under a
 per-case `testinfra.IsolateEnv(t)` HOME/XDG_CONFIG_HOME sandbox, matching the
-bash harnesses' `fresh_home` contract.
+bash harnesses' `fresh_home` contract. `RunCLI` prepends that same built
+binary's directory to the caller-provided `PATH`, so child `vp` invocations
+use the test build even when `SentinelPATH` is active; all other host CLI
+sentinels remain later on `PATH`.
 
 Run one tier locally with `go test -race -run '<pattern>' -v
 ./internal/integration/...` (see each tier's pattern below); all of them also
@@ -1177,7 +1180,7 @@ tests keep their names; only the 4th (the former `dispatch/04-*.sh`) is new.
 | Test | What it asserts |
 |------|-----------------|
 | `TestIntegrationE2EGithookInitInstallsAndReapFires` | `vp init` installs the post-commit hook; a real `git commit -F commit.msg` without `&& rm` leaves no `commit.msg` on disk, even for a multi-paragraph message with trailing whitespace |
-| `TestIntegrationE2EGithookCheckReportsMissingOnExistingClone` | A deleted hook is reported by `vp check`, repaired by re-running `vp init`, then reports clean — AND neither the ONNX embedder nor any agent CLI is ever constructed/exec'd (`testinfra.SentinelPATH` + a dead proxy, mirroring `TestIntegrationMigrateLoadsNoModel`) |
+| `TestIntegrationE2EGithookCheckReportsMissingOnExistingClone` | A deleted hook is reported by `vp check`, repaired by re-running `vp init`, then reports clean — AND neither the ONNX embedder nor any agent CLI is ever constructed/exec'd; child `vp` calls bypass the `vp` sentinel by resolving to the built test binary (`testinfra.SentinelPATH` + a dead proxy, mirroring `TestIntegrationMigrateLoadsNoModel`) |
 | `TestIntegrationE2EGithookInitRefusesForeignHookAndSharedHookspath` | A foreign post-commit hook is never touched (sha256-verified); a repo with `core.hooksPath` set is never written to at all; both refusals leave `vp init` at exit 0 |
 
 #### `test/e2e/walkthrough/` → `TestIntegrationE2EWalkthroughHappyPath` (pattern: `^TestIntegrationE2EWalkthrough`)

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/suykerbuyk/vibe-palace/internal/testinfra"
@@ -184,7 +185,10 @@ func TestIntegrationE2EGithookCheckReportsMissingOnExistingClone(t *testing.T) {
 	// assertion that no real binary ran; a non-empty sentinelLog is proof the
 	// interception worked, not a failure. Logged for visibility only.
 	if data, err := os.ReadFile(sentinelLog); err == nil && len(data) != 0 {
-		t.Logf("sentinel intercepted (not exec'd for real): %s", data)
+		if strings.Contains(string(data), "vp|") {
+			t.Fatalf("child vp invocation hit the sentinel instead of the built binary: %s", data)
+		}
+		t.Logf("host CLI sentinel intercepted (not exec'd for real): %s", data)
 	}
 }
 

@@ -123,3 +123,76 @@ func TestSentinelPATHDerivesNonEmptyNameSetAndWins(t *testing.T) {
 		}
 	}
 }
+
+func TestRunCLIPathPrefersBuiltVPAndRetainsHostSentinels(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SentinelPATH uses sh scripts; windows is out of scope")
+	}
+
+	logPath := SentinelPATH(t)
+	oldPath := os.Getenv("PATH")
+	priorVP, err := exec.LookPath("vp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(priorVP) != "vp" {
+		t.Fatalf("SentinelPATH did not provide a vp sentinel: %q", priorVP)
+	}
+
+	builtDir := t.TempDir()
+	builtVP := filepath.Join(builtDir, "vp")
+	if err := os.WriteFile(builtVP, []byte("test-built vp binary fixture\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(builtVP, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shadowPath := t.TempDir()
+	inputEnv := []string{"PATH=" + shadowPath, "KEEP_ME=unchanged", "PATH=" + oldPath}
+	env := withBuiltVPOnPath(inputEnv, builtVP)
+	if !strings.Contains(strings.Join(env, "\n"), "KEEP_ME=unchanged") {
+		t.Fatalf("PATH rewrite discarded unrelated environment: %q", env)
+	}
+	if len(env) != len(inputEnv) || env[0] != inputEnv[0] {
+		t.Fatalf("PATH rewrite did not preserve earlier duplicate PATH entry: got %q, want prefix %q", env, inputEnv[:1])
+	}
+	key, pathValue, ok := strings.Cut(env[2], "=")
+	if !ok || key != "PATH" {
+		t.Fatalf("effective PATH assignment = %q, want original PATH key spelling", env[2])
+	}
+	wantPathPrefix := builtDir + string(os.PathListSeparator)
+	if !strings.HasPrefix(pathValue, wantPathPrefix) || !strings.HasSuffix(pathValue, oldPath) {
+		t.Fatalf("effective PATH = %q, want built vp directory before caller PATH %q", pathValue, oldPath)
+	}
+	t.Setenv("PATH", pathValue)
+
+	gotVP, err := exec.LookPath("vp")
+	if err != nil || gotVP != builtVP {
+		t.Fatalf("LookPath(vp) = %q, %v; want built binary %q", gotVP, err, builtVP)
+	}
+	for _, name := range []string{"codex", "grok"} {
+		got, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("LookPath(%q): %v", name, err)
+		}
+		if got == builtVP || got == "" || filepath.Dir(got) == builtDir {
+			t.Fatalf("LookPath(%q) = %q, want its sentinel after built vp", name, got)
+		}
+		if _, err := exec.Command(got).CombinedOutput(); err == nil {
+			t.Fatalf("host sentinel %q unexpectedly exited 0", name)
+		}
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"codex", "grok"} {
+		if !strings.Contains(string(raw), name+"|") {
+			t.Errorf("host sentinel %q was not invoked:\n%s", name, raw)
+		}
+	}
+	if strings.Contains(string(raw), "vp|") {
+		t.Fatalf("vp sentinel ran despite built vp taking PATH precedence:\n%s", raw)
+	}
+}
