@@ -83,10 +83,16 @@ func (tx *Tx) discardChunks() error {
 		}
 	}
 	s := &state{gen: tx.lockGen}
-	s.indexChunks(newChunkFold())
+	empty := newChunkFold()
+	s.indexChunks(empty)
 	s.indexKG(&kgFold{})
 	s.ledger = foldLedger(nil)
 	tx.st = s
+	// chunks.jsonl was just removed, so the Tx's fold is now the empty one s
+	// was indexed from — published rather than dropped, so a later call in this
+	// Tx neither re-reads a file that is gone nor folds a stale view.
+	tx.chunks = empty
+	tx.syncedFold = empty
 	rec, err := tx.freshBaseline(nil)
 	if err != nil {
 		return err

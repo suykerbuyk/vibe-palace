@@ -113,6 +113,11 @@ func (tx *Tx) AdoptRenamedStore(from string) (renamed bool, err error) {
 		if err := renameDir(fromDir, toDir); err != nil {
 			return false, err
 		}
+		// tx.files.dir now holds ANOTHER project's store. Drop the fold before
+		// anything downstream (rewriteWingLabels, below) can read it, or a fold
+		// loaded earlier in this Tx would silently be the wrong project's.
+		tx.chunks = nil
+		tx.syncedFold = nil
 		tx.noteWrite(true)
 		renamed = true
 		if err := adoptStep("renamed"); err != nil {
@@ -162,10 +167,15 @@ func (tx *Tx) AdoptRenamedStore(from string) (renamed bool, err error) {
 // through Tx.Rewrite (whole-file, epoch-changing). Idempotent: once rewritten,
 // no chunk names `from` and the change set is empty.
 func (tx *Tx) rewriteWingLabels(from, to string) error {
-	f, err := tx.readChunkFold()
+	f, err := tx.chunkFold()
 	if err != nil {
 		return err
 	}
+	// changes is built from Chunk VALUES (chunkFold.chunks is map[string]Chunk),
+	// so it holds no pointer into the fold, and f is not touched after Rewrite
+	// returns. That is why sharing one Tx-owned fold with the rewrite below is
+	// safe here: the fold is Tx-owned, so do not retain it across a call that
+	// may mutate it.
 	changes := map[string]Labels{}
 	for id, c := range f.chunks {
 		if c.Wing == from {

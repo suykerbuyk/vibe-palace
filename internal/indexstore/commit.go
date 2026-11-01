@@ -140,8 +140,17 @@ func (tx *Tx) state() (*state, error) {
 
 // fail marks the Tx broken (its cached state is dropped at the end) and
 // returns err.
+//
+// It also drops the cached chunk fold. The case this exists for is a write
+// that LANDS and then returns an error: writeFile has already replaced
+// chunks.jsonl when its error comes back, so writeChunkFold's "publish on
+// success" never runs and the cache would otherwise hold the pre-write fold
+// while the file holds the new bytes. A *Tx stays usable after a failed write,
+// so the next fold-using call must re-read from disk.
 func (tx *Tx) fail(err error) error {
 	if err != nil {
+		tx.chunks = nil
+		tx.syncedFold = nil
 		tx.mu.Lock()
 		tx.broken = true
 		tx.mu.Unlock()
@@ -244,6 +253,26 @@ func (tx *Tx) appendChunks(s *state, owner Owner, recs []OwnedChunk) error {
 	}
 	if err := tx.appendLines(tx.files.chunks, data); err != nil {
 		return err
+	}
+	// Write-through (the cache's whole correctness rests on this): the append
+	// just changed chunks.jsonl on disk, so a fold already loaded in this Tx
+	// must learn about it in the same step, or the next ReplaceOwned decides
+	// append-vs-rewrite from a stale view and either duplicates these lines or
+	// writes a file that drops them. Applied from the lines actually appended,
+	// not from recs, so the fold matches byte for byte what s believed was new.
+	// Only when a fold is loaded: Append's own path never loads one, and
+	// loading here would add a whole-file read per Tx (TestAppendDoesNotRescan).
+	if f := tx.chunks; f != nil {
+		for _, l := range lines {
+			switch l.Kind {
+			case lineChunk:
+				f.addChunk(Chunk{ID: l.ID, Content: l.Content, Wing: l.Wing, Room: l.Room, Hall: l.Hall})
+			case lineOwner:
+				// By VALUE: l.Owner points at a per-iteration loop variable
+				// above, so the fold must never retain that pointer.
+				f.setOwner(l.ID, ownerLine{Owner: *l.Owner, Ownership: l.Ownership})
+			}
+		}
 	}
 	for id := range newIDs {
 		s.ids[id] = struct{}{}
@@ -666,10 +695,11 @@ func (tx *Tx) ReplaceOwned(owner Owner, recs []OwnedChunk) error {
 	if err := tx.ensureChunkFingerprint(); err != nil {
 		return err
 	}
-	f, err := tx.readChunkFold()
+	f, err := tx.chunkFold()
 	if err != nil {
 		return err
 	}
+	ownerKey := owner.key()
 	keep := map[string]bool{}
 	rewrite := false
 	for _, r := range recs {
@@ -679,25 +709,29 @@ func (tx *Tx) ReplaceOwned(owner Owner, recs []OwnedChunk) error {
 			ol.Day = ""
 		}
 		for _, have := range f.owners[r.ID] {
-			if have.Owner.key() == owner.key() && have.Ownership != ol {
+			if have.Owner.key() == ownerKey && have.Ownership != ol {
 				rewrite = true
 			}
 		}
 	}
-	for id, ols := range f.owners {
-		if keep[id] {
-			continue
-		}
-		for _, ol := range ols {
-			if ol.Owner.key() == owner.key() {
-				rewrite = true
-			}
-		}
+	// Does this owner still own anything outside keep? Answered from the fold's
+	// owner index, in O(ids this owner owns), instead of a scan of every chunk
+	// in the store.
+	if !rewrite && f.ownedOutside(owner, keep) {
+		rewrite = true
 	}
 	if !rewrite {
 		// The decision was made from the file; append against the same view,
-		// not against a cached id set that may predate it.
-		s.indexChunks(f)
+		// not against a cached id set that may predate it. The pointer compare
+		// is what keeps that true while costing nothing on the second and later
+		// calls in a Tx: s is re-derived once per fold OBJECT, and every path
+		// that mutates the fold in place (appendChunks, writeChunkFold,
+		// discardChunks) brings s into step in the same step. A new mutating
+		// path must do the same, or this compare will skip a needed resync.
+		if tx.syncedFold != f {
+			s.indexChunks(f)
+			tx.syncedFold = f
+		}
 		return tx.fail(tx.appendChunks(s, owner, recs))
 	}
 	for _, r := range recs {
@@ -746,7 +780,7 @@ func (tx *Tx) Rewrite(changes map[string]Labels) error {
 // rewriteChunks reads chunks.jsonl whole under the lock, applies edit, and
 // replaces the file atomically. It is more than an append: the epoch changes.
 func (tx *Tx) rewriteChunks(s *state, edit func(*chunkFold)) error {
-	f, err := tx.readChunkFold()
+	f, err := tx.chunkFold()
 	if err != nil {
 		return err
 	}
@@ -754,7 +788,34 @@ func (tx *Tx) rewriteChunks(s *state, edit func(*chunkFold)) error {
 	return tx.writeChunkFold(s, f)
 }
 
-// readChunkFold reads chunks.jsonl whole and folds it.
+// chunkFold returns the Tx's fold of chunks.jsonl, reading and folding the
+// file at most once per Tx.
+//
+// The Tx holds the project's index commit lock for its whole life, so no other
+// process can change chunks.jsonl underneath it, and every path in this package
+// that changes the file updates this fold in the same step (appendChunks,
+// writeChunkFold, discardChunks) or drops it (fail, AdoptRenamedStore).
+//
+// The cache is per-Tx, NEVER per-process: a new Tx re-reads by construction,
+// which is what TestReplaceOwnedAppendsAgainstTheFileItRead requires. Do not
+// promote it to a package-level cache.
+//
+// Callers must not retain the returned fold across a call that may mutate it —
+// it is one shared, Tx-owned object, not a snapshot.
+func (tx *Tx) chunkFold() (*chunkFold, error) {
+	if tx.chunks != nil {
+		return tx.chunks, nil
+	}
+	f, err := tx.readChunkFold()
+	if err != nil {
+		return nil, err
+	}
+	tx.chunks = f
+	return f, nil
+}
+
+// readChunkFold reads chunks.jsonl whole and folds it. It is the uncached
+// primitive; everything on a hot path goes through chunkFold.
 func (tx *Tx) readChunkFold() (*chunkFold, error) {
 	lines, _, _, err := readLines(tx.files.chunks)
 	if err != nil {
@@ -776,7 +837,12 @@ func (tx *Tx) writeChunkFold(s *state, f *chunkFold) error {
 	if err := writeFile(tx.files.chunks, data); err != nil {
 		return err
 	}
+	// Publish: the file now IS f. Callers must pass the Tx's own fold (from
+	// chunkFold), never a privately-read one — publishing a private fold would
+	// discard edits the cache is holding.
+	tx.chunks = f
 	s.indexChunks(f)
+	tx.syncedFold = f
 	return nil
 }
 

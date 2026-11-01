@@ -60,7 +60,7 @@ func (tx *Tx) Reap(otherLive func() (map[string]bool, error)) ([]string, error) 
 		}
 		replaced = append(replaced, ArchiveOwner(sha))
 	}
-	f, err := tx.readChunkFold()
+	f, err := tx.chunkFold()
 	if err != nil {
 		return nil, err
 	}

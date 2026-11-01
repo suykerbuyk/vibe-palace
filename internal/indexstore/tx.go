@@ -49,6 +49,19 @@ type Tx struct {
 	st          *state // loaded on the first write or read that needs it
 	broken      bool   // a write failed part-way: the cached state is not trusted
 
+	// chunks is chunks.jsonl folded, read and folded at most ONCE per Tx
+	// (Tx.chunkFold); nil means not loaded yet. syncedFold is the fold object
+	// state.indexChunks was last run over, so ReplaceOwned's append branch can
+	// tell "s is already in step with this fold" from "s may predate it".
+	//
+	// Both are UNGUARDED, like st above: every *Tx method runs on the one
+	// goroutine holding the commit lock. 🔴 Never take tx.mu across a fold load
+	// or across a write — appendLines calls noteWrite, which takes tx.mu, so a
+	// lock held around the fold would deadlock, and holding it across a
+	// whole-file read would be wrong in any case.
+	chunks     *chunkFold
+	syncedFold *chunkFold
+
 	recipe             *index.ChunkRecipe // set by UseRecipe
 	fingerprintChecked bool               // chunks.fingerprint is known to exist
 }

@@ -63,10 +63,58 @@ type chunkFold struct {
 	order  []string
 	chunks map[string]Chunk
 	owners map[string][]ownerLine
+	// byOwner is owner.key() -> the set of ids that owner owns, kept in step
+	// with owners by indexOwner/unindexOwner. It exists so Tx.ReplaceOwned can
+	// answer "does this owner own anything outside keep?" in O(ids this owner
+	// owns) instead of a scan of the whole store. EVERY path that adds or
+	// removes an owner line MUST go through those two helpers: a stale entry
+	// here makes ReplaceOwned see a ghost id outside keep, take the rewrite
+	// branch, and rewrite the whole file on every call.
+	byOwner map[string]map[string]bool
 }
 
 func newChunkFold() *chunkFold {
-	return &chunkFold{chunks: map[string]Chunk{}, owners: map[string][]ownerLine{}}
+	return &chunkFold{
+		chunks:  map[string]Chunk{},
+		owners:  map[string][]ownerLine{},
+		byOwner: map[string]map[string]bool{},
+	}
+}
+
+// indexOwner records that o owns id.
+func (f *chunkFold) indexOwner(id string, o Owner) {
+	k := o.key()
+	set := f.byOwner[k]
+	if set == nil {
+		set = map[string]bool{}
+		f.byOwner[k] = set
+	}
+	set[id] = true
+}
+
+// unindexOwner records that o no longer owns id, dropping the owner's entry
+// once it owns nothing.
+func (f *chunkFold) unindexOwner(id string, o Owner) {
+	k := o.key()
+	set := f.byOwner[k]
+	if set == nil {
+		return
+	}
+	delete(set, id)
+	if len(set) == 0 {
+		delete(f.byOwner, k)
+	}
+}
+
+// ownedOutside reports whether o owns any id that keep does not hold. It is
+// the byOwner-backed replacement for a scan of every chunk in the store.
+func (f *chunkFold) ownedOutside(o Owner, keep map[string]bool) bool {
+	for id := range f.byOwner[o.key()] {
+		if !keep[id] {
+			return true
+		}
+	}
+	return false
 }
 
 func foldChunkLines(lines []chunkLine) *chunkFold {
@@ -83,9 +131,16 @@ func foldChunkLines(lines []chunkLine) *chunkFold {
 		}
 	}
 	// An owner line whose chunk line is missing (a hand edit) has nothing to
-	// own; it is dropped from the fold.
-	for id := range f.owners {
+	// own; it is dropped from the fold. setOwner above already indexed it, so
+	// it must be unindexed here too — this is the ONE reachable path that
+	// removes owner lines without going through dropOwner, and leaving it out
+	// leaves a ghost id in byOwner that makes every later ReplaceOwned for
+	// that owner take the rewrite branch.
+	for id, ols := range f.owners {
 		if _, ok := f.chunks[id]; !ok {
+			for _, ol := range ols {
+				f.unindexOwner(id, ol.Owner)
+			}
 			delete(f.owners, id)
 		}
 	}
@@ -106,6 +161,7 @@ func (f *chunkFold) setOwner(id string, ol ownerLine) (changed, rewrote bool) {
 		}
 	}
 	f.owners[id] = append(f.owners[id], ol)
+	f.indexOwner(id, ol.Owner)
 	return true, false
 }
 
@@ -130,6 +186,7 @@ func (f *chunkFold) dropOwner(o Owner, keep map[string]bool) bool {
 		for _, ol := range ols {
 			if ol.Owner.key() == k {
 				removed = true
+				f.unindexOwner(id, ol.Owner)
 				continue
 			}
 			out = append(out, ol)
@@ -151,6 +208,7 @@ func (f *chunkFold) dropOwnersWhere(drop func(Owner) bool, keep map[string]bool)
 		for _, ol := range ols {
 			if drop(ol.Owner) {
 				removed = true
+				f.unindexOwner(id, ol.Owner)
 				continue
 			}
 			out = append(out, ol)
@@ -165,7 +223,16 @@ func (f *chunkFold) prune() bool {
 	out := f.order[:0]
 	removed := false
 	for _, id := range f.order {
-		if len(f.owners[id]) == 0 {
+		if ols := f.owners[id]; len(ols) == 0 {
+			// Defensive, and today unreachable: the guard above is len == 0, so
+			// there is no owner line left to unindex — dropOwner/dropOwnersWhere
+			// unindexed them before emptying the slice. Kept so that widening
+			// the guard, or adding a path that deletes a non-empty owner slice,
+			// cannot silently leave a ghost in byOwner. The reachable orphan
+			// path is foldChunkLines'.
+			for _, ol := range ols {
+				f.unindexOwner(id, ol.Owner)
+			}
 			delete(f.chunks, id)
 			delete(f.owners, id)
 			removed = true
