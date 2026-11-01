@@ -208,34 +208,83 @@ type file struct {
 	ast    *ast.File
 }
 
-// loadPackages parses every .go file under the given roots.
+// prunedDirs are the directory NAMES no source audit reads, at any depth.
+//
+// third_party is in this list deliberately, and the choice is worth stating
+// because the two walkers this package used to have disagreed about it: the
+// KG walk listed it, loadPackages did not. Including it is the reconciliation
+// that changes no verdict today and is right tomorrow. third_party/coder-hnsw
+// is upstream code plus vp.patch — its provenance is gated by `make
+// hnsw-vendor`, not by these rules — so it falls squarely under the policy
+// already stated here, that vendored trees are not ours to audit. It is also
+// unreachable from loadPackages' production roots (internal/ and cmd/), so
+// adding it cannot remove a finding this repository reports; it only stops a
+// future caller that walks from the module root from auditing upstream code.
+var prunedDirs = map[string]bool{
+	"vendor":      true,
+	"testdata":    true,
+	"third_party": true,
+}
+
+// walkGoFiles walks root and calls visit for every .go file that keep accepts,
+// pruning the directories no source audit should read. It is the ONE place that
+// prune decision lives: this package previously carried two walkers with two
+// hand-lists, they drifted, and a walk from the module root then re-reported
+// every legitimate call site in each ADR-017 worktree under .wt/ as a
+// violation — 30 findings from zero real breaches. A second hand-list is
+// exactly what must not exist, so new prune rules go here and nowhere else.
+//
+// 🔴 NEVER skip the root itself. The root's DirEntry name is whatever the
+// caller passed — ".." for a relative walk, which repoRoots uses — and a naive
+// strings.HasPrefix(name, ".") check on it SKIPS THE ENTIRE TREE and reports
+// zero findings. An audit that silently finds nothing is the exact false-green
+// this package exists to eliminate, so it is worth a comment: this bug was
+// caught by MEASURING the first run instead of trusting it.
+//
+// The dot-prefix rule is what covers the gitignored trees by construction —
+// .git, .claude, .wt (ADR-017 worktrees) and .cache (agent scratch) — rather
+// than a hand-list of two names that the next gitignored directory would
+// escape.
+//
+// keep is the caller's OWN file filter, and the callers deliberately differ:
+// loadPackages takes every .go file INCLUDING _test.go, because several rules
+// (hermeticTestMain and friends) exist to audit test files; the KG walk in
+// kg_records_test.go excludes _test.go. Unifying those silently would change
+// which files each rule sees, so the policy stays at the call site.
+//
+// walkGoFiles has NO vacuity check of its own and must not grow one: it cannot
+// know what "enough files" means for a caller, and loadPackages is routinely
+// pointed at a one-file synthetic fixture tree (writeFixture), which any
+// minimum would reject. A caller that walks a tree whose size it DOES know
+// owns that assertion — moduleSources' `len(out) < 100` is the live one, and
+// it is the tripwire for the root guard above.
+func walkGoFiles(root string, keep func(path string) bool, visit func(path string) error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			if name := d.Name(); prunedDirs[name] || strings.HasPrefix(name, ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || !keep(path) {
+			return nil
+		}
+		return visit(path)
+	})
+}
+
+// loadPackages parses every .go file under the given roots, test files
+// included (see walkGoFiles' keep contract).
 func loadPackages(roots ...string) ([]file, error) {
 	var out []file
 	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				// NEVER skip the root itself. The root's DirEntry name is whatever the
-				// caller passed — ".." for a relative walk — and a naive
-				// strings.HasPrefix(name, ".") check on it SKIPS THE ENTIRE TREE and
-				// reports zero findings. An audit that silently finds nothing is the
-				// exact false-green this package exists to eliminate, so it is worth a
-				// comment: this bug was caught by MEASURING the first run instead of
-				// trusting it.
-				if path == root {
-					return nil
-				}
-				// Vendored/generated trees are not ours to audit.
-				if name := d.Name(); name == "vendor" || name == "testdata" || strings.HasPrefix(name, ".") {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") {
-				return nil
-			}
+		err := walkGoFiles(root, func(string) bool { return true }, func(path string) error {
 			fset := token.NewFileSet()
 			f, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 			if perr != nil {

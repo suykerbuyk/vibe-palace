@@ -7,7 +7,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,8 +22,16 @@ type goSource struct {
 	file *ast.File
 }
 
-// moduleSources parses every non-test .go file of the module, skipping VCS,
-// agent, vendored and testdata trees.
+// moduleSources parses every non-test .go file of the module.
+//
+// The prune is walkGoFiles' — the package's one walk-and-prune helper — not a
+// hand-list here. The hand-list this replaced (".git", ".claude",
+// "third_party", "testdata", "vendor") had drifted from the shared walker's
+// rule and, crucially, named no gitignored tree beyond those two: with ADR-017
+// worktrees at <root>/.wt/ this walk descended into a COMPLETE SECOND COPY of
+// the module and re-reported every legitimate in-package call site as a
+// violation. walkGoFiles' dot-prefix rule covers .wt, .cache and any future
+// gitignored directory by construction, which a third hand-list would not.
 func moduleSources(t *testing.T) []goSource {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -36,20 +43,9 @@ func moduleSources(t *testing.T) []goSource {
 		t.Fatal(err)
 	}
 	var out []goSource
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", ".claude", "third_party", "testdata", "vendor":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
-			return nil
-		}
+	// This walk's own file filter: non-test files only. loadPackages passes the
+	// opposite one; see walkGoFiles.
+	err = walkGoFiles(root, func(p string) bool { return !strings.HasSuffix(p, "_test.go") }, func(p string) error {
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
@@ -65,6 +61,9 @@ func moduleSources(t *testing.T) []goSource {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Kept, and load-bearing: this is the tripwire for walkGoFiles' root guard.
+	// A root the prune wrongly skipped yields an empty walk, and every rule
+	// below would then pass by finding nothing.
 	if len(out) < 100 {
 		t.Fatalf("only %d source files parsed; the walk is probably pointed at the wrong tree", len(out))
 	}
