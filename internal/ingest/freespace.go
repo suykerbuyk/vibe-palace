@@ -18,12 +18,37 @@ import (
 // size another, so the guard is on the thing that actually runs out.
 
 // FreeSpace is the free space on a filesystem: free bytes always, and free
-// inodes where the platform reports them (not on Windows).
+// inodes where the FILESYSTEM reports them. HasInodes is false on Windows,
+// which has no inode count at all, and on a unix filesystem that does no inode
+// accounting. It must be derived from what the filesystem reports, never
+// asserted per platform -- see hasInodeAccounting.
 type FreeSpace struct {
 	Bytes     uint64
 	Inodes    uint64
 	HasInodes bool
 }
+
+// hasInodeAccounting reports whether a filesystem does inode accounting at
+// all, from the TOTAL file nodes it reports (statfs(2) f_files).
+//
+// It is DERIVED, never asserted. A filesystem with dynamic inode allocation --
+// btrfs and ZFS notably -- has no fixed inode table and reports a total of 0,
+// which means "no inode accounting", not "no inodes left". Asserting the
+// capability for every unix filesystem made such a host read as zero free
+// inodes, so the reserve refused every run permanently, with no flag or env
+// escape: `vp index rebuild` was impossible on it by any route, and a search
+// index cannot be copied in from another machine because it is per-host
+// derived data (ADR-014). The OS tooling already draws this distinction --
+// `df -i` prints `-` for the use column on such a filesystem precisely because
+// there is no denominator to divide by.
+//
+// A NON-zero total with zero free is a genuinely exhausted filesystem and must
+// still be refused, which is why this reads the total and never the free count.
+//
+// This is the one place the capability is decided, so a test can drive it
+// directly: reverting it to `true` fails TestHasInodeAccountingTellsAbsentFromZero
+// and the zero-total rows of TestWatchdogInodeCheckFollowsInodeAccounting.
+func hasInodeAccounting(totalFileNodes uint64) bool { return totalFileNodes > 0 }
 
 // FreeSpaceReader reports the free space on the filesystem holding a path.
 // freespace_unix.go and freespace_windows.go provide the platform reader
