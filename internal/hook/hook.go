@@ -16,7 +16,6 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/enrichment"
 	"github.com/suykerbuyk/vibe-palace/internal/memory"
-	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -279,53 +278,27 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 
 	res := &Result{Event: payload.HookEventName}
 
-	// 2. Opt-in gate. Auto-capture only into directories carrying an explicit
-	// .vibe-palace.toml signal (cwd or a parent). Without it the CWD is not a
-	// vp-managed project — e.g. the vault root (itself a git repo) or an
-	// un-init'd code repo — and capturing would scaffold a stray
-	// Projects/<basename>/ tree and write a claim sentinel into a non-project dir.
-	if project.DetectSignal(payload.CWD) != project.SignalVibeConfig {
+	// 2. The capture opt-in gates — marker signal, stale checkout, uninitialised
+	// project — now live in GateCapture (gate.go) because the Codex SessionEnd
+	// hook needs the same three and they depend on nothing Claude-shaped:
+	// (vaultRoot, projectSlug, cwd) is their whole input. The three Warn/Info
+	// messages, their attributes and their ORDER moved verbatim; this is an
+	// extraction, not a rewrite, and hook_removed_slug_test.go,
+	// hook_residue_test.go and hook_uninitialised_gate_test.go pin that by
+	// asserting the message text and the redirect attribute unchanged.
+	//
+	// Each arm still returns (res, nil): a skip is a correct outcome, not a
+	// hook failure, and the Result flag is what reports it.
+	switch GateCapture(storage.HostClaudeCode, opts.VaultRoot, opts.ProjectSlug, payload.CWD, payload.SessionID) {
+	case SkipNoProject:
 		res.SkippedNoProject = true
-		slog.Info("hook: skipping capture — no .vibe-palace.toml project signal", "cwd", payload.CWD)
 		return res, nil
-	}
-
-	// 2b. Stale-checkout gate. The marker-presence gate above does not look at
-	// the NAME, and everything below (archive, harvest with push, capture)
-	// lazily creates Projects/<slug>/. A checkout whose marker still names a
-	// renamed-away project would resurrect it, unattended, at every SessionEnd.
-	// Skip BEFORE any of it: the transcript stays in the host's own store and
-	// the native memory is neither read nor deleted, so nothing is lost. Warn,
-	// not Info — this is a checkout the operator has to fix. The message's text
-	// before its first colon is the category vplog.Summarize counts, and that
-	// count is what vp_bootstrap_context's health alert prints ("hook stale
-	// checkout ×N"), so it names the problem rather than a bare "hook".
-	// The redirect (renamed to X / moved to vault Y, from the departure
-	// record) rides as an attribute, so the category stays stable.
-	if d, departed := project.Departed(opts.VaultRoot, opts.ProjectSlug); departed {
+	case SkipDeparted:
 		res.SkippedRemovedSlug = true
-		slog.Warn("hook stale checkout: skipping capture — the marker names a project that departed the vault; update .vibe-palace.toml",
-			"project", opts.ProjectSlug, "cwd", payload.CWD, "redirect", d.Redirect(), "source", d.Source)
 		return res, nil
-	}
-
-	// 2c. Uninitialised-project gate. Every vault writer refuses a project the
-	// vault has not initialised (projectdir.RefuseUninitialisedAbs): a write
-	// there would create Projects/<slug>/ and its .surface stamp, and the hook
-	// commits neither. Skip the whole run BEFORE archive, harvest and capture
-	// rather than let each fail: the transcript stays in the host's own store
-	// and the native memory is neither read nor deleted, so nothing is lost and
-	// `vp archive create` recovers the transcript once the project exists.
-	// Warn: a checkout the operator has to initialise. The text before the
-	// first colon is the vplog.Summarize category, as for 2b.
-	if opts.VaultRoot != "" {
-		state, err := storage.ClassifyProjectDir(opts.VaultRoot, opts.ProjectSlug)
-		if err != nil || !state.Initialised() {
-			res.SkippedUninitialised = true
-			slog.Warn("hook uninitialised project: skipping capture — the vault has not initialised the marker's project; run `vp init <checkout>`, then recover the transcript with `vp archive create --session-id <id>`",
-				"project", opts.ProjectSlug, "state", state.String(), "err", err, "cwd", payload.CWD, "session_id", payload.SessionID)
-			return res, nil
-		}
+	case SkipUninitialised:
+		res.SkippedUninitialised = true
+		return res, nil
 	}
 
 	// 3. Resolve claim directory.
@@ -402,12 +375,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 			if opts.Launch != nil && archiveResult.Manifest != nil {
 				first := archiveResult.Manifest.SourceSHA256
 				defer func() {
-					args := []string{"drain", "archives", "--vault-root", opts.VaultRoot, "--project", opts.ProjectSlug, "--first", first}
-					logPath := filepath.Join(storage.NewVault(opts.VaultRoot).VaultLocalDir(), "ingester.log")
-					if _, lerr := opts.Launch("", args, logPath); lerr != nil {
-						slog.Warn("hook: could not launch the archive ingester (non-fatal)",
-							"project", opts.ProjectSlug, "error", lerr)
-					}
+					LaunchArchiveIngester(opts.Launch, opts.VaultRoot, opts.ProjectSlug, first)
 				}()
 			}
 		}

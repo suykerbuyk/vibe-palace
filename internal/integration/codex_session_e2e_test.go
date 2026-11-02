@@ -46,6 +46,21 @@ func TestIntegrationCodexSessionEndArchivesExactTranscriptAndLinksReceipt(t *tes
 	if entries[0].Manifest.VaultRelSessionNote != "" {
 		t.Fatalf("stub receipt back-link=%q", entries[0].Manifest.VaultRelSessionNote)
 	}
+	// vp_version and git_head, through the REAL binary. This is the only leg
+	// that carries a real cli.BuildInfo, so it is the only one that proves the
+	// registration in cmd/vp/commands.go actually passes it — a build that adds
+	// the CreateOptions field but forgets the registration argument compiles and
+	// writes "", which is what every Codex manifest before this change held.
+	if entries[0].Manifest.VPVersion == "" {
+		t.Errorf("manifest vp_version is empty: cli.BuildInfo never reached archive.Create")
+	}
+	// git_head is derived from the EVENT's cwd (SourceCWD), not the hook
+	// process's. `vp init --no-git` leaves env.projectDir without a repo, so an
+	// empty value is correct here; a NON-empty one could only have come from the
+	// process cwd, which is the coincidental-correctness this unit removes.
+	if got := entries[0].Manifest.GitHead; got != "" {
+		t.Errorf("manifest git_head = %q, want empty: the event cwd is not a git repo", got)
+	}
 	v := storage.NewVault(env.vaultPath)
 	rows, _, err := v.ListSessions("codexproj", "", "", 0)
 	if err != nil {

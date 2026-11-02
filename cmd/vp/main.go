@@ -114,12 +114,20 @@ func initLogging() {
 // a resolved-but-unreachable root does NOT — CheckCompatible reports it, so a
 // mutating command fail-stops rather than writing into the void.
 func surfaceGate(cmd *cli.Command) int {
-	// The hook is exempt. surfaceGate resolves the CONFIGURED vault
-	// (vaultRoot()), but the hook writes to the vault it resolves from the hook
+	// The hooks are exempt. surfaceGate resolves the CONFIGURED vault
+	// (vaultRoot()), but a hook writes to the vault it resolves from the hook
 	// payload's CWD — usually a different vault — so a warning here would name
-	// the wrong one. The hook runs its own surface.EnforceWarnOnly against the
-	// payload vault (see runHook), after it points logging there.
-	if cmd.Name == "hook" {
+	// the wrong one. Each hook runs its own surface.EnforceWarnOnly against the
+	// payload vault (see runHook and runCodexSessionEnd), after it points
+	// logging there.
+	//
+	// Codex's SessionEnd joined this exemption rather than being wrapped in
+	// mutates(): it is pinned UNWRAPPED by main_test.go's allowedUnwrapped map
+	// and by cmd_codex_hook_test.go, because a fail-stop surface gate does not
+	// fit inside Codex's three-second hook ceiling. Without the exemption it
+	// took the warn-only arm below and warned about the WRONG vault on every
+	// Codex session end.
+	if cmd.Name == "hook" || cmd.Name == "codex hook session-end" {
 		return cli.ExitOK
 	}
 	root, err := vaultRoot()

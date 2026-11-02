@@ -117,7 +117,7 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	reg.Register(cmdCodex())
 	reg.Register(cmdCodexHook())
 	reg.Register(cmdCodexHookSessionStart())
-	reg.Register(cmdCodexHookSessionEnd())
+	reg.Register(cmdCodexHookSessionEnd(info))
 	reg.Register(cmdCheck(info))
 	reg.Register(cmdHook(info))
 	reg.Register(cmdHookInstall())
