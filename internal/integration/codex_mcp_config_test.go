@@ -44,7 +44,15 @@ func TestIntegrationCodexCLIListsEnabledVibePalaceAndTools(t *testing.T) {
 	}
 	install := exec.Command(bin, "mcp", "install", "--codex")
 	install.Dir = project
-	install.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
+	// The binary under test must be the `vp` PATH resolves to, because the
+	// Codex MCP entry and both hooks are written as a bare "vp" and Codex
+	// resolves that name at run time. Without this the install registered
+	// whatever vp happened to be installed on the developer's machine, not the
+	// one just built, so the rest of this test exercised the wrong binary.
+	// CodexHost.Install now pins this and refuses rather than registering a
+	// different program.
+	install.Env = append(os.Environ(), "CODEX_HOME="+codexHome,
+		"PATH="+filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if output, err := install.CombinedOutput(); err != nil {
 		t.Fatalf("vp mcp install --codex: %v\n%s", err, output)
 	}

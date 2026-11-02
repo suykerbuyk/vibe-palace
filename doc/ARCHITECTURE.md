@@ -4329,9 +4329,45 @@ editor so every byte outside the owned `command`, `args`, and `enabled` values
 survives reconciliation. Native skills live in `.agents/skills/` and carry
 `agents/openai.yaml` with `policy.allow_implicit_invocation: false`.
 
-The user `hooks.json` layer installs a trusted SessionStart instruction and a
-3-second SessionEnd handler. SessionEnd archives Codex's supplied transcript
-path through the `codex-raw` adapter and `archive.Create`; a narrow typed capture
+The user `hooks.json` layer installs a SessionStart instruction and a 3-second
+SessionEnd handler. Both are written with a **bare** `vp` command, matching the
+MCP entry: Codex keys hook trust to the command string, so a resolved absolute
+path would silently untrust the hook whenever it moved — a different `PREFIX`,
+a PATH reorder, another machine. Because a bare name is resolved by Codex
+through PATH at run time, `Install` first **pins** that `vp` on PATH is the
+executable performing the install, and refuses outright when it is not, rather
+than configuring Codex to run some other program. Both hooks are written in a
+single atomic update. vp cannot observe whether Codex currently trusts a hook
+and cannot grant trust; an install that rewrote the file says so, and trusting
+the hooks remains the operator's step in Codex.
+
+The pin is an **identity** check, not a product-authenticity check: it asks
+whether the `vp` PATH resolves to is the same image performing the install, and
+rejects any distinct executable — including another genuine but different `vp`.
+A content check (a version string, buildinfo) would accept an older genuine
+`vp`, which is still the wrong program for the hook just written, and is
+forgeable by anything that prints the expected text.
+
+The documented rollout is unaffected: `make install` writes `$(PREFIX)/bin/vp`
+with `PREFIX ?= $(HOME)/.local`, that directory is on PATH, and `vp mcp install
+--codex` then resolves to the same image. These workflows **do** now refuse,
+each correctly, and each with a message naming both paths and the remedy:
+
+| Workflow | Before | After |
+|---|---|---|
+| `make install PREFIX=/opt/vp`, then run `/opt/vp/bin/vp` while PATH finds another `vp` | Succeeded, and pointed Codex at the *other* binary | Refuses |
+| A worktree build (`go build -o ./vp && ./vp mcp install --codex`) while PATH finds the installed `vp` | Succeeded, registering the installed binary rather than the one just built | Refuses |
+| `go run ./cmd/vp mcp install --codex` | Succeeded, registering PATH's `vp` | Refuses |
+| A second checkout's uninstalled binary | Succeeded, registering the other checkout's `vp` | Refuses |
+| A CI or rollout script invoking a staged binary directly | Succeeded, registering PATH's `vp` | Refuses |
+| PATH's first `vp` is a different executable entirely | Succeeded, registering that program as the hook | Refuses |
+
+The remedy in every row is the same: put the intended binary's directory first
+on PATH, or re-run the `vp` that `which vp` already finds. Note that in every
+"before" column the install did not fail — it silently registered a different
+binary than the operator was holding, which is the behaviour the pin ends.
+
+SessionEnd archives Codex's supplied transcript path through the `codex-raw` adapter and `archive.Create`; a narrow typed capture
 writer creates an auto-capture receipt and links it through storage accessors.
 The receipt never causes the manifest to point at its own stub note. A second
 source hash is a best-effort stability check, not a snapshot proof. A missing,

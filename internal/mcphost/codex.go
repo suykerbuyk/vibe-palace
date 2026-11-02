@@ -29,13 +29,19 @@ type CodexHost struct {
 	homeDir       func() (string, error)
 	codexLookPath func() (string, error)
 	vpLookPath    func() (string, error)
-	runner        func(args ...string) ([]byte, error)
+	// selfExe names the executable image running this process. Tests replace
+	// it, and must: under `go test` os.Executable() is the package's .test
+	// binary, so every Install test would otherwise trip pinVPOnPath. Mirrors
+	// internal/surface's replaceable readSelfExe, for the same reason.
+	selfExe func() (string, error)
+	runner  func(args ...string) ([]byte, error)
 }
 
 func NewCodexHost() *CodexHost {
 	h := &CodexHost{configPath: defaultCodexConfigPath(), homeDir: os.UserHomeDir}
 	h.codexLookPath = func() (string, error) { return exec.LookPath(h.Executables()[0]) }
 	h.vpLookPath = func() (string, error) { return exec.LookPath(h.Executables()[1]) }
+	h.selfExe = os.Executable
 	h.runner = func(args ...string) ([]byte, error) {
 		return exec.Command(h.Executables()[0], args...).CombinedOutput()
 	}
@@ -83,6 +89,13 @@ func (h *CodexHost) Installed() (bool, error) {
 func (h *CodexHost) Install(_ string, projectRoot string, out io.Writer) error {
 	if out == nil {
 		out = io.Discard
+	}
+	// Pinned BEFORE anything is read or written: a refusal must not leave
+	// config.toml patched and hooks.json not. It guards the MCP entry too,
+	// which is written as the same bare "vp", so it runs even when
+	// features.hooks=false suppresses the hook half.
+	if err := h.pinVPOnPath(); err != nil {
+		return err
 	}
 	raw, err := codexConfigRead(h.configPath)
 	if err != nil {
@@ -187,31 +200,71 @@ func (h *CodexHost) installCodexHooks(projectRoot string, out io.Writer) {
 	} else if unknown {
 		fmt.Fprintln(out, "Codex hook status unknown at a higher configuration layer; install only the Vibe-Palace user hook.")
 	}
-	if h.vpLookPath == nil {
-		fmt.Fprintln(out, "warning: Codex hooks not installed: vp executable could not be resolved")
-		return
-	}
-	vpPath, err := h.vpLookPath()
+	hooksPath := filepath.Join(filepath.Dir(h.configPath), "hooks.json")
+	changed, err := codexhook.InstallHooks(hooksPath)
 	if err != nil {
-		fmt.Fprintf(out, "warning: Codex hooks not installed: resolve vp executable: %v\n", err)
+		fmt.Fprintf(out, "warning: install Codex hooks: %v\n", err)
 		return
 	}
-	if !filepath.IsAbs(vpPath) {
-		vpPath, err = filepath.Abs(vpPath)
-		if err != nil {
-			fmt.Fprintf(out, "warning: Codex hooks not installed: resolve vp path: %v\n", err)
-			return
-		}
-	}
-	if err := codexhook.InstallSessionStartHook(filepath.Join(filepath.Dir(h.configPath), "hooks.json"), vpPath); err != nil {
-		fmt.Fprintf(out, "warning: install Codex SessionStart hook: %v\n", err)
+	// Silent on a no-op. writeHooks short-circuits on byte equality, so a
+	// repeat install changes nothing and has nothing to re-trust; a banner on
+	// every run is worse than none. One call means one bool, so this is "if
+	// and only if the file changed" with no partial-success path to qualify.
+	if !changed {
 		return
 	}
-	if err := codexhook.InstallSessionEndHook(filepath.Join(filepath.Dir(h.configPath), "hooks.json"), vpPath); err != nil {
-		fmt.Fprintf(out, "warning: install Codex SessionEnd hook: %v\n", err)
-		return
-	}
-	fmt.Fprintln(out, "Codex SessionStart and SessionEnd hooks configured; review/trust them in Codex before relying on bootstrap or archival.")
+	fmt.Fprint(out, codexHookTrustAdvisory(compressHome(hooksPath)))
+}
+
+// codexHookTrustAdvisory renders the notice for an install that rewrote the
+// Codex hooks file.
+//
+// 🔴 STANDING CONTRACT FOR THIS NOTICE. Change the wording only within it:
+//
+//	The notice states only (a) what vp did, and (b) what vp cannot determine.
+//	It never states that anything is unaffected, safe, or will not run.
+//
+// This exists because the notice has overclaimed three times, each time while
+// trying to be helpful about what the operator need NOT worry about, and each
+// time without the knowledge to make the promise. The first draft asserted the
+// hooks had been untrusted; the second asserted they would not run; the third
+// asserted that a formatting-only or foreign-entry rewrite left trust intact.
+// All three were false on a reachable path.
+//
+// What vp genuinely cannot determine, and why:
+//   - The trigger is a BYTE change, which is wider than a trust change: Codex
+//     hashes the parsed hook, so a reformat flips the bytes while trust holds.
+//   - But a byte change is also NARROWER than it looks in the other direction.
+//     Codex's trust record is positional — `<hooks.json>:<event>:<group>:<hook>`
+//     — and codexhook.replaceOwnedRows appends the owned group LAST, so its
+//     index is the count of preserved foreign groups. Adding, removing or
+//     reordering a foreign group moves the owned hook to a different trust key
+//     and the old record stops authorising it. Trust can therefore be lost by
+//     an edit vp did not make, to an entry vp does not own.
+//   - vp cannot read Codex's trust state at all: the hash does not reproduce,
+//     and a stale entry from a previous command string survives a rewrite.
+//
+// So the notice reports the write and the ignorance, and leaves the verdict to
+// Codex. The three fields named are the three measured to be hashed;
+// additionalContextLimit is deliberately absent, because its hashed-ness was
+// never probed.
+//
+// It states what happened first and then the choices, following
+// internal/surface.StaleBinaryAdvisory, because a notice that opens with the
+// problem reads as a refusal.
+func codexHookTrustAdvisory(path string) string {
+	return "⚠ CODEX HOOKS REWRITTEN — REVIEW AND TRUST THEM IN CODEX.\n\n" +
+		"Wrote " + path + ". Codex keys hook trust to the hook's command, timeout and\n" +
+		"matcher, and its trust record is positional, so a hook's place in the file is\n" +
+		"part of its identity too. vp cannot read Codex's trust state, cannot tell you\n" +
+		"whether this rewrite invalidated it, and cannot grant trust for you.\n\n" +
+		"Codex says NOTHING about an untrusted hook: no warning, no \"skipped\" line. The\n" +
+		"only symptom is that bootstrap and session capture quietly stop, and trust is\n" +
+		"per-hook, so capture can go silent while bootstrap still works.\n\n" +
+		"    To arm them:  open Codex and accept the hook review prompt for the\n" +
+		"                  Vibe-Palace SessionStart and SessionEnd hooks, if it appears.\n" +
+		"    To verify:    a trusted run prints `hook: SessionStart` lines.\n\n" +
+		"This is printed only when an install actually rewrote the file.\n"
 }
 
 func (h *CodexHost) removeHostArtifacts(out io.Writer) error {
@@ -258,6 +311,82 @@ func (h *CodexHost) userHome() (string, error) {
 		return "", fmt.Errorf("home directory lookup is unavailable")
 	}
 	return h.homeDir()
+}
+
+// pinRemedy closes every pin refusal. A refusal that names the mismatch
+// without naming the way out is an incomplete diagnostic.
+const pinRemedy = "Codex runs the hook and the MCP server as a bare \"vp\", resolved through PATH,\n" +
+	"so writing this now would configure Codex to run a different program.\n" +
+	"Put the intended binary's directory first on PATH, or re-run the vp that\n" +
+	"`which vp` already finds."
+
+// pinVPOnPath refuses the install unless the "vp" PATH resolves to is the
+// executable running it.
+//
+// Both the Codex hook command and the Codex MCP server entry are written as a
+// bare "vp", so Codex resolves that name through PATH at run time. This pins,
+// at install time, that the name means what the operator thinks it means. A
+// shadowing binary earlier on PATH — measured as a plain shell script named
+// "vp" — otherwise gets configured as the hook, and Codex reports nothing at
+// all when a hook is untrusted or wrong, so the failure is invisible.
+//
+// 🔴 This is an IDENTITY check, not a product-authenticity check. It rejects
+// any distinct executable image, including another genuine but different vp:
+// an older install, a second checkout's build. Deliberate. A content check (a
+// version string, buildinfo) would accept an older genuine vp, which is still
+// the wrong program for the hook just written, and is forgeable by anything
+// that prints the expected text. Identity needs no parser.
+//
+// It refuses rather than warning because an install has no work to lose. That
+// is the opposite ruling to internal/surface.SelfImageReplaced, which must
+// never gate a vault write, and the reason the doctrine does not transfer is
+// stated there: refusing a write would lose work to protect a schema.
+//
+// Sibling: internal/check.installedVP asks a related question for the
+// stale-MCP report. It cannot be reused — internal/check imports this package,
+// so importing it back would be an import cycle.
+func (h *CodexHost) pinVPOnPath() error {
+	if h.vpLookPath == nil {
+		return fmt.Errorf("refusing to install: no way to resolve %q on PATH\n%s", vpBinary, pinRemedy)
+	}
+	onPath, err := h.vpLookPath()
+	if err != nil {
+		return fmt.Errorf("refusing to install: no %q found on PATH: %w\n%s", vpBinary, err, pinRemedy)
+	}
+	if h.selfExe == nil {
+		return fmt.Errorf("refusing to install: no way to identify the running %q image\n%s", vpBinary, pinRemedy)
+	}
+	self, err := h.selfExe()
+	if err != nil {
+		return fmt.Errorf("refusing to install: cannot identify the running %q image: %w\n%s", vpBinary, err, pinRemedy)
+	}
+	if sameExecutable(onPath, self) {
+		return nil
+	}
+	return fmt.Errorf("refusing to install: the %q on PATH is not this binary\n  PATH %q resolves to: %s\n  this binary is:      %s\n%s",
+		vpBinary, vpBinary, onPath, self, pinRemedy)
+}
+
+// sameExecutable reports whether a and b name the same executable image.
+//
+// Clean/Abs equality is tried FIRST, and symlinks resolved only if that
+// disagrees. The order is load-bearing, not an optimisation: ownsCommand below
+// resolves symlinks ONLY and reports false when either side cannot be resolved,
+// which would refuse every hermetic test comparing synthetic paths such as
+// /usr/bin/vp that do not exist on the machine running the test. This is the
+// shape internal/atomicfile already uses for the same question.
+func sameExecutable(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if filepath.Clean(absA) == filepath.Clean(absB) {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(absA)
+	resolvedB, errB := filepath.EvalSymlinks(absB)
+	return errA == nil && errB == nil && resolvedA == resolvedB
 }
 
 func (h *CodexHost) ownsCommand(command string) bool {
