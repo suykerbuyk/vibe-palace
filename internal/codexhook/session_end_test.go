@@ -129,6 +129,11 @@ func TestSessionEndSmallTranscriptArchivesAndLinksReceiptWithinThreeSeconds(t *t
 	if got := entries[0].Manifest.VPVersion; got != "0.0.0-codexhook-test" {
 		t.Errorf("manifest vp_version = %q, want the injected value", got)
 	}
+	// THE NO-MCP-NOTE CASE. Nothing wrote a canonical note for this session, so
+	// the only note carrying the id is the receipt itself — a TagAutoCapture
+	// stub — and the manifest must stay empty rather than point back at it.
+	// The paired case, where an MCP note DOES exist and the manifest must name
+	// it, is TestSessionEndBackLinksAPreWrittenMCPNote.
 	if entries[0].Manifest.VaultRelSessionNote != "" {
 		t.Fatalf("stub receipt back-linked itself: %q", entries[0].Manifest.VaultRelSessionNote)
 	}

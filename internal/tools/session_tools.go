@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
+	"github.com/suykerbuyk/vibe-palace/internal/codexhook"
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/hook"
 	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
@@ -36,6 +37,37 @@ var hostSessionID = func() string {
 		return ""
 	}
 	return hostsession.ClaudeSessionID(os.Getppid(), home, hostsession.ReadProcStart)
+}
+
+// codexMarkerDir names the directory whose Codex session marker this server may
+// read: its OWN working directory.
+//
+// 🔴 It is the CWD SOURCE that is replaceable, never the reader. Stubbing the
+// reader would prove the assignment below and nothing else — not the glob, not
+// the single-marker rule, not that the hook and the handler agree on the path.
+// Pointing this at a temp directory keeps all of that under test.
+//
+// The server's own cwd is the right key because a Codex vp mcp child is
+// launched in its SESSION's working directory (measured: two concurrent
+// servers, two different cwds, one shared app-server ppid), and because it is
+// not agent-reachable. The capture tool's `cwd` argument is caller-supplied and
+// optional, so deriving from it would hand an agent the path to the id — the
+// very thing the DERIVE-ONLY rule below exists to prevent.
+//
+// This is the same value cmd/vp's bootstrap captures and hands to
+// Registry.WatchVaultBinding; read directly so the capture handler needs no
+// registry dependency.
+var codexMarkerDir = func() (string, error) { return os.Getwd() }
+
+// codexSessionID resolves the live Codex session id and model for dir, or
+// "", "" when it cannot be CONFIRMED.
+//
+// Deliberately a plain func, not a var: see codexMarkerDir. The resolution
+// itself — glob, parse, TTL, filename/body agreement and the
+// exactly-one-candidate rule — lives with the writer in internal/codexhook so
+// there is ONE definition of the marker's shape and filename convention.
+func codexSessionID(dir string) (sessionID, model string) {
+	return codexhook.ReadSessionMarker(dir)
 }
 
 // clientInfoHost resolves the host name the MCP initialize handshake recorded
@@ -500,11 +532,42 @@ func captureSessionHandler(vault *storage.Vault, launch detachlaunch.LaunchFunc)
 		// note stays honestly unlinked. Deriving here (not trusting the caller)
 		// is what lets the SessionEnd hook find the agent's wrap note and link
 		// it to the transcript once the archive exists.
-		if sp.Host != storage.HostCodex {
-			if id := hostSessionID(); id != "" {
-				sp.ArchiveSessionID = id
-				sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
+		//
+		// Codex has no live session map to read: vp mcp is a child of the
+		// SHARED app-server daemon, so the parent pid names the daemon rather
+		// than a session and collides across concurrent sessions; the process
+		// environment carries no session id; and vp's MCP library parses none
+		// from the initialize handshake. Its id arrives instead through the
+		// marker the SessionStart hook wrote into the checkout — still derived
+		// by the server from an authoritative host payload, still never taken
+		// from the caller.
+		if sp.Host == storage.HostCodex {
+			if dir, err := codexMarkerDir(); err == nil {
+				// 🔴 The caller's cwd NEVER widens the glob. It is accepted
+				// only when it names the directory this server is already
+				// going to read, which makes it informational. filepath.Clean
+				// resolves neither symlinks nor relative paths, so both forms
+				// fail the comparison and are ignored — the fail-closed
+				// direction. Do not "fix" that with EvalSymlinks: it would let
+				// an agent point the lookup at another checkout's marker.
+				if p.CWD != "" && filepath.Clean(p.CWD) != filepath.Clean(dir) {
+					slog.Debug("vp_capture_session: ignoring a cwd argument that is not this server's working directory",
+						"arg_cwd", p.CWD, "server_cwd", dir)
+				}
+				if id, model := codexSessionID(dir); id != "" {
+					sp.ArchiveSessionID = id
+					sp.ArchiveSessionIDSource = storage.ArchiveIDSourceCodexSessionStart
+					// The marker's model is a fallback, never an override: the
+					// caller knows which model is answering now, while a marker
+					// records what SessionStart saw.
+					if sp.Model == "" {
+						sp.Model = model
+					}
+				}
 			}
+		} else if id := hostSessionID(); id != "" {
+			sp.ArchiveSessionID = id
+			sp.ArchiveSessionIDSource = storage.ArchiveIDSourceDerived
 		}
 
 		// INLINE TRANSCRIPT ARCHIVE — transcript-archive parity for hook-less

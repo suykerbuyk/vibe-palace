@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -16,9 +17,15 @@ import (
 
 const AdditionalContextLimit = 1200
 
+// SessionStartEvent is the subset of Codex's session-start.command.input this
+// hook reads. Codex's own schema makes session_id, model and cwd REQUIRED, and
+// SessionStart is the ONLY Codex hook that carries model — session-end's schema
+// has no such field — which is why the model is recorded here rather than later.
 type SessionStartEvent struct {
 	CWD           string `json:"cwd"`
 	HookEventName string `json:"hook_event_name"`
+	SessionID     string `json:"session_id"`
+	Model         string `json:"model"`
 }
 
 type Output struct {
@@ -79,6 +86,22 @@ func HandleSessionStart(in io.Reader, out io.Writer) error {
 			err = encodeErr
 		}
 		return err
+	}
+	// 🔴 Gated on err == nil AND found, which is what reaching this line means.
+	// `found` ALONE would not do: SessionStartContext returns found == false in
+	// exactly one place — no .vibe-palace.toml signal — while an empty cwd, an
+	// unreadable marker, a missing [project].name, an invalid name and an
+	// over-limit instruction all return found == TRUE with an error. A write
+	// gated on found alone would therefore also fire for a checkout whose
+	// marker cannot be used.
+	//
+	// A write failure is logged and otherwise ignored: this hook's contract is
+	// to emit the bootstrap instruction, and a failed marker must never cost
+	// the injection. The consequence of losing it is an unjoined note, which is
+	// the behaviour that predates this unit.
+	if err := WriteSessionMarker(event.CWD, event.SessionID, event.Model); err != nil {
+		slog.Warn("codex hook: could not record the session marker; this session's note will be unjoined",
+			"cwd", event.CWD, "session_id", event.SessionID, "err", err)
 	}
 	response := Output{HookSpecificOutput: &HookSpecificOutput{
 		HookEventName:     "SessionStart",

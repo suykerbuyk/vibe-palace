@@ -596,6 +596,17 @@ const (
 	// ArchiveIDSourceCodexSessionEnd identifies the id supplied by Codex's
 	// SessionEnd lifecycle event.
 	ArchiveIDSourceCodexSessionEnd = "codex-session-end"
+
+	// ArchiveIDSourceCodexSessionStart marks an ArchiveSessionID the MCP server
+	// read from the marker Codex's SessionStart hook wrote into the checkout.
+	//
+	// Distinct from "derived" on purpose: that value means specifically "read
+	// from the host's live session map via the server's parent pid", a route
+	// that does not exist under Codex — vp mcp is a child of the SHARED
+	// app-server daemon, so the pid names the daemon and collides across
+	// concurrent sessions. Two provenances that were obtained differently must
+	// not share one token, or an audit cannot tell them apart.
+	ArchiveIDSourceCodexSessionStart = "codex-session-start"
 )
 
 // Values of SessionMeta.HostSource, plus the explicit unknown-host value.

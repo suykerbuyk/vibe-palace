@@ -85,6 +85,33 @@ func HandleSessionEnd(in io.Reader, out io.Writer, opts Options) error {
 	if event.CWD == "" {
 		return fmt.Errorf("Codex SessionEnd event has no cwd")
 	}
+	// The session marker dies with the session, on EVERY path from here down.
+	// This defer covers the three arms ProcessSessionEnd never reaches — no
+	// project signal, an unusable project marker, and a REFUSED vault binding —
+	// while ProcessSessionEnd carries its own defer for the arms it owns. Both
+	// firing on a normal run is harmless and intended: RemoveSessionMarker is
+	// idempotent.
+	//
+	// 🔴 The refused-binding arm removes too, deliberately. The SessionEnd event
+	// is Codex stating this session ended; vp already treats that statement as
+	// terminal, because the same event drives the archive and the receipt. If
+	// the binding was refused there is no archive to join to, and a session that
+	// has ended will not capture again — so keeping the marker buys nothing and
+	// costs the NEXT session in this checkout a full TTL of ambiguity.
+	//
+	// It is placed before DetectSignal, not after, because a marker written at
+	// SessionStart outlives a project marker that is removed or invalidated
+	// mid-session, and that marker must still be cleaned up.
+	//
+	// Nothing foreign can be deleted: the event name is validated above, the cwd
+	// is non-empty here, and the filename is fully determined by this event's
+	// own session id.
+	defer func() {
+		if err := RemoveSessionMarker(event.CWD, event.SessionID); err != nil {
+			slog.Warn("codex hook: could not remove the session marker",
+				"cwd", event.CWD, "session_id", event.SessionID, "err", err)
+		}
+	}()
 	if project.DetectSignal(event.CWD) != project.SignalVibeConfig {
 		return fmt.Errorf("Codex SessionEnd cwd has no Vibe-Palace project marker")
 	}
@@ -143,6 +170,21 @@ func ProcessSessionEnd(parent context.Context, event SessionEndEvent, vault *sto
 	if parent == nil {
 		parent = context.Background()
 	}
+	// The session marker dies with the session, on every return path below: the
+	// transcript arms, the three GateCapture skips, archive failure, an expired
+	// receipt budget, receipt failure, and success.
+	//
+	// 🔴 It lives HERE rather than only in HandleSessionEnd because this is the
+	// function the tests call — every existing SessionEnd test drives
+	// ProcessSessionEnd directly, so a defer reachable only through
+	// HandleSessionEnd would be a cleanup no assertion could exercise and no
+	// mutation could turn red.
+	defer func() {
+		if err := RemoveSessionMarker(event.CWD, event.SessionID); err != nil {
+			slog.Warn("codex hook: could not remove the session marker",
+				"cwd", event.CWD, "session_id", event.SessionID, "err", err)
+		}
+	}()
 	if event.SessionID == "" || event.TranscriptPath == "" || vault == nil || projectSlug == "" {
 		return fmt.Errorf("SessionEnd requires session_id, transcript_path, project marker, and vault")
 	}

@@ -43,6 +43,11 @@ func TestIntegrationCodexSessionEndArchivesExactTranscriptAndLinksReceipt(t *tes
 	if entries[0].Manifest.SourceSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("source_sha256=%s want %x", entries[0].Manifest.SourceSHA256, sum)
 	}
+	// THE NO-MCP-NOTE CASE. No canonical note carries this session id, so the
+	// receipt is the only candidate and the manifest must stay empty rather
+	// than point back at a stub. Paired with
+	// TestIntegrationCodexSessionEndBackLinksAPreWrittenMCPNote, which runs the
+	// same binary against a vault that DOES hold one.
 	if entries[0].Manifest.VaultRelSessionNote != "" {
 		t.Fatalf("stub receipt back-link=%q", entries[0].Manifest.VaultRelSessionNote)
 	}
@@ -118,5 +123,50 @@ func TestIntegrationCodexUnavailableTranscriptReportsFailureAndWritesNoReceipt(t
 	}
 	if len(entries) != 0 {
 		t.Fatalf("missing source left archive: %+v", entries)
+	}
+}
+
+// The paired case for the no-MCP-note assertion in
+// TestIntegrationCodexSessionEndArchivesExactTranscriptAndLinksReceipt: with a
+// canonical note already carrying this session's id, the REAL binary must
+// close the loop and write the manifest's reverse link.
+//
+// Through testinfra.RunCLI rather than the library, because the whole point of
+// this leg is that the compiled `vp codex hook session-end` does it — the
+// install half of this task's parent shipped a defect whose unit tests all
+// passed while the live path was broken.
+func TestIntegrationCodexSessionEndBackLinksAPreWrittenMCPNote(t *testing.T) {
+	env := setupFreshEnv(t)
+	bin := buildVPBinary(t)
+	runVP(t, bin, env, nil, "init", env.projectDir, "--name", "codexproj", "--vault-path", env.vaultPath, "--no-git")
+
+	v := storage.NewVault(env.vaultPath)
+	canonical, err := v.WriteSessionRef("codexproj", storage.SessionMeta{
+		Date: "2026-11-02", ArchiveSessionID: "thr_joined",
+		Host: storage.HostCodex, HostSource: storage.HostSourceDeclared,
+		Tag: "implementation", Summary: "an MCP note that knows its host session",
+	}, "mcp note body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := filepath.Join(t.TempDir(), "rollout.jsonl")
+	if err := os.WriteFile(source, []byte("{\"codex_record\":\"joined\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	event, _ := json.Marshal(map[string]string{"session_id": "thr_joined", "cwd": env.projectDir, "transcript_path": source, "hook_event_name": "SessionEnd"})
+	run := testinfra.RunCLI(t, env.iso.Environ(), env.projectDir, event, "codex", "hook", "session-end")
+	if run.ExitCode != 0 || !strings.Contains(run.Stdout, "archived:") {
+		t.Fatalf("SessionEnd exit=%d stdout=%s stderr=%s", run.ExitCode, run.Stdout, run.Stderr)
+	}
+	entries, err := archive.ListEntries(env.vaultPath, "codexproj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("archive entries=%d", len(entries))
+	}
+	if got := entries[0].Manifest.VaultRelSessionNote; got != canonical.NotePath {
+		t.Fatalf("manifest back-link=%q, want the canonical note %q", got, canonical.NotePath)
 	}
 }
