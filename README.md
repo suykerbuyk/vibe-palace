@@ -56,7 +56,7 @@ and vibe-palace enforces that mechanically rather than by convention:
 
 - **AI artifacts are host-local and gitignored by the tool itself.**
   `vp` maintains a canonical ignore set (`/CLAUDE.md`, `/AGENTS.md`,
-  `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`) and reconciles
+  `/commit.msg`, `/.claude/`, `/.grok/`, `/.agents/`, `/.vibe-palace/`) and reconciles
   it into the project's `.gitignore` — these files are written into the
   working tree for the host to find, and must never be committed. Two
   exceptions are outside that set. Cursor skill rules

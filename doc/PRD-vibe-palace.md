@@ -116,10 +116,12 @@ It MAY be committed to the project repository; a committed copy never carries
 lives in on a given host is that host's own `[project_vaults]` binding in its
 global config (ADR-012).
 `vp init` also touches the working tree in other ways: it adds ignore lines to
-`.gitignore` (`/AGENTS.md`, `/CLAUDE.md`, `/.claude/`, `/.grok/`, `/.vibe-palace/`,
-`/commit.msg`), writes the untracked host artifacts those lines cover (the
-`AGENTS.md` block and, unless the user-global plugin already serves them, the
-`.claude/` / `.grok/` command and skill shims), and installs
+`.gitignore` (`/AGENTS.md`, `/CLAUDE.md`, `/.claude/`, `/.grok/`, `/.agents/`,
+`/.vibe-palace/`, `/commit.msg`), writes the untracked host artifacts those lines
+cover (the `AGENTS.md` block and, unless the user-global plugin already serves
+them, the `.claude/` / `.grok/` command and skill shims — the Codex `.agents/`
+shims are emitted by `vp commands upgrade`, not by init, though init's ignore
+line covers them when they arrive), and installs
 `.git/hooks/post-commit`. None of them is the project's identity.
 Everything else — workflow rules, behavioral calibration, commands, skills,
 templates — is delivered through the MCP interface on demand.

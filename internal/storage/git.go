@@ -95,11 +95,25 @@ func VaultGitignorePatterns(vaultRoot string) ([]string, error) {
 
 // CanonicalProjectGitignorePatterns is the set of .gitignore lines that
 // vibe-palace owns in a *consuming project's* repository root. These are
-// the host-local AI artifacts vp writes into the project tree (CLAUDE.md,
-// AGENTS.md, commit.msg, .claude/, .grok/, .vibe-palace/) and must never
-// be committed. The reconciler treats every entry as an exact-line presence
-// requirement: missing lines are appended at EOF in declaration order;
-// already-present lines are left alone (including their position).
+// the host-local AI artifacts vp writes into the project tree — the literal
+// below is the specification; read it, do not trust a prose census of it.
+// The three skill-shim directories are the three host skill-shim roots:
+// /.claude/ (Claude), /.grok/ (Grok) and /.agents/ (Codex Agent Skills,
+// shims.CodexSkillsDir). They share shims.PlanSkills but NOT their callers —
+// Claude and Grok are also emitted by shims.Reconcile during `vp init`, while
+// the Codex root is written only by `vp commands upgrade`
+// (cmd/vp/cmd_commands.go, planCodexSkillShims). All three are host-local and
+// must never be committed. The reconciler treats every entry as an
+// exact-line presence requirement: missing lines are appended at EOF in
+// declaration order; already-present lines are left alone (including their
+// position).
+//
+// EVERY ENTRY IS ROOT-ANCHORED, and a new one must be. A pattern whose only
+// slash is a trailing one matches at ANY depth, so it would also hide a
+// same-named path vp never wrote further down the tree — the harm shape of
+// the reverted a0477e4 commit.msg rule recorded above. vp writes these
+// artifacts at the root of the projectRoot it is given and nowhere below it,
+// so the anchored spelling is exactly coextensive with what vp owns.
 //
 // This set is deliberately narrow: it covers ONLY vp-owned artifacts.
 // Build, coverage, or binary entries (/vp, /build/, /coverage.*) are the
@@ -110,6 +124,7 @@ var CanonicalProjectGitignorePatterns = []string{
 	"/commit.msg",
 	"/.claude/",
 	"/.grok/",
+	"/.agents/",
 	"/.vibe-palace/",
 }
 

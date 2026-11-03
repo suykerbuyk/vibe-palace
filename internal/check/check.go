@@ -535,9 +535,16 @@ func gitTracksFile(path string) (bool, error) {
 }
 
 // CheckProjectGitignore reports whether the project repo-root .gitignore
-// is missing any of the canonical vp-owned host-local artifact patterns
-// (CLAUDE.md, commit.msg, .claude/, .grok/, .vibe-palace/). This is an
-// advisory check (Status: Info) — never Fail — pointing the user at
+// is missing any of the canonical vp-owned host-local artifact patterns —
+// storage.CanonicalProjectGitignorePatterns is the specification, and this
+// comment deliberately does not restate it: the omission this check was blind
+// to (the Codex /.agents/ shim dir) was first mis-read from a prose census
+// just like this one. The set is both the thing reconciled and the oracle
+// this check reports from, so a missing member is invisible here until it is
+// added there; TestCheckProjectGitignore_MissingAgents pins one member
+// against exactly that.
+//
+// This is an advisory check (Status: Info) — never Fail — pointing the user at
 // `vp commands upgrade --overwrite` (or `vp init`) to self-heal. A clean file
 // is Pass. The remedy names --overwrite because a non-TTY run without it
 // reconciles nothing, and it is safe to name: since

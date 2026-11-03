@@ -807,6 +807,48 @@ func TestCheckProjectGitignore_Partial(t *testing.T) {
 	}
 }
 
+// TestCheckProjectGitignore_MissingAgents is the oracle for the Codex shim
+// dir. storage.CanonicalProjectGitignorePatterns is BOTH the set the
+// reconciler writes and the set this check reports from, so an omitted member
+// is structurally invisible: the /.agents/ gap survived its whole life because
+// no test named a single entry. The three tests above do assert more than the
+// status — non-empty Details, the --overwrite remedy, a summary containing
+// "missing" — but NONE of them pins a specific canonical entry, and that is
+// the invariant that matters: a test that never names a member cannot see a
+// member go missing. All three stay green with "/.agents/" deleted from the
+// canonical set (verified, not assumed). This one does not.
+//
+// SHOWN CAPABLE OF FAILING. Delete the single line `"/.agents/",` from
+// CanonicalProjectGitignorePatterns (it still compiles — no identifier
+// changes) and the seed below becomes the COMPLETE canonical set, so nothing
+// is missing, the row is Pass, and the t.Fatalf fires:
+//
+//	status = 0, want Info; summary="host-local vp artifacts ignored"
+//
+// The seed is derived from the live set so the mutation flips Info→Pass; the
+// ASSERTION is the hardcoded "/.agents/" literal, which is what makes this an
+// oracle rather than a tautology.
+func TestCheckProjectGitignore_MissingAgents(t *testing.T) {
+	dir := t.TempDir()
+	var seed []string
+	for _, p := range storage.CanonicalProjectGitignorePatterns {
+		if p != "/.agents/" {
+			seed = append(seed, p)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"),
+		[]byte(strings.Join(seed, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckProjectGitignore(dir)
+	if r.Status != Info {
+		t.Fatalf("status = %v, want Info; summary=%q", r.Status, r.Summary)
+	}
+	if !strings.Contains(strings.Join(r.Details, "\n"), "/.agents/") {
+		t.Errorf("details must name /.agents/, got %v", r.Details)
+	}
+}
+
 func TestCheckStrayScaffolds(t *testing.T) {
 	vaultDir := t.TempDir() // under os.TempDir(): the write-guard stays inert
 	v := storage.NewVault(vaultDir)

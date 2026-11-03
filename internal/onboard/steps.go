@@ -597,8 +597,11 @@ func stepHookWiring(_ context.Context, _ Request) []Outcome {
 }
 
 // stepProjectGitignore reconciles the project repo-root .gitignore so the
-// host-local AI artifacts vp writes into the project tree (CLAUDE.md,
-// commit.msg, .claude/, .grok/, .vibe-palace/) are never committed. It is
+// host-local AI artifacts vp writes into the project tree are never committed.
+// storage.CanonicalProjectGitignorePatterns is the set; this comment does not
+// restate it, because the prose census that used to stand here drifted from
+// the literal in two directions at once (it dropped /AGENTS.md, and it never
+// listed the Codex /.agents/ shim dir at all). It is
 // append-only and idempotent. Failures are non-fatal — they surface as an Info
 // row and are logged, mirroring how the vault .gitignore reconcile is treated,
 // so a gitignore hiccup never aborts onboarding.

@@ -341,8 +341,14 @@ vp init
   other files `vp init` writes into the project are host-local: `AGENTS.md`
   (created if missing), `CLAUDE.md` if present, the `.claude/` / `.grok/`
   shims, and `.vibe-palace/`. Init appends `/CLAUDE.md`, `/AGENTS.md`,
-  `/commit.msg`, `/.claude/`, `/.grok/` and `/.vibe-palace/` to the project
-  `.gitignore`, and installs a git `post-commit` hook (it deletes a consumed
+  `/commit.msg`, `/.claude/`, `/.grok/`, `/.agents/` and `/.vibe-palace/` to the
+  project `.gitignore` — the `/.agents/` line is the Codex skill-shim dir, which
+  `vp commands upgrade` writes rather than init. If you ran `vp init` first the
+  line is already there when the directory later appears; if `vp commands
+  upgrade` is your first vp command, that same run writes the shims and then
+  reconciles the `.gitignore`, so the line lands in the same run as the
+  directory rather than ahead of it (`vp check` reports a canonical entry that
+  is still missing) — and installs a git `post-commit` hook (it deletes a consumed
   `commit.msg`) when the directory is a git repository. Two exceptions are
   outside that ignore set: Cursor skill rules `.cursor/rules/vps-*.mdc`
   (written when `.cursor/` exists) are not ignored, and a pre-existing
@@ -2058,9 +2064,17 @@ The shims are regeneratable on any fresh clone, so they are treated as
 host-local by default: `vp init` (and `vp commands upgrade`) reconcile
 the project repo-root `.gitignore` to ignore `/.claude/` along with the
 other vp-written artifacts (`/CLAUDE.md`, `/AGENTS.md`, `/commit.msg`,
-`/.grok/`, `/.vibe-palace/`). The reconcile is append-only and idempotent — it
-never rewrites or reorders your existing `.gitignore` lines — and
-`vp check` flags an advisory when a canonical entry is missing.
+`/.grok/`, `/.agents/`, `/.vibe-palace/`). The reconcile is append-only and
+idempotent — it never rewrites or reorders your existing `.gitignore` lines —
+and `vp check` flags an advisory when a canonical entry is missing.
+
+One wrinkle worth knowing before you script it: `vp commands upgrade`
+reconciles the `.gitignore` only on a run that reaches the apply step. A
+non-interactive run without `--overwrite` and with no shim or agent-block
+work pending prints `Nothing to do` and returns before it, so an
+already-upgraded project in CI picks up a NEW canonical entry only under
+`vp commands upgrade --overwrite` (or an interactive run, or `vp init`).
+That is why `vp check`'s advisory names `--overwrite`.
 
 Teams that instead want everyone to see the same `/vpc-` menu checked
 in can commit the shim bodies (they are deterministic, so diffs are

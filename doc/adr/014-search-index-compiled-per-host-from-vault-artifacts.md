@@ -1105,7 +1105,7 @@ vault runs v9.2.0 or later before the migration, and none goes back.
     - Today the reconciler appends every canonical line a vault lacks, on two paths, and an
       ordinary `vp config sync` reaches both:
       - **create**, when `.gitignore` is absent: `ReconcileVaultGitignore`
-        (`internal/storage/git.go:102`, `:118`), applied at `internal/reconcile/vault.go:286-288`;
+        (`internal/storage/git.go:133`, `:156`), applied at `internal/reconcile/vault.go:286-288`;
       - **top-up**, on an existing vault: `planVaultGitignore` → `MissingVaultGitignorePatterns`
         (`internal/reconcile/vault.go:230-240`; `internal/storage/git.go:175`) →
         `TopUpVaultGitignore` (`internal/reconcile/vault.go:313-340`;

@@ -5,6 +5,7 @@
 /.claude/
 /.wt/
 /.grok/
+/.agents/
 /coverage.out
 /coverage.html
 /vp

@@ -541,15 +541,24 @@ func TestReconcileProjectGitignore_AtomicWrite(t *testing.T) {
 	}
 }
 
-// TestCanonicalProjectGitignoreIncludesAgents guards that the vp-managed
-// project artifact set covers both host-local bootstrap shims (CLAUDE.md and
-// AGENTS.md), so neither is ever committed into a consuming project.
-func TestCanonicalProjectGitignoreIncludesAgents(t *testing.T) {
+// TestCanonicalProjectGitignoreCoversVPArtifacts guards that the vp-managed
+// project artifact set covers every host-local artifact vp writes into a
+// consuming project: both bootstrap shims (CLAUDE.md and AGENTS.md), the
+// commit.msg scratch file, the state dir, and all THREE skill-shim dirs —
+// /.claude/ (Claude), /.grok/ (Grok) and /.agents/ (Codex). The Codex one was
+// missing for its whole life because this list is both the specification and
+// the oracle CheckProjectGitignore reports from, so nothing could see the gap.
+// The want slice below is hardcoded on purpose: derived from the live set it
+// would be a tautology.
+//
+// (Renamed from TestCanonicalProjectGitignoreIncludesAgents — that name read
+// as "the .agents/ dir" while the test was about AGENTS.md.)
+func TestCanonicalProjectGitignoreCoversVPArtifacts(t *testing.T) {
 	set := make(map[string]bool, len(CanonicalProjectGitignorePatterns))
 	for _, p := range CanonicalProjectGitignorePatterns {
 		set[p] = true
 	}
-	for _, want := range []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.claude/", "/.grok/", "/.vibe-palace/"} {
+	for _, want := range []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.claude/", "/.grok/", "/.agents/", "/.vibe-palace/"} {
 		if !set[want] {
 			t.Errorf("CanonicalProjectGitignorePatterns missing %q: %v", want, CanonicalProjectGitignorePatterns)
 		}
@@ -594,7 +603,7 @@ func TestMissingProjectGitignorePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.vibe-palace/"}
+	want := []string{"/CLAUDE.md", "/AGENTS.md", "/commit.msg", "/.agents/", "/.vibe-palace/"}
 	if strings.Join(missing, "|") != strings.Join(want, "|") {
 		t.Errorf("partial-file: want %v, got %v", want, missing)
 	}

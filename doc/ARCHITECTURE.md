@@ -666,12 +666,12 @@ ignore lines, because a hand-edited `.gitignore` does not switch on behaviour
 (ADR-014 decision 11). The reconciler appends every canonical line a vault
 lacks, on two paths, and an ordinary `vp config sync` reaches both: **create**,
 when `.gitignore` is absent (`ReconcileVaultGitignore`,
-`internal/storage/git.go:141`, `:161`, applied at
+`internal/storage/git.go:156`, `:176`, applied at
 `internal/reconcile/vault.go:304`); and **top-up**, on an existing vault
 (`planVaultGitignore` → `MissingVaultGitignorePatterns`,
-`internal/reconcile/vault.go:230-240`, `internal/storage/git.go:222` →
+`internal/reconcile/vault.go:230-240`, `internal/storage/git.go:237` →
 `TopUpVaultGitignore`, `internal/reconcile/vault.go:353`,
-`internal/storage/git.go:197`). Both paths emit the two derived lines only on a
+`internal/storage/git.go:212`). Both paths emit the two derived lines only on a
 vault whose `vault.toml` carries the marker, so unconditional lines never reach
 an unmigrated vault before the marker. `vp config sync` never writes the
 marker itself. Three writers put the marker and the lines in place: the
@@ -698,7 +698,7 @@ on the marker alone; the lines follow from the marker, never the other way
 round. Because `.vibe-palace/` can be ignored on an existing vault, the marker
 write force-adds `vault.toml`, as `vp migrate kg-filenames` does
 (`cmd/vp/cmd_migrate_kg.go:142`, through `GitAddForce`,
-`internal/storage/git.go:617`).
+`internal/storage/git.go:632`).
 
 **Which v10.2.0 behaviour waits for the marker** (ADR-014 decision 11):
 
@@ -1828,7 +1828,8 @@ reconciler-owned mirror. Templates flow through four stations:
    `.gitignore` via `storage.ReconcileProjectGitignore`, appending the
    host-local AI artifacts vp writes into the project tree
    (`storage.CanonicalProjectGitignorePatterns`: `/CLAUDE.md`,
-   `/AGENTS.md`, `/commit.msg`, `/.claude/`, `/.grok/`, `/.vibe-palace/`)
+   `/AGENTS.md`, `/commit.msg`, `/.claude/`, `/.grok/`, `/.agents/`,
+   `/.vibe-palace/`)
    so they are never committed. `AGENTS.md` is a host-local vp-managed
    bootstrap shim — `vp init` creates and wires it (the cross-host
    `agents.md` baseline that teaches `vp_bootstrap_context` + the
