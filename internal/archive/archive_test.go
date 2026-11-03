@@ -125,12 +125,23 @@ func TestCreate_WritesPairAndHashesPreCompression(t *testing.T) {
 	}
 }
 
-func TestCreateCodexRawArchiveStoresExactHashAndUnknownTurnCount(t *testing.T) {
+// Renamed from TestCreateCodexRawArchiveStoresExactHashAndUnknownTurnCount.
+//
+// 🔴 The old test STAYED GREEN when codex-raw's Inspect became real, and that was
+// the problem. Its body was {"type":"response_item","payload":{"x":1}} — no
+// payload.type, no role — so the new Inspect also returns (0, ""), and the
+// assertion "TurnCount != 0 || Model != \"\"" kept passing while the name and the
+// purpose had both become false. A pin that cannot fail is not a pin.
+//
+// It now carries the shared twelve-record fixture and asserts the counted values
+// END TO END through Create: that the real Inspect runs, and that its numbers
+// reach the manifest.
+func TestCreateCodexRawArchiveStoresExactHashAndTheCountedTurns(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "vault")
 	testutil.InitProject(t, vault, "demo")
 	src := filepath.Join(tmp, "codex.jsonl")
-	content := []byte("{\"type\":\"response_item\",\"payload\":{\"x\":1}}\n")
+	content := []byte(codexRolloutFixture)
 	if err := os.WriteFile(src, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +150,11 @@ func TestCreateCodexRawArchiveStoresExactHashAndUnknownTurnCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Manifest.SourceSHA256 != hex.EncodeToString(want[:]) || res.Manifest.TurnCount != 0 || res.Manifest.Model != "" {
-		t.Fatalf("manifest = %+v", res.Manifest)
+	if res.Manifest.SourceSHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("source_sha256 = %s, want %x", res.Manifest.SourceSHA256, want)
+	}
+	if res.Manifest.TurnCount != 3 || res.Manifest.Model != "gpt-6-nova" {
+		t.Fatalf("manifest = (turns %d, model %q), want (3, gpt-6-nova)", res.Manifest.TurnCount, res.Manifest.Model)
 	}
 }
 

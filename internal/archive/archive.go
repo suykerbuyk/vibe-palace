@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -309,8 +310,16 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	}
 
 	// Inspection failures are non-fatal — the source hash still pins
-	// the exact bytes. Turn count and model are convenience fields.
-	turnCount, model, _ := a.Inspect(sourcePath)
+	// the exact bytes. Turn count and model are convenience fields. The
+	// Adapter contract (adapter.go) says Create LOGS and does not abort;
+	// it previously discarded the error into _, so a silently broken
+	// adapter Inspect was indistinguishable from a transcript with no
+	// turns and no model.
+	turnCount, model, inspectErr := inspectWithin(opts.Context, a, sourcePath)
+	if inspectErr != nil {
+		slog.Warn("archive: adapter Inspect failed; manifest turn_count and model are unset",
+			"adapter", opts.Adapter, "session", opts.SessionID, "err", inspectErr)
+	}
 
 	hostname, _ := os.Hostname()
 
@@ -355,6 +364,51 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		ArchivePath:  archivePath,
 		Manifest:     m,
 	}, nil
+}
+
+// inspectWithin runs a.Inspect under ctx.
+//
+// 🔴 Inspect takes no context and cannot be interrupted (Adapter, adapter.go),
+// and it is the ONLY pass in Create that does not honour opts.Context:
+// HashSource checks it between reads and compressFileContext wraps its reader in
+// contextReader. The bytes it scans are unbounded — MaxArchiveBytes caps the
+// COMPRESSED blob, so a highly compressible transcript can be hundreds of MB of
+// source inside an 18 MiB ceiling. On the Codex hook that one uncancellable pass
+// is what can carry SessionEnd past its 2600ms budget, and codexhook checks
+// ctx.Err() after Create and returns BEFORE writing the receipt — so an overrun
+// costs the receipt, which is the note<->transcript join.
+//
+// On the deadline the adapter's result is DISCARDED ENTIRELY and zero values are
+// returned: never a partially-counted turn_count, which would be a wrong number
+// nothing distinguishes from a right one. The caller logs it, the manifest
+// records turn_count 0 and no model, and Create does not abort — the same
+// degradation any other Inspect error already produces.
+//
+// The goroutine is not leaked: ch is buffered, so the send never blocks, and the
+// scan is bounded by the source file. It runs to completion and exits whether or
+// not anyone is still waiting.
+//
+// A nil-Done context never selects the ctx arm, so this is a no-op for every
+// caller that passes no Context — Create defaults opts.Context to
+// context.Background() above, and the Codex SessionEnd hook is the only caller
+// in the tree that passes one.
+func inspectWithin(ctx context.Context, a Adapter, sourcePath string) (int, string, error) {
+	type result struct {
+		turns int
+		model string
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		turns, model, err := a.Inspect(sourcePath)
+		ch <- result{turns, model, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.turns, r.model, r.err
+	case <-ctx.Done():
+		return 0, "", fmt.Errorf("archive: adapter %q Inspect abandoned at the deadline: %w", a.Name(), ctx.Err())
+	}
 }
 
 // HashSource computes the SHA256 and byte size of a regular source file while

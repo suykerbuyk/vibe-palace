@@ -143,3 +143,105 @@ func TestSessionDayHasNoDecisionChunkCaller(t *testing.T) {
 		}
 	}
 }
+
+// codexOneRecord is a single Codex session_meta record whose two timestamps land
+// on DIFFERENT UTC DAYS: the record's own top-level stamp is 2026-05-13, the
+// payload stamp — the instant the session actually began — is 2026-05-12.
+//
+// 🔴 The day split is load-bearing, not decoration. It mirrors the live
+// rollout-2026-10-29T14-37-46 case (payload 2026-10-29T20:37:46.909Z, top-level
+// 2026-10-30T13:24:56.686Z, a 16.8h gap). A same-day fixture would let the
+// correct and the buggy readings agree, and the test would pass under the very
+// bug it exists to catch.
+const codexOneRecord = `{"timestamp":"2026-05-13T13:24:56Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a19e1e-fixture","timestamp":"2026-05-12T23:30:00.675Z","cwd":"/tmp/x"}}` + "\n"
+
+// A1: the start of a Codex session is session_meta's PAYLOAD timestamp, never
+// the record's own top-level stamp.
+func TestCodexRawSessionStartReadsSessionMetaPayloadTimestamp(t *testing.T) {
+	got, ok, err := (codexRawAdapter{}).SessionStart([]byte(codexOneRecord))
+	if err != nil || !ok {
+		t.Fatalf("SessionStart = %v, %v, %v", got, ok, err)
+	}
+	want := time.Date(2026, 5, 12, 23, 30, 0, 675000000, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("SessionStart = %s, want %s (the PAYLOAD stamp; the record's own is 2026-05-13T13:24:56Z, a different UTC day)",
+			got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}
+
+// A2: the production consequence. captured_at is set two days after the
+// transcript stamp so it cannot coincide — deleting codexRawAdapter.SessionStart
+// moves BOTH the day (2026-05-12 -> 2026-05-14) and the source (transcript ->
+// captured_at).
+func TestSessionDayDatesACodexArchiveFromTheTranscript(t *testing.T) {
+	m := &Manifest{Adapter: CodexRawAdapterName, SessionID: "s", CapturedAt: "2026-05-14T00:30:00Z"}
+	for _, zone := range []string{"America/Los_Angeles", "Asia/Tokyo", "UTC"} {
+		withLocalZone(t, zone, func() {
+			got, err := m.SessionDay([]byte(codexOneRecord))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != (SessionDay{Day: "2026-05-12", Source: DayFromTranscript}) {
+				t.Fatalf("%s: SessionDay = %+v, want 2026-05-12 from the transcript (captured_at would give 2026-05-14)", zone, got)
+			}
+		})
+	}
+}
+
+// A3: every way of failing to read a start is (zero, false, nil) — never an
+// error. SessionDay propagates a StartReader error and IngestArchive turns that
+// into a FAILED ARCHIVE with no captured_at fallback, so a malformed rollout
+// must degrade to today's behaviour rather than become un-ingestable.
+func TestCodexRawSessionStartFallsBackRatherThanErroring(t *testing.T) {
+	thirdIsMeta := `{"timestamp":"2026-05-13T00:00:00Z","ordinal":0,"type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-05-13T00:00:01Z","ordinal":1,"type":"turn_context","payload":{"model":"gpt-6-luna"}}
+{"timestamp":"2026-05-13T13:24:56Z","ordinal":2,"type":"session_meta","payload":{"session_id":"s","timestamp":"2026-05-12T23:30:00.675Z"}}
+`
+	cases := []struct {
+		name   string
+		source string
+		wantOK bool
+	}{
+		{"empty source", "", false},
+		{"markdown prose", "# A session note\n\nSome prose.\n", false},
+		{"session_meta with no payload timestamp", `{"type":"session_meta","payload":{"session_id":"s"}}` + "\n", false},
+		{"session_meta with an unparseable timestamp", `{"type":"session_meta","payload":{"timestamp":"not-a-time"}}` + "\n", false},
+		{"session_meta is the third record", thirdIsMeta, true},
+	}
+	for _, tc := range cases {
+		got, ok, err := (codexRawAdapter{}).SessionStart([]byte(tc.source))
+		if err != nil {
+			t.Errorf("%s: err = %v, want nil — an error fails the whole archive at ingest", tc.name, err)
+			continue
+		}
+		if ok != tc.wantOK {
+			t.Errorf("%s: ok = %v, want %v", tc.name, ok, tc.wantOK)
+			continue
+		}
+		if tc.wantOK {
+			want := time.Date(2026, 5, 12, 23, 30, 0, 675000000, time.UTC)
+			if !got.Equal(want) {
+				t.Errorf("%s: got %s, want %s", tc.name, got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+			}
+		}
+	}
+}
+
+// First session_meta wins. One rollout in the live corpus carries two: line 1 is
+// the file's own session, line 2 is the PARENT session with a different id and an
+// EARLIER stamp. A last-wins or earliest-wins rule would date the file by its
+// parent's session rather than its own.
+func TestCodexRawSessionStartTakesTheFirstSessionMeta(t *testing.T) {
+	twoMeta := `{"timestamp":"2026-10-31T16:42:00Z","ordinal":0,"type":"session_meta","payload":{"session_id":"own","timestamp":"2026-10-31T16:37:36.420Z"}}
+{"timestamp":"2026-10-31T16:42:01Z","ordinal":1,"type":"session_meta","payload":{"session_id":"parent","timestamp":"2026-10-31T15:45:04.545Z"}}
+`
+	got, ok, err := (codexRawAdapter{}).SessionStart([]byte(twoMeta))
+	if err != nil || !ok {
+		t.Fatalf("SessionStart = %v, %v, %v", got, ok, err)
+	}
+	want := time.Date(2026, 10, 31, 16, 37, 36, 420000000, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("SessionStart = %s, want the FIRST session_meta %s; the second is the parent session",
+			got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}

@@ -32,12 +32,24 @@ func TestCodexRawAdapterHashesExactSourceBytes(t *testing.T) {
 	}
 }
 
-func TestCodexRawAdapterDoesNotClaimClaudeTurnCount(t *testing.T) {
-	turns, model, err := (codexRawAdapter{}).Inspect("unused")
-	if err == nil || turns != 0 || model != "" {
-		t.Fatalf("Inspect = (%d, %q, %v), want unknown metadata and explicit error", turns, model, err)
-	}
-}
+// TestCodexRawAdapterDoesNotClaimClaudeTurnCount is RETIRED, deliberately, and
+// this note stands in its place so nobody restores it from the history.
+//
+// It asserted that codex-raw's Inspect returns an error and no metadata, on the
+// premise that the rollout format "is not interpreted". Scope 2 of
+// codex-u3-codex-raw-adapter-enrichment interprets it, so the premise is gone.
+//
+// 🔴 It did NOT go red when that landed, and the plan was wrong to say it would.
+// Its argument was the literal path "unused", which does not exist — so the new
+// Inspect still failed at os.Open and the assertion still held. It would have
+// stayed GREEN while testing nothing but os.Open, which is the same vacuous-pin
+// failure this unit caught in archive_test.go, from the other direction.
+//
+// What replaced it, in codex_rollout_test.go:
+//   - the turn count is Codex's own rule, never Claude's:
+//     TestCodexRawInspectCountsConversationalTurns
+//   - a missing source is an error with both results zeroed:
+//     TestCodexRawInspectReportsAMissingSource
 
 func TestCodexRawAdapterRejectsMissingSource(t *testing.T) {
 	if _, _, err := (codexRawAdapter{}).ResolveSource(CreateOptions{SourcePath: filepath.Join(t.TempDir(), "missing")}); err == nil {

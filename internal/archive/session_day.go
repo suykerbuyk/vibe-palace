@@ -124,3 +124,81 @@ func (claudeAdapter) SessionStart(source []byte) (time.Time, bool, error) {
 func (inlineAdapter) SessionStart(source []byte) (time.Time, bool, error) {
 	return claudeSessionStart(source)
 }
+
+// codexRolloutHead is the part of a Codex rollout record codexSessionStart
+// reads: the record type and, for session_meta, the payload's own timestamp.
+//
+// 🔴 The RECORD's top-level timestamp is when that record was APPENDED, not when
+// the session began. Measured over 32 real rollouts: session_meta's own
+// top-level stamp trails its payload stamp by up to 16.8h, and 3 of the 32 land
+// on a LATER UTC DAY than the session actually started. Reading it would date
+// those a day late — the exact defect this reader exists to remove — so it is
+// deliberately not a field here.
+type codexRolloutHead struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Timestamp string `json:"timestamp"`
+	} `json:"payload"`
+}
+
+// codexSessionStart scans Codex rollout JSONL from the top and returns the
+// payload timestamp of the first session_meta record. Every rollout in the live
+// corpus opens with one, so the loop exits on line 1 in practice; it scans on
+// rather than asserting the position, because a prepended record must not date
+// the archive wrongly.
+//
+// 🔴 Every failure here is (zero, false, nil) — never an error — except a
+// scanner failure. Manifest.SessionDay turns a StartReader error into a return
+// (session_day.go, above), and IngestArchive turns THAT into a failed archive
+// with no captured_at fallback. So a malformed rollout must degrade to the
+// captured_at behaviour this reader replaces, not become un-ingestable. The
+// scanner error is propagated only because claudeSessionStart already does; the
+// longest line in the corpus is 188,804 bytes against the 64 MiB ceiling below.
+func codexSessionStart(source []byte) (time.Time, bool, error) {
+	sc := bufio.NewScanner(bytes.NewReader(source))
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] != '{' {
+			return time.Time{}, false, nil
+		}
+		var rec codexRolloutHead
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return time.Time{}, false, nil
+		}
+		if rec.Type != "session_meta" {
+			continue
+		}
+		// The first session_meta is terminal either way: a rollout whose own
+		// opening record carries no usable stamp is dated from captured_at, not
+		// from some later record that means something else.
+		if rec.Payload.Timestamp == "" {
+			return time.Time{}, false, nil
+		}
+		t, err := time.Parse(time.RFC3339Nano, rec.Payload.Timestamp)
+		if err != nil {
+			return time.Time{}, false, nil
+		}
+		return t, true, nil
+	}
+	if err := sc.Err(); err != nil {
+		return time.Time{}, false, err
+	}
+	return time.Time{}, false, nil
+}
+
+// SessionStart implements StartReader over Codex's rollout JSONL. The instant a
+// Codex session began is session_meta's PAYLOAD timestamp; the record's own
+// top-level timestamp is when the record was appended and can land on a later
+// UTC day.
+//
+// 🔴 FIRST session_meta wins, and that is load-bearing. One rollout in the live
+// corpus carries two: line 1 is the file's own session, line 2 is the PARENT
+// session with a different id and an EARLIER stamp. A last-wins or
+// earliest-wins rule would date that file by its parent's session.
+func (codexRawAdapter) SessionStart(source []byte) (time.Time, bool, error) {
+	return codexSessionStart(source)
+}
