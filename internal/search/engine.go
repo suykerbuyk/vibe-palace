@@ -299,7 +299,70 @@ var (
 	// (a build already admitted past the miss-count gate), a child of the
 	// caller's ctx. It never wraps lockProject nor the commit closure.
 	embedBudget = 10 * time.Second
+	// searchBuildBudget is a wall-clock backstop around the search-path build's
+	// PRELUDES — the decision-chunk regeneration and the corpus walk — which run
+	// between the project lock and the corpus gate and are otherwise bounded only
+	// by a ctx that the CLI (context.Background()) and the MCP request path never
+	// give a deadline. It never wraps lockProject, nor pl.Tx's own lock wait, nor
+	// the commit closure.
+	//
+	// SIZING RULE: it must comfortably exceed prelude #1's floor, which after
+	// replaceowned-refolds-chunks-jsonl-once-per-call is THREE whole-file passes
+	// over chunks.jsonl in a fresh process (readStoreFn; ReplaceOwned -> tx.state
+	// -> loadState on a cold state cache; ReplaceOwned -> chunkFold), or TWO when
+	// the process state cache is warm. The cost is a per-LINE decode cost, not an
+	// I/O cost: measured hermetically at 18.8-20.7 us/line cold, 12.5-13.9 warm.
+	//
+	// MEASURED 2026-11-03, loaded host, replayed-live-line fixture:
+	//   537,176 lines (the vibe-palace store that day) -> 10.8 s cold, 7.1 s warm
+	//   805,764 lines                                  -> 16.7 s cold  OVER BUDGET
+	//
+	// A budget at or below that floor expires inside the decision WRITER, which
+	// is the failure mode this bound exists to avoid; it must expire inside the
+	// corpus READER instead. regenerationFloor records the measured number and
+	// TestTheBudgetExceedsTheMeasuredRegenerationFloor asserts the relation.
+	//
+	// THIS CONSTANT HAS A SHELF LIFE, AND NOTHING WARNS WHEN IT EXPIRES. The cold
+	// floor reaches 15 s at about 725,000 lines -- 1.35x the store it was measured
+	// against, a crossing bracketed by the two measured rows above. Past it, the
+	// budget expires inside the decision writer again. A `vp check` row that
+	// announces the crossing is filed as
+	// index-store-floor-check-warns-before-the-budget-is-breached and is NOT
+	// shipped with this change: this comment is currently the only record.
+	searchBuildBudget = 15 * time.Second
+	// regenerationFloor is the MEASURED cold cost of prelude #1 on the store
+	// searchBuildBudget was sized against (537,176 chunk lines, three whole-file
+	// passes, loaded host, 2026-11-03). It exists so the sizing rule is an
+	// assertion and not a comment. It is never used as a timeout.
+	regenerationFloor = 10770 * time.Millisecond
 )
+
+// searchBuildCtx derives the prelude budget from parent. It is the ONLY place a
+// prelude deadline is created; rebuild and tryWitnessedLoad call it and never
+// context.WithTimeout directly. A NON-POSITIVE budget returns the PARENT and a
+// no-op cancel — it does NOT return an already-expired child, which
+// WithTimeout(parent, 0) would, and which would turn every search-path build
+// into an instant refusal.
+//
+// The budget is a PARAMETER, not a read of searchBuildBudget, so a test can
+// drive this exact production function at a chosen budget without writing the
+// package variable. Both production call sites pass searchBuildBudget.
+var searchBuildCtx = func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, budget)
+}
+
+// corpusWalkItemHook, when a test sets it, runs beside walkCorpus's per-item
+// ctx checks. Production leaves it nil.
+var corpusWalkItemHook func(kind string, n int)
+
+// buildErrHook, when a test sets it, receives the RAW build error in
+// ensureIndex before mapBuildErr replaces it. It is the only place a prelude's
+// context.DeadlineExceeded is observable: mapBuildErr turns it into
+// *IndexNotBuiltError or serve-as-is. Production leaves it nil.
+var buildErrHook func(project string, err error)
 
 // joinBuildHook, when a test sets it, runs when a search joins another
 // search's in-flight build of the same project.
@@ -478,7 +541,14 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	// no commit lock, no run lock. Only the build owner does this (serialized by
 	// buildsRun), so no two loads race and it never races a full rebuild. When it
 	// installs, the project is current and no build runs.
-	if gerr == nil && e.tryWitnessedLoad(ctx, project, g) {
+	// The SECOND production call site of searchBuildCtx. tryWitnessedLoad runs its
+	// own full walkCorpus, a third unbounded prelude ahead of rebuild on any host
+	// with an hnsw.idx and a moved generation, so it carries its own budget. This
+	// is additive with rebuild's, not shared: see the task's section 8 Q1.
+	wctx, wcancel := searchBuildCtx(ctx, searchBuildBudget)
+	consumed := gerr == nil && e.tryWitnessedLoad(wctx, project, g)
+	wcancel()
+	if consumed {
 		finished = true
 		b.err = nil
 		e.endBuild(project, b)
@@ -487,6 +557,9 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 
 	_, rerr := e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch, true)
 	finished = true
+	if buildErrHook != nil {
+		buildErrHook(project, rerr)
+	}
 	// ADR-016 decision 4/5: the build refused to embed a cold corpus inline (or
 	// ran out its embed budget), so it served degraded. Record the durable
 	// corpus-rebuild want and ensure the detached singleton `vp index rebuild` is
@@ -1516,7 +1589,10 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 	}
 	storeIDs := map[string]bool{}
 	decisionNotes, localOwners := map[string]bool{}, map[string]bool{}
-	for _, c := range st.Chunks(true) {
+	for n, c := range st.Chunks(true) {
+		if corpusWalkItemHook != nil {
+			corpusWalkItemHook("store", n)
+		}
 		if err := ctx.Err(); err != nil {
 			return corpusWalk{stats: stats}, err
 		}
@@ -1599,7 +1675,10 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 				continue
 			}
 
-			for _, d := range drawers {
+			for di, d := range drawers {
+				if corpusWalkItemHook != nil {
+					corpusWalkItemHook("drawer", di)
+				}
 				if err := ctx.Err(); err != nil {
 					return corpusWalk{stats: stats}, err
 				}
@@ -1635,12 +1714,15 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 
 	// Third corpus source: Projects/<p>/iterations.md at H2 boundaries
 	// (wrapstate.ParseEntries). No synthetic drawers.jsonl.
-	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(e.vault, project)
+	iterIDs, iterTexts, iterMetas, err := collectIterationCorpus(ctx, e.vault, project)
 	if err != nil {
 		return corpusWalk{stats: stats}, fmt.Errorf("iteration corpus: %w", err)
 	}
 	stats.IterationChunks = len(iterIDs)
 	for i, id := range iterIDs {
+		if corpusWalkItemHook != nil {
+			corpusWalkItemHook("iteration", i)
+		}
 		if err := ctx.Err(); err != nil {
 			return corpusWalk{stats: stats}, err
 		}
@@ -1668,12 +1750,15 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 	// synthetic drawers.jsonl, and deliberately not routed through
 	// capture.IndexTranscript — so no knowledge-graph facts are extracted from
 	// wrap prose, structurally rather than by a flag.
-	noteIDs, noteTexts, noteMetas, err := collectNoteCorpus(e.vault, project)
+	noteIDs, noteTexts, noteMetas, err := collectNoteCorpus(ctx, e.vault, project)
 	if err != nil {
 		return corpusWalk{stats: stats}, fmt.Errorf("note corpus: %w", err)
 	}
 	stats.NoteChunks = len(noteIDs)
 	for i, id := range noteIDs {
+		if corpusWalkItemHook != nil {
+			corpusWalkItemHook("note", i)
+		}
 		if err := ctx.Err(); err != nil {
 			return corpusWalk{stats: stats}, err
 		}
@@ -1702,12 +1787,15 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 	// same lazy embed-cache path (cachedVector → embed on miss), so it needs no
 	// store, no ledger, and no fingerprint. MUST be mirrored in liveSet, or the
 	// reaper deletes these .vec files on the next rebuild.
-	commitIDs, commitTexts, commitMetas, err := collectCommitLogCorpus(e.vault, project)
+	commitIDs, commitTexts, commitMetas, err := collectCommitLogCorpus(ctx, e.vault, project)
 	if err != nil {
 		return corpusWalk{stats: stats}, fmt.Errorf("commit corpus: %w", err)
 	}
 	stats.CommitChunks = len(commitIDs)
 	for i, id := range commitIDs {
+		if corpusWalkItemHook != nil {
+			corpusWalkItemHook("commit", i)
+		}
 		if err := ctx.Err(); err != nil {
 			return corpusWalk{stats: stats}, err
 		}
@@ -1760,6 +1848,22 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
 	// before any commit lock is held, and before the reap reads the layout. For
 	// a project with no corpus this is the only cache access a Rebuild makes.
+	// The prelude budget (searchBuildBudget): a wall-clock backstop around the
+	// decision-chunk regeneration and the corpus walk, created BEFORE the embed
+	// cache dir resolves so an already-expired budget returns at the next
+	// boundary instead of paying another whole-file read. Only the search path
+	// (refuse) is bounded; `vp index rebuild`, Rebuild and the capture path stay
+	// unbounded, which is what keeps an explicit rebuild able to finish.
+	workCtx := ctx
+	if refuse {
+		var cancel context.CancelFunc
+		workCtx, cancel = searchBuildCtx(ctx, searchBuildBudget)
+		defer cancel()
+	}
+	if err := workCtx.Err(); err != nil {
+		return stats, err
+	}
+
 	if _, err := e.cache.dir(project); err != nil {
 		return stats, fmt.Errorf("embed cache dir: %w", err)
 	}
@@ -1769,14 +1873,19 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 	// disk, so the read then loads them. The same writer the capture path uses,
 	// so a rebuilt decision matches a captured one (ADR-014; this child's Scope
 	// 2). It takes the commit lock in its own short Tx and skips on a busy lock.
-	if err := e.regenerateDecisionChunks(ctx, pl, timeout, &chain, project); err != nil {
+	// pl.Tx keeps the OUTER ctx deliberately: the prelude budget must not cut off
+	// the separate commit-lock wait, which has its own timeout. workCtx is the
+	// LOOP ctx. An implementer who passes workCtx to pl.Tx charges the lock wait
+	// to the prelude budget; TestTheCommitLockWaitUsesTheOuterCtxNotThePreludeBudget
+	// pins the distinction.
+	if err := e.regenerateDecisionChunks(ctx, workCtx, pl, timeout, &chain, project, !refuse); err != nil {
 		return stats, fmt.Errorf("note corpus: regenerate decision chunks: %w", err)
 	}
 
 	// The four-source corpus walk, lock-free (shared with the witnessed consume,
 	// tryWitnessedLoad). It embeds nothing; the misses it reports are embedded
 	// below, under this build's held locks.
-	w, err := e.walkCorpus(ctx, project, mode)
+	w, err := e.walkCorpus(workCtx, project, mode)
 	if err != nil {
 		return w.stats, err
 	}
@@ -2886,15 +2995,19 @@ func (e *Engine) liveSet(project string) (map[string]bool, error) {
 			}
 		}
 	}
-	iterIDs, _, _, err := collectIterationCorpus(e.vault, project)
+	// liveSet stays on context.Background() DELIBERATELY. Threading the build's
+	// workCtx here could let a deadline mid-reap treat a PARTIAL live set as the
+	// keep-set, and the reaper deletes the .vec files not in it. That is a
+	// data-loss shape, not a performance one. Do not "tidy" this.
+	iterIDs, _, _, err := collectIterationCorpus(context.Background(), e.vault, project)
 	if err != nil {
 		return nil, fmt.Errorf("iteration corpus: %w", err)
 	}
-	noteIDs, _, _, err := collectNoteCorpus(e.vault, project)
+	noteIDs, _, _, err := collectNoteCorpus(context.Background(), e.vault, project)
 	if err != nil {
 		return nil, fmt.Errorf("note corpus: %w", err)
 	}
-	commitIDs, _, _, err := collectCommitLogCorpus(e.vault, project)
+	commitIDs, _, _, err := collectCommitLogCorpus(context.Background(), e.vault, project)
 	if err != nil {
 		return nil, fmt.Errorf("commit corpus: %w", err)
 	}

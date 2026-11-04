@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -71,7 +72,14 @@ func commitCacheID(project, sha string, chunkIndex int, text string) string {
 // drops a hit whose Date is empty under any date bound ("" < from and "" > to
 // are both true). This is the same behaviour iteration hits have; revisit only
 // if the writer gains a structured date line.
-func collectCommitLogCorpus(vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+// ctx bounds the per-ENTRY loop. Like collectIterationCorpus this reads ONE file
+// (commit-log.md) and loops entries in memory, so the top-of-function check is
+// one check for the whole collector and the entry loop carries its own. The ctx
+// error is returned bare, never %v-formatted, so errors.Is survives to the top.
+func collectCommitLogCorpus(ctx context.Context, vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	path, err := vault.CommitLogFile(project)
 	if err != nil {
 		return nil, nil, nil, err
@@ -91,6 +99,11 @@ func collectCommitLogCorpus(vault *storage.Vault, project string) (ids []string,
 
 	cfg := chunk.DefaultChunkConfig()
 	for _, e := range entries {
+		// Per-ENTRY, not per-file: one file was read above, so this loop is the
+		// real granularity of the bound.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, nil, cerr
+		}
 		parts := chunk.Chunk(e.Body, cfg)
 		if len(parts) == 0 {
 			// Empty or whitespace-only body: still index the entry by its SHA

@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -138,7 +139,14 @@ func noteSummarySourceRef(stem string) string {
 // what iterations does with os.ReadFile), and content that will not parse
 // contributes nothing without failing (that is what iterations does when
 // ParseEntries yields no entries).
-func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+// ctx bounds the per-FILE loop. Unlike the iteration and commit-log collectors
+// this one globs sessions/*.md, so a per-file check is genuine per-file
+// granularity. The ctx error is returned bare, never %v-formatted, so
+// errors.Is(err, context.DeadlineExceeded) holds at the top.
+func collectNoteCorpus(ctx context.Context, vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	dir, err := vault.SessionDir(project)
 	if err != nil {
 		return nil, nil, nil, err
@@ -155,6 +163,9 @@ func collectNoteCorpus(vault *storage.Vault, project string) (ids []string, text
 	cfg := chunk.DefaultChunkConfig()
 
 	for _, path := range paths {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, nil, cerr
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {

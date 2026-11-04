@@ -118,15 +118,15 @@ func TestCommitLogIDsDoNotCollideWithNotesOrIterations(t *testing.T) {
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", shared)
 	writeIterationsMD(t, v.Root, "proj", "## Iteration 1 — one\n\n"+shared+"\n\n---\n")
 
-	commitIDs, _, _, err := collectCommitLogCorpus(v, "proj")
+	commitIDs, _, _, err := collectCommitLogCorpus(context.Background(), v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteIDs, _, _, err := collectNoteCorpus(v, "proj")
+	noteIDs, _, _, err := collectNoteCorpus(context.Background(), v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
-	iterIDs, _, _, err := collectIterationCorpus(v, "proj")
+	iterIDs, _, _, err := collectIterationCorpus(context.Background(), v, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}

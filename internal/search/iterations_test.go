@@ -184,7 +184,7 @@ func TestRebuild_IterationChunksShareSourceRefSoDedupKeepsOne(t *testing.T) {
 	b.WriteString("\n\n---\n")
 	writeIterationsMD(t, v.Root, "chunky", b.String())
 
-	ids, texts, metas, err := collectIterationCorpus(v, "chunky")
+	ids, texts, metas, err := collectIterationCorpus(context.Background(), v, "chunky")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestIterationCacheID_IncludesAllFourFields(t *testing.T) {
 
 func TestCollectIterationCorpus_MissingFileIsEmpty(t *testing.T) {
 	_, v := testEngine(t)
-	ids, texts, metas, err := collectIterationCorpus(v, "no-such-proj")
+	ids, texts, metas, err := collectIterationCorpus(context.Background(), v, "no-such-proj")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestCollectIterationCorpus_SummaryRowWhenCacheMatches(t *testing.T) {
 		t.Fatalf("WriteIterationSummary: %v", err)
 	}
 
-	_, _, metas, err := collectIterationCorpus(v, project)
+	_, _, metas, err := collectIterationCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestCollectIterationCorpus_NoSummaryRowWhenUncached(t *testing.T) {
 		"",
 	}, "\n"))
 
-	_, _, metas, err := collectIterationCorpus(v, project)
+	_, _, metas, err := collectIterationCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestCollectIterationCorpus_StaleCacheFallsBackToRawOnly(t *testing.T) {
 		t.Fatalf("WriteIterationSummary: %v", err)
 	}
 
-	_, _, metas, err := collectIterationCorpus(v, project)
+	_, _, metas, err := collectIterationCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestCollectIterationCorpus_OnlyLastMatchGetsSummaryRow(t *testing.T) {
 		t.Fatalf("WriteIterationSummary: %v", err)
 	}
 
-	_, _, metas, err := collectIterationCorpus(v, project)
+	_, _, metas, err := collectIterationCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestCollectIterationCorpus_DegenerateCachedSummaryProducesNoSummaryRow(t *t
 		t.Fatalf("WriteIterationSummary: %v", err)
 	}
 
-	_, _, metas, err := collectIterationCorpus(v, project)
+	_, _, metas, err := collectIterationCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}

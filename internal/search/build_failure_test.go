@@ -98,7 +98,7 @@ func TestACorruptVectorIsAMiss(t *testing.T) {
 	eng, v := testEngine(t)
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a note body")
 	search(t, eng, "proj", "a note body")
-	ids, _, _, _ := collectNoteCorpus(v, "proj")
+	ids, _, _, _ := collectNoteCorpus(context.Background(), v, "proj")
 	dir, _ := v.EmbedCacheDir("proj")
 	if err := os.WriteFile(filepath.Join(dir, ids[0]+".vec"), []byte{1, 2, 3}, 0o644); err != nil {
 		t.Fatal(err)

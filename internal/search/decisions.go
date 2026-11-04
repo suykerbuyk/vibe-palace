@@ -237,12 +237,23 @@ type noteDecisionSet struct {
 	decisions        []string
 }
 
+// decisionLoopHook, when a test sets it, runs at the top of the decision write
+// loop with the 0-based index of the note about to be written. It is the
+// PRODUCTION observation point the budget guard counts; a test must never
+// substitute a counter of its own. Production leaves it nil.
+var decisionLoopHook func(n int)
+
 // collectNoteDecisionSets reads the decision frontmatter of every session note
 // under Projects/<project>/sessions/*.md. A missing directory is empty-and-nil;
 // an unparseable note contributes nothing without failing the build (matching
 // collectNoteCorpus). It reads only the frontmatter the decision writer needs —
 // never the body — so it files no body as a decision.
-func collectNoteDecisionSets(vault *storage.Vault, project string) ([]noteDecisionSet, error) {
+// ctx bounds the per-FILE loop (the same per-note glob collectNoteCorpus walks).
+// The ctx error is returned bare so errors.Is survives to the top.
+func collectNoteDecisionSets(ctx context.Context, vault *storage.Vault, project string) ([]noteDecisionSet, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir, err := vault.SessionDir(project)
 	if err != nil {
 		return nil, err
@@ -253,6 +264,9 @@ func collectNoteDecisionSets(vault *storage.Vault, project string) ([]noteDecisi
 	}
 	var out []noteDecisionSet
 	for _, path := range paths {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -288,8 +302,13 @@ func collectNoteDecisionSets(vault *storage.Vault, project string) ([]noteDecisi
 // last build stay and the next build retries, exactly as a skipped vector batch
 // does. It embeds nothing; vectors for decision chunks come later from the store
 // read.
-func (e *Engine) regenerateDecisionChunks(ctx context.Context, pl *projectLock, timeout time.Duration, chain *genChain, project string) error {
-	sets, err := collectNoteDecisionSets(e.vault, project)
+// ctx is the OUTER build ctx and bounds only pl.Tx's commit-lock wait, which has
+// its own timeout; loopCtx is the PRELUDE BUDGET and bounds the collectors, the
+// store read and the write loop. They are separate on purpose: charging the lock
+// wait to the prelude budget would let a busy lock consume the budget the
+// preludes need. Do not collapse them.
+func (e *Engine) regenerateDecisionChunks(ctx, loopCtx context.Context, pl *projectLock, timeout time.Duration, chain *genChain, project string, applyGone bool) error {
+	sets, err := collectNoteDecisionSets(loopCtx, e.vault, project)
 	if err != nil {
 		return err
 	}
@@ -302,18 +321,52 @@ func (e *Engine) regenerateDecisionChunks(ctx context.Context, pl *projectLock, 
 	// are removed. Read from disk, so a note deleted since the last build is
 	// seen. Scoped to decision chunks so this never touches a note that owns
 	// some other kind of chunk.
-	st, err := readStoreFn(e.vault, project)
-	if err != nil {
+	if err := loopCtx.Err(); err != nil {
 		return err
 	}
+	// applyGone is FALSE on the budgeted search path, and the gone set is not
+	// even computed there. Two reasons, and the second is the load-bearing one:
+	//
+	//  1. Computing it costs a whole-store READ (readStoreFn) that nothing else
+	//     on this path needs.
+	//  2. Applying it costs a whole-store WRITE *per owner*. Tx.ReplaceOwned
+	//     with recs == nil always takes the rewrite branch — keep is empty, so
+	//     f.ownedOutside(owner, keep) is true for any owner that owns anything —
+	//     and that branch ends in writeChunkFold, i.e. encodeLines(f.lines())
+	//     plus a full writeFile of chunks.jsonl. The per-Tx fold cache removed
+	//     the repeated READ; it does nothing for the WRITE. So the delete phase
+	//     is O(G x L) in deletions x store lines, measured at ~3.1 s per pass on
+	//     a 537k-line store: five deleted notes would spend the entire 15 s
+	//     budget AFTER the only budget check, which is exactly the unbounded
+	//     whole-store work this bound exists to remove.
+	//
+	// Deletions are therefore left to the UNBOUNDED paths (vp index rebuild,
+	// Rebuild, the capture path), which is where destructive O(G x L) work
+	// belongs. The cost is that decision chunks of notes deleted from disk keep
+	// being served until such a rebuild runs — a wrong hit, not a missing one,
+	// already recorded as consequence 2 in the task's "What happens IF the
+	// backstop fires".
+	//
+	// Batching the removals into one fold edit and one store write is the real
+	// fix and needs a new multi-owner API in internal/indexstore; it is filed
+	// on rewrite-census-to-decide-whether-3g-deferred-flush-is-needed.
 	gone := map[string]bool{}
-	for _, c := range st.Chunks(false) {
-		if c.SourceType != storage.SourceTypeDecision {
-			continue
+	if applyGone {
+		if err := loopCtx.Err(); err != nil {
+			return err
 		}
-		for _, o := range c.Owners {
-			if o.Kind == indexstore.OwnerNote && !present[o.ID] {
-				gone[o.ID] = true
+		st, serr := readStoreFn(e.vault, project)
+		if serr != nil {
+			return serr
+		}
+		for _, c := range st.Chunks(false) {
+			if c.SourceType != storage.SourceTypeDecision {
+				continue
+			}
+			for _, o := range c.Owners {
+				if o.Kind == indexstore.OwnerNote && !present[o.ID] {
+					gone[o.ID] = true
+				}
 			}
 		}
 	}
@@ -340,13 +393,52 @@ func (e *Engine) regenerateDecisionChunks(ctx context.Context, pl *projectLock, 
 
 	writeErr := func() error {
 		tx.UseRecipe(ix.Recipe)
-		for _, s := range sets {
-			if err := ctx.Err(); err != nil {
+		for i, s := range sets {
+			if decisionLoopHook != nil {
+				decisionLoopHook(i)
+			}
+			if err := loopCtx.Err(); err != nil {
 				return err
 			}
 			if err := WriteNoteDecisions(tx, ix.Recipe, project, s.stem, s.archiveSessionID, s.date, s.decisions); err != nil {
 				return err
 			}
+		}
+		// The gone-owner loop is DESTRUCTIVE: it removes the decision chunks of
+		// notes deleted from disk. Writes and deletes do NOT have the same
+		// safety, and the contract differs accordingly:
+		//
+		//   - the write prefix MAY commit. It is additive, and a later
+		//     refuse=false Rebuild completes it.
+		//   - NO delete may commit unless ALL of them can. A deletion performed
+		//     beside a truncated prefix cannot afterwards be distinguished from
+		//     one the corpus actually called for.
+		//
+		// pl.finishTx() commits BEFORE regenerateDecisionChunks inspects
+		// writeErr, so anything this closure has already done to the Tx is
+		// durable even when it returns an error. A per-iteration loopCtx check
+		// here would therefore NOT make deletes safe — it would make them
+		// PARTIAL, committing the owners deleted before the deadline and
+		// dropping the rest. That is strictly worse than either extreme.
+		//
+		// So the budget is consulted exactly ONCE, before any destructive work:
+		// an expired budget deletes nothing, and a live one completes the whole
+		// gone set.
+		//
+		// That is safe to leave unbounded HERE only because this loop no longer
+		// runs on the budgeted path at all: applyGone is false when refuse is
+		// true (operator ruling, 2026-11-03, "bounded beats unbounded"), so
+		// gone is empty there and the loop is a no-op. Each deletion costs a
+		// FULL store rewrite — see the applyGone comment above — so a gone set
+		// of any size would otherwise blow the budget after the only check.
+		//
+		// TestPartialRegenerationStopsBeforeDeletingGoneOwners pins the
+		// expired-at-entry arm; TestGoneOwnerDeletesAreAllOrNothing pins that a
+		// deadline landing between deletions does not split the set;
+		// TestTheBudgetedPathDoesNotRunTheDestructiveDeletePhase pins that the
+		// budgeted path never enters it.
+		if err := loopCtx.Err(); err != nil {
+			return err
 		}
 		for ownerID := range gone {
 			if err := tx.ReplaceOwned(indexstore.NoteOwner(ownerID), nil); err != nil {

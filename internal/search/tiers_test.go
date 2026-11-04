@@ -721,8 +721,8 @@ func TestLiveSetCoversEveryTier(t *testing.T) {
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a note")
 	writeIterationsMD(t, v.Root, "proj", "## Iteration 1 — one\n\nbody\n\n---\n")
 	d := addDrawer(t, v, "proj", "w", "r", "a drawer", "facts")
-	noteIDs, _, _, _ := collectNoteCorpus(v, "proj")
-	iterIDs, _, _, _ := collectIterationCorpus(v, "proj")
+	noteIDs, _, _, _ := collectNoteCorpus(context.Background(), v, "proj")
+	iterIDs, _, _, _ := collectIterationCorpus(context.Background(), v, "proj")
 	live, err := eng.liveSet("proj")
 	if err != nil {
 		t.Fatal(err)

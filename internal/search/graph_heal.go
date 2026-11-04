@@ -263,13 +263,13 @@ func (e *Engine) gatherCachedCorpus(ctx context.Context, project string) (ids []
 	// miss is left out.
 	for _, src := range []struct {
 		name    string
-		collect func(*storage.Vault, string) ([]string, []string, []drawerMeta, error)
+		collect func(context.Context, *storage.Vault, string) ([]string, []string, []drawerMeta, error)
 	}{
 		{"iteration", collectIterationCorpus},
 		{"note", collectNoteCorpus},
 		{"commit", collectCommitLogCorpus},
 	} {
-		cids, _, _, cerr := src.collect(e.vault, project)
+		cids, _, _, cerr := src.collect(ctx, e.vault, project)
 		if cerr != nil {
 			return nil, nil, 0, 0, fmt.Errorf("heal: %s corpus of %s: %w", src.name, project, cerr)
 		}

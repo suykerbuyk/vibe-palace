@@ -104,7 +104,7 @@ func TestCollectNoteCorpus_IndexesBodyNotFrontmatter(t *testing.T) {
 	writeSessionNote(t, v.Root, "note-only", "2026-08-30-abcd1234-01", "2026-08-30",
 		fmMarker, "Wrap prose carrying "+bodyMarker+" in the narrative.")
 
-	ids, texts, metas, err := collectNoteCorpus(v, "note-only")
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, "note-only")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestCollectNoteCorpus_IDsUniqueAndStable(t *testing.T) {
 	writeSessionNote(t, v.Root, "multi", "2026-08-01-aaaa1111-01", "2026-08-01", "one", long.String())
 	writeSessionNote(t, v.Root, "multi", "2026-08-02-aaaa1111-01", "2026-08-02", "two", "Short second note body.")
 
-	ids1, _, metas1, err := collectNoteCorpus(v, "multi")
+	ids1, _, metas1, err := collectNoteCorpus(context.Background(), v, "multi")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestCollectNoteCorpus_IDsUniqueAndStable(t *testing.T) {
 		t.Errorf("want 2 distinct SourceRefs (one per note), got %d", len(refCounts))
 	}
 
-	ids2, _, _, err := collectNoteCorpus(v, "multi")
+	ids2, _, _, err := collectNoteCorpus(context.Background(), v, "multi")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestCollectNoteCorpus_EmptyBodyContributesNothing(t *testing.T) {
 	writeSessionNote(t, v.Root, "blank", "2026-08-03-bbbb2222-01", "2026-08-03", "empty", "")
 	writeSessionNote(t, v.Root, "blank", "2026-08-04-bbbb2222-01", "2026-08-04", "ws", "   \n\n\t\n  ")
 
-	ids, texts, metas, err := collectNoteCorpus(v, "blank")
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, "blank")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestCollectNoteCorpus_EmptyBodyContributesNothing(t *testing.T) {
 
 	// Non-vacuity: the same project with one real body does produce rows.
 	writeSessionNote(t, v.Root, "blank", "2026-08-05-bbbb2222-01", "2026-08-05", "real", "Actual prose here.")
-	ids, _, _, err = collectNoteCorpus(v, "blank")
+	ids, _, _, err = collectNoteCorpus(context.Background(), v, "blank")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestCollectNoteCorpus_EmptyBodyContributesNothing(t *testing.T) {
 // missing-file convention: absence is empty-and-nil, never an error.
 func TestCollectNoteCorpus_NoSessionDirIsEmpty(t *testing.T) {
 	_, v := testEngine(t)
-	ids, texts, metas, err := collectNoteCorpus(v, "no-such-proj")
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, "no-such-proj")
 	if err != nil {
 		t.Fatalf("a missing sessions dir must not be an error: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestCollectNoteCorpus_UnparseableNoteIsSkipped(t *testing.T) {
 	}
 	writeSessionNote(t, v.Root, "malformed", "2026-08-06-cccc3333-01", "2026-08-06", "ok", "Good body.")
 
-	ids, texts, _, err := collectNoteCorpus(v, "malformed")
+	ids, texts, _, err := collectNoteCorpus(context.Background(), v, "malformed")
 	if err != nil {
 		t.Fatalf("a malformed note must not fail the whole corpus: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestNoteCacheID_KeyedOnIdentityAndContent(t *testing.T) {
 	writeSessionNote(t, v.Root, "dupes", "2026-08-07-dddd4444-01", "2026-08-07", "a", dupe)
 	writeSessionNote(t, v.Root, "dupes", "2026-08-08-dddd4444-01", "2026-08-08", "b", dupe)
 
-	ids, texts, _, err := collectNoteCorpus(v, "dupes")
+	ids, texts, _, err := collectNoteCorpus(context.Background(), v, "dupes")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestCollectNoteCorpus_UnreadableNoteFailsTheRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, _, err := collectNoteCorpus(v, "unreadable"); err == nil {
+	if _, _, _, err := collectNoteCorpus(context.Background(), v, "unreadable"); err == nil {
 		t.Fatal("an unreadable note must fail the corpus, not be silently skipped")
 	} else if !strings.Contains(err.Error(), "read session note") {
 		t.Errorf("error = %q, want it to name the note it could not read", err)
@@ -548,7 +548,7 @@ func TestCollectNoteCorpus_SummaryRowDistinctFromRawRow(t *testing.T) {
 	writeSessionNoteWithSummary(t, v.Root, "summarized", "2026-08-20-1111beef-01", "2026-08-20",
 		"wrap", bodyText, summaryText)
 
-	ids, texts, metas, err := collectNoteCorpus(v, "summarized")
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, "summarized")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +609,7 @@ func TestCollectNoteCorpus_SummaryCacheIDDistinctFromRawChunkZero(t *testing.T) 
 	writeSessionNoteWithSummary(t, v.Root, project, stem, "2026-08-21", "wrap",
 		"Short raw body, a single chunk.", "A dense search summary.")
 
-	ids, texts, metas, err := collectNoteCorpus(v, project)
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +655,7 @@ func TestCollectNoteCorpus_NoSummaryFieldProducesNoSummaryRow(t *testing.T) {
 	writeSessionNote(t, v.Root, "unsummarized", "2026-08-22-3333beef-01", "2026-08-22",
 		"wrap", "Plain wrap body with no search summary ever generated.")
 
-	ids, _, metas, err := collectNoteCorpus(v, "unsummarized")
+	ids, _, metas, err := collectNoteCorpus(context.Background(), v, "unsummarized")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestCollectNoteCorpus_ShortBodySingleChunkStillGetsSummaryRow(t *testing.T)
 	writeSessionNoteWithSummary(t, v.Root, "shortnote", "2026-08-23-4444beef-01", "2026-08-23",
 		"wrap", "One short sentence of raw body.", summaryText)
 
-	ids, texts, metas, err := collectNoteCorpus(v, "shortnote")
+	ids, texts, metas, err := collectNoteCorpus(context.Background(), v, "shortnote")
 	if err != nil {
 		t.Fatal(err)
 	}

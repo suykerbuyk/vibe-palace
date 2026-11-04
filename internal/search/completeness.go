@@ -5,6 +5,7 @@ package search
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -276,11 +277,12 @@ func (e *Engine) TrulyEmpty(project string) (bool, error) {
 	if found, err := dirHasSuffix(sessions, ".md"); err != nil || found {
 		return false, err
 	}
-	iterIDs, _, _, err := collectIterationCorpus(e.vault, project)
+	// TrulyEmpty is not on the budgeted path and has no ctx of its own.
+	iterIDs, _, _, err := collectIterationCorpus(context.Background(), e.vault, project)
 	if err != nil || len(iterIDs) > 0 {
 		return false, err
 	}
-	commitIDs, _, _, err := collectCommitLogCorpus(e.vault, project)
+	commitIDs, _, _, err := collectCommitLogCorpus(context.Background(), e.vault, project)
 	if err != nil || len(commitIDs) > 0 {
 		return false, err
 	}

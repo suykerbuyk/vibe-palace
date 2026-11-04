@@ -48,7 +48,7 @@ func fileDecisionDrawers(ctx context.Context, vault *storage.Vault, project, not
 	tx, err := indexstore.Lock(ctx, vault, project, decisionWriteTimeout)
 	if err != nil {
 		if errors.Is(err, vaultlock.ErrLockWaitTimeout) || errors.Is(err, indexstore.ErrProjectGone) {
-			slog.Warn("decision chunks: index commit lock unavailable; skipping, the next notes-tier build will restore them",
+			slog.Warn("decision chunks: index commit lock unavailable; skipping, the next notes-tier build will restore them, or `vp index rebuild <project>` if that build runs out of its budget",
 				"project", project, "note", noteStem, "err", err)
 			return 0, nil
 		}

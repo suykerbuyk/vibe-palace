@@ -153,7 +153,7 @@ func TestSearchWritesTimeOutAndSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a note body")
-	noteIDs, _, _, _ := collectNoteCorpus(v, "proj")
+	noteIDs, _, _, _ := collectNoteCorpus(context.Background(), v, "proj")
 	dir, _ := v.EmbedCacheDir("proj")
 	before := dirHashes(t, dir)
 	recBefore := record(t, v, "proj")

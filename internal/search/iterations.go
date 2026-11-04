@@ -4,6 +4,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -102,7 +103,16 @@ func renderIterationSummary(s storage.IterationSummary) string {
 // SourceRef, so a shared ref would make dedup arbitrarily pick one over the
 // other, and a shared id would make Rebuild's global id-keyed metadata/vector
 // cache silently answer one row's queries with the other's content.
-func collectIterationCorpus(vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+// ctx bounds the per-ENTRY loop. collectIterationCorpus reads ONE file and then
+// chunks every entry in memory, so a check at the top buys exactly one check for
+// the whole collector; the uninterruptible unit after it is chunk.Chunk over
+// every entry, which is why the check is also inside the entry loop. Its error
+// is returned bare so errors.Is(err, context.DeadlineExceeded) holds at the top:
+// the launcher predicate and buildErrHook both key on it.
+func collectIterationCorpus(ctx context.Context, vault *storage.Vault, project string) (ids []string, texts []string, metas []drawerMeta, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	path, err := vault.IterationsFile(project)
 	if err != nil {
 		return nil, nil, nil, err
@@ -134,6 +144,11 @@ func collectIterationCorpus(vault *storage.Vault, project string) (ids []string,
 	cfg := chunk.DefaultChunkConfig()
 
 	for _, e := range entries {
+		// Per-ENTRY, not per-file: this collector read one file, so the entry
+		// loop is where the uninterruptible chunk.Chunk work actually is.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, nil, nil, cerr
+		}
 		matchIndex := seenN[e.N]
 		seenN[e.N] = matchIndex + 1
 		isLastMatch := matchIndex == totalCount[e.N]-1

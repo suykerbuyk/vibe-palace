@@ -62,10 +62,15 @@ func decisionOwnerIDs(t *testing.T, v *storage.Vault, project string) []string {
 	return out
 }
 
-// runRegenerate drives regenerateDecisionChunks exactly as rebuild does:
-// under the project lock, with one genChain, and finishing the Tx whatever the
-// loop returned (decisions.go calls pl.finishTx BEFORE it inspects writeErr,
-// which is why a cancelled regeneration is durable at all).
+// runRegenerate drives regenerateDecisionChunks under the project lock, with
+// one genChain, finishing the Tx whatever the loop returned (decisions.go calls
+// pl.finishTx BEFORE it inspects writeErr, which is why a cancelled
+// regeneration is durable at all).
+//
+// It is NOT a stand-in for rebuild's wiring: it passes the SAME ctx as both the
+// outer and the loop ctx, where rebuild passes (ctx, workCtx). A test that uses
+// this helper pins the writer's behaviour, never which ctx production hands it
+// — see TestRebuildBoundsTheDecisionWriterWithThePreludeBudget for the wiring.
 func runRegenerate(t *testing.T, e *Engine, ctx context.Context, project string) error {
 	t.Helper()
 	pl, err := e.lockProject(context.Background(), project, 5*time.Second)
@@ -74,7 +79,7 @@ func runRegenerate(t *testing.T, e *Engine, ctx context.Context, project string)
 	}
 	defer pl.release()
 	chain := genChain{}
-	return e.regenerateDecisionChunks(ctx, pl, 5*time.Second, &chain, project)
+	return e.regenerateDecisionChunks(ctx, ctx, pl, 5*time.Second, &chain, project, true)
 }
 
 // writeDecisionsPerNoteTx files each note's decisions in its OWN Tx, the way
