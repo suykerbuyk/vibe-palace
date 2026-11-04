@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
@@ -1135,4 +1137,362 @@ func TestTheBudgetedPathDoesNotRunTheDestructiveDeletePhase(t *testing.T) {
 			t.Fatal("the unbounded path never read the store, so it cannot have computed a gone set")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// THE TWO ARMS NO MUTATION COULD REDDEN (task
+// search-build-budget-suite-has-two-arms-no-mutation-can-redden)
+//
+// Both were found by running single-arm mutations at PACKAGE scope against the
+// suite above. Each is the file's own invariant turned on itself: an assertion
+// that reads as proof and cannot fail.
+// ---------------------------------------------------------------------------
+
+// H1. ensureIndex's launcher predicate has three arms:
+//
+//	errors.Is(rerr, errEmbedRefused) || errors.Is(rerr, context.DeadlineExceeded) || errors.Is(rerr, context.Canceled)
+//
+// Before this test existed, deleting ONLY the middle arm left the whole package
+// green. The one test that drives the launcher through the budget path,
+// TestWarmCorpusWithASlowWalkIsRefused, REPLACES the production seam with
+// context.WithCancel (see its retireOnWalk), so the error it produces is
+// context.Canceled and the THIRD arm covers it; the middle arm was on no test's
+// path. The task that filed this records that dropping the middle and third arms
+// TOGETHER does redden — which is how a coarser mutation first reported this
+// predicate as pinned. One arm at a time is the discipline.
+//
+// This test drives a GENUINE DEADLINE through the production seam: the seam
+// wrapper calls the REAL searchBuildCtx (context.WithTimeout) and only chooses
+// the budget, exactly as TestAnExpiredPreludeBudgetReachesBuildErrHookAsDeadlineExceeded
+// does. There is no context.WithCancel stand-in anywhere in it.
+//
+// Determinism without a timing race: the budget is generous, and the production
+// walk hook BLOCKS on the budget ctx's Done channel at the first corpus item.
+// So the deadline is always reached from INSIDE the walk — the walk is never
+// racing the timer — and the only way this test can mis-fire is the walk not
+// being reached inside the budget at all, which it reports as a loud fatal
+// rather than a vacuous pass.
+//
+// The error must satisfy the middle arm and NOTHING ELSE: the two sibling arms
+// are asserted absent, so a green here cannot be bought by errEmbedRefused or
+// context.Canceled.
+func TestAGenuinePreludeDeadlineFiresTheDetachedRebuildLauncher(t *testing.T) {
+	const project = "proj"
+	// Generous relative to the microseconds-to-milliseconds a tiny fixture needs
+	// to get from the seam call to the first corpus item; the blocking hook, not
+	// this number, is what makes the expiry deterministic.
+	const budget = 500 * time.Millisecond
+
+	v := testVault(t)
+	for i := 0; i < 8; i++ {
+		addDrawer(t, v, project, "wing", "room", fmt.Sprintf("deadline corpus chunk number %d", i), "facts")
+	}
+	// No Rebuild has run, so there is no hnsw.idx on disk and tryWitnessedLoad
+	// returns before its own walkCorpus: the only walk the hook below sees is
+	// rebuild's, on rebuild's own budget ctx.
+
+	var mu sync.Mutex
+	var budgetCtx context.Context
+	var seamAt, firstItemAt time.Time
+	walked := 0
+
+	realSeam := searchBuildCtx
+	searchBuildCtx = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		c, cancel := realSeam(parent, budget) // the REAL seam: context.WithTimeout
+		mu.Lock()
+		budgetCtx, seamAt = c, time.Now()
+		mu.Unlock()
+		return c, cancel
+	}
+	t.Cleanup(func() { searchBuildCtx = realSeam })
+
+	oldWalk := corpusWalkItemHook
+	corpusWalkItemHook = func(string, int) {
+		mu.Lock()
+		walked++
+		if firstItemAt.IsZero() {
+			firstItemAt = time.Now()
+		}
+		c := budgetCtx
+		mu.Unlock()
+		if c != nil {
+			<-c.Done() // wait out the REAL deadline from inside the production walk
+		}
+	}
+	t.Cleanup(func() { corpusWalkItemHook = oldWalk })
+
+	var raw error
+	sawRaw := false
+	oldErrHook := buildErrHook
+	buildErrHook = func(_ string, err error) { raw, sawRaw = err, true }
+	t.Cleanup(func() { buildErrHook = oldErrHook })
+
+	spy := &launchSpy{}
+	eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+		WithRebuildLauncher(spy.launcher()))
+	t.Cleanup(func() { eng.Close() })
+
+	err := eng.ensureIndex(context.Background(), project)
+
+	mu.Lock()
+	n, gap, bctx := walked, firstItemAt.Sub(seamAt), budgetCtx
+	mu.Unlock()
+
+	if n == 0 {
+		t.Fatalf("the corpus walk ran ZERO items, so no deadline was observed on the production "+
+			"walk and this test proves nothing: the %v budget expired before the walk was reached", budget)
+	}
+	t.Logf("non-vacuity: %d corpus item(s) walked; seam -> first item took %v of the %v budget", n, gap, budget)
+	if cerr := bctx.Err(); !errors.Is(cerr, context.DeadlineExceeded) {
+		t.Fatalf("the ctx the production seam returned did not expire as a DEADLINE: %v "+
+			"(a context.WithCancel stand-in is exactly what made the existing launcher test blind)", cerr)
+	}
+	if !sawRaw {
+		t.Fatal("buildErrHook never fired: the search-path build did not run")
+	}
+	if raw == nil {
+		t.Fatal("the search-path build returned nil although its prelude budget expired mid-walk")
+	}
+	if !errors.Is(raw, context.DeadlineExceeded) {
+		t.Fatalf("raw build error does not satisfy errors.Is(err, context.DeadlineExceeded): %v", raw)
+	}
+	// The two sibling arms must NOT cover this error, or a green here says
+	// nothing about the DeadlineExceeded arm.
+	if errors.Is(raw, context.Canceled) {
+		t.Fatalf("the raw build error also satisfies context.Canceled (%v): the Canceled arm of the "+
+			"launcher predicate would cover it, so this test could not discriminate the "+
+			"DeadlineExceeded arm", raw)
+	}
+	if errors.Is(raw, errEmbedRefused) {
+		t.Fatalf("the raw build error also satisfies errEmbedRefused (%v): the embed-refusal arm "+
+			"would cover it, so this test could not discriminate the DeadlineExceeded arm", raw)
+	}
+	if got := spy.projects(); len(got) == 0 {
+		t.Fatal("the detached rebuild launcher did NOT fire on a build that ended in a bare " +
+			"context.DeadlineExceeded: ensureIndex's launcher predicate has no reachable " +
+			"errors.Is(rerr, context.DeadlineExceeded) arm, so a search-path build that runs out " +
+			"its prelude budget records no durable rebuild want and spawns no detached rebuild")
+	}
+	var nb *IndexNotBuiltError
+	if !errors.As(err, &nb) {
+		t.Fatalf("want *IndexNotBuiltError from the degraded search path, got %v", err)
+	}
+}
+
+// armAfterWalkKind delegates to the ctx the PRODUCTION seam returned until it is
+// armed; each arm resets a one-call grace, after which it reports
+// context.DeadlineExceeded. It is a context double, never a stand-in for a
+// production component: the collector loops it bounds, the three wraps above
+// them and mapBuildErr below them are all the real ones.
+//
+// The one-call grace, re-armed from EVERY item of the chosen kind, is what makes
+// the landing point exact without counting items: the Err() call immediately
+// after a hooked item is the walk loop's own per-item check, which must stay
+// live (an error there returns BARE and never reaches a wrap); the next Err()
+// after the LAST item of that kind is the top-of-function check of the collector
+// that follows, whose error DOES travel out through the wrap under test. Nothing
+// between those two points consults the ctx.
+type armAfterWalkKind struct {
+	context.Context
+	mu    sync.Mutex
+	done  chan struct{}
+	armed bool
+	grace int
+}
+
+func newArmAfterWalkKind(parent context.Context) *armAfterWalkKind {
+	return &armAfterWalkKind{Context: parent, done: make(chan struct{})}
+}
+
+func (c *armAfterWalkKind) arm() {
+	c.mu.Lock()
+	c.armed, c.grace = true, 1
+	c.mu.Unlock()
+}
+
+func (c *armAfterWalkKind) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.armed {
+		return c.Context.Err()
+	}
+	if c.grace > 0 {
+		c.grace--
+		return nil
+	}
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+	return context.DeadlineExceeded
+}
+
+func (c *armAfterWalkKind) Done() <-chan struct{} { return c.done }
+
+// H2. walkCorpus wraps each of its three collectors' errors, in source order:
+//
+//	return corpusWalk{stats: stats}, fmt.Errorf("iteration corpus: %w", err)
+//	return corpusWalk{stats: stats}, fmt.Errorf("note corpus: %w", err)
+//	return corpusWalk{stats: stats}, fmt.Errorf("commit corpus: %w", err)
+//
+// Before this test existed, setting all three to %v left the whole package green.
+// TestCollectorCtxErrorsSurviveErrorsIs and TestCollectorInnerLoopCtxErrorsSurviveErrorsIs
+// pin the COLLECTORS, calling each one directly — they never cross these wraps.
+// The two tests that do run a production walk miss them for fixture reasons:
+// TestTheCorpusWalkRunsOnThePreludeBudgetCtx retires its ctx from the walk hook,
+// so the error leaves through a per-item check rather than a collector return
+// (and its fixture writes frontmatter-only session notes and no iterations.md),
+// and TestAnExpiredPreludeBudgetReachesBuildErrHookAsDeadlineExceeded reads
+// buildErrHook, which ensureIndex calls BEFORE mapBuildErr.
+//
+// The consequence 629e573's own message names: each collector "returns its ctx
+// error bare, never `%v`-formatted, so `errors.Is(err, context.DeadlineExceeded)`
+// still holds at the top of `walkCorpus` where the launcher predicate in
+// `ensureIndex` and `mapBuildErr` both key on it. A formatted error there would
+// silently turn the soft deadline hard." A %v on any ONE of the three wraps
+// immediately above those collectors does exactly that: mapBuildErr's soft
+// predicate stops matching and the typed *IndexNotBuiltError becomes a raw
+// plumbing error at the top of Search.
+//
+// So this asserts mapBuildErr's OUTPUT across the walkCorpus boundary, which is
+// the claim, and it asserts it once per wrap: a single-wrap mutation must redden
+// exactly one subtest.
+func TestACollectorCtxErrorStaysSoftAcrossTheWalkCorpusWraps(t *testing.T) {
+	const project = "proj"
+
+	cases := []struct {
+		name string
+		// armOn is the walk kind whose LAST item precedes the collector under
+		// test. Its fixture must produce at least one item of that kind, which
+		// the subtest asserts.
+		armOn   string
+		wrap    string
+		fixture func(t *testing.T, v *storage.Vault)
+	}{
+		{
+			name:  "iteration corpus",
+			armOn: "drawer",
+			wrap:  "iteration corpus: ",
+			fixture: func(t *testing.T, v *storage.Vault) {
+				for i := 0; i < 3; i++ {
+					addDrawer(t, v, project, "wing", "room", fmt.Sprintf("wrap corpus drawer %d", i), "facts")
+				}
+			},
+		},
+		{
+			name:  "note corpus",
+			armOn: "iteration",
+			wrap:  "note corpus: ",
+			fixture: func(t *testing.T, v *storage.Vault) {
+				ensureProjectDir(t, v, project)
+				writeIterationsMD(t, v.Root, project,
+					"## Iteration 1 — first\n\nbody one here with enough prose to chunk.\n\n"+
+						"## Iteration 2 — second\n\nbody two here with enough prose to chunk.\n")
+			},
+		},
+		{
+			name:  "commit corpus",
+			armOn: "note",
+			wrap:  "commit corpus: ",
+			fixture: func(t *testing.T, v *storage.Vault) {
+				ensureProjectDir(t, v, project)
+				for _, s := range []string{"2026-05-13-eeee0001-01", "2026-05-13-eeee0002-01"} {
+					// A BODY, not just frontmatter: collectNoteCorpus skips a
+					// note whose body is empty, which emits no "note" item and
+					// leaves the arm below unreachable.
+					writeSessionNote(t, v.Root, project, s, "2026-05-13", "wrap corpus note "+s,
+						"session note body with enough prose to chunk into a corpus row.")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testVault(t)
+			tc.fixture(t, v)
+
+			var mu sync.Mutex
+			var budgetCtx *armAfterWalkKind
+			walked := map[string]int{}
+
+			realSeam := searchBuildCtx
+			searchBuildCtx = func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+				real, cancel := realSeam(parent, budget) // the production seam, at the production budget
+				c := newArmAfterWalkKind(real)
+				mu.Lock()
+				budgetCtx = c
+				mu.Unlock()
+				return c, cancel
+			}
+			t.Cleanup(func() { searchBuildCtx = realSeam })
+
+			oldWalk := corpusWalkItemHook
+			corpusWalkItemHook = func(kind string, _ int) {
+				mu.Lock()
+				walked[kind]++
+				c := budgetCtx
+				mu.Unlock()
+				if kind == tc.armOn && c != nil {
+					c.arm()
+				}
+			}
+			t.Cleanup(func() { corpusWalkItemHook = oldWalk })
+
+			var raw error
+			sawRaw := false
+			oldErrHook := buildErrHook
+			buildErrHook = func(_ string, err error) { raw, sawRaw = err, true }
+			t.Cleanup(func() { buildErrHook = oldErrHook })
+
+			eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+			t.Cleanup(func() { eng.Close() })
+
+			err := eng.ensureIndex(context.Background(), project)
+
+			mu.Lock()
+			n := walked[tc.armOn]
+			mu.Unlock()
+
+			if n == 0 {
+				t.Fatalf("the corpus walk ran ZERO %q items, so the budget was never armed ahead of "+
+					"the %q collector and this subtest proves nothing", tc.armOn, tc.wrap)
+			}
+			if !sawRaw {
+				t.Fatal("buildErrHook never fired: the search-path build did not run")
+			}
+			if raw == nil {
+				t.Fatalf("the search-path build returned nil although the ctx went done inside "+
+					"the %q collector (%d %q items walked)", tc.wrap, n, tc.armOn)
+			}
+			// Non-vacuity for the WRAP itself: the error must actually have left
+			// walkCorpus through the wrap under test, not through a per-item check
+			// (which returns bare) or some earlier return. The %v mutant produces
+			// the identical string, so this is a reachability check, never the
+			// discriminator.
+			if !strings.Contains(raw.Error(), tc.wrap) {
+				t.Fatalf("the build error did not travel out through the %q wrap: %v "+
+					"(walked %d %q items) — this subtest is not exercising the wrap it names",
+					tc.wrap, raw, n, tc.armOn)
+			}
+			// Errorf, not Fatalf, for the two assertions below: the single named
+			// mutation (%w -> %v on this wrap) breaks BOTH, and a Fatalf on the
+			// first would hide the second's red behind it. Each is shown red in
+			// its own right.
+			if !errors.Is(raw, context.DeadlineExceeded) {
+				t.Errorf("errors.Is lost the ctx error across the %q wrap: %v", tc.wrap, raw)
+			}
+			// THE CLAIM: mapBuildErr's output across the boundary. ensureIndex
+			// returns exactly what mapBuildErr made of the raw error.
+			var nb *IndexNotBuiltError
+			if !errors.As(err, &nb) {
+				t.Errorf("mapBuildErr did not classify the build as SOFT across the %q wrap: "+
+					"got %v (%T), want *IndexNotBuiltError.\nA %%v on that wrap breaks "+
+					"errors.Is, so mapBuildErr's soft predicate stops matching and the "+
+					"prelude budget silently turns from a soft deadline into a hard search error",
+					tc.wrap, err, err)
+			}
+		})
+	}
 }
