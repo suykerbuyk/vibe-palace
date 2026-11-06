@@ -268,6 +268,32 @@ func runHelper(mode string) int {
 	}
 
 	switch mode {
+	case "purge-kill":
+		// K1/K2: open alpha's commit lock, run DropTranscriptTier through the
+		// purge-ledger step, signal ready, and then block for ever so the
+		// parent can SIGKILL this process. Neither Commit nor Release ever
+		// runs, which is the whole point: the finishing generation bump that
+		// Release performs on an INJECTED ERROR is exactly what a real kill
+		// does not reach.
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		done := make(chan struct{})
+		commitStep = func(step string) error {
+			if step == "purge-ledger" {
+				if err := sig("ready"); err != nil {
+					return err
+				}
+				<-done // never closed: block until killed
+			}
+			return nil
+		}
+		if _, err := tx.DropTranscriptTier(nil); err != nil {
+			return fail("DropTranscriptTier: %v", err)
+		}
+		return fail("the helper was never killed")
+
 	case "run-hold":
 		// Take the run lock, optionally report progress, signal, and hold
 		// until told to go (or until killed).

@@ -130,7 +130,7 @@ func TestRebuildClearsMarkerOnlyAfterTheEngineRebuild(t *testing.T) {
 	f.noteRebuild("alpha")
 
 	probe := &markerProbe{Engine: f.eng, v: f.v}
-	d := Deps{Vault: f.v, Engine: probe, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng)}
+	d := Deps{Vault: f.v, Engine: probe, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng), Config: storage.Config{IndexTranscripts: true}}
 	if _, err := Rebuild(context.Background(), d, RebuildOptions{Project: "alpha", FreeSpace: &fakeFree{ok: plentyFree}}); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}

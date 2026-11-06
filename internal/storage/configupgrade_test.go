@@ -193,6 +193,9 @@ structural_boost_room = 0.34
 [chunker]
 max_chars = 800
 overlap = 100
+
+[index]
+transcripts = false
 `
 	canonical, _ := CanonicalKeys()
 	present := PresentKeys(content)
@@ -359,6 +362,9 @@ structural_boost_room = 0.34
 [chunker]
 max_chars = 800
 overlap = 100
+
+[index]
+transcripts = false
 `
 	os.WriteFile(configPath, []byte(content), 0o644)
 
@@ -411,6 +417,9 @@ structural_boost_room = 0.34
 [chunker]
 max_chars = 800
 overlap = 100
+
+[index]
+transcripts = false
 `
 	os.WriteFile(configPath, []byte(content), 0o644)
 

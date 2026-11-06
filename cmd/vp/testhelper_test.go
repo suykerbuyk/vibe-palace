@@ -223,3 +223,22 @@ func TestEmbedderSeamHelpersRefuseParallel(t *testing.T) {
 		}
 	})
 }
+
+// setHostGlobalTranscripts rewrites the host GLOBAL config
+// (~/.config/vibe-palace/config.toml, which setupTestVaultEnvAt placed under
+// XDG_CONFIG_HOME) so [index] transcripts has the given value.
+//
+// It exists because the host default is now transcripts = false: a test that
+// asserts an archive IS ingested must opt the host in, or it passes
+// vacuously over a run that admitted nothing. Guards of the exclusion itself
+// use the value true deliberately — the one OPPOSITE the default — so that
+// breaking the config layering flips what they observe.
+func setHostGlobalTranscripts(t *testing.T, vaultDir string, on bool) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "vibe-palace", "config.toml")
+	body := `vault_path = "` + vaultDir + "\"\n\n[index]\ntranscripts = " +
+		map[bool]string{true: "true", false: "false"}[on] + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

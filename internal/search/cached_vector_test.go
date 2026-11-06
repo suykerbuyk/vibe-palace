@@ -32,7 +32,7 @@ func TestCachedVectorChecksTheRegime(t *testing.T) {
 	}
 	lookup := func(model string) bool {
 		t.Helper()
-		eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: model})
+		eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: model, IndexTranscripts: true})
 		t.Cleanup(func() { eng.Close() })
 		vec, hit, err := eng.CachedVector("proj", id)
 		if err != nil {
@@ -57,7 +57,7 @@ func TestCachedVectorChecksTheRegime(t *testing.T) {
 	}
 
 	// Not closed: Close closes the embedder, and this engine has none.
-	bare := NewEngine(nil, v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "model-a"})
+	bare := NewEngine(nil, v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "model-a", IndexTranscripts: true})
 	if _, _, err := bare.CachedVector("proj", id); !errors.Is(err, errNoRegime) {
 		t.Fatalf("an engine with no embedder: %v, want errNoRegime", err)
 	}

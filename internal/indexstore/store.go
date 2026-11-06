@@ -259,6 +259,22 @@ func (f *chunkFold) lines() []chunkLine {
 }
 
 // countOwned is the number of distinct chunk ids o owns.
+// countOwnersOfKind counts the chunks owned by at least one owner of this
+// kind. It mirrors countOwned, one pass over the fold's owner lines, and is
+// what reports the transcript chunks a purge has not yet reclaimed.
+func (f *chunkFold) countOwnersOfKind(kind string) int {
+	n := 0
+	for _, ols := range f.owners {
+		for _, ol := range ols {
+			if ol.Owner.Kind == kind {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
 func (f *chunkFold) countOwned(o Owner) int {
 	k, n := o.key(), 0
 	for _, ols := range f.owners {
@@ -556,3 +572,9 @@ func kgRecords(kg *kgFold, l *Ledger, ledgeredOnly bool) []StoredKG {
 // repair pass compares it with the ledger's chunk count and re-ingests the
 // archive on a shortfall.
 func (s *Store) CountChunks(o Owner) int { return s.chunks.countOwned(o) }
+
+// CountOwnersOfKind counts the chunks owned by at least one owner of kind
+// (OwnerArchive, OwnerBatch, OwnerNote). It counts what is IN THE FOLD,
+// whether or not the owner is live, which is what makes it the right reader
+// for the unreclaimed residue a transcript purge has not yet removed.
+func (s *Store) CountOwnersOfKind(kind string) int { return s.chunks.countOwnersOfKind(kind) }

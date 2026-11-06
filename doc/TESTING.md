@@ -115,7 +115,6 @@ value that is never written.** Only the real corpus contains the fenced snippets
 merely *discusses* a header line, and the accumulated markdown weirdness of a hundred files.
 
 Current canaries:
-
 | Test | What it would catch |
 |---|---|
 | `TestLiveVaultHasNoPhantomRelations` | `parseTaskMeta` regressing to a whole-file scan and reading a task's **body** as a real `Parent`/`Depends` — several real task files discuss the header syntax in prose and inside fences |
@@ -177,7 +176,6 @@ declaration order, nothing on the response path re-serializes through a map (`mc
 marshals the value directly, `vp inject` encodes it directly), so **declaration order is wire order is
 cut order**. A host with a fixed inline cap keeps a prefix and discards the rest, and the only thing
 that decides what an agent still holds is which fields were declared first.
-
 | Test | What it proves |
 |------|----------------|
 | `TestBootstrapTruncatedPrefixIsDetectable` | The headline. A real payload cut where the index begins (at `"head_of_queue":`) is **detectable from inside the truncated channel**: `complete` is absent from the prefix (and present in the whole document), while `resume_uri`, `workflow_uri`, `resume_sha256`, `active_task_count`, `ranking` and `post_bootstrap_instructions` all survive. It also asserts the prefix is *not* valid JSON, so a future payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
@@ -201,7 +199,6 @@ The cap belongs to the **host**, so it applies to every tool result, not just bo
 2026-08-12 surface survey measured 19 tools over it and found **every** URI escape hatch declared
 *after* the payload it rescues — `vp_get_task` returned 192,060 bytes with `content_uri` at byte
 191,956, 172 KB past the cut. These tests pin the fixed layout for the rest of the surface.
-
 | Test | What it proves |
 |------|----------------|
 | `TestSurfaceTruncatedPrefixIsDetectable` | The headline, table-driven over 12 result structs. Each is marshalled with an over-cap bulk field, cut at the 19,968-byte specimen, and asserted: every recovery handle survives the prefix, `complete` does **not**, and the whole document ends with `,"complete":true}`. Cases that deliberately carry no sentinel (`getLearningResult`, the nested `doctrineResult`) assert its **absence**, so a future blanket "add complete everywhere" cannot land silently. Like the bootstrap version it asserts the prefix is *not* valid JSON, so a payload that shrinks under the cap cannot turn the test green by removing the truncation it measures |
@@ -229,7 +226,6 @@ description, and the Grok `/vpc` hub shim (`internal/shims`). As of v8.2.0 the o
 asserts only the `restart.md` site. The template reaches only hosts that
 ran `/vpc-restart`; the description reaches every agent on every host; the hub fronts the exact host
 where the flat cut was measured. Fixing one is the ADR-006 failure mode.
-
 | Test | What it proves |
 |------|----------------|
 | `TestBootstrapDeliveryDoctrine_AbsentBudgetNeverStandsAlone` (RETIRED) | Deleted in 1537d83 together with the `budget` field it policed: with no `budget` on the payload, there is no absent-budget claim left to condition on `complete` |
@@ -250,7 +246,6 @@ Split deliberately across two packages: the **in-package** tests range the unexp
 they cover a fifth placeholder added tomorrow without an exported list; the **integration** tests
 drive `Server.HandleMessage`, because a guard proven only through its helper is not proven on the
 path it is installed on.
-
 | Test | What it proves |
 |---|---|
 | `TestTableIsTheSingleSource` | One table backs both the expander and the guard: for **every** entry, `Expand` erases it and `Lost` reports exactly it. An earlier version could only assert "at least one loss" and stayed green while `Lost` swallowed three of four |
@@ -282,7 +277,6 @@ the failing names, before believing any silence.
 CI triggers on every push to `main` and on every pull request. The jobs, as of
 v8.2.0 (`sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z0-9-]+:$'`
 lists them):
-
 | Job | Runs | Why it exists |
 |---|---|---|
 | `fmt` | `make fmt-check` | Fast, toolchain-only formatting verdict. `gofmt -l` alone prints drift and exits 0, so the target fails on any drift |
@@ -518,7 +512,6 @@ Find the current list with `grep -rln 'ProjectCacheDir(' --include='*.go' .`.
 These tests exercise interactions between multiple packages. They use a
 shared `testHarness` type that bundles vault, engine, embedder, MCP server,
 context resolver, and config into a single test fixture.
-
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `StorageToSearch` | storage → search | Yes | Drawers written via storage become searchable after rebuild; semantic ranking, wing/hall/date filters all work |
@@ -567,7 +560,6 @@ that does not lead with the run will not reproduce the bug:
 
 The naive rule reads that as a lone OPENING fence, inverts its fence state, and
 never recovers. What that cost, per caller:
-
 | Caller | Failure the naive rule caused |
 |--------|-------------------------------|
 | `wrapstate.NextIterFromIterationsMD` | Swallowed 187 of 191 iteration headings → reported iteration **77** on a project at 190 |
@@ -575,7 +567,6 @@ never recovers. What that cost, per caller:
 | `check.countSectionTableRows` | **Failed open** — hid every table row below such a line, so `resume-caps` would never breach. **Latent**: no resume.md in the vault carries a fence today |
 
 The rule `mdfence` implements, and each test's job:
-
 | Test | What it proves |
 |------|----------------|
 | `TestTheRealLineIsNotAnOpeningFence` | An opening **backtick** fence's info string may not contain a backtick — the single rule that makes the line above prose, not a fence |
@@ -599,7 +590,6 @@ fence boundary breaks a contiguous table run and must flush it).
 Unit tests for the pure, slice-based friction-analytics functions and the three
 CLI commands that wrap them. "Needs model?" marks tests that exercise the
 session `model` field (model-regression detection).
-
 | Test | Layer | Needs model? | What it proves |
 |------|-------|--------------|----------------|
 | `TestGetFrictionWindows_Empty` | `internal/capture` | No | Empty session slice yields zero-count windows with no divide-by-zero |
@@ -643,14 +633,12 @@ session `model` field (model-regression detection).
 | `TestRunEffectivenessJSON` | `cmd/vp` | No | `--json` emits the full `EffectivenessResult` |
 
 ### `internal/integration/` — Hook Pipeline Tests
-
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `HookPipeline_EndToEnd` | hook → archive → capture → storage | No | Full hook flow: archive transcript, create session note with friction score, write claim sentinel, idempotent skip on re-run, isolation between sessions |
 | `HookInstall_EndToEnd` | hook → settings | No | Install replaces `vv hook` with `vp hook`, preserves user hooks, uninstall removes cleanly |
 
 ### `internal/integration/` — CLI Dispatch Tests
-
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `IntegrationDispatchParentBareShowsHelp` | cli → cmd/vp | No | `vp config` renders parent help on stdout and exits 0 via the framework dispatch gate (no per-parent stubby `Run` closure) |
@@ -664,7 +652,6 @@ Regression for the iter-134 `/wrap` failure: a never-written
 `Projects/<slug>/memory/` dir in the `--paths` list made `git add` exit 128 and
 aborted the whole commit. `CommitAndPushPaths` now filters supplied paths absent
 from both worktree and index before staging, reporting them in `SkippedPaths`.
-
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `VaultCommitTolerateMissingPath` | cli → storage → git | No | Full-stack `vp vault commit --paths Projects/demo/resume.md,Projects/demo/memory`: exits 0, prints `Skipped (absent): Projects/demo/memory` on stderr, commits `resume.md` (tracked + "wrap demo" at HEAD), and never creates/commits the absent memory path |
@@ -810,7 +797,6 @@ semantics, per-remote `RemoteResults`, and the dirty-`Templates/commands/*.md`
 self-heal that unwedged the triggering `vp commands upgrade` incident). Unit
 coverage in `internal/storage/vaultpull_test.go` (real `git` subprocesses against
 bare-remote + clone fixtures):
-
 | Test | What it proves |
 |------|----------------|
 | `TestPull_PhantomTemplateHeal` | A dirty template whose content equals the remote ref is `git checkout HEAD`-discarded and recorded in `HealedTemplates`, so the merge succeeds instead of aborting |
@@ -827,7 +813,6 @@ bare-remote + clone fixtures):
 
 `internal/storage/pull_conflict_test.go`, toy repos with real `git`; the git
 shim is `reconcileGitShim` (`vaultsync_merge_test.go`).
-
 | Test | What it proves |
 |------|----------------|
 | `TestPull_ConflictIsAbortedAndNamed` | No `MERGE_HEAD` or unmerged entry is left; HEAD, the conflicted file and the host's unrelated dirt are unchanged; the `*mergeConflictError` names the paths, `origin/main`, the short tip and the remedy; git's output is kept |
@@ -857,7 +842,6 @@ the classifier's transcript-DEFER guard. Unit coverage in
 `internal/storage/vaultsyncflow_test.go`, `vaultsync_test.go`, and
 `vaulttidy_test.go` (real `git` subprocesses against bare-remote + clone
 fixtures):
-
 | Test | What it proves |
 |------|----------------|
 | `TestSyncVault_CleanArtifacts` | A tree with only sweepable artifacts is committed locally, then pulled and pushed |
@@ -880,7 +864,6 @@ Covers `storage.ResolveVaultBinding`: the tier-1 `.vibe-palace/local.toml`
 global `vault_path`, and the single typed refusal (`ErrVaultBindingRejected`)
 every rejected binding carries. Hermetic `$HOME`/`XDG_CONFIG_HOME` fixtures; the
 git-origin derivation is a seam (`gitRemoteSlug`) so a test can count its calls.
-
 | Test | What it proves |
 |------|----------------|
 | `TestResolveBinding_PrecedenceMatrix` | Each tier alone, and tiers 1+2 agreeing, give the expected path and source prefix |
@@ -922,7 +905,6 @@ moves from the tracked `.vibe-palace.toml` to the gitignored, co-located
 becomes a hard, fail-closed refusal at the resolver (the seam the CLI, the MCP
 startup bind, and `vp hook` all pass through). The legacy untracked
 `.vibe-palace.toml` `vault_path` stays honored during a deprecation window.
-
 | Test | What it proves |
 |------|----------------|
 | `TestResolveTier1_LocalOverrideWins` (`internal/storage`) | A `.vibe-palace/local.toml` `vault_path` resolves tier 1, source `cwd-local:<file>` |
@@ -952,7 +934,6 @@ Covers `storage.BindProjectVault` (the one `[project_vaults]` writer), its CLI
 (`vp config bind`) and MCP (`vp_config_bind`, stdio only) front ends, and
 `RebindCheckout` (split binds, rename moves the key). Hermetic HOME/XDG
 fixtures with a real git remote on the target vault.
-
 | Test | What it proves |
 |------|----------------|
 | `TestBindMovedBindsEveryCheckout` | A moved bind makes every named checkout, and a fresh worktree, resolve through the binding |
@@ -983,7 +964,6 @@ fixtures with a real git remote on the target vault.
 
 `vp config bind` takes several slugs in one call, and the resolver refuses a
 binding that no longer matches what the vault holds.
-
 | Test | What it proves |
 |------|----------------|
 | `TestBindProjectVaultsWritesEverySlugInOneWrite` / `TestBindProjectVaultsIsAllOrNothing` | Every slug lands in one config write, and one refused slug writes none of them |
@@ -1011,7 +991,6 @@ directories, against `file://` bare remotes, to split two projects out of one
 vault into a second vault. Each printed real-run line and Undo line is run
 through `sh -c` exactly as printed, and both vault paths contain a space, so a
 quoting fault fails the test.
-
 | Test | What it proves |
 |------|----------------|
 | `TestIntegrationLifecycleHappyPath` | `init` publishes both remotes, the copy is byte-identical, the second host's pull sweeps its departed embed cache, a raw write into the moved tree refuses, and `clone --bind` makes the second host's write land in the new vault |
@@ -1150,7 +1129,6 @@ tier's `metrics.jsonl` now actually reaches its 14-day-retention CI upload —
 see the "Fixed, not merely ported" note below.
 
 #### `test/e2e/init/` → `TestIntegrationE2EInit*` (pattern: `^TestIntegrationE2EInit`)
-
 | Test | What it asserts |
 |------|-----------------|
 | `TestIntegrationE2EInitPositionalProjectDir` | `vp init` in a git-inited dir creates `.vibe-palace.toml` + default vault under HOME; no Templates/ pass |
@@ -1167,7 +1145,6 @@ see the "Fixed, not merely ported" note below.
 End-user-level verification that every parent-command exit-code contract
 holds against the real binary. Extended, not replaced — the 3 pre-existing
 tests keep their names; only the 4th (the former `dispatch/04-*.sh`) is new.
-
 | Test | What it asserts |
 |------|-----------------|
 | `TestIntegrationDispatchParentBareShowsHelp` | `vp config` → help on stdout, empty stderr, exit 0 |
@@ -1176,7 +1153,6 @@ tests keep their names; only the 4th (the former `dispatch/04-*.sh`) is new.
 | `TestIntegrationDispatchBareParentExitDiscipline` | Fan-out check across `vault`, `commands`, `migrate`, `skills`, `archive` — bare exits 0 with help, unknown-subcommand exits 1 |
 
 #### `test/e2e/githook/` → `TestIntegrationE2EGithook*` (pattern: `^TestIntegrationE2EGithook`)
-
 | Test | What it asserts |
 |------|-----------------|
 | `TestIntegrationE2EGithookInitInstallsAndReapFires` | `vp init` installs the post-commit hook; a real `git commit -F commit.msg` without `&& rm` leaves no `commit.msg` on disk, even for a multi-paragraph message with trailing whitespace |
@@ -1226,7 +1202,6 @@ upload glob changed accordingly, from
 `/tmp/vp-e2e-workflows-metrics.*/metrics.jsonl`.
 
 ### `internal/integration/` — Phase 12 Tests (Room Classification)
-
 | Test | Layers | ONNX? | What it proves |
 |------|--------|-------|----------------|
 | `WeightedRoomScoring` | palace → storage | No | Weighted keyword scoring ranks rooms correctly; high/medium/low tiers produce expected scores |
@@ -1245,7 +1220,6 @@ upload glob changed accordingly, from
 | `DiscoverRejectsRegressions` | palace → storage | No | Proposals causing regressions (negative score) are filtered out |
 
 ### `internal/capture/` — Capture Pipeline Tests
-
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
 | `CaptureAndSearch` | Yes | Full transcript → chunk → embed → store → search pipeline |
@@ -1264,7 +1238,6 @@ upload glob changed accordingly, from
 > without `-race`. Do not combine `-race` with the ONNX tests in this package.
 
 ### `internal/search/` — Search Engine Tests
-
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
 | `SearchSemanticRanking` | Yes | Related content ranks above unrelated content |
@@ -1325,7 +1298,6 @@ recall) against an independent ground-truth scan. It runs in the
   produce ties at the k-th boundary and `sort.Slice` is not stable — those
   assertions would be tie-fragile and flaky. The distance-bound property is the
   real correctness signal.
-
 | Test | ONNX? | What it proves |
 |------|-------|----------------|
 | `TestConstitutionRecall` | No | Across k ∈ {5,10,20} and sampled queries, every returned distance stays within the GT distance bound (set-overlap recall@k is logged for information only) |
@@ -1355,7 +1327,6 @@ evaluations through the test-only `countingCosine`, library searches through
 
 **Shared contract** (`vector_index_contract_test.go`, every case runs on both
 implementations):
-
 | Test | What it proves |
 |---|---|
 | `TestContractBuildDuplicateIDsLastWins` | `Build` deduplicates ids before adding anything; the last occurrence wins and `Len` counts distinct ids |
@@ -1374,7 +1345,6 @@ implementations):
 | `TestCandidateCountSaturates` | `limit*3` saturates instead of overflowing into a negative `k` |
 
 **HNSW wrapper** (`hnsw_index_test.go`, `main_test.go`, `hnsw_rebuild_test.go`):
-
 | Test | What it proves |
 |---|---|
 | `TestDistanceNameIsPinned` | `distanceName` is `vp-cosine-nanguard`, and `TestMain` found the library resolving it to `cosineNaNGuard` before any constructor ran (registration only in `init()`) |
@@ -1401,7 +1371,6 @@ implementations):
 `internal/indexstore/graph_write_test.go`; `third_party/coder-hnsw/validate_test.go`;
 task `hnsw-graph-file-envelope-and-warm-start`, Unit A). Each `-short`; each was
 broken once against its named mutant and failed before passing.
-
 | Test | What it proves |
 |---|---|
 | `TestGraphRoundTrip` | Build→Save→Load reconstructs every id→key pairing and every vector byte-for-byte (`nextKey` too), and searches answer over the warm graph. Mutant: an id→key mispairing in the reload loop |
@@ -1422,7 +1391,6 @@ publish** (`hnsw_selection_test.go`, `hnsw_index.go`; task
 `hnsw-graph-file-envelope-and-warm-start`, Unit B). The selection thresholds are
 lowered per test so a small corpus straddles them; each was broken once against
 its named mutant and failed before passing.
-
 | Test | What it proves |
 |---|---|
 | `TestSelectKindTable` | `selectKind(loadResult, n, converts)` is the whole Scope-1 table (loaded/mismatch/corrupt/noGraph × n vs L/T × converts). Mutant: `noGraph` ignores `converts` (a search-path conversion) |
@@ -1446,7 +1414,6 @@ its named mutant and failed before passing.
 (`hnsw_catchup_test.go`; task `hnsw-incremental-catch-up-and-save-triggers`,
 Unit C). Thresholds lowered per test; each was broken once against its named
 mutant and failed before passing.
-
 | Test | What it proves |
 |---|---|
 | `TestCatchUpAddsNewTombstonesRemoved` | catch-up inserts the new ids and tombstones the removed ones (serves a,b,d, not c). Mutant: skip the Delete loop / the Insert loop |
@@ -1473,7 +1440,6 @@ race through the converter's OWN step-hooks (`convertAfterBuild`,
 on the published index's `Search`/`liveIDs` rather than a restart (a restart's
 search-path catch-up would mask the bug), and was broken once against its named
 revert before passing.
-
 | Test | What it proves |
 |---|---|
 | `TestConvertT1MidConversionCaptureNotLost` | a capture landing mid-conversion is in the published graph after the swap (same engine's `h.Search`, no restart). Revert: `convertReconcileBounded` returns true at entry → the gate refuses the unreconciled snapshot, no swap, X lost |
@@ -1516,7 +1482,6 @@ task.
   naming one refuses before anything is read, and the walk never opens a
   directory it skips. A file loads only as a `.vec` of exactly 1536 bytes with a
   usable vector; ids are `<project>/<stem>`.
-
 | Test | Where | What it proves |
 |---|---|---|
 | `TestRealCacheSetButEmptyFails` | `make test` | The shared input check returns an error naming an empty or nonexistent cache once `VP_HNSW_REAL_CACHE` is set, and returns "no run" with no error when it is unset |
@@ -1539,7 +1504,6 @@ task.
 the Makefile): an anchored `-run` list, no `-race`, the output and wall time
 printed, and a failure unless every listed test printed `--- PASS: <name>`, so
 a filter that matches nothing or a test that skips cannot pass.
-
 | Target | Gate | Tests | `-timeout` | Run by |
 |---|---|---|---|---|
 | `make hnsw-slow` | `VP_HNSW_SLOW=1` | `TestHNSWChurnRecallFloor5k`, `TestHNSWTombstoneHeavySearchCost` | 15m | the CI `hnsw` job |
@@ -1554,7 +1518,6 @@ A bare `VP_HNSW_MEASURE=1 go test ./internal/search/` runs
 build can exceed: use the targets.
 
 **Engine lifecycle** (`engine_index_lifecycle_test.go`):
-
 | Test | What it proves |
 |---|---|
 | `TestEngineRebuildClosesTheReplacedIndexOffLock` | On both `Rebuild` paths (replace, and the empty-corpus drop) the old index is closed, its rebuild cancelled and exited, and `e.mu` is free when it closes (`beforeIndexClose` hook, `TryLock`) |
@@ -1582,7 +1545,6 @@ installs a lock recorder over the whole binary that fails the run if any
 goroutine nests two index commit locks or tries the run lock while holding one.
 
 **Locks and the counter** (`runlock_test.go`, `tx_test.go`, `generation_test.go`):
-
 | Test | What it proves |
 |---|---|
 | `TestRunLockIsNonBlockingAndNamesItsHolder` | While a helper holds the run lock, `TryRunLock` returns at once with `ok=false`, and `ReadHolder` names the helper's pid, kind, project and start time |
@@ -1605,7 +1567,6 @@ goroutine nests two index commit locks or tries the run lock while holding one.
 | `TestCounterAndHolderWritesAreFsynced` | Counter and holder writes fsync the temp file and, after the rename, the directory |
 
 **Chunk store, ledger and commit steps** (`store_test.go`):
-
 | Test | What it proves |
 |---|---|
 | `TestCollidingDrawerIDsAreTwoStoreChunks` | Two contents whose 32-bit drawer ids collide are two stored chunks |
@@ -1641,7 +1602,6 @@ goroutine nests two index commit locks or tries the run lock while holding one.
 | `TestStoreWritesLeaveTheTreeClean` | With the canonical `.gitignore`, `git status --porcelain -uall` is empty after every kind of store write |
 
 **Reaper, legacy ledger and structure** (`reap_test.go`, `legacy_test.go`, `structure_test.go`):
-
 | Test | What it proves |
 |---|---|
 | `TestReapCollectsAKilledArchiveLaterSuperseded` | The reaper drops a superseded archive's ownership, deletes what it alone owned, and unlinks those vectors |
@@ -1679,7 +1639,6 @@ live-set read, and nothing is reaped; `internal/integration`'s
 ### Importers write the frozen corpus (`importers-write-the-frozen-tracked-corpus`)
 
 The shared prepare step:
-
 | Test | What it proves |
 |------|----------------|
 | `internal/palace`: `TestPrepareMatchesTheGolden` | `palace.Prepare` on `testdata/prepare_fixture.md`, under the default config, yields the wings, rooms, halls, chunk indexes, contents, dates, entities and triples of `testdata/prepare_golden.json`; chunk ids are compared by content, since `Prepare` ids are `index.ChunkID` and the golden's are drawer ids |
@@ -1700,7 +1659,6 @@ go test ./internal/palace ./internal/capture   # both must then pass
 ```
 
 The vibevault importer (`internal/migrate/vibevault_archive_test.go`):
-
 | Test | What it proves |
 |------|----------------|
 | `TestVibevaultWritesArchivesOnly` | An import writes archives and manifests, and no tracked drawer or KG file |
@@ -1721,7 +1679,6 @@ The MemPalace importer (`internal/migrate/mempalace_store_test.go`). The
 rows that pin "exactly one batch record" count raw `"kind":"batch"` lines in
 `ledger.jsonl`, because the ledger fold is last-wins and would hide a
 duplicate.
-
 | Test | What it proves |
 |------|----------------|
 | `TestMempalaceRefusesAnUnknownProject` | A slug in neither tree is refused and nothing is written |
@@ -1743,7 +1700,6 @@ duplicate.
 | `TestMempalaceSkipsBlankDrawers` | Blank drawers are counted and skipped |
 
 Elsewhere:
-
 | Test | What it proves |
 |------|----------------|
 | `internal/integration`: `TestIntegrationVibeVaultImportWritesArchives`, `TestIntegrationVibeVaultIdempotentReimport` | End to end, vibevault archives sessions and a re-run adds nothing |
@@ -1761,7 +1717,6 @@ use the package's seams (`afterPrepareFn`, `beforeLockFn`, `beforeReleaseFn`,
 `readVerifiedFn`).
 
 The store support:
-
 | Test | What it proves |
 |------|----------------|
 | `internal/archive`: `TestReadVerified*` | The whole-archive read: one read of the file; length, `source_bytes` and hash checked; a manifest-less archive keyed by its bytes; a manifest changed or moved since the listing, or rewritten mid-read, is `ErrArchiveChanged`, never `ErrArchiveCorrupt` |
@@ -1771,7 +1726,6 @@ The store support:
 | `internal/search`: `TestCachedVectorChecksTheRegime` | Another regime's vector, or one with no sidecar, is never a cache hit |
 
 The commit step (`ingest_test.go`):
-
 | Test | What it proves |
 |------|----------------|
 | `TestIngestArchiveCommitsAPendingArchive` | Owners are the archive's `source_sha256`; every chunk has a vector; the ledger record carries the vault-relative path, hash, distinct chunk count, `captured_at`, start day and source, generation 1; `git status` stays empty |
@@ -1786,7 +1740,6 @@ The commit step (`ingest_test.go`):
 | `TestIngestArchiveCheckpoint`, `TestIngestArchiveFailsOnCorruptBytes` | A checkpoint error abandons the archive; corrupt bytes are an error, never ledgered |
 
 The run (`run_test.go`) and the repair (`repair_test.go`):
-
 | Test | What it proves |
 |------|----------------|
 | `TestRunIngestsOnlyArchivesOutsideTheBaseline` | Automatic scope is the archives outside the baseline set, whatever their dates; an explicit run takes the backlog |
@@ -1808,7 +1761,6 @@ The run (`run_test.go`) and the repair (`repair_test.go`):
 
 The code review's fixes (`review_fix_test.go`, adapted from the reviewer's
 repros):
-
 | Test | What it proves |
 |------|----------------|
 | `TestRunServesAnArchiveThatArrivesDuringTheRun` | An archive that arrives during the run (its trigger losing the lock) is served by the holder before it releases |
@@ -1839,7 +1791,6 @@ Task `index-fingerprints-project-lifecycle-and-migration-marker` (ADR-014
 decision 3, "the migration marker", and the host-local counterparts). Every
 test below was broken once on purpose and failed; the mutants are recorded in
 that task.
-
 | Test | What it pins |
 |---|---|
 | `internal/surface`: `TestWriteFormat_KeepsTheMarker` | A format bump is a read-modify-write that keeps `authored_only` |
@@ -1902,7 +1853,6 @@ operator-typed HOST path stays OUT. It backs `--export` on `audit rooms`,
 commands that previously handed a user path straight to `os.Create`, so an
 export could overwrite a vault document with no lock, no stamp, no containment
 and no CAS, and still report success.
-
 | Test | What it proves |
 |------|----------------|
 | `TestRefuseDestinationInsideVaultRefusesAnExistingVaultDocument` | The base case: a live document under the vault root is refused |
@@ -1917,7 +1867,6 @@ and no CAS, and still report success.
 | `TestRefuseDestinationInsideVaultEmptyRootFailsClosed` | `filepath.Abs("")` succeeds as the cwd, so an empty root must be refused BEFORE `Abs` — otherwise the predicate silently answers a question about the working directory |
 
 The CLI half pins the policy the predicate cannot express on its own:
-
 | Test | What it proves |
 |------|----------------|
 | `TestAuditRoomsRefusesExportInsideVault` | Site 1 (`--export`) refuses, and asserts the target document was **not** overwritten — not merely the exit code |
@@ -1965,7 +1914,6 @@ scan. A second private copy of the conditions is the defect the whole feature
 exists to prevent.
 
 ### Contract and detection (`internal/wrapstate/heading_contract_test.go`, `internal/check/iteration_headings_test.go`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestScanFrameOrphans_MustFlag` / `_MustNotFlag` | every live orphan shape is caught, and the frame rule does **not** fire on a front-matter `---`, a fenced sample, an indented block, or an H3 sub-section |
@@ -1984,7 +1932,6 @@ harness — over fixtures built with a new `orphanFrame` helper that composes th
 writer's frame with a heading `FormatIterationHeader` would never emit. All five
 are mutation-proven: neutralise the orphan clamp in `ParseEntries` and all five
 go red.
-
 | Test | What it proves |
 |------|----------------|
 | `TestGetIteration_OrphanNotGluedOntoPrecedingEntry` | the measured 110/111 case at the tool: `n=110` returns 110's narrative and neither the orphan's heading nor its body, `bytes` still describes the body advertised, and the orphan gains no phantom entry in the archive extent |
@@ -1998,7 +1945,6 @@ go red.
 The planner decides what may be repaired. Its one catastrophic failure mode is
 **inventing an iteration number**, because once written a guess is
 indistinguishable from a number the operator chose — the file is the only record.
-
 | Test | What it proves |
 |------|----------------|
 | **`TestPlanRefusesOffListOrphan`** | **the anti-derivation pin.** An orphan is planted in a numeric gap, in a project the operator's table *does* cover, with an obvious max+1 available — and the plan must take none of those. Mutation-proven against the refusal branch |
@@ -2022,7 +1968,6 @@ A helper test does not prove the path the helper is installed on. These drive
 against a git-clean temp vault whose fixtures place the operator's rows on
 **exactly** their recorded line numbers, so the real table is exercised rather
 than bypassed.
-
 | Test | What it proves |
 |------|----------------|
 | `TestMigrateIterationHeadingsAppliesThroughTheRealSeam` | heading-only diff on disk, clean archives untouched and unmentioned, and a `.surface` stamp — the structural proof the write went through the vault layer rather than a hand-rolled `os.WriteFile` |
@@ -2042,7 +1987,6 @@ trusts it takes the oldest narrative believing it took the newest, and nothing
 about the result looks wrong. Three other places in the vault say `newest first`
 truthfully, which is why the match is an exact literal rather than a rule about
 sentences.
-
 | Test | What it proves |
 |------|----------------|
 | `TestRepairIterationsPreambleSparesTrueStatements` | rezbldr's scoped pre-rename sentence, the `git log` narratives, and a hand-edited variant are all left alone |
@@ -2068,7 +2012,6 @@ last-writer boundary. **It is never regenerated**: there is no
 ratchet, and no shallow-clone skip — so no test reads vibe-palace's own git
 history, and none can pass vacuously in a shallow CI clone. Two tests pin
 it:
-
 | Test | Pins |
 |---|---|
 | `TestShippedManifestWellFormed` | a header naming the boundary and the derivation; every row `^[0-9a-f]{64}  \S.*\.md$`, a clean relative relpath, sorted by (relpath, key), unique; exactly two `# extra:` annotations, each directly before one of the two `pre-rebase-501c96e` tag rows and naming its blob OID; no CR in the file; every row parses |
@@ -2334,7 +2277,6 @@ The host stub returns `e.Hosts` (nil by default, so the report carries the
 single `MCP hosts` Skip row) and counts into `e.HostCalls`. Like the embedder
 helpers it sets `VP_TEST_MCP_HOST_SEAM` through `t.Setenv` before swapping, so
 a parallel caller panics instead of racing.
-
 | Test | What it proves |
 |------|----------------|
 | `TestCheckCommand` | Human/JSON parity in two envs — healthy, and healthy plus a vault-root `.gitattributes` naming the `vp-surface` merge driver (exactly one Fail): the human `[FAIL]` count equals `summary.fail`, and the human exit is `ExitUser` exactly when `exit_code` is 1. Mutating `runCheck`'s `n > 0` to `n > 1` turns the merge-driver row red |
@@ -2468,7 +2410,6 @@ reports the complement.
 Toy-repo fixtures only (`marker_fixtures_test.go`): a "migrated" vault is the
 marker, the derived ignore lines and the drawers untracked and deleted in one
 commit; "migrated then reverted" adds `git revert`. None runs the migration.
-
 | Test | What it proves |
 |---|---|
 | `internal/surface`: `TestParseVaultManifest_SameAsTheFileReader` | The bytes parser the git readers use and the file reader agree, and a malformed marker names `authored_only` |
@@ -2603,7 +2544,6 @@ init` (`splitInitDest`, against a local bare remote). The split, merge and copy
 suites write the migration marker into both vaults (`splitFixtureVault`,
 `formatManifest`, the copy tool and CLI fixtures). Tests that assumed split
 creates its destination now assert the destination is unchanged instead.
-
 | Test | What it proves |
 |---|---|
 | `internal/storage`: `TestDerivedResidue_TrackedDrawerIsNever`, `TestDerivedResidue_PathAndUntrackedAndIgnored`, `TestDerivedResidue_RechecksEveryLine`, `TestDerivedResidue_OneGitCall`, `TestDerivedResidue_GitFailureIsAnError`, `TestDerivedResidue_NotAGitVault` | The residue is untracked AND ignored AND derived (never a tracked drawer, never an ignored `*.bak`), every listed line is re-checked with `isDerivedPath`, one git call for all slugs, and a git failure is an error |
@@ -2620,7 +2560,6 @@ already the `make test` / Tier 1 default); the cross-process test is an
 integration-tier test, `-short`-skipped, run by `make integration`.
 
 ### `internal/vaultlock` — Lock Primitive
-
 | Test | What it proves |
 |------|----------------|
 | `TestAcquireCreatesLockDirAndFile` | `Acquire` creates `<root>/.vp-locks/` and exactly one `.lock` sidecar |
@@ -2633,7 +2572,6 @@ integration-tier test, `-short`-skipped, run by `make integration`.
 | `TestAcquireInvalidVaultRoot` | empty or relative `vaultRoot` is rejected |
 
 ### `internal/vaultfs` — Concurrent Write Path (`-race`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestEdit_ConcurrentNoLostUpdate` | 32 goroutines each `Edit` their own anchor in one file; with the lock held across the whole read-modify-write every contribution survives (no lost update) |
@@ -2647,7 +2585,6 @@ The `.vp-locks` segment refusal is covered by
 ### `internal/storage` — Interlock and RMW (`-race`)
 
 `vaultlock_write_test.go`:
-
 | Test | What it proves |
 |------|----------------|
 | `TestDeleteDrawerAppendDrawerInterlock` | concurrent `AppendDrawer` and `DeleteDrawer` on one drawers file interlock on the same lock object: the file stays valid JSONL, every appended-and-kept ID survives, every deleted ID is gone (the historical non-interlock bug) |
@@ -2664,7 +2601,6 @@ sequential-never-nested sequence share. Every test here runs under a watchdog
 (`mustFinishWithin`), because the failure these tests guard is a timeout-free
 `LOCK_EX` that **hangs** rather than errors — without the watchdog a regression
 wedges the package instead of naming itself.
-
 | Test | What it proves |
 |------|----------------|
 | `TestCreate_ConcurrentChangedSourcePreservesExactlyOneBak` | 8 goroutines archive one session with a CHANGED source against one vault, over 4 independent rounds: exactly one `.bak` survives, it holds the PRIOR hash, the live manifest holds the NEW one, and no racer errors. Unlocked, racers derive the same `.bak` name and collide on the rename (or read past it and preserve nothing). Non-vacuity: at least one racer must report `Skipped=false`, so a build where every racer deduped cannot pass by never reaching the arm |
@@ -2676,13 +2612,11 @@ wedges the package instead of naming itself.
 | `TestCreate_ThenLinkSessionNote_NoSelfDeadlock` | `Create` → `LinkSessionNote` → `Create` (through the `.bak` arm) → `LinkSessionNote`, sequentially in one process, completes. `flock` does not recurse, so anyone who moved the acquire down into the shared `WriteManifest` would deadlock here permanently rather than fail |
 
 `internal/hook`:
-
 | Test | What it proves |
 |------|----------------|
 | `TestRun_ArchiveManifestLockContentionIsNonFatal` | **the test that proves a contended lock cannot lose a SessionEnd.** The manifest lock is held from outside; a full `SessionEnd` still returns, reports the refusal in `Result.Error`, sets no `ArchivePath`, and writes its session note. `cmdHook` is registered UNWRAPPED and `cmd_hook.go` passes `context.Background()`, so there is no timeout on that path — mutating the posture to `LockBlocking` does not fail this test, it **hangs** it, and the watchdog is what turns that into a legible failure |
 
 ### `internal/integration` — Cross-Process (`-short`-skipped, `make integration`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestIntegration_VaultLockCrossProcess` | builds the real `vp` binary and launches N concurrent `vp vault edit` child **processes** contending on one seeded file; every fixed-width anchor is converted to its DONE marker exactly once, proving the advisory flock serializes whole-file RMW across separate OS processes (CLI vs MCP). Skipped under `-short`. |
@@ -2696,7 +2630,6 @@ while the flock had serialized every child correctly (ADR-003 amendment
 **Linux** — the retry loop reaches `os.Rename`, the errno classifier and
 `time.Sleep` through unexported package vars, so the policy is exercised without
 a Windows runner.
-
 | Test | What it proves |
 |------|----------------|
 | `TestRenameWithRetry_RetriesThenSucceeds` | a rename failing twice with a retryable error then succeeding returns nil, and the attempt **count** proves the loop actually re-ran rather than the first call quietly succeeding. |
@@ -2744,7 +2677,6 @@ The one test from this epic that survives is the `CreateTask` TOCTOU guard,
 because `CreateTask` outlived the editor that was its second caller.
 
 ### `internal/storage` — `CreateTask` TOCTOU (`tasks_test.go`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestCreateTask_ConcurrentSameSlugExactlyOneWins` | the already-exists `os.Stat` now runs **inside** the per-path lock: of N concurrent creates of one slug, exactly one succeeds and the rest error — previously both passed the check and one silently overwrote the other |
@@ -2770,14 +2702,12 @@ call. Second, the empty guard is an assertion, not an escape hatch. All of
 these are pure-unit / in-process (no ONNX) and run in `make test`.
 
 ### `internal/storage` — CAS Writer (`project_dirs_test.go`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestWriteResumeCAS` | the full matrix: a matching sha writes; a mismatched sha is refused with `*ResumeConflictError` (unwrapping to `vaultfs.ErrShaConflict`) carrying the actual current digest; `""` creates when absent; `""` is a **conflict** when the file exists (an omitted guard cannot degrade to last-writer-wins); a non-empty sha against an absent file conflicts with `Current: "(absent)"` |
 | `TestWriteResumeRefusesStaleRead` | the motivating scenario end to end: A reads, B writes, A's write against its stale sha is refused and **B's content is still on disk** — the file is left untouched by the refusal |
 
 ### `internal/tools` — Digest Read Path and the Required Guard
-
 | Test | What it proves |
 |------|----------------|
 | `TestGetResumeSha256MatchesDisk` (`context_query_tools_test.go`) | `vp_get_resume`'s `sha256` equals the sha256 of the bytes actually on disk — i.e. it is a usable CAS guard, not a decoration |
@@ -2803,7 +2733,6 @@ on a real `mcp.Server`, the registry's schema validation and mutating-write gate
 then the handler. The storage- and schema-layer tests above would all still pass
 if the tool mapped a conflict to a SUCCESS result or lost the error on the way
 back through dispatch; this is the test that makes those failure modes visible.
-
 | What it proves |
 |----------------|
 | Writer A reads `resume.md`, writer B lands a concurrent `vp_vault_edit`, and A's whole-file `vp_update_resume` against its now-stale sha is **refused** — B's edit survives. Mutation-proven: breaking the in-lock compare in `storage.WriteResume` makes it fail with *"the stale `vp_update_resume` SUCCEEDED; writer B's edit was silently reverted."* |
@@ -2853,7 +2782,6 @@ full-suite check tests stub the seam through `healthyCheckEnv` (see "`cmd/vp` �
 Flag Wiring").
 
 ### `cmd/vp/cmd_migrate_test.go` (all under the guard)
-
 | Test | What it proves |
 |------|----------------|
 | `TestMigrateMemPalaceMissingExportBuildsNoEmbedder` | A missing export exits 1 with `read export file`, dry run and real run alike |
@@ -2875,7 +2803,6 @@ Flag Wiring").
 | `TestMigrateVibeVaultRealRunArchivesAndNamesNoCommand` / `…NoSessionsBuildsNoEmbedder` | A real run archives the session and `knowledge.md` with zero constructions, says the archives are not indexed yet, and names no command (no match of `\bvp [a-z]`); `--agentctx --no-sessions` never constructs either |
 
 ### `cmd/vp/cmd_search_test.go` (all under the guard, each in a temp cwd)
-
 | Test | What it proves |
 |------|----------------|
 | `TestSearchInvalidProjectSlugBuildsNoEmbedder` | `-p "../Bad Slug"` exits 1 |
@@ -2886,7 +2813,6 @@ Flag Wiring").
 | `TestSearchUnreadableProjectsIsSystemError` | An unlistable `Projects/` exits 2 — "could not look" is not "absent" |
 
 ### Harness and library
-
 | Test | What it proves |
 |------|----------------|
 | `TestForbidVaultEmbedderRecordsAndRestores` | Through a recorder: the forbidden seam reports an error naming `stubVaultEmbedder`, returns the sentinel, and is restored by cleanup |
@@ -2925,7 +2851,6 @@ blow past the host's initialize timeout — leaving a live session with zero too
 Three layers of test hold that down.
 
 ### `internal/embedder/lazy_test.go` — the `LazyEmbedder` proxy (unit, no ONNX)
-
 | Test | What it proves |
 |------|----------------|
 | `TestLazyDefersConstruction` | The wrapped constructor has run **zero** times before first use, once after |
@@ -2965,7 +2890,6 @@ Neither proves that nothing on the **server's** startup path forces the model
 anyway, or that a cold `vp_search` actually reaches the disk. These two do,
 through real JSON-RPC dispatch against the production tool surface
 (`tools.RegisterAll` on a real `mcp.Server`).
-
 | Test | What it proves |
 |------|----------------|
 | `TestIntegration_HandshakeDoesNotConstructEmbedder` | Registering the surface, answering `initialize`, and answering `tools/list` construct the embedder **zero** times. The count — not wall-clock time — is the observable: timing assertions are unworkable under CI's `-race`. Non-vacuity: the first `vp_search` drives the count to exactly 1, and a second search leaves it at 1 |
@@ -2995,7 +2919,6 @@ for dedup on every call, so a per-drawer loop would make seeding O(N²).
 `flushDrawers` directly (an `atomic.Int32`, matching the idiom
 `countingLazyEmbedder` already uses below) so this batching property is a
 checked call-count assertion, not just an inference from correct output.
-
 | Test | What it proves |
 |------|----------------|
 | `TestSeedBatchesManyDrawerOptionsIntoOneRoom` | A 50-entry batch (30 via `WithDrawers`, 19 via `WithDrawer`, 1 via `WithDrawerOut`) into ONE `(project, wing, room)` group lands correctly AND flushes with exactly **1** `AppendDrawers` call, regardless of how many separate option calls contributed to it. Count — not wall-clock time — is the observable; see the same rule under *Lazy Startup Tests* (`TestIntegration_HandshakeDoesNotConstructEmbedder`) |
@@ -3035,7 +2958,6 @@ parsing and validation, project scoping, the list index shape (no bodies), and
 harvest param wiring (`project`/`cwd`/`dry_run`/`push`).
 
 ### `internal/wrapstate` — Memory Dirt Categorization (`collect_test.go`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestDirtyProbes` | vault dirt is split into non-memory vs memory by path (including rename-by-destination and quoted paths) |
@@ -3043,7 +2965,6 @@ harvest param wiring (`project`/`cwd`/`dry_run`/`push`).
 | `TestPreflight_MemoryDirt` | memory-only dirt emits a `memory_dirty` NOTE and no `vault_dirty` warning; non-memory dirt still warns |
 
 ### `internal/hook` — SessionEnd Harvest (`hook_test.go`)
-
 | Test | What it proves |
 |------|----------------|
 | `TestRun_SessionEndHarvests` | `SessionEnd` drains the native dir into the vault and commits |
@@ -3181,7 +3102,6 @@ at different absolute paths on different hosts (and in different subtrees on one
 host), `note_path` is **persisted**, and it is exactly the form `vp_vault_read`
 consumes. An absolute path here is a fact about the writing host and a lie
 everywhere else.
-
 | Test | What it proves |
 |------|----------------|
 | `TestWriteSessionNotePathNamesARealFile` (`internal/capture`) | The returned `note_path` is non-empty, **relative**, slash-separated, **resolves to a file that exists** under the vault root, and that file carries both the session ID and **its own `note_path` in frontmatter** |
@@ -3240,7 +3160,6 @@ recompute: `archive:`, `friction_breakdown` (whose **nil is load-bearing** — n
 *never scored*, so dropping it does not merely lose data, it **lies**), and any
 LLM-synthesized narrative. That last one is a **live race**: the enrichment drain
 rewrites notes *asynchronously, after* the capture that created them.
-
 | Test | What it proves |
 |------|----------------|
 | `TestWriteSessionNoteLandsDespitePreWriteFailures` (`internal/capture`) | A failing enricher **and** an unresolvable archive together still leave the note **on disk**, with both losses reported |
@@ -3290,7 +3209,6 @@ Hook-less hosts get a transcript archive at capture time when a non-empty
 inline archive even if `archive_transcript` is omitted; the flag remains an
 explicit force for other empty-id hosts and a no-op on Claude Code (see
 `doc/ARCHITECTURE.md`). Coverage spans the three layers the feature touches:
-
 | Test | What it proves |
 |------|----------------|
 | `TestInlineAdapter_*` (`internal/archive`, 6 tests) | The `inline` adapter round-trips caller-supplied bytes **verbatim** into a manifest + compressed archive pair; empty `SourceContent` is a clear hard error, never a fallback; re-`Create` with the same id is idempotent; changed content preserves the prior manifest; the temp file is cleaned up |
@@ -3352,7 +3270,6 @@ So health **rides in the `vp_bootstrap_context` payload** every session already 
 and is **absent entirely when healthy** — an always-on green light is the soft signal
 agents learn to skim past, the same reasoning that killed the `partial` capture tier.
 The field appearing *at all* means something needs looking at.
-
 | Test | What it proves |
 |------|----------------|
 | `TestSummarizeUnknownNotHealthyOnMissingLog` (`internal/vplog`) | A log that cannot be read is **`unknown`**, never `healthy`, and `scan_error` says why |
@@ -3434,7 +3351,6 @@ The tool still answers two questions itself, cheaply and without a run lock:
 spawning: the pending archives and the baseline set counted separately with their
 bytes, the estimate, the reserve and the free space. It writes nothing and takes no
 lock.
-
 | Test | What it proves |
 |------|----------------|
 | `TestRefreshIndexStartsADetachedRebuild` | With a recording launcher, a project that has content returns `{started: true, pid, log}` after **exactly one** launch of `vp index rebuild <project> --vault-root <root>`, and the handler itself opened no archive and built no index |
@@ -3482,7 +3398,6 @@ existing test actually reaches.** A test that keeps passing while measuring the
 wrong thing is worse than a missing one.
 
 ### `internal/tools/task_overwrite_test.go`
-
 | Test | What it proves |
 |------|----------------|
 | `TestOverwriteRevisesThePreambleAboveTheFirstH2` | **The acceptance gate.** Asserts POSITION, not presence: `headerAndPreamble` derives the region between the header block and the first H2, a precondition asserts a created task's preamble is EMPTY, then an overwrite INSERTS a provenance line and asserts `index(line) < index("## Context")`, and a second overwrite CHANGES it. The header block must be byte-identical both times |
@@ -3498,7 +3413,6 @@ wrong thing is worse than a missing one.
 The refuse-gate is in `vaultfs`, not in the MCP tool, so `vp vault write` /
 `vp vault edit` are covered by the same rule: **a guard only an agent can trip is
 not a guard.**
-
 | Test | What it proves |
 |------|----------------|
 | `TestIsTaskFilePath` | Active, `done/`, `cancelled/` and case variants match; `notes/tasks.md`, `Knowledge/tasks/…` and a bare `tasks/` do not |
@@ -3518,6 +3432,142 @@ than on the heading's spelling.
 
 ---
 
+## Transcript exclusion — the guards, and what each one's mutation is
+
+Task `exclude-the-transcript-tier-from-indexing-by-default`. The transcript
+tier is OPT-IN per host: `[index] transcripts` defaults to `false`, archives
+are still captured exactly as before and are simply never ingested.
+
+🔴 **Two resolution rules, not one, and TWO CONSUMERS of both.** The ARGV FLAG
+is resolved ONCE PER PASS and never varies by project; the CONFIG FALLBACK is
+resolved ONCE PER PROJECT PER PASS, because a pass spans projects (`runHeld`'s
+`for _, p := range projects` loops; `vp index rebuild --all`'s target loop)
+while the host-local layer that opts a project in is per-project. Collapsing
+them back into one resolution is the mutation
+`TestAPassOverTwoProjectsResolvesEachProjectsOwnConfig` and
+`TestADrainPassResolvesEachProjectsOwnConfig` exist to catch.
+
+🔴 **The belt turns on the VECTOR, not on the owner alone** (operator ruling
+2026-11-06, *"don't ingest, but don't discard"*). The transcript decision
+governs INGESTION, not what the engine loads from what is already stored:
+
+- an archive-owned chunk WITH a cached vector is LOADED whatever the setting
+  says, so an explicit opt-in run's work survives the next automatic rebuild;
+- one WITHOUT a vector is skipped and NOT counted as a miss — the belt's
+  original purpose, unchanged, because a miss sets `StaleMissingVectors` and
+  makes an excluded project demand the very rebuild the exclusion avoids, and
+  because embedding it IS the days-long cost.
+
+🔴 **This moved three guards' fixtures and invalidated one assertion.** A
+fixture whose archive chunks carry vectors no longer reaches the skip at all,
+so `TestTheWalkCountsArchiveChunksBeforeTheExclusionSkip`,
+`TestTheENGINEIndexesEachProjectUnderItsOwnConfig` and
+`TestTheTranscriptsFlagReachesTheSearchEngine` all now warm their stores with
+`--no-embed`. The last one's `--no-transcripts` arm previously asserted the
+engine DROPPED stored chunks; that assertion was not weakened but made wrong by
+the ruling, and `TestAnAutomaticRebuildDoesNotDiscardAnOptInRunsWork` asserts
+its opposite as the contract.
+
+🔴 **`internal/ingest` is only ONE of the two consumers.** `search.Engine`
+resolves the same two rules for the walk's exclusion belt, the completeness
+record and the coverage state — so it carries BOTH halves:
+`search.WithTranscriptsFlag` (the pass's flag) and `search.WithConfigFor` (the
+per-project fallback). `rebuildProject` skips the archive INGEST pass for
+`--no-transcripts` and then still runs the ENGINE rebuild, so an engine
+resolving from config alone reloaded the archive-owned chunks the flag said to
+leave out, and skipped archives a `--transcripts` run had just admitted. The
+rule itself lives in `storage.ResolveTranscripts`, with ONE definition and two
+callers; a copy in either package would be a second place to forget it.
+
+Each guard below records three answers, because each of the three has caught a
+real inert guard in this feature:
+
+- **Q1 PATH** — **WIRING** (starts from an argv slice, an on-disk config file
+  or a real killed process, and ends at a durable production effect) or
+  **COMPONENT** (drives one function with inputs the test supplies). 🔴 A
+  COMPONENT guard may never be cited as closing a WIRING claim.
+- **Q2 VALUE** — the fixture's value differs from what the mutation falls back
+  to. Every guard that exercises the CONFIG LAYERING sets `transcripts = true`,
+  the value OPPOSITE the default; set to `false` it would agree with the
+  default and stay green on its own mutation. For the per-project guards the
+  two PROJECTS must differ, not just the value.
+- **Q3 PRESENCE** — the fixture CONTAINS the thing the mutation acts on, and
+  that is asserted BEFORE the call.
+| Guard | Kind | File | Mutation that must redden it |
+|---|---|---|---|
+| `TestTheTranscriptsFlagBeatsTheConfigFromArgv` | WIRING | `cmd/vp/transcript_exclusion_wiring_test.go` | each of the six flag-wiring edits in turn: drop the two `cli.FlagDef`s; drop the field from the `indexRebuildArgs{…}` literal; drop `Transcripts:` from the `RebuildOptions{…}` literal; hardcode `transcripts := false` in `Rebuild`; `transcripts := d.Config.IndexTranscripts` (the config beating the argv); the flag as the only input |
+| `TestTheLauncherArgvTurnsTranscriptsOffEndToEnd` | WIRING | same | delete `--no-transcripts` from `tools.NewRebuildLauncher`'s argv |
+| `TestTheDrainSpawnerArgvTurnsTranscriptsOffEndToEnd` | WIRING | same | delete it from `main.spawnRebuildFor`'s argv |
+| `TestTheHostLocalConfigFileReachesTheIngestDecision` | WIRING | same | take `index` out of `storage.hostProjectLayer`'s allow-list |
+| `TestAPerProjectOptInDoesNotLeakToAnotherProject` | WIRING | same | share one decoded layer across `LoadConfig` calls |
+| `TestAPassOverTwoProjectsResolvesEachProjectsOwnConfig` | WIRING | `cmd/vp/transcript_exclusion_wiring_test.go` | hoist the per-target `d.transcriptsFor(…, p)` back out of `Rebuild`'s loop into one `resolveTranscripts(o.Transcripts, d.Config)`. 🔴 Its two fixture projects must DISAGREE (p opted in by a host-local file, q on the global's default) and q must hold an admissible archive — the control sub-test proves that empirically. Its third sub-test pins the other half: the ARGV FLAG is NOT per project |
+| `TestADrainPassResolvesEachProjectsOwnConfig` | WIRING | same | hoist it out of `runPending` into one per-pass resolution. q's ledger is created BEFORE its archive so the archive is PENDING, not baseline, and the two projects use DIFFERENT session ids so their archives do not hash the same — a shared hash makes the run's memo refuse the second as already attempted, whatever its config says |
+| `TestAnAutomaticRebuildDoesNotDiscardAnOptInRunsWork` | WIRING | `cmd/vp/transcript_exclusion_wiring_test.go` | restore the pre-ruling belt (`if archiveOwned && !indexTranscripts { continue }`). 🔴 Q3: the opt-in run must have EMBEDDED the chunks, asserted two ways — a `local` tier AND a cached vector per archive-owned chunk — or there is no work to survive. Q2: the host config is the DEFAULT `false`, so the surviving tier cannot be explained by the config agreeing. It also re-asserts the bound: a NEW archive arriving later still stays out |
+| `TestTheTranscriptsFlagReachesTheSearchEngine` | WIRING | `cmd/vp/transcript_exclusion_wiring_test.go` | revert `Engine.indexTranscripts` to return `cfg.IndexTranscripts`; and drop `search.WithTranscriptsFlag` from `vp index rebuild`'s `NewEngine`. 🔴 **Only the `--no-transcripts` arm reddens** — measured, not assumed. The `--transcripts` arm is a CONTROL: ingest has the flag too and its repair pass embeds the chunk before the engine walks, after which the engine loads it whatever its own setting says (the 2026-11-06 ruling). 🔴 Q3: the store must be warm AND UNEMBEDDED (`--transcripts --no-embed`) — the belt acts only on a vectorless chunk, so a vectored fixture makes both arms take the same path |
+| `TestTheENGINEIndexesEachProjectUnderItsOwnConfig` | WIRING | same | revert the engine to the single pass-level config; and drop `search.WithConfigFor`. 🔴 **Only the `global on, q opted out locally` arm reddens** — measured against both that mutation AND the ingest-side hoist. The `global off, p opted in` arm is a control for the same reason as above: p's ingest half opts in, so its repair embeds p's chunks and the engine then loads them regardless. 🔴 Q3: both stores warm via ONE `--all --transcripts --no-embed` run — per-project warm-ups make the other project a step-7 rescan target whose repair pass re-embeds its vectors |
+| `TestResolveTranscriptsIsTheOnePrecedenceRule` | COMPONENT | `internal/storage/transcript_exclusion_test.go` | make the config beat the flag (R1's regression shape). 🔴 NOT the naive inversion `if opt == nil { return *opt }` — that nil-dereferences and aborts the run before the two discriminating rows. It guards the rule where it LIVES, now that it has two callers; it may not be cited for either caller actually reaching it |
+| `TestTheAutomaticIngesterAdmitsNoArchiveWhenExcluded` | COMPONENT | same | delete the exclusion arm from `decide` |
+| `TestTheExclusionArmBindsTheExplicitPassToo` | COMPONENT | same | MOVE the arm below `decide`'s `o.Explicit` early return |
+| `TestTheExplicitRebuildSkipsTheArchivePassWhenExcluded` | COMPONENT | same | delete the guard around step 4 in `rebuildProject` |
+| `TestTheExcludedRebuildStillBuildsTheAuthoredTiers` | COMPONENT | same | skip step 5 as well as step 4 |
+| `TestATranscriptFreeRebuildCompletesAndClearsStale` | COMPONENT | same | delete the exclusion arm from `everyLiveArchiveAccounted` |
+| `TestATranscriptFreeCompletionDoesNotClearTheBaseline` | COMPONENT | same | let `ClearBaseline` run unconditionally |
+| `TestAnExcludedRebuildClearsTheColdSearchWant` | COMPONENT | `internal/ingest/transcript_exclusion_test.go` | tie the want-clear to `transcripts`. The acceptance item "the cold-search hair trigger is dead": an excluded rebuild must CLEAR the durable rebuild-corpus want, or every later cold search re-spawns and the exclusion removes the build's cost without removing the trigger |
+| `TestAnExcludedProjectWithArchivesReadsAuthoredNotPartial` | COMPONENT | `internal/search/transcript_exclusion_test.go` | delete the `authored` branch from `CoverageState` |
+| `TestAuthoredIsUnreachableWhileArchiveChunksAreLiveOwned` | COMPONENT | same | delete the `ExcludedTiers` arm ALONE (not with `!IndexTranscripts`) |
+| `TestTheWalkCountsArchiveChunksBeforeTheExclusionSkip` | COMPONENT | same | RELOCATE `facts.archiveOwned++` below the exclusion `continue`. 🔴 Relocate, do not DELETE — a deletion reddens for the wrong reason, because `archiveOwned` is then always zero. 🔴 Q3: the fixture commits with `withVecs=false` and asserts per chunk that it has NO cached vector. It used to commit WITH vectors; the 2026-11-06 ruling made that inert and the relocation mutation ran green against it |
+| `TestUnreclaimedChunksDoNotBlockAuthored` | COMPONENT | same | add the unreclaimed count to the `authored` predicate |
+| `TestTheExcludedTierIsNamedInTheCoverageReport` | COMPONENT | same | stop copying `rec.ExcludedTiers` into `Coverage` |
+| `TestAnExcludedProjectWithLiveOwnedArchiveChunksIsNotStale` | COMPONENT | same | drop the walk's exclusion `continue`, so archive chunks count as `localMisses` (re-measured after the 2026-11-06 ruling: still reddens). 🔴 Q3 unchanged and now load-bearing twice over: the chunk must be ingested AND a cache MISS, because the belt now acts only on a vectorless chunk |
+| `TestAnAuthoredProjectRaisesNoBootstrapAlert` | COMPONENT | `internal/tools/transcript_exclusion_test.go` | add a `case search.CoverageAuthored:` arm to the alert switch |
+| `TestAnAuthoredProjectIsNotTalliedAsAProblem` | COMPONENT | same | remove `&& oc.State != search.CoverageAuthored` from the bootstrap tally |
+| `TestTheColdSearchLauncherArgvCarriesTheFlag` | COMPONENT | same | delete the flag from the launcher argv (proves it is PRODUCED only) |
+| `TestRefreshIndexDoesNotForceTranscriptsOff` | COMPONENT | same | add `--no-transcripts` to `vp_refresh_index`'s argv |
+| `TestAnAbsentIndexTranscriptsKeyDoesNotOverrideTheLayerBelow` | COMPONENT | `internal/storage/transcript_exclusion_test.go` | change `Transcripts *bool` to `bool` in `hostProjectLayer` |
+| `TestAnExplicitHostLocalFalseStillOverrides` | COMPONENT | same | the pointer's OTHER half: an explicit host-local `false` must beat a global `true`, which is what makes `*bool` a tri-state rather than a way to ignore the key |
+| `TestTheEmbeddedDefaultExcludesTranscripts` | COMPONENT | same | flip `transcripts` to `true` in `config/defaults.toml` |
+| `TestCaptureIsUnaffectedByTranscriptExclusion` | WIRING | `internal/hook/transcript_exclusion_test.go` | gate `archive.Create` on the exclusion predicate |
+| `TestThePurgeDropsOnlyArchiveOwnedCHUNKS` | COMPONENT | `internal/indexstore/purge_transcripts_test.go` | chunk predicate → `return true`; and → `o.Kind == OwnerBatch`. 🔴 "Batch chunks survive" is a statement about the PURGE alone, not about the rebuild that runs it |
+| `TestThePurgeDropsOnlyArchiveOwnedKG` | COMPONENT | same | the KG predicate alone, both ways — chunks and KG share one `BatchOwner`, and `kgFold.dropOwnersWhere` is a second function |
+| `TestThePurgeKeepsTheBatchAndBaselineLedgerLines` | COMPONENT | same | remove the ledger wholesale + `freshBaseline(nil)`; **and** make `AddToBaseline` REPLACE rather than union (measured here, not on `TestThePurgeIsIdempotent`). 🔴 What it pins is scoped to the PURGE: `discardOnMismatch` earlier in the same rebuild still removes the whole ledger, `recBatch` lines included — see *what NO guard here covers* below |
+| `TestEveryPurgeIntermediateLeavesNoLoadableTranscript` | COMPONENT | same | REORDER: drop chunks before the ledger rewrite. 🔴 The "nothing loadable" assertion alone CANNOT see that reorder — with the chunks already gone, `Chunks(true)` yields none either way. What sees it is the second assertion: no `StateLive` session record may be left over a store that no longer holds its chunks, the state `discard.go` forbids |
+| `TestThePurgeIsIdempotent` | COMPONENT | same | make the second run change the store (e.g. drop note owners once nothing archive-owned is left). 🔴 Its OTHER named mutation — `AddToBaseline` replacing rather than unioning — was measured and reddens `TestThePurgeKeepsTheBatchAndBaselineLedgerLines`, not this row: a second purge has no session line to drop and never calls `AddToBaseline` at all |
+| `TestThePurgeDoesNotWriteTheFingerprint` | COMPONENT | same | re-introduce a fingerprint write (observe the WRITE, never the value) |
+| `TestAPartialPurgeIsFinishedByRerunning` | COMPONENT | same | make the chunk step non-resumable |
+| `TestThePurgeIsANoOpAfterACoarseDiscard` | COMPONENT | same | make the purge error when it finds no archive owner |
+| the five `TestAutomaticRebuildBounded*` fixture tests | COMPONENT | `internal/sourceaudit/automatic_rebuild_bounded_test.go` | census'd in *Every rule, and where it is tested* above, under `automatic-rebuild-unbounded`. The REAL-tree mutations (remove the flag from either live spawn site) redden `TestSourceAuditGate` and the finding NAMES the site |
+| `TestAPurgeKilledAfterTheLedgerStepLeavesTheCounterMoved` | WIRING | same | remove the explicit post-ledger bump. 🔴 It asserts the counter moved by **two**, not one: `beginDestructive` contributes exactly one, so `after > before` alone is an INERT assertion that stays green on this mutation |
+
+### 🔴 What NO guard here covers
+
+The **stale-reader race**: a lock-free, generation-keyed reader passing its
+equal-generation witness on pre-write content while the writer dies. Observing
+it needs a second process's lock-free read interleaved with the writer's steps
+AND a kill of the writer inside that interleaving; the reader-side seams are
+in-process while the writer must be a separate process to be killable, so the
+two cannot be coordinated without a seam in the writer's crash path. The
+explicit post-ledger bump NARROWS the window from the whole remainder of the Tx
+to one counter write after one file write — **a narrowing, not a fix**. The
+hazard belongs to every destructive write in `internal/indexstore`, not to the
+purge, and is filed as
+`kill-between-generation-bumps-strands-lock-free-readers`. No guard in this
+table may be cited as covering it.
+
+Also NOT covered: the coarse `Tx.Discard(DiscardChunks)` on the
+chunks-recipe-mismatch path still destroys non-re-derivable mempalace import
+batches before the purge runs. `TestThePurgeIsANoOpAfterACoarseDiscard` pins
+only that the purge composes cleanly afterwards.
+
+🔴 **Read every "the purge preserves X" claim as scoped to the purge.** It is
+step 3b of a rebuild whose step 3 is `discardOnMismatch`, and `--drop-transcripts`
+does not avoid it. Narrowing that claim where it is DEFINED does not narrow it
+where it is USED, so the exception is repeated at each site that states it:
+`indexstore.Tx.DropTranscriptTier`, `search.Engine.DropTranscriptTier`, the
+`--drop-transcripts` flag help (and therefore `vp-index-rebuild.1`), the
+failure messages of `TestThePurgeDropsOnlyArchiveOwnedCHUNKS` and
+`TestThePurgeKeepsTheBatchAndBaselineLedgerLines`, ADR-014's 2026-11-05
+amendment, and the two rows above.
+
 ## Source Audit — the gate that would have caught `note_path` in five minutes
 
 `internal/sourceaudit` is a static analysis **of this repository's own source**, run as
@@ -3528,12 +3578,11 @@ and hid for months anyway.
 
 ### Every rule, and where it is tested
 
-As of v8.2.0 the audit reports 12 kinds of finding. Derive the list with
+As of v8.2.0 the audit reports 13 kinds of finding. Derive the list with
 `grep -rhoE 'Kind[A-Za-z]* *= *"[a-z-]+"' internal/sourceaudit/*.go`. `Run`
 (`sourceaudit.go`) applies the syntactic rules; `RunModule` (`derived_gate.go`)
 applies the type-checked one. All files are under `internal/sourceaudit/`
 unless a path says otherwise.
-
 | Kind | What it pins | Tests |
 |------|--------------|-------|
 | `write-only-field` | A yaml/json-tagged field on a struct the code constructs that nothing assigns | `sourceaudit_test.go` |
@@ -3548,6 +3597,7 @@ unless a path says otherwise.
 | `git-enabled-owner` | `git_enabled` read, or its refusal forged, anywhere other than `storage.RefuseIfGitDisabled` and its allow-listed readers | `git_enabled_owner_test.go` |
 | `literal-pathspec-opt-out` | vp's git taken off literal pathspecs: `gitenv.GlobPathspecs` used outside `storage.checkIgnored` (the one `git check-ignore`, behind `GitPathIgnored` and the staging guard), a `GIT_*_PATHSPECS` variable or `--no-literal-pathspecs`/`--glob-pathspecs`/`--icase-pathspecs` spelled in a string literal outside `gitenv`, or a string literal beginning with pathspec magic (`:(`, `:!`, `:^`) | `literal_pathspec_owner_test.go` |
 | `departure-record-writer` | Any caller of a privileged departure-record entry point (`vaultfs.WriteDepartureRecord` and its siblings); each allowed caller is a reviewed baseline entry | `departure_record_writer_test.go` |
+| `automatic-rebuild-unbounded` | An AUTOMATIC `vp index rebuild` spawn site (`tools.NewRebuildLauncher`, `main.spawnRebuildFor`) whose argv does not carry `--no-transcripts`. An automatic trigger with no operator in the loop must be bounded BY CONSTRUCTION, not by configuration: without the flag the spawned run resolves the host's config, so a host with `[index] transcripts = true` gets the historical backlog on a hair trigger any cold search re-arms. The EXPLICIT sites are deliberately NOT in the allow-list | `automatic_rebuild_bounded_test.go` |
 | `derived-gate-divergence` | The surface-gate predicate derived from the call graph disagrees with the hand-declared one for a CLI command or MCP tool. Each accepted divergence is a baseline entry whose reason records the ruling | `derived_gate_test.go`, `derived_gate_declared_test.go`, and `TestDerivedGateBaselineIsCurrent` in `sourceaudit_test.go` |
 
 **Where the derived-gate rule runs.** It type-checks the whole module
@@ -3564,7 +3614,6 @@ checks the rule. The ruling is recorded on `skipUnlessFullSuite`
 in `derived_gate_test.go` and above `source-audit:` in the `Makefile`.
 
 ### The first two findings, and why they are the same bug
-
 | Kind | What it finds | The defect that earned it |
 |------|---------------|---------------------------|
 | `write-only-field` | a yaml/json-tagged field on a struct the code **constructs**, that nothing ever assigns | **`note_path`** — tagged, serialized, never assigned; `vp_capture_session` reported `note_path: ""` for the life of the project. **Six months. Every test green.** |
@@ -3612,7 +3661,6 @@ While it was being built, **two separate bugs made it report ZERO findings on a 
 full of defects** — a walk that skipped its own root, then a type resolver that could
 not see `pkg.Type{…}` literals. Both times it produced a confident clean bill of
 health. *That is the disease, inside the tool built to cure it.*
-
 | Test | What it proves |
 |------|----------------|
 | `TestFindsAPlantedWriteOnlyField` | it **finds** a planted `note_path`-shaped bug — an analyzer that cannot prove this is worth nothing |
@@ -3686,7 +3734,6 @@ here — see ADR-007). Its
 tests carry the same doctrine — *an auditor
 validated only by its own logic is the thing this epic exists to prevent* — so the
 central test is a **mutation test**, exactly as in `sourceaudit`.
-
 | Test (file) | What it proves |
 |------|----------------|
 | `TestArchiveRoundTrip_FindsKnownDefects` (`archive_test.go`) | hand a vault three KNOWN defects (a stranded manifest, a dangling back-link, a readable-but-empty tree) and assert it finds exactly those — **an auditor that cannot fail issues a clean bill of health it never earned** |
@@ -3703,7 +3750,6 @@ central test is a **mutation test**, exactly as in `sourceaudit`.
 (both packages) and asserted against the **written files**, not the tool's own return
 value — the bug that started the whole epic survived every test that trusted the result
 struct.
-
 | Test | What it proves |
 |------|----------------|
 | `TestBackfillArchiveLink_*` (`internal/storage`) | stamps a caller-keyed note (provenance `backfilled`); idempotent re-run writes nothing; skips a **minted**-key coincidence; **refuses an identity conflict** loudly; never re-points an already-linked note; canonical prefers the non-stub |
@@ -3973,7 +4019,6 @@ for that call site.
 ---
 
 ## MockEmbedder vs Real ONNX
-
 | Aspect | MockEmbedder | ONNX Embedder |
 |--------|-------------|---------------|
 | Vectors | Deterministic SHA-256 hash | Learned semantic representation |

@@ -193,6 +193,11 @@ const (
 	// belong in the host-local store, not the git-tracked tree. See
 	// decisionTrackedReach.
 	KindDecisionTrackedReach = "decision-tracked-reach"
+
+	// KindAutomaticRebuildUnbounded: an AUTOMATIC `vp index rebuild` spawn
+	// site whose argv does not carry --no-transcripts, so an opt-in host gets
+	// the historical backlog on a trigger with no operator in the loop.
+	KindAutomaticRebuildUnbounded = "automatic-rebuild-unbounded"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -338,6 +343,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, creatingProjectOwner(files)...)
 	findings = append(findings, hermeticTestMain(files)...)
 	findings = append(findings, departureRecordWriter(files)...)
+	findings = append(findings, automaticRebuildBounded(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil

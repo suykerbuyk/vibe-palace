@@ -87,10 +87,22 @@ func countingEngine(t *testing.T, cfg storage.Config) (*Engine, *storage.Vault, 
 	return eng, v, emb
 }
 
+// testEngine builds the package's ordinary test engine.
+//
+// 🔴 IndexTranscripts is TRUE here, and in every other storage.Config literal
+// in this package's tests, deliberately. The host default is now the opposite
+// (storage defaults.toml, [index] transcripts = false), under which walkCorpus
+// skips archive-owned store chunks entirely. Every test in this package that
+// writes an archive-owned chunk and asserts it is served, counted or stale
+// predates that default and is about a host that DOES index transcripts; left
+// at the default they would pass over a walk that loaded nothing. The
+// exclusion is pinned by its own guards, which set this field false on
+// purpose.
 func testEngine(t *testing.T) (*Engine, *storage.Vault) {
 	t.Helper()
 	v := testVault(t)
 	cfg := storage.Config{
+		IndexTranscripts:   true,
 		SearchDefaultLimit: 10,
 		BoostWing:          0.12,
 		BoostHall:          0.24,
@@ -734,7 +746,7 @@ func TestIndexDrawersWithPrecomputedVec(t *testing.T) {
 // never built returns real results — the engine builds it on demand. Disabling
 // the lazy build in Search makes this fail with "returned 0 results".
 func TestSearchLazyBuildsIndex(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{})
+	eng, v, _ := countingEngine(t, storage.Config{IndexTranscripts: true})
 	ctx := context.Background()
 
 	addDrawer(t, v, "proj", "wing-a", "room-1", "first document", "facts")
@@ -761,7 +773,7 @@ func TestSearchLazyBuildsIndex(t *testing.T) {
 // search over a cold engine builds every known project rather than silently
 // returning nothing.
 func TestCrossProjectSearchLazyBuildsAllIndexes(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{})
+	eng, v, _ := countingEngine(t, storage.Config{IndexTranscripts: true})
 	ctx := context.Background()
 
 	addDrawer(t, v, "proj-a", "wing-1", "room-1", "alpha project content", "facts")
@@ -822,7 +834,7 @@ func TestSearchCrossProject_CoversProjectsOnlyProject(t *testing.T) {
 // built fails the whole cross-project search, naming it, rather than returning a
 // partial result that presents itself as complete.
 func TestSearchCrossProject_BuildFailureNamesTheProject(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	emb.batchFail = true
 	writeSessionNote(t, v.Root, "notesonly", "2026-09-10-aaaa0000-01", "2026-09-10", "t", "some body text")
 
@@ -857,7 +869,7 @@ func TestSearchCrossProject_UnreadableVaultIsAnError(t *testing.T) {
 // TestLazyBuildRunsOnce verifies that concurrent searches for the same project
 // trigger exactly one index build.
 func TestLazyBuildRunsOnce(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	ctx := context.Background()
 
 	for i := range 5 {
@@ -896,7 +908,7 @@ func TestLazyBuildRunsOnce(t *testing.T) {
 // TestRebuildBatchesEmbeddings verifies that Rebuild embeds cache misses via
 // EmbedBatch in chunks of EmbedderBatchSize, never one at a time.
 func TestRebuildBatchesEmbeddings(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{EmbedderBatchSize: 32})
+	eng, v, emb := countingEngine(t, storage.Config{EmbedderBatchSize: 32, IndexTranscripts: true})
 	ctx := context.Background()
 
 	const drawers = 70 // ceil(70/32) = 3 batches
@@ -938,7 +950,7 @@ func TestRebuildBatchesEmbeddings(t *testing.T) {
 // TestSearchPropagatesBuildError verifies that a failed lazy build surfaces as
 // an error, not as an empty result set.
 func TestSearchPropagatesBuildError(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	emb.batchFail = true
 	ctx := context.Background()
 
@@ -970,7 +982,7 @@ func TestSearchPropagatesBuildError(t *testing.T) {
 // have all been deleted drops the previous index instead of serving hits for
 // content that no longer exists.
 func TestRebuildClearsStaleIndex(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{})
+	eng, v, _ := countingEngine(t, storage.Config{IndexTranscripts: true})
 	ctx := context.Background()
 
 	addDrawer(t, v, "proj", "wing-a", "room-1", "doomed content", "facts")
@@ -1275,7 +1287,7 @@ func TestIndexDrawersMixedBatch(t *testing.T) {
 // model load. A counting embedder records zero embeds, and the error is a
 // *NothingIndexableError.
 func TestTrulyEmptyLoadsNoEmbedder(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	mkProject(t, v, "proj")
 
 	_, err := eng.Search(context.Background(), "anything", SearchFilters{Project: "proj"})

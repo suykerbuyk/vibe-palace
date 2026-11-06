@@ -91,10 +91,15 @@ func runDrainArchives(ctx context.Context, vaultRoot, project, first string, err
 		return cli.ExitOK
 	}
 	emb := embedder.NewLazy(func() (embedder.Embedder, error) { return newVaultEmbedder(v, cfg) })
-	eng := search.NewEngine(emb, v, cfg)
+	// WithConfigFor: a drain pass visits the triggering project and the
+	// vault's others, and each one's engine rebuild must use its own config.
+	eng := search.NewEngine(emb, v, cfg, search.WithConfigFor(v.LoadConfig))
 	defer eng.Close()
 	res, err := ingest.Run(ctx, ingest.Deps{
 		Vault: v, Engine: eng, Embedder: emb, GraphHealer: ingest.NewEngineHealer(eng),
+		// ConfigFor, not just Config: a drain pass visits the triggering
+		// project AND the vault's others, and cfg is the triggering project's.
+		Config: cfg, ConfigFor: v.LoadConfig,
 		// ADR-016 U4 B2/B3: the drain is the guaranteed consumer of a pending
 		// rebuild-corpus want. These seams keep the process-spawn and liveness
 		// machinery out of internal/ingest (which imports neither cmd/vp's
@@ -130,11 +135,23 @@ func runDrainArchives(ctx context.Context, vaultRoot, project, first string, err
 // inactive and no live holder is building; the spawned child's own TryRunLock
 // is the authority. A launch failure is logged and dropped: no lock was taken,
 // so nothing is lost, and the durable want is served by a later trigger.
+// drainRebuildLaunch is the spawn seam of spawnRebuildFor, a var so a guard
+// can capture the argv this AUTOMATIC site emits and feed it back through the
+// production command registry. Production never replaces it. The sibling
+// automatic site, tools.NewRebuildLauncher, already takes its LaunchFunc as a
+// parameter; this is the same seam at the same kind of site.
+var drainRebuildLaunch = detachlaunch.Launch
+
 func spawnRebuildFor(v *storage.Vault) func(project string) {
 	return func(project string) {
-		args := []string{"index", "rebuild", project, "--vault-root", v.Root}
+		// 🔴 --no-transcripts, UNCONDITIONALLY — the second AUTOMATIC spawn
+		// site, bounded by construction for the same reason as the
+		// cold-search launcher (tools.NewRebuildLauncher). See internal/
+		// sourceaudit's automatic-rebuild-spawn rule, which fails the build if
+		// either site loses the flag.
+		args := []string{"index", "rebuild", project, "--vault-root", v.Root, "--no-transcripts"}
 		logPath := filepath.Join(v.VaultLocalDir(), "rebuild.log")
-		if _, err := detachlaunch.Launch("", args, logPath); err != nil {
+		if _, err := drainRebuildLaunch("", args, logPath); err != nil {
 			slog.Warn("vp drain archives: could not spawn the rebuild for a pending corpus want",
 				"project", project, "error", err)
 		}

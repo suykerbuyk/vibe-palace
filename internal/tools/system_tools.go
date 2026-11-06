@@ -913,6 +913,11 @@ type refreshIndexParams struct {
 	Project     string `json:"project"`
 	MaxArchives int    `json:"max_archives"`
 	DryRun      bool   `json:"dry_run"`
+	// Transcripts opts this one explicit run in to the transcript tier. This
+	// is the EXPLICIT spawn site, so unlike the two automatic ones it never
+	// forces --no-transcripts: absent, the spawned rebuild resolves the host's
+	// config, which excludes transcripts by default.
+	Transcripts bool `json:"transcripts"`
 }
 
 var refreshIndexSchema = json.RawMessage(`{
@@ -920,7 +925,8 @@ var refreshIndexSchema = json.RawMessage(`{
 	"properties": {
 		"project": {"type": "string", "description": "Project slug."},
 		"max_archives": {"type": "integer", "description": "Optional cap on the number of archives the spawned rebuild attempts; 0 (the default) means no cap."},
-		"dry_run": {"type": "boolean", "description": "Report the rebuild's plan and disk/inode estimate in-process, writing nothing and taking no lock, instead of starting a rebuild."}
+		"dry_run": {"type": "boolean", "description": "Report the rebuild's plan and disk/inode estimate in-process, writing nothing and taking no lock, instead of starting a rebuild."},
+		"transcripts": {"type": "boolean", "description": "Index the transcript tier on this run, including the historical backlog. Off by default on this host: captured session archives are not indexed, which is what keeps a rebuild to hours rather than days. A run with it on can take days."}
 	},
 	"required": ["project"]
 }`)
@@ -966,13 +972,29 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch det
 			return nil, fmt.Errorf("project is required")
 		}
 
-		deps := ingest.Deps{Vault: vault, Engine: engine, Embedder: engine.Embedder(), GraphHealer: ingest.NewEngineHealer(engine)}
+		// The config so the dry run's estimate reflects THIS host's transcript
+		// setting: ingest.DryRun resolves it exactly as ingest.Rebuild does,
+		// and a zero Config would report "no archives" on an opt-in host.
+		cfg, cerr := vault.LoadConfig(p.Project)
+		if cerr != nil {
+			return nil, fmt.Errorf("refresh index %q: load config: %w", p.Project, cerr)
+		}
+		deps := ingest.Deps{
+			Vault: vault, Engine: engine, Embedder: engine.Embedder(),
+			GraphHealer: ingest.NewEngineHealer(engine),
+			Config:      cfg, ConfigFor: vault.LoadConfig,
+		}
 
 		// dry_run: the preflight in-process. It writes nothing and takes no
 		// lock, so a trigger that arrives during it is never turned away
 		// (ADR-014 decision 7; this child's Scope 2).
 		if p.DryRun {
-			rep, err := ingest.DryRun(deps, ingest.RebuildOptions{Project: p.Project, MaxArchives: p.MaxArchives})
+			var t *bool
+			if p.Transcripts {
+				yes := true
+				t = &yes
+			}
+			rep, err := ingest.DryRun(deps, ingest.RebuildOptions{Project: p.Project, MaxArchives: p.MaxArchives, Transcripts: t})
 			if err != nil {
 				return nil, fmt.Errorf("refresh index %q: dry run: %w", p.Project, err)
 			}
@@ -1015,6 +1037,13 @@ func refreshIndexHandler(engine *search.Engine, vault *storage.Vault, launch det
 		args := []string{"index", "rebuild", p.Project, "--vault-root", vault.Root}
 		if p.MaxArchives > 0 {
 			args = append(args, "--max-archives", strconv.Itoa(p.MaxArchives))
+		}
+		// The explicit site's opt-in. Nothing is appended when it is off: the
+		// spawned rebuild then resolves the host's config, which excludes the
+		// transcript tier by default. A forced --no-transcripts here would
+		// make the opt-in unreachable over MCP.
+		if p.Transcripts {
+			args = append(args, "--transcripts")
 		}
 		logPath := filepath.Join(vault.VaultLocalDir(), "rebuild.log")
 		pid, err := launch("", args, logPath)
@@ -1078,7 +1107,16 @@ func NewRebuildLauncher(vault *storage.Vault, launch detachlaunch.LaunchFunc) se
 		if indexstore.RunCooldownActive(vault, time.Now(), indexstore.DefaultRunCooldown) {
 			return
 		}
-		args := []string{"index", "rebuild", project, "--vault-root", vault.Root}
+		// 🔴 --no-transcripts, UNCONDITIONALLY, never read from the config.
+		// This is an AUTOMATIC trigger, and an automatic trigger must be
+		// bounded BY CONSTRUCTION, not by configuration: if it merely
+		// inherited the default, a host that opted in would still have the
+		// days-long backlog build on a hair trigger, and killing that build
+		// would not stop it, because any cold search re-spawns it from here.
+		// The flag is non-nil false in ingest, so it beats a host config of
+		// true. The baseline backlog drains only on an explicit
+		// `vp index rebuild <p> --transcripts`.
+		args := []string{"index", "rebuild", project, "--vault-root", vault.Root, "--no-transcripts"}
 		logPath := filepath.Join(vault.VaultLocalDir(), "rebuild.log")
 		if _, err := launch("", args, logPath); err != nil {
 			// No lock was taken, so no want was lost; the marker keeps it for the

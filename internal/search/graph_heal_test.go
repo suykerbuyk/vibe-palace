@@ -68,7 +68,7 @@ func healBase(t *testing.T, contents []string, withVecs bool, tHi, lLo int) (*En
 	v := testVault(t)
 	const project = "healproj"
 	ce := &countEmb{inner: embedder.NewMock(384)}
-	e := NewEngine(ce, v, storage.Config{SearchDefaultLimit: 10})
+	e := NewEngine(ce, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { _ = e.Close() })
 	commitArchive(t, e.cache, v, project, "sess-1", "sha-1", contents, withVecs)
 	ce.reset()

@@ -199,7 +199,7 @@ func writeLegacyVector(t *testing.T, root, project, id string, vec []float32) st
 // vectors stay byte-for-byte, and no sidecar adopts them. Only `vp index
 // rebuild` removes them.
 func TestEmbedCache_LegacyVectorsMigrateAndCountAsAMismatch(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{})
+	eng, v, _ := countingEngine(t, storage.Config{IndexTranscripts: true})
 	d1 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content one", "facts")
 	d2 := addDrawer(t, v, "proj", "wing-a", "room-1", "legacy content two", "facts")
 
@@ -232,7 +232,7 @@ func TestEmbedCache_LegacyVectorsMigrateAndCountAsAMismatch(t *testing.T) {
 		t.Errorf("a sidecar was written over unattributed vectors (stat err %v)", err)
 	}
 
-	again := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10})
+	again := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { again.Close() })
 	stats, err = again.Rebuild(context.Background(), "proj")
 	if err != nil {

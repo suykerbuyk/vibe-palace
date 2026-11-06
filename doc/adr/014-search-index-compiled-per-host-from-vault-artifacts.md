@@ -862,10 +862,80 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
   | `legacy` | the vault carries no migration marker, and tracked drawers exist |
   | `unbuilt` | the project has content, but `completeness.json` records no built tier on this host, for example a fresh clone before its first search. A missing fingerprint lands here, never in `stale` |
   | `notes` | notes, iterations and commit-log are built, and the project has no archive with a live session (decision 7) |
+  | `authored` | the project HAS archives, this host excludes the transcript tier (`[index] transcripts = false`, the default), and the last build observed NO archive-owned chunk left to serve. A deliberately transcript-free index, not an incomplete one. It is tested AFTER `notes`, so `notes` keeps its exact meaning (m = 0, the project has no archives) and a reader can still tell "no transcripts exist" from "transcripts exist and are excluded". The fourth arm is what stops the state lying: a host that flips the setting while its store still serves transcript chunks keeps whatever state it read before, and its `Reason` names the remedy (`vp index rebuild <p> --drop-transcripts`) |
   | `partial` | the project has archives with live sessions, and n of the m sessions are in the ledger with their live archive's `source_sha256`, with n < m. This includes n = 0, a pending supersede, and a live baseline archive not yet ingested |
   | `current` | the project has archives, and every live session is in the ledger with its live archive's `source_sha256` |
 
   - **Order.** The states are tested in table order, and the first that matches wins.
+  - **Amendment (2026-11-05, task
+    `exclude-the-transcript-tier-from-indexing-by-default`).** This decision is
+    NARROWED: the transcript tier is now OPT-IN per host. `[index] transcripts`
+    resolves through the three config layers of `LoadConfig` and defaults to
+    `false`, so `vp index rebuild` opens no archive and writes no archive-owned
+    chunk unless a host (or a single run's `--transcripts`) asks for it.
+    Archives are still CAPTURED exactly as this ADR describes — nothing on the
+    capture path reads the setting — they are simply never ingested. The two
+    AUTOMATIC `vp index rebuild` spawn sites append `--no-transcripts`
+    unconditionally, so an automatic trigger is bounded by construction rather
+    than by configuration. `vp index rebuild <p> --drop-transcripts` is the
+    one-time reclaim for a host that already built the tier; it preserves the
+    imported-batch chunks, KG and ledger records that `Tx.Discard` would
+    destroy.
+
+    🔴 **That preservation is scoped to the purge, and decision 3 still
+    overrides it.** `--drop-transcripts` runs step 3's `discardOnMismatch`
+    FIRST, so a `chunks.fingerprint` mismatch on the same run reaches
+    `Tx.Discard(DiscardChunks)` and removes ledger, chunks, KG and graph
+    wholesale — imported batches included — before the purge gets there. The
+    flag does not avoid it. That a chunks-recipe change destroys
+    non-re-derivable mempalace imports with no warning and no record of what
+    was lost is a defect in its own right, filed separately; the purge is only
+    proved to compose cleanly after it.
+
+    🔴 **Where that setting is resolved, and why it is two rules and not one.**
+    An ingest pass SPANS PROJECTS — `runHeld` walks `projectOrder`'s whole list
+    (`internal/ingest/run.go`, the `for _, p := range projects` loops), and
+    `vp index rebuild --all` walks every target — while the host-local
+    per-project config layer (decision 2's per-host derivation; `storage`'s
+    `hostProjectLayer`) is what a single project uses to opt IN. So:
+
+      - **the ARGV FLAG (`--transcripts` / `--no-transcripts`) is resolved ONCE
+        PER PASS and never varies by project.** It is the operator's word for
+        this invocation; when it is given no config is read at all.
+      - **the CONFIG FALLBACK is resolved ONCE PER PROJECT PER PASS**, from
+        that project's own layered config, at the moment the pass visits it
+        (`ingest.Deps.transcriptsFor`).
+
+    Resolving the whole pass from one config carried the triggering project's
+    answer onto every other project it visited — and under `--all`, where the
+    caller loads the config of the EMPTY project, it ignored every per-project
+    override in the vault. An unreadable project config resolves to the
+    excluded default, never to another project's answer.
+
+    🔴 **Amended 2026-11-06 by operator ruling: "don't ingest, but don't
+    discard".** The automatic bound is unchanged — both automatic spawn sites
+    still append `--no-transcripts` unconditionally, and a cold search can
+    never trigger the multi-day build. But the decision governs INGESTION, not
+    what the engine loads from what is ALREADY stored: the corpus walk loads an
+    archive-owned chunk that carries a cached vector whatever the setting says,
+    so an explicit opt-in run's work survives the next automatic rebuild. A
+    stored chunk with NO vector is still skipped and still not counted as a
+    miss — that half is what keeps an excluded project from reading `stale`,
+    and skipping it is also what keeps the explicit path from EMBEDDING it,
+    which is the days-long cost itself. The accepted trade is that an opted-in
+    host's automatic rebuild does more work than a bare one, and that the
+    purge (`--drop-transcripts`) is now the ONLY thing that removes leftover
+    archive chunks — the engine no longer hides them.
+
+    🔴 **Both rules have TWO consumers**, and the rule itself is defined once,
+    in `storage.ResolveTranscripts`. `internal/ingest` resolves it for the
+    admission decision; `search.Engine` resolves it for the corpus walk's
+    exclusion belt, the completeness record and the coverage state. A rebuild
+    skips the archive INGEST pass for `--no-transcripts` and then still runs
+    the ENGINE rebuild, so an engine that resolved from config alone reloaded
+    the archive-owned chunks the flag said to leave out, and skipped archives a
+    `--transcripts` run had just admitted. The engine therefore carries both
+    halves (`search.WithTranscriptsFlag`, `search.WithConfigFor`).
   - **Consequences of the order:**
     - `stale` always surfaces;
     - a glide-path project reads `legacy`, not `notes`;

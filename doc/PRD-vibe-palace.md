@@ -1831,13 +1831,16 @@ project, and `vp index status` and `vp_index_status` must report the same:
 | `legacy` | the vault carries no migration marker, and tracked drawers exist |
 | `unbuilt` | the project has content, but `completeness.json` records no built tier on this host, for example a fresh clone before its first search. A missing fingerprint lands here, never in `stale` |
 | `notes` | notes and iterations are built, and the project has no archive with a live session |
+| `authored` | the project HAS archives, this host excludes the transcript tier (`[index] transcripts = false`, the default), and the last build observed NO archive-owned chunk left to serve. A deliberately transcript-free index, not an incomplete one. It is tested AFTER `notes`, so `notes` keeps its exact meaning (m = 0, the project has no archives) and a reader can still tell "no transcripts exist" from "transcripts exist and are excluded". The fourth arm is what stops the state lying: a host that flips the setting while its store still serves transcript chunks keeps whatever state it read before, and its `Reason` names the remedy (`vp index rebuild <p> --drop-transcripts`) |
 | `partial` | the project has archives with live sessions, and n of the m sessions are in the ledger with their live archive's `source_sha256`, with n < m. This includes n = 0, a pending supersede, and a live baseline archive not yet ingested |
 | `current` | the project has archives, and every live session is in the ledger with its live archive's `source_sha256` |
 
 The states are tested in table order, and the first that matches wins (ADR-014 decision 8).
 So `stale` always surfaces; a glide-path project reads `legacy`, not `notes`; a
 notes-only project reads `notes`, never `current`; and a project with archives not yet
-ingested reads `partial`, never `notes`.
+ingested reads `partial`, never `notes`. A host that excludes the transcript tier
+(`[index] transcripts = false`, the default) reads `authored` once its store serves no
+archive-owned chunk.
 - `m` counts sessions with a live (not superseded) archive, not archive files, so a session
   archived on two days counts once.
 - **`legacy` outranks `unbuilt` deliberately.** On a vault without the marker, search answers

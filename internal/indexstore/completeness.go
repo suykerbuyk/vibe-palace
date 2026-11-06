@@ -38,6 +38,13 @@ type Completeness struct {
 	EmbedFingerprint  string `json:"embed_fingerprint,omitempty"`
 	// Stale is the persistent stale flag: set when it holds a reason.
 	Stale []StaleReason `json:"stale,omitempty"`
+	// ExcludedTiers names the corpus tiers this host deliberately did not
+	// build, as the BUILD observed them — not as the config asked for them. A
+	// tier is named here only when the config excludes it AND the walk loaded
+	// nothing owned by it, so the field is a statement about what this index
+	// can serve. It is a list, not a boolean, so a second excluded tier needs
+	// no second mechanism.
+	ExcludedTiers []string `json:"excluded_tiers,omitempty"`
 }
 
 // TierRecord is one built tier.

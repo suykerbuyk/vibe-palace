@@ -591,7 +591,7 @@ func setupEmbedder(vault *storage.Vault, cfg storage.Config) (embedder.Embedder,
 		return nil, nil, nil, fmt.Errorf("embedder: %w", err)
 	}
 
-	eng := search.NewEngine(emb, vault, cfg)
+	eng := search.NewEngine(emb, vault, cfg, search.WithConfigFor(vault.LoadConfig))
 
 	cleanup := func() {
 		eng.Close()

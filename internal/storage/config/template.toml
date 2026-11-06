@@ -66,6 +66,24 @@ max_chars = 800
 overlap = 100
 
 # Palace room classification and scoring.
+# Which tiers this HOST compiles into its search index. An index is derived
+# per host from the vault (ADR-014), so this is host state and never travels
+# in the vault.
+#
+# When it is false the transcript tier is EXCLUDED: captured AI session
+# archives are still written exactly as before, they are simply never
+# ingested into the chunk store, so nothing about capture changes. It is
+# off by default because transcripts were 99.3% of indexed mass and the
+# full build ran for days; notes, decisions, iterations and commit logs are
+# unaffected and are what search is for.
+#
+# Turn it on to opt this host in. A single run can be forced
+# either way with `vp index rebuild <project> --transcripts` /
+# `--no-transcripts`, which beats this file. A per-project, per-host
+# override goes in that project's host-local config, not here.
+[index]
+transcripts = false
+
 [palace]
 # Room keywords are configurable per project.
 # Project-level [palace.rooms] fully replaces vault-level rooms.

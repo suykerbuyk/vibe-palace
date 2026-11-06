@@ -2218,8 +2218,8 @@ What the payload carries instead:
   list that does not say what ordered it is indistinguishable from recency order.
 - The memory index, KG snapshot, and the command and skill lists, all of which
   were already indexes rather than bodies.
-- **`index_coverage`** per project — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `partial` or
-  `current`, tested in that order, over notes, iterations and the transcript archives (see
+- **`index_coverage`** per project — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `authored`,
+  `partial` or `current`, tested in that order, over notes, iterations and the transcript archives (see
   *Host-Local Index*) — so an incomplete search index says so before anyone searches, and a KG
   snapshot for a project whose graph is absent on this host is not a silent zero (ADR-014 decision
   8; see *Host-Local Index*).
@@ -3012,12 +3012,14 @@ read-only `vp_index_status`:
 | `legacy` | the vault carries no migration marker, and tracked drawers exist |
 | `unbuilt` | the project has content, but `completeness.json` records no built tier on this host, for example a fresh clone before its first search. A missing fingerprint lands here, never in `stale` |
 | `notes` | notes and iterations are built, and the project has no archive with a live session (decision 7) |
+| `authored` | the project HAS archives, this host excludes the transcript tier (`[index] transcripts = false`, the default), and the last build observed NO archive-owned chunk left to serve. A deliberately transcript-free index, not an incomplete one. It is tested AFTER `notes`, so `notes` keeps its exact meaning (m = 0, the project has no archives) and a reader can still tell "no transcripts exist" from "transcripts exist and are excluded". The fourth arm is what stops the state lying: a host that flips the setting while its store still serves transcript chunks keeps whatever state it read before, and its `Reason` names the remedy (`vp index rebuild <p> --drop-transcripts`) |
 | `partial` | the project has archives with live sessions, and n of the m sessions are in the ledger with their live archive's `source_sha256`, with n < m. This includes n = 0, a pending supersede, and a live baseline archive not yet ingested |
 | `current` | the project has archives, and every live session is in the ledger with its live archive's `source_sha256` |
 
 The states are tested in table order, and the first that matches wins. So `stale` always surfaces; a
 glide-path project reads `legacy`, not `notes`; a notes-only project reads `notes`, never `current`;
-and a project with archives not yet ingested reads `partial`, never `notes`. `legacy` outranks
+and a project with archives not yet ingested reads `partial`, never `notes`; a host that excludes
+the transcript tier reads `authored` once its store serves no archive-owned chunk. `legacy` outranks
 `unbuilt` deliberately: on a vault without the marker search answers from the tracked drawers, which
 need no local build, so a fresh clone of an unmigrated vault reads `legacy`, and its reason carries
 "not built yet on this host" and the ingester's progress. Every state carries a reason; for

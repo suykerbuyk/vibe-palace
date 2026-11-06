@@ -32,7 +32,7 @@ func TestSearchPathColdEmbedThrottled(t *testing.T) {
 	v := testVault(t)
 	spy := &launchSpy{}
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true},
 		WithRebuildLauncher(spy.launcher()))
 	eng.indexRunCooldown = time.Hour
 	t.Cleanup(func() { eng.Close() })
@@ -67,7 +67,7 @@ func TestSearchPathWarmBuildNotThrottled(t *testing.T) {
 		addDrawer(t, v, "proj", "wing", "room", fmt.Sprintf("distinct chunk number %d", i), "facts")
 	}
 	// Engine A warms the per-vault embed cache (cooldown disabled).
-	warm := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	warm := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 	warm.indexRunCooldown = 0
 	if _, err := warm.RebuildExplicit(context.Background(), "proj"); err != nil {
 		t.Fatalf("warm rebuild: %v", err)
@@ -78,7 +78,7 @@ func TestSearchPathWarmBuildNotThrottled(t *testing.T) {
 	// its first search rebuilds — but every vector is a cache hit (zero misses).
 	spy := &launchSpy{}
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true},
 		WithRebuildLauncher(spy.launcher()))
 	eng.indexRunCooldown = time.Hour
 	t.Cleanup(func() { eng.Close() })
@@ -104,7 +104,7 @@ func TestSearchPathWarmBuildNotThrottled(t *testing.T) {
 func TestExplicitRebuildNotThrottled(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 	eng.indexRunCooldown = time.Hour
 	t.Cleanup(func() { eng.Close() })
 	for i := 0; i < 5; i++ {

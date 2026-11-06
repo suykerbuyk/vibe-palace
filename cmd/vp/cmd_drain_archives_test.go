@@ -74,6 +74,9 @@ func TestDrainArchivesResolvesNothing(t *testing.T) {
 // built once, the run logs to the vault's vp.log, and it exits 0.
 func TestDrainArchivesIngestsTheTriggersArchive(t *testing.T) {
 	vault := setupTestVaultEnv(t)
+	// The host default excludes the transcript tier, so a drain opts in or it
+	// admits nothing; this test is about WHICH archive the drain takes.
+	setHostGlobalTranscripts(t, vault, true)
 	constructed := stubVaultEmbedder(t, embedder.NewMock(384))
 	drainArchiveOf(t, vault, "p", "Old", time.Date(2026, 5, 10, 2, 0, 0, 0, time.UTC))
 	m := drainArchiveOf(t, vault, "p", "S", time.Date(2026, 5, 13, 2, 0, 0, 0, time.UTC))

@@ -34,7 +34,7 @@ func newIntegrationEmbedder(t *testing.T) embedder.Embedder {
 func TestIntegrationSearchSemanticRanking(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
 	vault := storage.NewVault(t.TempDir())
-	cfg := storage.Config{SearchDefaultLimit: 10}
+	cfg := storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true}
 	eng := NewEngine(emb, vault, cfg)
 	defer eng.Close()
 
@@ -117,7 +117,7 @@ func TestIntegrationSearchSemanticRanking(t *testing.T) {
 func TestIntegrationRebuildAndCache(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
 	vault := storage.NewVault(t.TempDir())
-	cfg := storage.Config{SearchDefaultLimit: 10}
+	cfg := storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true}
 	eng := NewEngine(emb, vault, cfg)
 	defer eng.Close()
 
@@ -176,7 +176,7 @@ func TestIntegrationRebuildAndCache(t *testing.T) {
 func TestIntegrationIndexDrawerAndSearch(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
 	vault := storage.NewVault(t.TempDir())
-	cfg := storage.Config{SearchDefaultLimit: 10}
+	cfg := storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true}
 	eng := NewEngine(emb, vault, cfg)
 	defer eng.Close()
 
@@ -223,6 +223,7 @@ func TestIntegrationStructuralBoostsWithRealEmbeddings(t *testing.T) {
 	emb := newIntegrationEmbedder(t)
 	vault := storage.NewVault(t.TempDir())
 	cfg := storage.Config{
+		IndexTranscripts:   true,
 		SearchDefaultLimit: 10,
 		BoostWing:          0.12,
 		BoostHall:          0.24,

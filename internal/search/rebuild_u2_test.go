@@ -90,7 +90,7 @@ func TestColdDegradeEnsuresDetachedRebuild(t *testing.T) {
 	v := testVault(t)
 	spy := &launchSpy{}
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32}, WithRebuildLauncher(spy.launcher()))
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true}, WithRebuildLauncher(spy.launcher()))
 	t.Cleanup(func() { eng.Close() })
 	for i := 0; i < 40; i++ {
 		addDrawer(t, v, "proj", "wing", "room", fmt.Sprintf("distinct chunk number %d", i), "facts")
@@ -113,7 +113,7 @@ func TestBuiltProjectDoesNotLaunch(t *testing.T) {
 	v := testVault(t)
 	spy := &launchSpy{}
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32}, WithRebuildLauncher(spy.launcher()))
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true}, WithRebuildLauncher(spy.launcher()))
 	t.Cleanup(func() { eng.Close() })
 	addDrawer(t, v, "proj", "wing", "room", "one small chunk of content", "facts")
 
@@ -134,7 +134,7 @@ func TestBuiltProjectDoesNotLaunch(t *testing.T) {
 func TestColdEngineConsumesCommittedGraph(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	commitDrawerGraph(t, v, "proj", 40) // 40 > one 32-batch: the rebuild would refuse
@@ -161,7 +161,7 @@ func TestColdEngineConsumesCommittedGraph(t *testing.T) {
 func TestWitnessedLoadWitnessCatchesInterleavedWrite(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	commitDrawerGraph(t, v, "proj", 5)
@@ -210,7 +210,7 @@ func TestWitnessedLoadWitnessCatchesInterleavedWrite(t *testing.T) {
 func TestColdEngineConsumesSubsetGraph(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	// 40 drawers in the corpus (> one 32-batch), but the committed graph holds
@@ -238,7 +238,7 @@ func TestColdEngineConsumesSubsetGraph(t *testing.T) {
 func TestWitnessedLoadConsumesGraphMissingAWalkedID(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	commitGraphFromDrawers(t, v, "proj", 5, 4) // the 5th id is in the corpus, not the graph
@@ -270,7 +270,7 @@ func TestWitnessedLoadConsumesGraphMissingAWalkedID(t *testing.T) {
 func TestWitnessedLoadRefusesTrueStaleGraph(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	// The graph holds all 5 drawer ids PLUS a ghost id that is not (any longer) in
@@ -300,7 +300,7 @@ func TestWitnessedLoadRefusesTrueStaleGraph(t *testing.T) {
 func TestWitnessedLoadNoGraphStaysNotesOnly(t *testing.T) {
 	v, project := newGraphVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	g1, err := indexstore.ReadGeneration(v, project)

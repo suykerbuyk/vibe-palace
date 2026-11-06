@@ -51,6 +51,11 @@ const (
 	tierCommitLog      = "commit_log"
 	tierLocal          = "local"
 	tierTrackedDrawers = "tracked_drawers"
+	// tierTranscripts names the transcript tier in Completeness.ExcludedTiers.
+	// 🔴 It is NOT a tier of the Tiers map: archive-owned chunks are counted
+	// in tierLocal and that must not change. It exists only so an excluded
+	// tier has a name a report can print.
+	tierTranscripts = "transcripts"
 )
 
 // readStoreFn is the engine's one read of the host-local store, a seam so a
@@ -161,6 +166,15 @@ type buildFacts struct {
 	tiers       map[string]indexstore.TierRecord
 	localHits   int
 	localMisses int
+	// archiveOwned is the number of ARCHIVE-OWNED chunks this walk LOADED from
+	// the store — counted in st.Chunks(true), which yields only chunks with a
+	// live owner, so it is exactly the set search would serve.
+	//
+	// 🔴 It is incremented BEFORE the exclusion belt skips such a chunk. Count
+	// it after the skip and it would always be zero, which would let
+	// ExcludedTiers be written over a store still serving transcripts and make
+	// the `authored` state lie.
+	archiveOwned int
 }
 
 // writeCompletenessLocked records what this build found, under the held
@@ -187,6 +201,15 @@ func (e *Engine) writeCompletenessLocked(tx *indexstore.Tx, project string, b bu
 	rec.Stale = canonicalReasons(rec)
 	rec.Tiers = b.tiers
 	rec.LocalMisses = b.localMisses
+	// The excluded-tier record, from what the WALK observed and not from the
+	// config alone: the tier is named only when this host excludes it AND the
+	// walk loaded no archive-owned chunk. It is self-healing — ingest one
+	// archive again and the next build clears it, which makes CoverageAuthored
+	// unreachable without anyone remembering to reset anything.
+	rec.ExcludedTiers = nil
+	if !e.indexTranscripts(project) && b.archiveOwned == 0 {
+		rec.ExcludedTiers = []string{tierTranscripts}
+	}
 	if b.localHits > 0 {
 		if rec.ChunksFingerprint == "" && fc.chunks == indexstore.FingerprintMatch {
 			rec.ChunksFingerprint = fc.recipe

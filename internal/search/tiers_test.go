@@ -198,7 +198,7 @@ func TestOnlyLedgeredChunksLoad(t *testing.T) {
 // vector is not embedded on the search path, is not returned, and sets
 // exactly the missing-vector reason, which a second search leaves set.
 func TestLocalTierMissSetsMissingVectors(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	const text = "a ledgered transcript chunk with no vector"
 	commitArchive(t, eng.cache, v, "proj", "sess-a", "sha-a", []string{text}, false)
 	for range 2 {
@@ -265,7 +265,7 @@ func TestDecisionChunksAreNotesTier(t *testing.T) {
 	const transcript = "a ledgered transcript chunk"
 	for _, withTranscript := range []bool{true, false} {
 		t.Run(fmt.Sprintf("transcript=%v", withTranscript), func(t *testing.T) {
-			eng, v, emb := countingEngine(t, storage.Config{})
+			eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 			// A decision reaches the store through its session note: the rebuild's
 			// notes tier regenerates the chunk from the note's frontmatter.
 			writeDecisionNote(t, v.Root, "proj", "2026-05-14-aaaa0000-01", "2026-05-14", decision)
@@ -300,7 +300,7 @@ func TestEmbedderChangeKeepsVectors(t *testing.T) {
 	v := testVault(t)
 	const local = "a local chunk with its vector"
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a session note body")
-	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256})
+	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	t.Cleanup(func() { a.Close() })
 	commitArchive(t, a.cache, v, "proj", "sess-a", "sha-a", []string{local}, true)
 	search(t, a, "proj", local)
@@ -308,7 +308,7 @@ func TestEmbedderChangeKeepsVectors(t *testing.T) {
 	before := dirHashes(t, dir)
 
 	embB := newCountingEmbedder(384)
-	b := NewEngine(embB, v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 512})
+	b := NewEngine(embB, v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 512, IndexTranscripts: true})
 	t.Cleanup(func() { b.Close() })
 	if hasContent(search(t, b, "proj", local), local) {
 		t.Fatal("another regime's vector was served")
@@ -326,7 +326,7 @@ func TestEmbedderChangeKeepsVectors(t *testing.T) {
 		t.Fatalf("the cache changed under another regime:\n%v\n%v", before, after)
 	}
 
-	c := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256})
+	c := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	t.Cleanup(func() { c.Close() })
 	if !hasContent(search(t, c, "proj", local), local) {
 		t.Fatal("back under the old regime the vector is not served")
@@ -385,7 +385,7 @@ func TestMissingSidecarAndNoVectorsIsNotStale(t *testing.T) {
 // rebuild-driver stub holding a RebuildProof then discards them and clears
 // stale; the next write puts the sidecar down.
 func TestVectorsWithNoSidecarAreStale(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{})
+	eng, v, emb := countingEngine(t, storage.Config{IndexTranscripts: true})
 	const local = "a local chunk whose vector lost its sidecar"
 	commitArchive(t, eng.cache, v, "proj", "sess-a", "sha-a", []string{local}, true)
 	dir, _ := v.EmbedCacheDir("proj")
@@ -437,7 +437,7 @@ func TestVectorsWithNoSidecarAreStale(t *testing.T) {
 // fingerprint, from the completeness record alone.
 func TestPersistedEmbedFingerprint(t *testing.T) {
 	v := testVault(t)
-	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256})
+	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	t.Cleanup(func() { a.Close() })
 	commitArchive(t, a.cache, v, "proj", "sess-a", "sha-a", []string{"a local chunk"}, true)
 	search(t, a, "proj", "a local chunk")
@@ -448,11 +448,11 @@ func TestPersistedEmbedFingerprint(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	b := NewEngine(nil, v, storage.Config{EmbedderMaxSeqLen: 512})
+	b := NewEngine(nil, v, storage.Config{EmbedderMaxSeqLen: 512, IndexTranscripts: true})
 	if r := staleOf(t, b, "proj"); !slices.Equal(r, []indexstore.StaleReason{staleEmbed}) {
 		t.Fatalf("stale = %v, want the embed reason from the record", r)
 	}
-	same := NewEngine(nil, v, storage.Config{EmbedderMaxSeqLen: 256})
+	same := NewEngine(nil, v, storage.Config{EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	if r := staleOf(t, same, "proj"); len(r) != 0 {
 		t.Fatalf("same regime: stale = %v, want none", r)
 	}
@@ -519,7 +519,7 @@ func (panicEmbedder) Dimensions() (int, error) { panic("Stale loaded the model")
 func TestStaleLoadsNoModel(t *testing.T) {
 	v := testVault(t)
 	ensureProjectDir(t, v, "proj")
-	eng := NewEngine(panicEmbedder{}, v, storage.Config{EmbedderMaxSeqLen: 256})
+	eng := NewEngine(panicEmbedder{}, v, storage.Config{EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	if stale, r, err := eng.Stale("proj"); err != nil || stale {
 		t.Fatalf("nothing built: %v %v %v", stale, r, err)
 	}
@@ -576,10 +576,10 @@ func TestStaleFlagLifecycle(t *testing.T) {
 	v := testVault(t)
 	ensureProjectDir(t, v, "other")
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a note")
-	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256})
+	a := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 256, IndexTranscripts: true})
 	t.Cleanup(func() { a.Close() })
 	search(t, a, "proj", "a note")
-	b := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 512})
+	b := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderMaxSeqLen: 512, IndexTranscripts: true})
 	t.Cleanup(func() { b.Close() })
 	search(t, b, "proj", "a note")
 	if !slices.Contains(record(t, v, "proj").Stale, staleEmbed) {
@@ -694,7 +694,7 @@ func TestTrulyEmpty(t *testing.T) {
 			v := testVault(t)
 			ensureProjectDir(t, v, "proj")
 			tc.seed(t, v)
-			eng := NewEngine(panicEmbedder{}, v, storage.Config{})
+			eng := NewEngine(panicEmbedder{}, v, storage.Config{IndexTranscripts: true})
 			got, err := eng.TrulyEmpty("proj")
 			if err != nil || got != tc.empty {
 				t.Fatalf("TrulyEmpty = %v, %v; want %v", got, err, tc.empty)

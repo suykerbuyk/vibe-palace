@@ -25,6 +25,27 @@ var indexRebuildFlags = []cli.FlagDef{
 	{Name: "--dry-run", Help: "Report the pending archives, the baseline set, the estimate and the reserve; write nothing and take no lock"},
 	{Name: "--no-embed", Help: "Write chunks, the local KG and the ledger but embed nothing (an operator mode; the run does not complete)"},
 	{Name: "--vault-root", Arg: "PATH", Help: "Absolute vault root (optional; resolved from the working directory otherwise). Set by the detached MCP launch."},
+	{Name: "--transcripts", Help: "Ingest and embed the transcript tier on this run, whatever the config says (the historical backlog included). This is the days-long run on a large vault."},
+	{Name: "--no-transcripts", Help: "Do not INGEST transcript archives on this run, whatever the config says. Archive chunks already in the store keep their place in the index; only unembedded ones are left out, and never embedded. The automatic launchers always pass it."},
+	{Name: "--drop-transcripts", Help: "Remove every archive-owned chunk, KG record and ledger session row from this project's store. The purge itself keeps imported batches and the baseline set; a chunks-recipe mismatch on the same run discards the whole store first, imported batches included."},
+}
+
+// transcriptsFromFlags turns --transcripts / --no-transcripts into the
+// tri-state ingest resolves: nil when neither was passed, so the config
+// decides. They are mutually exclusive, which is a usage error.
+func transcriptsFromFlags(fv *cli.FlagValues) (*bool, error) {
+	yes, no := fv.Bool("--transcripts"), fv.Bool("--no-transcripts")
+	switch {
+	case yes && no:
+		return nil, errors.New("--transcripts and --no-transcripts are mutually exclusive")
+	case yes:
+		t := true
+		return &t, nil
+	case no:
+		f := false
+		return &f, nil
+	}
+	return nil, nil
 }
 
 func cmdIndexRebuild() *cli.Command {
@@ -63,14 +84,21 @@ func cmdIndexRebuild() *cli.Command {
 			if len(pos) == 1 {
 				project = pos[0]
 			}
+			transcripts, terr := transcriptsFromFlags(fv)
+			if terr != nil {
+				fmt.Fprintf(os.Stderr, "vp index rebuild: %v\n", terr)
+				return cli.ExitUser
+			}
 			return runIndexRebuild(context.Background(), indexRebuildArgs{
-				vaultRoot:   fv.Get("--vault-root"),
-				project:     project,
-				all:         fv.Bool("--all"),
-				skip:        fv.GetAll("--skip"),
-				maxArchives: fv.Int("--max-archives"),
-				dryRun:      fv.Bool("--dry-run"),
-				noEmbed:     fv.Bool("--no-embed"),
+				vaultRoot:       fv.Get("--vault-root"),
+				project:         project,
+				all:             fv.Bool("--all"),
+				skip:            fv.GetAll("--skip"),
+				maxArchives:     fv.Int("--max-archives"),
+				dryRun:          fv.Bool("--dry-run"),
+				noEmbed:         fv.Bool("--no-embed"),
+				transcripts:     transcripts,
+				dropTranscripts: fv.Bool("--drop-transcripts"),
 			}, os.Stdout, os.Stderr)
 		},
 	}
@@ -84,6 +112,10 @@ type indexRebuildArgs struct {
 	maxArchives int
 	dryRun      bool
 	noEmbed     bool
+	// transcripts is the resolved tri-state of --transcripts /
+	// --no-transcripts: nil means neither was passed and the config decides.
+	transcripts     *bool
+	dropTranscripts bool
 }
 
 // runIndexRebuild is the testable body of `vp index rebuild`. It resolves the
@@ -98,6 +130,10 @@ func runIndexRebuild(ctx context.Context, a indexRebuildArgs, out, errOut io.Wri
 	}
 	if !a.all && a.project == "" {
 		fmt.Fprintln(errOut, "vp index rebuild: name a project, or pass --all")
+		return cli.ExitUser
+	}
+	if a.dropTranscripts && a.transcripts != nil && *a.transcripts {
+		fmt.Fprintln(errOut, "vp index rebuild: --drop-transcripts and --transcripts are mutually exclusive")
 		return cli.ExitUser
 	}
 
@@ -128,16 +164,36 @@ func runIndexRebuild(ctx context.Context, a indexRebuildArgs, out, errOut io.Wri
 		return cli.ExitSystem
 	}
 	emb := embedder.NewLazy(func() (embedder.Embedder, error) { return newVaultEmbedder(v, cfg) })
-	eng := search.NewEngine(emb, v, cfg)
+	// 🔴 WithConfigFor, for the SAME reason ingest.Deps.ConfigFor is set below:
+	// --all walks every project and cfg is the config of ONE of them (the
+	// EMPTY project under --all, which carries no host-local layer at all).
+	// The ingest half alone is not enough — the ENGINE decides, per project,
+	// which archive-owned chunks the built index serves.
+	// WithTranscriptsFlag: this pass's explicit --transcripts/--no-transcripts
+	// must reach the ENGINE too, not only ingest. rebuildProject skips the
+	// archive ingest pass for --no-transcripts and then still runs the engine
+	// rebuild; without the flag here that rebuild re-reads config and reloads
+	// the very chunks the flag said to leave out.
+	eng := search.NewEngine(emb, v, cfg,
+		search.WithConfigFor(v.LoadConfig),
+		search.WithTranscriptsFlag(a.transcripts))
 	defer eng.Close()
 
-	d := ingest.Deps{Vault: v, Engine: eng, Embedder: emb, GraphHealer: ingest.NewEngineHealer(eng)}
+	// ConfigFor, not just Config: --all walks every project and cfg here is
+	// the config of ONE project (the empty one under --all, which carries no
+	// host-local layer at all). Each target resolves its own.
+	d := ingest.Deps{
+		Vault: v, Engine: eng, Embedder: emb, GraphHealer: ingest.NewEngineHealer(eng),
+		Config: cfg, ConfigFor: v.LoadConfig,
+	}
 	opts := ingest.RebuildOptions{
-		Project:     a.project,
-		All:         a.all,
-		Skip:        a.skip,
-		MaxArchives: a.maxArchives,
-		NoEmbed:     a.noEmbed,
+		Project:         a.project,
+		All:             a.all,
+		Skip:            a.skip,
+		MaxArchives:     a.maxArchives,
+		NoEmbed:         a.noEmbed,
+		Transcripts:     a.transcripts,
+		DropTranscripts: a.dropTranscripts,
 	}
 
 	if a.dryRun {

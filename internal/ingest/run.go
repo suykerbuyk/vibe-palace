@@ -112,6 +112,33 @@ type RunOptions struct {
 	// indexstore.DefaultRunCooldown. A zero default keeps the throttle out of the
 	// many fixture tests that fire back-to-back runs without opting in.
 	Cooldown time.Duration
+
+	// Transcripts is the pass's explicit --transcripts / --no-transcripts, or
+	// nil when no flag reached it. It is never read directly: withTranscripts
+	// resolves it against Deps.Config exactly once per pass, and `transcripts`
+	// below is what decide reads.
+	Transcripts *bool
+	// transcripts is the RESOLVED answer FOR ONE PROJECT, set only by
+	// withTranscriptsFor. It is unexported so no caller can hand decide a
+	// value that skipped the precedence rule, and its zero value is the
+	// excluded default, which is the safe direction for a pass that somehow
+	// reached decide unresolved.
+	transcripts bool
+}
+
+// withTranscriptsFor returns o with the transcript decision resolved FOR ONE
+// PROJECT.
+//
+// 🔴 IT IS CALLED PER PROJECT, NOT PER PASS, and that is the whole point: a
+// pass spans projects (projectOrder; runHeld's `for _, p := range projects`
+// loops, and inScopePending's), while storage.hostProjectLayer is a
+// per-project host-local layer a project may use to opt IN. Resolving once for
+// the pass leaked the triggering project's setting onto every other project it
+// visited. The pass's FLAG half (o.Transcripts) is still resolved once and
+// never varies by project — see Deps.transcriptsFor.
+func (o RunOptions) withTranscriptsFor(d Deps, project string) RunOptions {
+	o.transcripts = d.transcriptsFor(o.Transcripts, project)
+	return o
 }
 
 // skipped reports whether project is named by Skip.
@@ -565,6 +592,10 @@ func runPending(ctx context.Context, d Deps, held *indexstore.RunLock, o RunOpti
 	if st.skipped[p] {
 		return nil
 	}
+	// This project's own transcript answer, resolved here because the pass
+	// visits several projects and the config layer that decides it is
+	// per-project. decide reads o.transcripts and nothing else.
+	o = o.withTranscriptsFor(d, p)
 	entries, err := archive.ListEntries(d.Vault.Root, p)
 	if err != nil {
 		st.skip(p, "ingest: cannot list the project's archives; skipped this run", err)
@@ -716,6 +747,15 @@ func plan(entries []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool
 // pending and in scope, and with which re-target.
 func decide(sid string, newest *archive.Entry, list []*archive.Entry, l *indexstore.Ledger, firsts map[string]bool,
 	o RunOptions, memo *runMemo, root string) (item, bool) {
+	// The transcript tier's admission arm. It is FIRST, above the o.Explicit
+	// early return below, because exclusion binds the explicit rebuild pass as
+	// well as the automatic drain: the explicit pass draining the historical
+	// baseline is the days-long build this exists to stop, not the bounded
+	// automatic one. o.transcripts is the value withTranscripts resolved once
+	// for this pass.
+	if !o.transcripts {
+		return item{}, false
+	}
 	sha := newest.Manifest.SourceSHA256
 	warn := func(kind, msg string, args ...any) {
 		memo.warnOnce(kind+":"+newest.ArchivePath, msg, append([]any{"session", sid, "archive", newest.ArchivePath}, args...)...)
@@ -988,7 +1028,9 @@ func inScopePending(d Deps, o RunOptions) ([]string, error) {
 			}
 			continue
 		}
-		for _, it := range plan(entries, snap.Ledger(), firsts, o, nil, d.Vault.Root) {
+		// Per project, for the same reason runPending resolves per project:
+		// what is "pending" for p depends on p's own config.
+		for _, it := range plan(entries, snap.Ledger(), firsts, o.withTranscriptsFor(d, p), nil, d.Vault.Root) {
 			out = append(out, it.e.Manifest.SourceSHA256)
 		}
 	}

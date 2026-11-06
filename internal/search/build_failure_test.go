@@ -38,7 +38,7 @@ func TestABuildThatPanicsDoesNotWedgeTheProject(t *testing.T) {
 	v := testVault(t)
 	ensureProjectDir(t, v, "proj")
 	d := addDrawer(t, v, "proj", "wing", "room", "content after the panic", "facts")
-	eng := NewEngine(&panicOnceEmbedder{Embedder: embedder.NewMock(384)}, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(&panicOnceEmbedder{Embedder: embedder.NewMock(384)}, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	func() {

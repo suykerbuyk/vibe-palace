@@ -110,8 +110,13 @@ func vaultStackBuilder(models *embedder.SharedModelCache) vaultstack.BuildFunc {
 		// `vp index rebuild` seam live only on this engine, never a CLI/one-shot
 		// one). The engine holds `handle` as its embedder; VaultStack.Close ->
 		// Engine.Close -> handle.Close is the single refcount decrement.
+		// WithConfigFor: this engine answers for EVERY project in the vault,
+		// and [index] transcripts is per project. Without it every project's
+		// walk, completeness record and coverage state would be judged under
+		// the one config bootstrap happened to load.
 		eng := search.NewEngine(handle, v, cfg,
 			search.WithBackgroundConverter(),
+			search.WithConfigFor(v.LoadConfig),
 			search.WithRebuildLauncher(tools.NewRebuildLauncher(v, detachlaunch.Launch)))
 
 		resolver := vpctx.NewResolver(v.Root)

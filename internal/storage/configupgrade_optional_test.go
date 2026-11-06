@@ -37,6 +37,9 @@ structural_boost_room = 0.34
 [chunker]
 max_chars = 800
 overlap = 100
+
+[index]
+transcripts = false
 `
 
 // want28 is the optional/documented tier re-derived by hand from

@@ -855,9 +855,9 @@ vp index rebuild --all               # rebuild every project in the vault, in sl
 vp index rebuild --all --skip foo --skip bar   # ...but leave these projects out
 ```
 
-- **Coverage states.** `vp index status` reports which of seven ordered states
-  this host is in — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `partial`,
-  `current` — and why, with the session counts behind it (`n` of `m` sessions
+- **Coverage states.** `vp index status` reports which of eight ordered states
+  this host is in — `absent`, `stale`, `legacy`, `unbuilt`, `notes`, `authored`,
+  `partial`, `current` — and why, with the session counts behind it (`n` of `m` sessions
   ingested, and the pending, backlog and failing archives separately). It opens
   no archive and loads no embedder, and it reports an index run already in
   progress without taking any lock. The same coverage is surfaced as

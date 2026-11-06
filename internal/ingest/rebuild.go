@@ -63,7 +63,7 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 	// The watchdog's start refusal, over the whole run's estimate, before any
 	// lock is taken or any archive opened.
 	wd := newWatchdog(o.FreeSpace, d.Vault.VaultLocalDir(), o.Reserve)
-	total, err := totalEstimate(d, targets)
+	total, err := totalEstimate(d, targets, o.Transcripts)
 	if err != nil {
 		return res, err
 	}
@@ -126,7 +126,13 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 		if err := held.SetProject(p); err != nil {
 			return res, err
 		}
-		r, served, emb, err := rebuildProject(ctx, d, held, eng, wd, o, p)
+		// 🔴 PER TARGET, not once for the run. `vp index rebuild --all` walks
+		// every project, and each one's host-local config may answer
+		// differently; the caller even loads its own config for the EMPTY
+		// project under --all, so a single resolution there ignores every
+		// per-project override. The FLAG half inside transcriptsFor is still
+		// resolved once and never varies by target.
+		r, served, emb, err := rebuildProject(ctx, d, held, eng, wd, o, p, d.transcriptsFor(o.Transcripts, p))
 		res.add(r)
 		res.Passes++
 		if err != nil {
@@ -169,6 +175,10 @@ func Rebuild(ctx context.Context, d Deps, o RebuildOptions) (RunResult, error) {
 type rebuildEngine interface {
 	RebuildExplicit(ctx context.Context, project string) (search.RebuildStats, error)
 	RebuildNoEmbed(ctx context.Context, project string) (search.RebuildStats, error)
+	// DropTranscriptTier is --drop-transcripts' one-time archive-owner purge.
+	// It lives on the engine because the purge's vector reap needs the
+	// engine's live set.
+	DropTranscriptTier(ctx context.Context, project string) (indexstore.TranscriptPurge, error)
 }
 
 // RebuildOptions are `vp index rebuild`'s arguments.
@@ -195,6 +205,16 @@ type RebuildOptions struct {
 	// FreeSpace is the free-space reader; nil means the platform reader. Tests
 	// inject one.
 	FreeSpace FreeSpaceReader
+	// Transcripts is the run's explicit --transcripts / --no-transcripts, or
+	// nil when neither was passed. Deps.transcriptsFor turns it into the
+	// resolved bool — per TARGET, through storage.ResolveTranscripts, where
+	// the argv wins over the config.
+	Transcripts *bool
+	// DropTranscripts runs the one-time archive-owner purge
+	// (Tx.DropTranscriptTier) at step 3 of each target's rebuild, after
+	// discardOnMismatch. It is `vp index rebuild <p> --drop-transcripts`, and
+	// it is a usage error together with --transcripts.
+	DropTranscripts bool
 }
 
 // skipped reports whether p is named by Skip.
@@ -305,7 +325,7 @@ func stopEndsRun(stopped string) bool {
 // 5) — served only on a completed embed build, so a stopped or --no-embed run
 // leaves the want for the next trigger — and whether it embedded (reached
 // RebuildExplicit; U4 site (b-stamp), ORed by the caller to arm the cooldown).
-func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string) (RunResult, bool, bool, error) {
+func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string, transcripts bool) (RunResult, bool, bool, error) {
 	var res RunResult
 	var embedded bool
 
@@ -315,27 +335,49 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 		return res, false, embedded, err
 	}
 
+	// Step 3b: --drop-transcripts, AFTER discardOnMismatch. On the mismatch
+	// path the store has just been discarded wholesale, so this is a clean
+	// no-op; on every other path it is the one-time reclaim that takes an
+	// already-built store back under the chunk-store size cliff and makes the
+	// `authored` coverage state reachable.
+	if o.DropTranscripts {
+		if _, err := eng.DropTranscriptTier(ctx, p); err != nil {
+			return res, false, embedded, fmt.Errorf("drop transcript tier: %w", err)
+		}
+	}
+
 	// Step 4: the explicit archive pass for THIS project alone (Only), entered
 	// through RunHeld with the run lock already held (never Run, whose second
 	// try-lock on a new descriptor would fail on Linux), SkipHeal so the heal is
 	// this driver's, the watchdog as the per-archive/every-500-chunk Checkpoint,
 	// and Embed=!NoEmbed.
-	ro := RunOptions{
-		VaultRoot:   d.Vault.Root,
-		Project:     p,
-		Only:        p,
-		Explicit:    true,
-		SkipHeal:    true,
-		NoEmbed:     o.NoEmbed,
-		MaxArchives: o.MaxArchives,
-		Checkpoint:  wd.checkpoint,
+	//
+	// 🔴 When the transcript tier is excluded, step 4 is SKIPPED ENTIRELY: no
+	// archive is listed, opened or ledgered. decide would admit nothing
+	// anyway, but skipping here is what makes `vp index rebuild --all` a
+	// routine operation instead of a days-long baseline drain.
+	var stopped string
+	if transcripts {
+		ro := RunOptions{
+			VaultRoot:   d.Vault.Root,
+			Project:     p,
+			Only:        p,
+			Explicit:    true,
+			SkipHeal:    true,
+			NoEmbed:     o.NoEmbed,
+			MaxArchives: o.MaxArchives,
+			Checkpoint:  wd.checkpoint,
+			// The run's explicit flag, so RunHeld's own resolution agrees with
+			// the one Rebuild already made rather than falling back to config.
+			Transcripts: o.Transcripts,
+		}
+		r, err := RunHeld(ctx, d, held, ro)
+		res.add(r)
+		if err != nil {
+			return res, false, embedded, err
+		}
+		stopped = r.Stopped
 	}
-	r, err := RunHeld(ctx, d, held, ro)
-	res.add(r)
-	if err != nil {
-		return res, false, embedded, err
-	}
-	stopped := r.Stopped
 
 	// A cancelled run leaves the context dead, so the engine rebuild cannot run;
 	// stop here and let the next run rebuild the tiers (the archive pass is
@@ -350,6 +392,7 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// stop the tiers are rebuilt from what is ledgered, so search stays
 	// coherent; completion below is what the stop prevents.
 	var stats search.RebuildStats
+	var err error
 	if o.NoEmbed {
 		stats, err = eng.RebuildNoEmbed(ctx, p)
 	} else {
@@ -395,12 +438,12 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// archive is ledgered with its full chunk count or carries a failure record
 	// written in this run.
 	if stopped == "" && !o.NoEmbed && stats.LocalMisses == 0 {
-		accounted, err := everyLiveArchiveAccounted(d, p, res.FailedSHAs)
+		accounted, err := everyLiveArchiveAccounted(d, p, res.FailedSHAs, transcripts)
 		if err != nil {
 			return res, served, embedded, err
 		}
 		if accounted {
-			if err := completeRebuild(ctx, d, held, p, res.FailedSHAs); err != nil {
+			if err := completeRebuild(ctx, d, held, p, res.FailedSHAs, transcripts); err != nil {
 				return res, served, embedded, err
 			}
 			// Requirement from 1b (round 3): only AFTER the rebuild of p
@@ -475,7 +518,14 @@ func discardOnMismatch(ctx context.Context, d Deps, p string) error {
 // written in this run (whose source_sha256 is in failed). It is the "every live
 // archive attempted" half of a completed rebuild (the baseline set included,
 // since the explicit pass took it).
-func everyLiveArchiveAccounted(d Deps, p string, failed []string) (bool, error) {
+// 🔴 When the transcript tier is EXCLUDED for p, the loop's universe is empty:
+// the host undertook to ingest no archive, so a live archive with no ledger
+// record is accounted for. Without that arm no excluded rebuild could ever
+// complete, completeRebuild would never run, and a pre-existing
+// StaleMissingVectors would persist for ever — the search path never clears a
+// stale reason — firing the bootstrap "run `vp index rebuild`" alert on every
+// session start, for the very build the exclusion exists to avoid.
+func everyLiveArchiveAccounted(d Deps, p string, failed []string, transcripts bool) (bool, error) {
 	entries, err := archive.ListEntries(d.Vault.Root, p)
 	if err != nil {
 		return false, err
@@ -487,6 +537,18 @@ func everyLiveArchiveAccounted(d Deps, p string, failed []string) (bool, error) 
 	l := snap.Ledger()
 	if !l.Exists() {
 		return false, nil
+	}
+	// 🔴 The exclusion arm sits BELOW the ledger check, not above it. Skipping
+	// step 4 also skips its ensureLedger, so a host that has never ingested
+	// has no ledger at all — and completeRebuild's ClearStale/ClearFailures
+	// need one (indexstore: "the project has no ledger; call EnsureLedger
+	// first"). There is also nothing for them to do there: no stale reason was
+	// ever set and no baseline exists to protect. Leaving the ledger
+	// uncreated is the right outcome besides, because a later opt-in then
+	// creates it and records every archive on disk as the baseline set, which
+	// is ADR-014 decision 2's drowning protection.
+	if !transcripts {
+		return true, nil
 	}
 	failedSet := map[string]bool{}
 	for _, s := range failed {
@@ -525,7 +587,16 @@ var completedRebuildFn = func(rl *indexstore.RunLock, project string, failed []s
 // completeRebuild clears stale (both reasons), empties the baseline set and
 // resets the failure counts of every archive that did not fail in this run, in
 // one commit step under the project's commit lock (step 8).
-func completeRebuild(ctx context.Context, d Deps, held *indexstore.RunLock, p string, failed []string) error {
+//
+// 🔴 ClearBaseline is SKIPPED when the transcript tier is excluded. The
+// baseline set is the AUTOMATIC ingester's skip-list for the historical
+// backlog (decide's InBaseline arm), and under exclusion that backlog is still
+// un-ingested. Emptying it would hand every archive on disk to the automatic
+// path the moment the operator opts in — the drowning ADR-014 decision 2's
+// baseline set exists to prevent. ClearStale and ClearFailures still run:
+// stale is about vectors this build did leave complete, and the failure counts
+// are about ingest attempts no longer being made.
+func completeRebuild(ctx context.Context, d Deps, held *indexstore.RunLock, p string, failed []string, transcripts bool) error {
 	proof, err := completedRebuildFn(held, p, failed)
 	if err != nil {
 		return err
@@ -538,8 +609,10 @@ func completeRebuild(ctx context.Context, d Deps, held *indexstore.RunLock, p st
 	if err := tx.ClearStale(proof); err != nil {
 		return err
 	}
-	if err := tx.ClearBaseline(proof); err != nil {
-		return err
+	if transcripts {
+		if err := tx.ClearBaseline(proof); err != nil {
+			return err
+		}
 	}
 	if err := tx.ClearFailures(proof); err != nil {
 		return err
@@ -601,6 +674,9 @@ func rescanAndRelease(ctx context.Context, d Deps, held *indexstore.RunLock, wd 
 		// rebuild-corpus token here (and only here) for the served-marker seen
 		// membership below (ADR-016 decision 5 / M1).
 		RebuildRun: true,
+		// The run's explicit flag only. The rescan spans the vault's OTHER
+		// projects, and runPending resolves each one's config for itself.
+		Transcripts: o.Transcripts,
 	}
 	pending := func() ([]string, error) { return inScopePending(d, ao) }
 	for {
@@ -705,7 +781,9 @@ func DryRun(d Deps, o RebuildOptions) (DryRunReport, error) {
 	rep.Reserve = o.Reserve.orDefault()
 	var total Estimate
 	for _, p := range targets {
-		pe, err := projectEstimate(d, p)
+		// Per target, exactly as Rebuild resolves it: the preflight must
+		// report what the run it previews would actually do.
+		pe, err := projectEstimate(d, p, d.transcriptsFor(o.Transcripts, p))
 		if err != nil {
 			return rep, err
 		}
@@ -727,7 +805,14 @@ func DryRun(d Deps, o RebuildOptions) (DryRunReport, error) {
 
 // projectEstimate reads p's pending archives and baseline set, split, with
 // their bytes, and the consumption estimate from the uncompressed MiB.
-func projectEstimate(d Deps, p string) (ProjectEstimate, error) {
+//
+// transcripts is the run's RESOLVED transcript decision. The estimate is a
+// statement about what a rebuild would read, and an excluded rebuild opens no
+// archive at all, so it must be threaded here rather than assumed: a literal
+// RunOptions{Explicit: true} would leave decide's resolved value at its zero,
+// which happens to be the excluded answer and would be wrong on an opt-in
+// host.
+func projectEstimate(d Deps, p string, transcripts bool) (ProjectEstimate, error) {
 	pe := ProjectEstimate{Project: p}
 	entries, err := archive.ListEntries(d.Vault.Root, p)
 	if err != nil {
@@ -739,7 +824,7 @@ func projectEstimate(d Deps, p string) (ProjectEstimate, error) {
 	}
 	l := snap.Ledger()
 	// The explicit plan: every archive a rebuild of p would read.
-	for _, it := range plan(entries, l, nil, RunOptions{Explicit: true}, nil, d.Vault.Root) {
+	for _, it := range plan(entries, l, nil, RunOptions{Explicit: true, transcripts: transcripts}, nil, d.Vault.Root) {
 		m := it.e.Manifest
 		if m == nil {
 			continue
@@ -762,10 +847,12 @@ func projectEstimate(d Deps, p string) (ProjectEstimate, error) {
 }
 
 // totalEstimate is the whole run's estimated consumption across targets.
-func totalEstimate(d Deps, targets []string) (Estimate, error) {
+// opt is the run's FLAG (nil when none was passed); each target's config
+// fallback is resolved for that target.
+func totalEstimate(d Deps, targets []string, opt *bool) (Estimate, error) {
 	var total Estimate
 	for _, p := range targets {
-		pe, err := projectEstimate(d, p)
+		pe, err := projectEstimate(d, p, d.transcriptsFor(opt, p))
 		if err != nil {
 			return total, err
 		}

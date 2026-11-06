@@ -35,7 +35,7 @@ func fpVault(t *testing.T) *storage.Vault {
 // fpRebuild runs one fresh engine with model m over v and returns its stats.
 func fpRebuild(t *testing.T, v *storage.Vault, model string) RebuildStats {
 	t.Helper()
-	eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: model})
+	eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: model, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	stats, err := eng.Rebuild(context.Background(), "proj")
 	if err != nil {
@@ -175,7 +175,7 @@ func TestEmbedCache_EmptyDirectoryIsNotAMismatch(t *testing.T) {
 // Writer is refused, and nothing is written.
 func TestEmbedCache_WriterRereadsTheRegimeUnderTheLock(t *testing.T) {
 	v := fpVault(t)
-	eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "model-a"})
+	eng := NewEngine(newCountingEmbedder(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "model-a", IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	if _, err := eng.Rebuild(context.Background(), "proj"); err != nil {
 		t.Fatal(err)
@@ -325,7 +325,7 @@ func TestEmbedCache_PutIsAtomicForReaders(t *testing.T) {
 // T4: an engine with NO embedder never validates the regime, so it never
 // deletes a vector or writes a sidecar. This is exactly the engine vp check
 // builds in registeredToolCount (cmd/vp/cmd_check.go:
-// search.NewEngine(nil, v, storage.Config{})), driven here through the cache
+// search.NewEngine(nil, v, storage.Config{IndexTranscripts: true})), driven here through the cache
 // operations a tool would reach.
 func TestEmbedCache_NilEmbedderEngineNeverInvalidates_CmdCheckRegisteredToolCount(t *testing.T) {
 	v := fpVault(t)
@@ -341,7 +341,7 @@ func TestEmbedCache_NilEmbedderEngineNeverInvalidates_CmdCheckRegisteredToolCoun
 		}
 		before := fpVecs(t, v)
 
-		eng := NewEngine(nil, v, storage.Config{})
+		eng := NewEngine(nil, v, storage.Config{IndexTranscripts: true})
 		if eng.cache.fingerprint != "" {
 			t.Fatalf("a nil-embedder engine carries fingerprint %q, want none", eng.cache.fingerprint)
 		}

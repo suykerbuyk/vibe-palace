@@ -81,7 +81,7 @@ func (p *orderProbe) Close() error {
 func TestEngineCloseJoinsWarmBeforeClosingEmbedder(t *testing.T) {
 	v := testVault(t)
 	p := &orderProbe{started: make(chan struct{}), dims: 384}
-	e := NewEngine(p, v, storage.Config{SearchDefaultLimit: 10})
+	e := NewEngine(p, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 
 	e.WarmEmbedder()
 	<-p.started // the warm goroutine is inside the (blocking) construct

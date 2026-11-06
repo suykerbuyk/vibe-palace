@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -18,7 +19,7 @@ import (
 )
 
 // Index coverage (index-coverage-instrument; ADR-014 decision 8). Coverage
-// answers, for one project, which of seven ordered states its host-local
+// answers, for one project, which of eight ordered states its host-local
 // search index is in and why, counting SESSIONS (decision 7), never archive
 // files. It is computed only from records search would itself answer from —
 // TrulyEmpty and Stale (this package), the completeness record's built tiers,
@@ -26,9 +27,9 @@ import (
 // and the ingest ledger — and the run lock's advisory holder record. It opens
 // no archive, loads no embedder and takes no lock (Scope 10, Scope 5).
 //
-// The seven states, tested in this order, first match wins (Scope 1).
+// The eight states, tested in this order, first match wins (Scope 1).
 
-// CoverageState is one of the seven ordered index-coverage states.
+// CoverageState is one of the eight ordered index-coverage states.
 type CoverageState string
 
 const (
@@ -48,6 +49,11 @@ const (
 	// commit-log) are built and the project has no archive with a live session
 	// (m = 0).
 	CoverageNotes CoverageState = "notes"
+	// CoverageAuthored: built, the project HAS archives (m > 0), this host
+	// excludes the transcript tier, and the build observed nothing
+	// archive-owned left to serve. A deliberately transcript-free index, not
+	// an incomplete one.
+	CoverageAuthored CoverageState = "authored"
 	// CoveragePartial: the project has live sessions and n < m (includes n = 0,
 	// pending archives and a non-empty baseline set).
 	CoveragePartial CoverageState = "partial"
@@ -74,6 +80,15 @@ type Coverage struct {
 	Pending int `json:"pending"`
 	Backlog int `json:"backlog"`
 	Failing int `json:"failing"`
+	// ExcludedTiers names the corpus tiers this host deliberately did not
+	// build, copied from the completeness record the BUILD wrote. A list, not
+	// a boolean, so a second excluded tier needs no second field.
+	ExcludedTiers []string `json:"excluded_tiers,omitempty"`
+	// UnreclaimedTranscriptChunks is the archive-owned chunks still in the
+	// chunk fold on disk. They are not served — the purge's ledger step made
+	// them ownerless — so this is a disk-space fact, and it is deliberately
+	// NOT an input to the authored predicate.
+	UnreclaimedTranscriptChunks int `json:"unreclaimed_transcript_chunks,omitempty"`
 	// Run is the index run in progress on this host, when the holder record
 	// names a live pid; nil otherwise (Scope 5). It is vault-wide, read once.
 	Run *CoverageRun `json:"run,omitempty"`
@@ -126,7 +141,9 @@ func NewCoverageEngine(vault *storage.Vault, cfg storage.Config) *Engine {
 	emb := embedder.NewLazy(func() (embedder.Embedder, error) {
 		return nil, errors.New("index coverage path loads no embedder")
 	})
-	return NewEngine(emb, vault, cfg)
+	// WithConfigFor so a coverage engine asked about a project OTHER than the
+	// one cfg was loaded for still reads that project's own setting.
+	return NewEngine(emb, vault, cfg, WithConfigFor(vault.LoadConfig))
 }
 
 // IndexCoverage is the shared single-project derivation: state, reason, the
@@ -198,11 +215,12 @@ func (e *Engine) CoverageState(project string) (Coverage, error) {
 
 	// The session counts feed legacy's progress and the notes/partial/current
 	// split. Compute them once, before the state branches that need them.
-	n, m, pending, backlog, failing, err := e.coverageCounts(project)
+	n, m, pending, backlog, failing, unreclaimed, err := e.coverageCounts(project)
 	if err != nil {
 		return Coverage{}, err
 	}
 	cov.N, cov.M, cov.Pending, cov.Backlog, cov.Failing = n, m, pending, backlog, failing
+	cov.UnreclaimedTranscriptChunks = unreclaimed
 
 	if stale {
 		rec, err := coverageReadCompleteness(e.vault, project)
@@ -246,24 +264,80 @@ func (e *Engine) CoverageState(project string) (Coverage, error) {
 		return cov, nil
 	}
 
+	cov.ExcludedTiers = rec.ExcludedTiers
+
 	// 5. notes — built, and the project has no archive with a live session.
+	// 🔴 Ordered BEFORE authored so notes keeps its exact meaning: m == 0 is
+	// "this project has no archives", which a reader must still be able to
+	// tell apart from "it has archives and this host excludes them".
 	if m == 0 {
 		cov.State = CoverageNotes
 		cov.Reason = "notes, iterations and commit-log built; the project has no archives"
 		return cov, nil
 	}
 
-	// 6. partial — live sessions and n < m (includes n = 0 and a backlog).
-	if n < m {
-		cov.State = CoveragePartial
-		cov.Reason = partialReason(project, n, m, pending, backlog, failing)
+	// 6. authored — built, archives exist, this host excludes the transcript
+	// tier, AND the last build observed nothing archive-owned left to serve.
+	//
+	// Re-derived after the 2026-11-06 ruling: still correct, and now
+	// load-bearing rather than merely conservative. archiveOwned counts every
+	// archive-owned chunk the walk VISITED in Chunks(true), which yields only
+	// live-owned ones — and the walk now LOADS those that carry a vector
+	// instead of hiding them. So a non-zero count means the index really is
+	// serving transcripts, and ExcludedTiers (hence `authored`) stays
+	// unreachable until the purge has removed the ledger rows that make them
+	// live. The purge is the only thing that gets there.
+	//
+	// 🔴 THE FOURTH ARM IS WHAT STOPS THE STATE LYING. The first three are a
+	// statement of intent; only ExcludedTiers — which writeCompletenessLocked
+	// sets from the WALK, not from the config — says the index actually serves
+	// no transcript. Without it a previously-built host would flip to authored
+	// the instant the setting changed, while still answering from 456k
+	// transcript chunks.
+	if !e.indexTranscripts(project) && slices.Contains(rec.ExcludedTiers, tierTranscripts) {
+		cov.State = CoverageAuthored
+		cov.Reason = authoredReason(m, unreclaimed)
 		return cov, nil
 	}
 
-	// 7. current — m > 0 and n = m.
+	// 7. partial — live sessions and n < m (includes n = 0 and a backlog).
+	if n < m {
+		cov.State = CoveragePartial
+		cov.Reason = partialReason(project, n, m, pending, backlog, failing) + inBetweenNote(e.indexTranscripts(project), unreclaimed, project)
+		return cov, nil
+	}
+
+	// 8. current — m > 0 and n = m.
 	cov.State = CoverageCurrent
-	cov.Reason = fmt.Sprintf("all %d sessions ingested", m)
+	cov.Reason = fmt.Sprintf("all %d sessions ingested", m) + inBetweenNote(e.indexTranscripts(project), unreclaimed, project)
 	return cov, nil
+}
+
+// authoredReason is the authored state's reason: what was built, what was not,
+// and the unreclaimed residue when there is any.
+func authoredReason(m, unreclaimed int) string {
+	r := fmt.Sprintf("notes, iterations and commit-log built; the transcript tier is excluded on this host (%d archives not indexed)", m)
+	if unreclaimed > 0 {
+		r += fmt.Sprintf("; %d archive-owned chunks remain on disk unserved (reclaim with `vp index rebuild --drop-transcripts`)", unreclaimed)
+	}
+	return r
+}
+
+// inBetweenNote is the sentence for the in-between state: the config excludes
+// transcripts, and a previous opt-in run's archive-owned chunks are still in
+// the store. The project keeps whatever state it read before — that is honest,
+// they really are still there — and this names the gap and the remedy rather
+// than leaving the operator to notice.
+//
+// Since the 2026-11-06 ruling those chunks are SERVED, not hidden: the engine
+// loads any that carry a cached vector, so an opt-in run's work survives. The
+// note therefore says "still served", not "still in the store", and the purge
+// is now the ONLY thing that removes them.
+func inBetweenNote(indexTranscripts bool, unreclaimed int, project string) string {
+	if indexTranscripts || unreclaimed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; transcripts are excluded on this host, and %d archive-owned chunks from an earlier opt-in are still stored and still served; `vp index rebuild %s --drop-transcripts` is what removes them", unreclaimed, project)
 }
 
 // coverageCounts counts sessions against the ledger, reading the manifests and
@@ -271,10 +345,13 @@ func (e *Engine) CoverageState(project string) (Coverage, error) {
 // sessions; n is those whose latest ledger record is live and names the live
 // archive's source_sha256 and is not superseding. The m-n remainder splits into
 // pending, backlog and failing.
-func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing int, err error) {
+// unreclaimed is the archive-owned chunks still in the fold, counted from the
+// same store read the session counts use (it is zero when m == 0, which
+// returns before the read).
+func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing, unreclaimed int, err error) {
 	entries, err := coverageListEntries(e.vault.Root, project)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
 	// One live archive per session: the latest captured_at, with source_sha256
 	// as a deterministic tie-break. archive.ListEntries sorts on captured_at
@@ -303,20 +380,21 @@ func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing
 	}
 	m = len(live)
 	if m == 0 {
-		return 0, 0, 0, 0, 0, nil
+		return 0, 0, 0, 0, 0, 0, nil
 	}
 
 	st, err := readStoreFn(e.vault, project)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
 	ledger := st.Ledger()
+	unreclaimed = st.CountOwnersOfKind(indexstore.OwnerArchive)
 
 	// With no ledger yet (no ingest run has created it on this host), every live
 	// archive is backlog, which is what the ledger's creation will record
 	// (ADR-014 decision 2).
 	if ledger == nil || !ledger.Exists() {
-		return 0, m, 0, m, 0, nil
+		return 0, m, 0, m, 0, unreclaimed, nil
 	}
 
 	for _, sid := range order {
@@ -346,7 +424,7 @@ func (e *Engine) coverageCounts(project string) (n, m, pending, backlog, failing
 			failing++
 		}
 	}
-	return n, m, pending, backlog, failing, nil
+	return n, m, pending, backlog, failing, unreclaimed, nil
 }
 
 // coverageEntryNewer reports whether a is the live archive over b: a later

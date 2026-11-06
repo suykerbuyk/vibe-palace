@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -78,6 +79,69 @@ type Deps struct {
 	// neither internal/tools nor syscall; nil means liveness cannot be
 	// determined and the consumer does not spawn (no storm).
 	HolderAlive func(pid int) bool
+	// Config is the FALLBACK config, used for every project when ConfigFor is
+	// nil. Only IndexTranscripts is read here, and only through
+	// transcriptsFor. A zero Config means transcripts are excluded, which is
+	// the default this package must fail toward.
+	Config storage.Config
+	// ConfigFor resolves ONE PROJECT's layered config —
+	// storage.(*Vault).LoadConfig in production, set by every caller that
+	// drives a pass.
+	//
+	// 🔴 IT EXISTS BECAUSE A PASS SPANS PROJECTS AND THE CONFIG IS
+	// PER-PROJECT. runHeld visits every in-scope project (projectOrder, the
+	// loops at run.go's `for _, p := range projects`), and `vp index rebuild
+	// --all` visits every target; meanwhile storage.hostProjectLayer is a
+	// per-project, host-local layer that a project may use to opt IN. One
+	// config resolved once for the whole pass therefore leaks the triggering
+	// project's setting onto every other project it visits — and with --all,
+	// where the caller loads the config for the empty project, it ignores
+	// every per-project override there is. nil means "use Config for every
+	// project", which is what the fixtures want and what a caller with no
+	// vault-backed config can offer.
+	ConfigFor func(project string) (storage.Config, error)
+}
+
+// configFor is ConfigFor with its documented fallback.
+func (d Deps) configFor(project string) (storage.Config, error) {
+	if d.ConfigFor == nil || project == "" {
+		return d.Config, nil
+	}
+	return d.ConfigFor(project)
+}
+
+// transcriptsFor is the resolution a pass makes for ONE project.
+//
+// 🔴 THE TWO HALVES ARE DELIBERATELY SEPARATE, and conflating them once cost
+// three plan revisions:
+//
+//   - THE ARGV FLAG IS AUTHORITATIVE AND RESOLVED ONCE PER PASS. opt is the
+//     pass's --transcripts/--no-transcripts; when it is non-nil no config is
+//     read at all, for any project. The operator said so for this invocation,
+//     and that must not vary from project to project. search.Engine carries
+//     the SAME flag (search.WithTranscriptsFlag) for the same reason: ingest
+//     and the engine are two halves of one run.
+//   - THE CONFIG FALLBACK IS RESOLVED PER PROJECT, from that project's own
+//     layered config, at the moment the pass visits it.
+//
+// An unreadable config resolves to the EXCLUDED default rather than to another
+// project's answer: failing toward less work is this feature's safe direction,
+// and reusing Deps.Config there would reinstate the leak on the error path.
+func (d Deps) transcriptsFor(opt *bool, project string) bool {
+	cfg := d.Config
+	if opt == nil {
+		// The config is read ONLY when there is no flag to beat it; the
+		// precedence decision itself is made in storage.ResolveTranscripts and
+		// nowhere else.
+		c, err := d.configFor(project)
+		if err != nil {
+			slog.Warn("ingest: cannot resolve the project's config; the transcript tier stays excluded for it",
+				"project", project, "error", err)
+			return false
+		}
+		cfg = c
+	}
+	return storage.ResolveTranscripts(opt, cfg)
 }
 
 // IngestOptions controls one IngestArchive.

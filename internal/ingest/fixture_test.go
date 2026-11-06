@@ -78,13 +78,37 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{t: t, v: storage.NewVault(root), emb: newCountingEmbedder()}
-	f.eng = search.NewEngine(f.emb, f.v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "test-model"})
+	// IndexTranscripts matches deps() below. In production both the engine's
+	// config and ingest.Deps.Config come from the SAME v.LoadConfig(project)
+	// call (cmd/vp/cmd_index_rebuild.go, cmd/vp/cmd_drain_archives.go), so
+	// they always agree; a fixture that opted ingest in and left the engine
+	// out would ingest archive chunks the engine's exclusion belt then skips,
+	// and every "is it searchable" assertion would fail for the wrong reason.
+	f.eng = search.NewEngine(f.emb, f.v, storage.Config{SearchDefaultLimit: 10, EmbedderModel: "test-model", IndexTranscripts: true})
 	t.Cleanup(func() { f.eng.Close() })
 	return f
 }
 
+// deps is the fixture's production Deps. Config opts IN to the transcript
+// tier: these tests were written when indexing transcripts was the only
+// behaviour, and they assert that archives ARE ingested. The host default is
+// now the opposite (storage defaults.toml, [index] transcripts = false), so
+// without this every one of them would pass vacuously over a run that admitted
+// nothing. The exclusion itself is pinned by its own guards, which set this
+// field the other way on purpose.
 func (f *fixture) deps() Deps {
-	return Deps{Vault: f.v, Engine: f.eng, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng)}
+	return Deps{
+		Vault: f.v, Engine: f.eng, Embedder: f.emb, GraphHealer: NewEngineHealer(f.eng),
+		Config: storage.Config{IndexTranscripts: true},
+	}
+}
+
+// excludedDeps is f.deps() with the transcript tier EXCLUDED, i.e. this
+// project's host default.
+func (f *fixture) excludedDeps() Deps {
+	d := f.deps()
+	d.Config.IndexTranscripts = false
+	return d
 }
 
 // git runs git in the vault with a fixed identity.

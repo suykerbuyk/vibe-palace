@@ -57,7 +57,7 @@ func TestSearchColdModelBoundedWaitNoBlindEmbed(t *testing.T) {
 	gate := make(chan struct{})
 	lazy, counter := newColdModel(gate, nil)
 	v := testVault(t)
-	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	// Release the construct FIRST at cleanup so Close's warmWG.Wait() returns.
 	t.Cleanup(func() { close(gate); eng.Close() })
 	addDrawer(t, v, "proj", "wing", "room", "some content to index", "facts")
@@ -85,7 +85,7 @@ func TestSearchColdModelConstructFailedFastFail(t *testing.T) {
 	defer swapDuration(&readyWait, 3*time.Second)()
 	lazy, counter := newColdModel(nil, errors.New("construct boom"))
 	v := testVault(t)
-	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	addDrawer(t, v, "proj", "wing", "room", "some content to index", "facts")
 
@@ -110,7 +110,7 @@ func TestSearchColdModelConstructFailedFastFail(t *testing.T) {
 // e.loaded / e.indexes are left untouched. Mutant: widen/remove the gate and the
 // whole corpus embeds.
 func TestColdCorpusOverBudgetRefusesWithoutEmbedding(t *testing.T) {
-	eng, v, emb := countingEngine(t, storage.Config{EmbedderBatchSize: 32})
+	eng, v, emb := countingEngine(t, storage.Config{EmbedderBatchSize: 32, IndexTranscripts: true})
 	for i := 0; i < 40; i++ {
 		addDrawer(t, v, "proj", "wing", "room", fmt.Sprintf("distinct chunk number %d", i), "facts")
 	}
@@ -177,7 +177,7 @@ func TestJoinBoundedWhenOwnerBuildStalls(t *testing.T) {
 	defer swapDuration(&joinBuildTimeout, 150*time.Millisecond)()
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
 	v := testVault(t)
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	addDrawer(t, v, "proj", "wing", "room", "one drawer the owner embeds", "facts")
 
@@ -245,7 +245,7 @@ func TestJoinServesNonEmptyInMemoryIndexOnTimeout(t *testing.T) {
 	defer swapDuration(&joinBuildTimeout, 150*time.Millisecond)()
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
 	v := testVault(t)
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	// The in-memory index to be served (loaded stays clear).
@@ -278,7 +278,7 @@ func TestJoinServesNonEmptyInMemoryIndexOnTimeout(t *testing.T) {
 func TestJoinCancelledCtxEmptyIndexRefuses(t *testing.T) {
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
 	v := testVault(t)
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	// An EMPTY in-memory index (Len()==0) — must not be served as an empty success.
@@ -308,7 +308,7 @@ func TestEmbedBudgetDeadlineRefusesAndDoesNotRemember(t *testing.T) {
 	defer swapDuration(&embedBudget, 100*time.Millisecond)()
 	emb := ctxBlockEmbedder{Embedder: embedder.NewMock(384)}
 	v := testVault(t)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	addDrawer(t, v, "proj", "wing", "room", "one drawer to embed", "facts")
 
@@ -336,7 +336,7 @@ func TestEmbedBudgetDeadlineRefusesAndDoesNotRemember(t *testing.T) {
 // from the warm one. Mutant: ensureAllIndexes returning on the first not-ready
 // project drops the warm results too.
 func TestCrossProjectSkipsNotReadyServesWarm(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{EmbedderBatchSize: 32})
+	eng, v, _ := countingEngine(t, storage.Config{EmbedderBatchSize: 32, IndexTranscripts: true})
 	ctx := context.Background()
 
 	// warm: a small project, built and cached by a first scoped search.
@@ -366,7 +366,7 @@ func TestCrossProjectSkipsNotReadyServesWarm(t *testing.T) {
 // S2: Search returns the typed not-ready error unwrapped — no `build index for`
 // / `search:` prefix — so the surfaces read the `vp index rebuild` text cleanly.
 func TestSearchReturnsNotBuiltErrorUnwrapped(t *testing.T) {
-	eng, v, _ := countingEngine(t, storage.Config{EmbedderBatchSize: 32})
+	eng, v, _ := countingEngine(t, storage.Config{EmbedderBatchSize: 32, IndexTranscripts: true})
 	for i := 0; i < 40; i++ {
 		addDrawer(t, v, "proj", "wing", "room", fmt.Sprintf("distinct chunk %d", i), "facts")
 	}
@@ -392,7 +392,7 @@ func TestSearchReturnsNotBuiltErrorUnwrapped(t *testing.T) {
 func TestWarmEmbedderConstructsDetached(t *testing.T) {
 	lazy, _ := newColdModel(nil, nil)
 	v := testVault(t)
-	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(lazy, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 
 	if eng.EmbedderReady() {

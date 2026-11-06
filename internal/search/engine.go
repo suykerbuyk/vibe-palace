@@ -48,7 +48,13 @@ type Engine struct {
 	embedder embedder.Embedder
 	vault    *storage.Vault
 	cache    *EmbedCache
-	config   storage.Config
+	// configFor resolves ONE PROJECT's layered config; nil means every project
+	// uses config above. See WithConfigFor.
+	configFor func(project string) (storage.Config, error)
+	// transcriptsFlag is the pass's explicit --transcripts/--no-transcripts,
+	// nil when neither was passed. See WithTranscriptsFlag.
+	transcriptsFlag *bool
+	config          storage.Config
 
 	mu       sync.RWMutex
 	indexes  map[string]VectorIndex // project -> index
@@ -221,6 +227,77 @@ func WithBackgroundConverter() EngineOption {
 // one-shot engine leaves it off and a cold search there only serves degraded.
 func WithRebuildLauncher(l RebuildLauncher) EngineOption {
 	return func(e *Engine) { e.rebuildLauncher = l }
+}
+
+// WithConfigFor injects the PER-PROJECT config resolver —
+// storage.(*Vault).LoadConfig in production, the same idiom
+// ingest.Deps.ConfigFor uses, and set by every caller whose engine can be
+// asked about more than one project.
+//
+// 🔴 ONE ENGINE SERVES MANY PROJECTS, AND [index] transcripts IS PER PROJECT.
+// Engine.config is ONE project's resolved config (and under
+// `vp index rebuild --all` it is the EMPTY project's, which carries no
+// host-local layer at all), yet walkCorpus's exclusion belt,
+// writeCompletenessLocked's ExcludedTiers record and CoverageState's
+// `authored` predicate are all asked per project — and the long-lived MCP
+// serving engine answers for every project in the vault. Reading
+// e.config.IndexTranscripts at those sites indexes one project's archive
+// chunks under another project's setting, in both directions.
+//
+// Unset, every project resolves from Engine.config, which is what a
+// single-project engine and this package's fixtures want.
+func WithConfigFor(f func(project string) (storage.Config, error)) EngineOption {
+	return func(e *Engine) { e.configFor = f }
+}
+
+// WithTranscriptsFlag injects the PASS's explicit --transcripts /
+// --no-transcripts, nil when neither was passed. Only `vp index rebuild` has
+// one; every other engine leaves it unset and resolves from config.
+//
+// 🔴 R1's PRECEDENCE RULE APPLIES TO THE ENGINE, NOT ONLY TO INGEST. The two
+// are halves of one run: rebuildProject skips the archive INGEST pass for
+// --no-transcripts and then still runs the ENGINE rebuild. With the flag
+// reaching only ingest, a --no-transcripts run over a warm store RELOADED the
+// archive-owned chunks it was told to leave out, and a --transcripts run on a
+// default host ingested archives the engine then SKIPPED. The flag is resolved
+// ONCE PER PASS and never varies by project; the config fallback
+// (WithConfigFor) stays per project.
+func WithTranscriptsFlag(opt *bool) EngineOption {
+	return func(e *Engine) { e.transcriptsFlag = opt }
+}
+
+// indexTranscripts reports whether THIS HOST indexes the transcript tier for
+// project — the archive-owned chunks of captured AI sessions.
+//
+// It is the engine's half of the rule ingest.Deps.transcriptsFor states, and it
+// resolves through the SAME function, storage.ResolveTranscripts:
+//
+//   - the PASS'S FLAG is authoritative and never varies by project
+//     (WithTranscriptsFlag). When one was passed no config is read at all.
+//   - the CONFIG FALLBACK is per project (WithConfigFor).
+//
+// 🔴 The flag half is not optional here. rebuildProject skips the archive
+// INGEST pass for --no-transcripts and then still runs the engine rebuild, so
+// an engine that resolved from config alone reloaded the archive-owned chunks
+// the flag said to leave out — and, the other way, skipped archives a
+// --transcripts run had just admitted.
+//
+// An unreadable project config resolves to the EXCLUDED default rather than to
+// another project's answer, for the reason transcriptsFor gives: failing
+// toward less work is this feature's safe direction, and falling back to
+// e.config would reinstate the leak on the error path.
+func (e *Engine) indexTranscripts(project string) bool {
+	cfg := e.config
+	if e.transcriptsFlag == nil && e.configFor != nil && project != "" {
+		c, err := e.configFor(project)
+		if err != nil {
+			slog.Warn("search: cannot resolve the project's config; the transcript tier stays excluded for it",
+				"project", project, "error", err)
+			return false
+		}
+		cfg = c
+	}
+	return storage.ResolveTranscripts(e.transcriptsFlag, cfg)
 }
 
 // projectBuild is a single in-flight lazy index build. Concurrent searches for
@@ -1587,6 +1664,9 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 	if err != nil {
 		return corpusWalk{stats: stats}, fmt.Errorf("read index store: %w", err)
 	}
+	// THIS PROJECT's transcript answer, read once for the whole walk. The
+	// engine may serve many projects and the setting is per project.
+	indexTranscripts := e.indexTranscripts(project)
 	storeIDs := map[string]bool{}
 	decisionNotes, localOwners := map[string]bool{}, map[string]bool{}
 	for n, c := range st.Chunks(true) {
@@ -1597,9 +1677,45 @@ func (e *Engine) walkCorpus(ctx context.Context, project string, mode rebuildMod
 			return corpusWalk{stats: stats}, err
 		}
 		storeIDs[c.ID] = true
+		// 🔴 COUNT FIRST, SKIP SECOND. st.Chunks(true) yields only chunks with
+		// a LIVE owner, so an archive-owned chunk here is one search would
+		// serve. Counting it before the exclusion belt below is what keeps
+		// writeCompletenessLocked from recording the transcript tier as
+		// excluded over a store that is still serving it — count after the
+		// skip and archiveOwned is always zero and the `authored` state lies.
+		archiveOwned := c.Selected != nil && c.Selected.Kind == indexstore.OwnerArchive
+		if archiveOwned {
+			facts.archiveOwned++
+		}
 		vec, err := e.cachedVector(project, c.ID)
 		if err != nil {
 			return corpusWalk{stats: stats}, err
+		}
+		// 🔴 THE BELT, AND IT TURNS ON THE VECTOR, NOT ON THE OWNER ALONE
+		// (operator ruling 2026-11-06: "don't ingest, but don't discard").
+		//
+		// The transcript decision governs INGESTION, not what this walk loads
+		// from what is ALREADY stored. An archive-owned chunk that HAS a
+		// cached vector is loaded like any other: an explicit opt-in run's
+		// work must survive the next automatic rebuild, and serving a vector
+		// that is already on disk costs nothing and makes no archive pending.
+		//
+		// One WITHOUT a vector is skipped, and — this is the belt's original
+		// and unchanged purpose — is NOT counted as a miss. A miss here sets
+		// StaleMissingVectors (writeCompletenessLocked), which makes an
+		// excluded project read `stale` (CoverageState) and demands on every
+		// bootstrap the very rebuild the exclusion exists to avoid. Skipping
+		// also keeps the explicit path from EMBEDDING it, which is the
+		// days-long cost itself: embedding is the work, and a stored chunk
+		// with no vector is work not yet done.
+		//
+		// Cost, stated: this reads the embed cache for every archive-owned
+		// chunk, where the old belt skipped before that read. A host that
+		// never opted in has no archive-owned chunk at all and pays nothing;
+		// one that did pays a cache read per chunk, which is the cost the
+		// operator accepted for its work surviving.
+		if archiveOwned && !indexTranscripts && vec == nil {
+			continue
 		}
 		if c.SourceType == storage.SourceTypeDecision {
 			if vec == nil && !mode.embedOthers {

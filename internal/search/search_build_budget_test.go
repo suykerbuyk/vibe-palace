@@ -559,7 +559,7 @@ func TestRebuildBoundsTheDecisionWriterWithThePreludeBudget(t *testing.T) {
 func TestTheWitnessedLoadRunsOnTheCtxTheSeamReturned(t *testing.T) {
 	v := testVault(t)
 	emb := newCountingEmbedder(384)
-	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+	eng := NewEngine(emb, v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	// Session notes so the witnessed walk actually iterates items: a
 	// drawers-only corpus walks zero per-item loops and the hook never fires,
@@ -950,7 +950,7 @@ func TestWarmCorpusWithASlowWalkIsRefused(t *testing.T) {
 			addDrawer(t, v, "proj", "wing", "room", fmt.Sprintf("warm chunk number %d", i), "facts")
 		}
 		// Warm the embed cache with one full, unbounded rebuild.
-		warm := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+		warm := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 		if _, err := warm.Rebuild(context.Background(), "proj"); err != nil {
 			t.Fatalf("warming rebuild: %v", err)
 		}
@@ -983,7 +983,7 @@ func TestWarmCorpusWithASlowWalkIsRefused(t *testing.T) {
 	t.Run("nothing servable in memory: refuse, and the launcher fires", func(t *testing.T) {
 		v, spy := newWarmVault(t)
 		// A FRESH engine: the embed cache is warm but no index is in memory.
-		eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+		eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true},
 			WithRebuildLauncher(spy.launcher()))
 		t.Cleanup(func() { eng.Close() })
 		walked := retireOnWalk(t)
@@ -1004,7 +1004,7 @@ func TestWarmCorpusWithASlowWalkIsRefused(t *testing.T) {
 
 	t.Run("a non-empty in-memory index: serve as-is, and the launcher still fires", func(t *testing.T) {
 		v, spy := newWarmVault(t)
-		eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+		eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true},
 			WithRebuildLauncher(spy.launcher()))
 		t.Cleanup(func() { eng.Close() })
 
@@ -1228,7 +1228,7 @@ func TestAGenuinePreludeDeadlineFiresTheDetachedRebuildLauncher(t *testing.T) {
 	t.Cleanup(func() { buildErrHook = oldErrHook })
 
 	spy := &launchSpy{}
-	eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32},
+	eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true},
 		WithRebuildLauncher(spy.launcher()))
 	t.Cleanup(func() { eng.Close() })
 
@@ -1446,7 +1446,7 @@ func TestACollectorCtxErrorStaysSoftAcrossTheWalkCorpusWraps(t *testing.T) {
 			buildErrHook = func(_ string, err error) { raw, sawRaw = err, true }
 			t.Cleanup(func() { buildErrHook = oldErrHook })
 
-			eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32})
+			eng := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, EmbedderBatchSize: 32, IndexTranscripts: true})
 			t.Cleanup(func() { eng.Close() })
 
 			err := eng.ensureIndex(context.Background(), project)

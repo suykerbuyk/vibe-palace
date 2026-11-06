@@ -667,7 +667,11 @@ func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageRe
 			if err != nil {
 				continue
 			}
-			if oc.State != search.CoverageCurrent {
+			// 🔴 authored is excluded alongside current: it is a healthy,
+			// chosen state, and a host that excludes transcripts everywhere
+			// would otherwise report others: {authored: 29} at every session
+			// start for ever.
+			if oc.State != search.CoverageCurrent && oc.State != search.CoverageAuthored {
 				counts[string(oc.State)]++
 			}
 		}
@@ -681,7 +685,8 @@ func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageRe
 // indexCoverageAlert returns the Scope 7 advisory alert line for the
 // bootstrapped project's coverage, or "" when none fires. It fires ONLY on
 // `stale` or `absent`: the two states that mean search is broken or has nothing.
-// legacy/unbuilt/notes/partial are expected after an install or migration. The
+// legacy/unbuilt/notes/partial/authored are expected after an install or
+// migration, or deliberately chosen (authored), so none of them fires. The
 // line is TERSE and capped (indexCoverageAlertMax) so it fits the bounded prefix
 // even at the longest slug; the full reason rides in IndexCoverageDetail and in
 // `vp index status`.

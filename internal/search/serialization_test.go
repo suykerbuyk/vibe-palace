@@ -91,7 +91,7 @@ func TestRebuildAndIndexDrawersInterleave(t *testing.T) {
 	ensureProjectDir(t, v, "proj")
 	addDrawer(t, v, "proj", "wing", "room", "a drawer the build embeds", "facts")
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	snap := recordLocks(t)
 	ctx := context.Background()
@@ -272,7 +272,7 @@ func TestZeroTimeoutSearchDoesNotWaitOnTheProjectMutex(t *testing.T) {
 	// Another process commits: a drawer on disk and a vector batch, which
 	// moves the counter.
 	late := addDrawer(t, v, "proj", "wing", "room", "a drawer another process added", "facts")
-	other := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10})
+	other := NewEngine(embedder.NewMock(384), v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { other.Close() })
 	if _, err := other.Rebuild(ctx, "proj"); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestColdSearchJoinsAnInFlightBuild(t *testing.T) {
 	ensureProjectDir(t, v, "proj")
 	d := addDrawer(t, v, "proj", "wing", "room", "content being built", "facts")
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	withSearchLockTimeout(t, 0)
 	ctx := context.Background()
@@ -520,7 +520,7 @@ func TestCaptureTimeoutDuringABuildIsNotLost(t *testing.T) {
 	ensureProjectDir(t, v, "proj")
 	addDrawer(t, v, "proj", "wing", "room", "a drawer the build embeds", "facts")
 	be := &blockingEmbedder{Embedder: embedder.NewMock(384), started: make(chan struct{}), release: make(chan struct{})}
-	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10})
+	eng := NewEngine(be, v, storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true})
 	t.Cleanup(func() { eng.Close() })
 	ctx := context.Background()
 

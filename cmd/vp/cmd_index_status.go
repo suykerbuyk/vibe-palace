@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
@@ -110,6 +111,13 @@ func printCoverage(out io.Writer, cov search.Coverage) {
 	fmt.Fprintf(out, "  %s\n", cov.Reason)
 	fmt.Fprintf(out, "  sessions: %d of %d ingested; pending %d, backlog %d, failing %d\n",
 		cov.N, cov.M, cov.Pending, cov.Backlog, cov.Failing)
+	if len(cov.ExcludedTiers) > 0 {
+		fmt.Fprintf(out, "  excluded tiers: %s\n", strings.Join(cov.ExcludedTiers, ", "))
+	}
+	if cov.UnreclaimedTranscriptChunks > 0 {
+		fmt.Fprintf(out, "  unreclaimed transcript chunks: %d (reclaim with `vp index rebuild %s --drop-transcripts`)\n",
+			cov.UnreclaimedTranscriptChunks, cov.Project)
+	}
 	if cov.Run != nil {
 		r := cov.Run
 		if r.Progress != nil {

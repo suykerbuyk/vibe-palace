@@ -100,6 +100,9 @@ func cmdSearch() *cli.Command {
 			// its runConvert never runs — the one engine path that takes the run
 			// lock, decision 3, exists only on the MCP serving engine.)
 			eng := search.NewEngine(emb, vault, cfg,
+				// A cross-project search builds every project's index; each
+				// resolves its own [index] transcripts.
+				search.WithConfigFor(vault.LoadConfig),
 				search.WithRebuildLauncher(tools.NewRebuildLauncher(vault, detachlaunch.Launch)))
 			defer eng.Close()
 

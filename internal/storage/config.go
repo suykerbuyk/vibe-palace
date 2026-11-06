@@ -91,6 +91,14 @@ type Config struct {
 	Archive                ArchiveConfig                  `json:"archive"`
 	Enrichment             EnrichmentConfig               `json:"enrichment"`
 	Summarization          SummarizationConfig            `json:"summarization"`
+	// IndexTranscripts is whether this HOST indexes the transcript tier —
+	// the archive-owned chunks of captured AI sessions. False by default:
+	// archives are still captured exactly as before, they are simply not
+	// ingested into the chunk store. LoadConfig is the single resolution
+	// point for the three config layers; an explicit --transcripts /
+	// --no-transcripts on an `vp index rebuild` argv beats it
+	// (ingest.ResolveTranscripts).
+	IndexTranscripts bool `json:"index_transcripts"`
 }
 
 // EnrichmentConfig holds resolved settings for the session-enrichment LLM
@@ -195,6 +203,14 @@ type tomlConfig struct {
 	Archive       tomlArchiveConfig       `toml:"archive"`
 	Enrichment    tomlEnrichmentConfig    `toml:"enrichment"`
 	Summarization tomlSummarizationConfig `toml:"summarization"`
+	Index         tomlIndexConfig         `toml:"index"`
+}
+
+// tomlIndexConfig is [index], the per-host index-scope block. It is host
+// state, never vault state: an index is derived per host (ADR-014), so which
+// tiers a host builds is that host's choice and must not travel in the vault.
+type tomlIndexConfig struct {
+	Transcripts bool `toml:"transcripts"`
 }
 
 type tomlEnrichmentConfig struct {
@@ -259,6 +275,13 @@ type hostProjectLayer struct {
 			Rooms    map[string]tomlRoomScoring `toml:"rooms"`
 		} `toml:"scoring"`
 	} `toml:"palace"`
+	Index struct {
+		// Transcripts is a POINTER for the same reason MinScore above is one:
+		// an absent key must be distinguishable from an explicit false. A
+		// plain bool would let a file that never mentions transcripts
+		// overwrite a lower layer's true with the zero value.
+		Transcripts *bool `toml:"transcripts"`
+	} `toml:"index"`
 }
 
 type tomlRoomScoring struct {
@@ -327,6 +350,7 @@ func (tc *tomlConfig) flatten() Config {
 			MaxTokens:      tc.Summarization.MaxTokens,
 			TimeoutSeconds: tc.Summarization.TimeoutSeconds,
 		},
+		IndexTranscripts: tc.Index.Transcripts,
 	}
 }
 
@@ -467,6 +491,36 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 	return tc.flatten(), nil
 }
 
+// ResolveTranscripts is the ONE precedence rule for whether a pass indexes the
+// transcript tier.
+//
+// 🔴 THE ARGV FLAG IS AUTHORITATIVE; THE CONFIG IS THE DEFAULT. opt is nil when
+// no --transcripts/--no-transcripts reached this pass, and only then does the
+// resolved config value apply. The reverse — letting the config overwrite a
+// caller's explicit value — would make `vp index rebuild <p> --transcripts` a
+// no-op on a default host AND let the automatic launcher's --no-transcripts be
+// ignored on an opt-in host, which is the unbounded days-long rebuild the
+// exclusion exists to stop.
+//
+// 🔴 IT LIVES HERE BECAUSE IT HAS TWO CALLERS, AND HAD ONLY ONE BEFORE.
+// ingest resolves it for the admission decision; internal/search resolves it
+// for the walk's exclusion belt, the completeness record and the coverage
+// state. While the rule lived in ingest alone the engine could not honour a
+// flag at all: a `--no-transcripts` run skipped the archive INGEST pass and
+// then rebuilt the index from config, reloading the very chunks the flag said
+// to leave out. A second copy of the rule would be a second place to forget
+// it, so there is one.
+//
+// It is the same tri-state idiom hostProjectLayer uses for
+// palace.scoring.min_score, and the same caller-wins precedence the engine
+// uses for the search limit.
+func ResolveTranscripts(opt *bool, cfg Config) bool {
+	if opt != nil {
+		return *opt
+	}
+	return cfg.IndexTranscripts
+}
+
 // applyHostProjectLayer merges the host-local layer over everything below it.
 //
 // Rooms merge by WHOLE-ROOM REPLACEMENT: a room the host-local file names
@@ -477,6 +531,12 @@ func (v *Vault) LoadConfig(project string) (Config, error) {
 // whole room rather than a patch whose result depends on what a lower layer
 // happened to say.
 func applyHostProjectLayer(tc *tomlConfig, hl hostProjectLayer) {
+	// [index] first: the Rooms merge below returns early when the file names
+	// no room, so anything placed after it would be skipped by every file
+	// that only sets a non-room key.
+	if v := hl.Index.Transcripts; v != nil {
+		tc.Index.Transcripts = *v
+	}
 	if v := hl.Palace.Scoring.MinScore; v != nil {
 		tc.Palace.Scoring.MinScore = *v
 	}

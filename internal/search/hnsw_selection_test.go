@@ -29,7 +29,7 @@ func withThresholds(t *testing.T, tHi, lLo int) {
 	t.Cleanup(func() { hnswSelectT, hnswSelectL = ot, ol })
 }
 
-func selCfg() storage.Config { return storage.Config{SearchDefaultLimit: 10} }
+func selCfg() storage.Config { return storage.Config{SearchDefaultLimit: 10, IndexTranscripts: true} }
 
 // newSelEngine builds an engine on vault v with a deterministic mock embedder,
 // so a second engine on the same vault reads the same cached vectors.
