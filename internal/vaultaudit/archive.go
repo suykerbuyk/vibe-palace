@@ -95,14 +95,51 @@ func auditArchiveRoundTrip(vault *storage.Vault) ([]Finding, []string, error) {
 			}
 		}
 
+		// HALF-LINKED: a manifest some note of this project already names in its
+		// archive: field. The note -> transcript direction is closed for these,
+		// so the stranded wording below ("nothing can navigate from the note to
+		// it") is FALSE of them — it was false of 17 manifests in the live vault
+		// when this was found, 15 of them reported as new drift in one audit.
+		//
+		// A failed scan degrades to the un-annotated stranded wording plus an
+		// unknown, exactly as the candidate scan above does: a dimension that
+		// could not look must say so, and must not quietly report the weaker
+		// claim as though it had.
+		forwardLinked := make(map[string]string) // manifest rel -> a note that names it
+		if fwd, ferr := vault.ListArchiveForwardLinkedNotes(p.Slug); ferr != nil {
+			unknowns = append(unknowns, fmt.Sprintf("%s: scan forward-linked notes: %v", p.Slug, ferr))
+		} else {
+			for _, n := range fwd {
+				if prev, seen := forwardLinked[n.ArchiveRel]; !seen || prev > n.NoteRel {
+					forwardLinked[n.ArchiveRel] = n.NoteRel
+				}
+			}
+		}
+
 		for _, e := range entries {
 			artifact := archive.VaultRelPath(vault.Root, e.ManifestPath)
 
 			note := e.Manifest.VaultRelSessionNote
 			if note == "" {
-				detail := fmt.Sprintf("transcript for session %s back-links to NO session note "+
-					"— the transcript is stranded: nothing can navigate from the note to it",
-					e.Manifest.SessionID)
+				// 🔴 STILL A Finding, deliberately. A half-linked manifest is an
+				// incomplete record and `vp archive link` is what completes it,
+				// so a dimension that stopped reporting it would switch off the
+				// instrument that shows the repair working. Only the Detail
+				// changes — finding identity is (Dimension, Artifact), so this
+				// re-wording provably cannot churn the accepted baseline, which
+				// is the same property the RECOVERABLE annotation below relies
+				// on.
+				var detail string
+				if noteRel, half := forwardLinked[artifact]; half {
+					detail = fmt.Sprintf("transcript for session %s is HALF-LINKED: note %s already "+
+						"names it in its archive: field, so note→transcript navigation works; "+
+						"only the manifest's own back-link is missing",
+						e.Manifest.SessionID, noteRel)
+				} else {
+					detail = fmt.Sprintf("transcript for session %s back-links to NO session note "+
+						"— the transcript is stranded: nothing can navigate from the note to it",
+						e.Manifest.SessionID)
+				}
 				if c, ok := byTarget[artifact]; ok {
 					detail += fmt.Sprintf(" — RECOVERABLE: note %s carries a caller-pushed key; "+
 						"apply with `vp archive link %s -p %s`", c.NoteRels[0], c.SessionID, p.Slug)

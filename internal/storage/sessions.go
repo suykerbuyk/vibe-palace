@@ -691,9 +691,23 @@ type ArchiveLinkResult struct {
 	// whether any note for this session exists at all. A session with no notes is
 	// an ordinary, expected outcome (the hook archives before it captures), NOT an
 	// error: Found is false and the caller simply does not write a back-link.
-	Canonical       SessionRef
-	Found           bool
-	CanonicalIsStub bool
+	// 🔴 THERE IS DELIBERATELY NO CanonicalIsStub HERE. One existed, and
+	// internal/capture's Codex receipt was its ONLY consumer: it withheld the
+	// manifest back-link whenever the canonical note was an auto-capture stub.
+	// Because the receipt IS tagged auto-capture and is the only note in
+	// existence at Codex SessionEnd, that condition was always true and the
+	// back-link was never written — while internal/hook, the other back-link
+	// call site, carried a comment describing the same rule and did not
+	// implement it. One rule, two call sites, one of each: see the task
+	// codex-back-link-withheld-by-a-guard-only-one-call-site-applies.
+	//
+	// The rule is now "at NO call site", and the field's absence is what keeps
+	// it there: re-splitting it requires re-adding this field, which is a
+	// reviewable change rather than a one-word edit. Stub RANKING is not gone —
+	// preferCanonical still promotes a real note over a stub — only the
+	// withholding is. Do not re-add this field without re-reading that task.
+	Canonical SessionRef
+	Found     bool
 }
 
 // TryLinkArchiveToSessions closes the note <-> transcript loop for one host session:
@@ -829,7 +843,6 @@ func (v *Vault) TryLinkArchiveToSessions(project, archiveSessionID, archiveRel s
 
 		if !res.Found || preferCanonical(canonicalMeta, res.Canonical, meta, ref) {
 			res.Canonical, canonicalMeta = ref, meta
-			res.CanonicalIsStub = meta.Tag == TagAutoCapture
 		}
 		res.Found = true
 	}
@@ -996,6 +1009,106 @@ func (v *Vault) ListCallerKeyedUnstampedNotes(project string) ([]CallerKeyedNote
 		out = append(out, CallerKeyedNote{SessionKey: key, NoteRel: rel})
 	}
 	return out, nil
+}
+
+// ArchiveForwardLinkedNote is one note that ALREADY names a transcript manifest
+// in its archive: field. It is the note-side half of the HALF-LINKED class: the
+// note -> transcript direction is closed and only the manifest's own back-link
+// is missing.
+//
+// Identity here is RECORDED, never derived. ArchiveSessionID is the host session
+// the note itself claims, and ArchiveRel is the exact vault-relative manifest
+// path the note itself stores. A consumer pairs on BOTH, so a note that names a
+// different manifest of the same session, or the same manifest under a different
+// session, cannot match. That is what makes this class stronger evidence than the
+// caller-keyed class above rather than a softening of it — nothing is inferred
+// from a key.
+type ArchiveForwardLinkedNote struct {
+	ArchiveRel       string
+	ArchiveSessionID string
+	NoteRel          string
+	Date             string
+	Iteration        int
+
+	// IsStub mirrors preferCanonical's stub test so a consumer can rank two
+	// notes of one session the same way every other linker does. It is a
+	// REPORTED property, not a decision: preferCanonical remains the one place
+	// that chooses.
+	IsStub bool
+}
+
+// ListArchiveForwardLinkedNotes scans one project's session notes for every note
+// carrying a non-empty archive: field. It is the note-side half of the
+// half-linked predicate — the manifest-side half lives with the manifest parser,
+// and internal/vaultaudit pairs the two, because storage cannot import
+// internal/archive.
+//
+// Read-only and LOCK-FREE by design, the same posture as
+// ListCallerKeyedUnstampedNotes and for the same reason: this feeds REPORTS (the
+// audit dimension, `vp archive backfill`). The applier re-derives its own match
+// set when it writes, so a stale answer here can mislead a human reading a
+// report but can never corrupt a write.
+func (v *Vault) ListArchiveForwardLinkedNotes(project string) ([]ArchiveForwardLinkedNote, error) {
+	dir, err := v.SessionDir(project)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return nil, fmt.Errorf("glob sessions: %w", err)
+	}
+
+	var out []ArchiveForwardLinkedNote
+	for _, m := range matches {
+		archiveRel := frontmatterFieldFromHead(m, "archive")
+		if archiveRel == "" {
+			continue
+		}
+		stem := strings.TrimSuffix(filepath.Base(m), ".md")
+		date, fp, iteration, ok := parseSessionStem(stem)
+		if !ok {
+			continue
+		}
+		rel, relErr := v.SessionRelPath(project, date, fp, iteration)
+		if relErr != nil {
+			continue
+		}
+		out = append(out, ArchiveForwardLinkedNote{
+			ArchiveRel:       archiveRel,
+			ArchiveSessionID: frontmatterFieldFromHead(m, "archive_session_id"),
+			NoteRel:          rel,
+			Date:             date,
+			Iteration:        iteration,
+			IsStub:           frontmatterFieldFromHead(m, "tag") == TagAutoCapture,
+		})
+	}
+	return out, nil
+}
+
+// PreferCanonicalNote reports whether the candidate note should displace the
+// incumbent as the note a transcript points back at, for a caller that holds
+// only the reported shape of each note rather than its full SessionMeta.
+//
+// 🔴 IT IS A THIN ADAPTER OVER preferCanonical AND MUST STAY ONE. The ranking
+// rule — a real note always beats the auto-capture stub, and between two of the
+// same kind the later (date, iteration) wins — is answered in exactly one place
+// in this package. A second copy of it is how the back-link rule came to be
+// implemented at one call site and merely described at another.
+func PreferCanonicalNote(cur, next ArchiveForwardLinkedNote) bool {
+	return preferCanonical(
+		SessionMeta{Tag: stubTag(cur.IsStub)}, SessionRef{Date: cur.Date, Iteration: cur.Iteration},
+		SessionMeta{Tag: stubTag(next.IsStub)}, SessionRef{Date: next.Date, Iteration: next.Iteration},
+	)
+}
+
+// stubTag maps the reported boolean back onto the tag value preferCanonical
+// tests, so the adapter above feeds it the real comparison rather than a
+// parallel one.
+func stubTag(isStub bool) string {
+	if isStub {
+		return TagAutoCapture
+	}
+	return ""
 }
 
 // BackfillArchiveLink is the Phase-4 APPLIER for

@@ -480,8 +480,22 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 			// warning — there is nothing wrong and nothing an operator would do.
 			slog.Debug("hook: no session note to link yet", "archive_session_id", payload.SessionID)
 		default:
-			// Back-link (transcript -> note). Points at the note a human would want to
-			// land on, never the auto-capture stub when a real one exists.
+			// Back-link (transcript -> note). Points at whatever
+			// TryLinkArchiveToSessions chose as canonical — the note a human
+			// would want to land on, which is the real note whenever one
+			// exists and the auto-capture stub when it is the only note of
+			// the session.
+			//
+			// 🔴 THE CHOICE IS MADE THERE, NOT HERE, and this comment used to
+			// imply otherwise: it read "never the auto-capture stub when a
+			// real one exists" beside code that tests nothing, while
+			// internal/capture's Codex receipt tested a CanonicalIsStub field
+			// and withheld the link outright. A rule implemented at one of two
+			// call sites and merely described at the other is how every Codex
+			// session came to strand its own transcript. The field is now
+			// deleted and NEITHER site tests it; storage.preferCanonical is the
+			// one place that ranks a stub against a real note. See task
+			// codex-back-link-withheld-by-a-guard-only-one-call-site-applies.
 			// TryLinkSessionNote, not LinkSessionNote: same non-negotiable reason
 			// as the archive.Create call above. The blocking form is a
 			// timeout-free LOCK_EX and this path has no timeout, so contention

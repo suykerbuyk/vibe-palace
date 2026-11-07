@@ -129,27 +129,46 @@ func TestSessionEndSmallTranscriptArchivesAndLinksReceiptWithinThreeSeconds(t *t
 	if got := entries[0].Manifest.VPVersion; got != "0.0.0-codexhook-test" {
 		t.Errorf("manifest vp_version = %q, want the injected value", got)
 	}
-	// THE NO-MCP-NOTE CASE. Nothing wrote a canonical note for this session, so
-	// the only note carrying the id is the receipt itself — a TagAutoCapture
-	// stub — and the manifest must stay empty rather than point back at it.
-	// The paired case, where an MCP note DOES exist and the manifest must name
-	// it, is TestSessionEndBackLinksAPreWrittenMCPNote.
-	if entries[0].Manifest.VaultRelSessionNote != "" {
-		t.Fatalf("stub receipt back-linked itself: %q", entries[0].Manifest.VaultRelSessionNote)
-	}
+	// THE NO-MCP-NOTE CASE, INVERTED 2026-11-07. Nothing wrote a canonical note
+	// for this session, so the only note carrying the id is the receipt itself —
+	// a TagAutoCapture stub — and the manifest must now NAME IT rather than stay
+	// empty. This assertion previously required the empty value, which pinned
+	// the defect: the receipt is always a stub and is always the only note at
+	// SessionEnd, so the old guard stranded every Codex transcript. The paired
+	// case, where an MCP note DOES exist and the manifest must prefer it, is
+	// TestSessionEndBackLinksAPreWrittenMCPNote — unchanged, and it is what
+	// proves this inversion did not cost the preference rule.
 	metaRows, _, err := v.ListSessions("demo", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var meta storage.SessionMeta
+	notesForSession := 0
 	for _, row := range metaRows {
 		if row.ArchiveSessionID == "thr_small" {
+			notesForSession++
 			meta = row
-			break
 		}
 	}
 	if meta.Archive == "" {
 		t.Fatalf("receipt has no forward archive link: %+v", meta)
+	}
+	// PRECONDITIONS, asserted rather than assumed: restoring the old guard
+	// reddens the back-link assertion below only while the session's one and
+	// only note is a TagAutoCapture stub. A fixture that drifted into holding a
+	// real note would link under the old guard too, and this test would pass
+	// against the defect it exists to catch.
+	if notesForSession != 1 {
+		t.Fatalf("precondition: %d notes carry thr_small, want exactly 1 (the receipt)", notesForSession)
+	}
+	if meta.Tag != storage.TagAutoCapture {
+		t.Fatalf("precondition: receipt tag = %q, want %q", meta.Tag, storage.TagAutoCapture)
+	}
+	// EQUALITY, not non-empty — the same reason the vp_version check above gives:
+	// a back-link wired to the wrong note is not visibly different from a
+	// correct one under a non-empty check.
+	if got := entries[0].Manifest.VaultRelSessionNote; got != meta.NotePath {
+		t.Fatalf("manifest back-link = %q, want the receipt note %q", got, meta.NotePath)
 	}
 	if meta.Host != storage.HostCodex || meta.HostSource != storage.HostSourceCodexHookEvent || meta.ArchiveSessionIDSource != storage.ArchiveIDSourceCodexSessionEnd {
 		t.Fatalf("receipt provenance = %+v", meta)

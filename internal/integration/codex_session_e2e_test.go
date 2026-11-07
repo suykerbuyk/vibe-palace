@@ -43,14 +43,16 @@ func TestIntegrationCodexSessionEndArchivesExactTranscriptAndLinksReceipt(t *tes
 	if entries[0].Manifest.SourceSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("source_sha256=%s want %x", entries[0].Manifest.SourceSHA256, sum)
 	}
-	// THE NO-MCP-NOTE CASE. No canonical note carries this session id, so the
-	// receipt is the only candidate and the manifest must stay empty rather
-	// than point back at a stub. Paired with
+	// THE NO-MCP-NOTE CASE, INVERTED 2026-11-07. No canonical note carries this
+	// session id, so the receipt is the only candidate — and the manifest must
+	// now NAME it. This assertion previously required the empty value, which
+	// pinned the defect rather than a requirement: the receipt is always a
+	// TagAutoCapture stub and always the only note at SessionEnd, so the old
+	// guard stranded every Codex transcript through the REAL BINARY and this
+	// suite called it correct. Paired with
 	// TestIntegrationCodexSessionEndBackLinksAPreWrittenMCPNote, which runs the
-	// same binary against a vault that DOES hold one.
-	if entries[0].Manifest.VaultRelSessionNote != "" {
-		t.Fatalf("stub receipt back-link=%q", entries[0].Manifest.VaultRelSessionNote)
-	}
+	// same binary against a vault that DOES hold a real note and must prefer it.
+	// The equality is checked below, once the receipt's note path is known.
 	// vp_version and git_head, through the REAL binary. This is the only leg
 	// that carries a real cli.BuildInfo, so it is the only one that proves the
 	// registration in cmd/vp/commands.go actually passes it — a build that adds
@@ -72,13 +74,32 @@ func TestIntegrationCodexSessionEndArchivesExactTranscriptAndLinksReceipt(t *tes
 		t.Fatal(err)
 	}
 	found := false
+	var receipt storage.SessionMeta
+	notesForSession := 0
 	for _, row := range rows {
-		if row.ArchiveSessionID == "thr_integration" && row.Host == storage.HostCodex && row.HostSource == storage.HostSourceCodexHookEvent && row.Archive != "" {
+		if row.ArchiveSessionID != "thr_integration" {
+			continue
+		}
+		notesForSession++
+		receipt = row
+		if row.Host == storage.HostCodex && row.HostSource == storage.HostSourceCodexHookEvent && row.Archive != "" {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("linked Codex receipt not persisted: %+v", rows)
+	}
+	// PRECONDITIONS for the inverted back-link assertion, asserted not assumed:
+	// restoring the old guard reddens it only while this session's single note
+	// is a TagAutoCapture stub.
+	if notesForSession != 1 {
+		t.Fatalf("precondition: %d notes carry thr_integration, want exactly 1 (the receipt)", notesForSession)
+	}
+	if receipt.Tag != storage.TagAutoCapture {
+		t.Fatalf("precondition: receipt tag = %q, want %q", receipt.Tag, storage.TagAutoCapture)
+	}
+	if got := entries[0].Manifest.VaultRelSessionNote; got != receipt.NotePath {
+		t.Fatalf("manifest back-link = %q, want the receipt note %q — the real binary stranded a Codex transcript", got, receipt.NotePath)
 	}
 }
 

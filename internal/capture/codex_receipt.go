@@ -39,10 +39,29 @@ func WriteCodexArchiveReceipt(vault *storage.Vault, project, sessionID, manifest
 	if err != nil {
 		return ref, err
 	}
-	// The receipt is a stub. Only a canonical, non-stub note may be written into
-	// the manifest's reverse link; never make the archive point back at its own
-	// receipt when that is the only note available.
-	if links.Found && !links.CanonicalIsStub {
+	// Back-link the manifest at whatever TryLinkArchiveToSessions chose as
+	// canonical — INCLUDING this receipt, when it is the session's only note.
+	//
+	// 🔴 THIS REVERSES THE RULE THAT STOOD HERE, deliberately and on an operator
+	// ruling (task codex-back-link-withheld-by-a-guard-only-one-call-site-applies).
+	// The old rule read `links.Found && !links.CanonicalIsStub` and withheld the
+	// link whenever the canonical note was an auto-capture stub. The receipt
+	// written twelve lines above IS tagged auto-capture, and at Codex SessionEnd
+	// it is the only note that exists — so the condition was ALWAYS true, the
+	// back-link was NEVER written, and every Codex session that never gained a
+	// richer note stranded its own transcript permanently. It was silent too:
+	// the guard sat BEFORE the call, so nothing failed and nothing logged.
+	//
+	// An archive naming its own receipt is not the loss the old comment feared.
+	// The receipt is the only record of that session, so naming it beats naming
+	// nothing, and the stub is never PREFERRED: storage.preferCanonical still
+	// promotes a real note over a stub the moment one exists, which is why the
+	// four preference tests over this path keep passing unchanged.
+	//
+	// The guard's field is gone, not merely unread (storage.ArchiveLinkResult).
+	// Consulting it at every back-link call site or at none is the invariant;
+	// one of each is what produced the task above.
+	if links.Found {
 		if err := archive.TryLinkSessionNote(vault.Root, manifestPath, links.Canonical.NotePath); err != nil {
 			return ref, err
 		}

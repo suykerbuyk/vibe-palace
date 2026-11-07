@@ -129,8 +129,80 @@ func TestWriteCodexArchiveReceiptUsesReturnedManifestPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.VaultRelSessionNote != "" {
-		t.Fatalf("stub receipt became manifest backlink: %q", manifest.VaultRelSessionNote)
+	// INVERTED 2026-11-07. This asserted VaultRelSessionNote == "" — "stub
+	// receipt became manifest backlink" — which pinned the defect rather than a
+	// requirement: the receipt is tagged auto-capture and is the only note at
+	// SessionEnd, so the old guard withheld the back-link on EVERY Codex
+	// session. The receipt is now the back-link when it is the only note.
+	// TestCodexReceiptBackLinksItselfWhenItIsTheOnlyNote is the direct lock on
+	// that rule; this is the incidental case for the same path.
+	if manifest.VaultRelSessionNote != ref.NotePath {
+		t.Fatalf("manifest backlink = %q, want the receipt %q", manifest.VaultRelSessionNote, ref.NotePath)
+	}
+}
+
+// TestCodexReceiptBackLinksItselfWhenItIsTheOnlyNote is the DIRECT lock on the
+// reversed rule: when no canonical note exists, the manifest names the receipt
+// rather than staying empty.
+//
+// 🔴 ITS FIXTURE IS LOAD-BEARING AND BOTH PRECONDITIONS BELOW ARE ASSERTED, NOT
+// ASSUMED. Restoring the old guard (`&& !links.CanonicalIsStub`) reddens this
+// test only while the canonical note is an auto-capture STUB and is the ONLY
+// note of the session. A fixture that also held a real note would link under
+// both the old and the new code, and this test would pass against the very
+// defect it exists to catch — the inert-guard shape this project keeps hitting.
+// The preconditions make that drift a failure instead of a silence.
+func TestCodexReceiptBackLinksItselfWhenItIsTheOnlyNote(t *testing.T) {
+	v := testVault(t)
+	source := filepath.Join(t.TempDir(), "codex.jsonl")
+	if err := os.WriteFile(source, []byte("only note is the receipt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := archive.Create(archive.CreateOptions{Adapter: archive.CodexRawAdapterName, SessionID: "thr_only", SourcePath: source, VaultRoot: v.Root, ProjectSlug: "test-proj", LockPosture: archive.LockNonBlocking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := WriteCodexArchiveReceipt(v, "test-proj", "thr_only", created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// PRECONDITION 1 — the fixture VALUE is the one the mutation acts on: the
+	// canonical note must be a TagAutoCapture stub, or the old guard would have
+	// linked anyway and this test could not discriminate.
+	meta, _, err := v.ReadSession("test-proj", receipt.Date, receipt.Fingerprint, receipt.Iteration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Tag != storage.TagAutoCapture {
+		t.Fatalf("precondition: receipt tag = %q, want %q — the fixture no longer exercises the stub path",
+			meta.Tag, storage.TagAutoCapture)
+	}
+
+	// PRECONDITION 2 — the fixture CONTAINS exactly the thing under test: one
+	// note for this session. A second, non-stub note would make the stub
+	// non-canonical and the assertion below would pass for the wrong reason.
+	rows, _, err := v.ListSessions("test-proj", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, row := range rows {
+		if row.ArchiveSessionID == "thr_only" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("precondition: %d notes carry thr_only, want exactly 1 (the receipt)", n)
+	}
+
+	manifest, err := archive.ReadManifest(created.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.VaultRelSessionNote != receipt.NotePath {
+		t.Fatalf("manifest back-link = %q, want the receipt %q — a Codex session must not strand its own transcript",
+			manifest.VaultRelSessionNote, receipt.NotePath)
 	}
 }
 
