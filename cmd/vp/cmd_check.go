@@ -404,6 +404,22 @@ func gatherCheckResults() []check.Result {
 	// Codex hook/skill policy is distinct from executable MCP registration;
 	// this read-only check reports only the user-global Codex layer it owns.
 	results = append(results, check.CheckCodexHost()...)
+	// Codex rollouts on this host with no archive in the vault. It needs the
+	// vault root, resolved the same way the Surface row below resolves it; an
+	// unresolvable vault yields "" and the check degrades to Skip on its own
+	// terms, exactly as the producer-registry wrapper does.
+	//
+	// 🔴 This call is NOT optional bookkeeping. `vp check --check NAME`
+	// dispatches check.Producers while a bare `vp check` calls these functions
+	// directly, so a producer added to the registry alone is reachable over MCP
+	// and silent on the surface a human reads — which is where this row's Fail
+	// status is the gate. TestCheckFullSuiteEmitsEveryProducerRow caught
+	// exactly that omission on the first full run of this unit.
+	codexOrphansVault := ""
+	if vaultPath, _, perr := storage.ResolveVaultPath(cwd); perr == nil {
+		codexOrphansVault = vaultPath
+	}
+	results = append(results, check.CheckCodexOrphans(codexOrphansVault)...)
 
 	// --- User-global slash surfaces (advisory — vp mcp install emit). ---
 	results = append(results, check.CheckHostSurfaces()...)

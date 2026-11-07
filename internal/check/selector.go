@@ -115,6 +115,17 @@ var Producers = map[string]func(vaultRoot string) []Result{
 		}
 		return CheckCodexHost()
 	},
+	// codex-orphans is host-local like stale-mcp: it reads CODEX_HOME and /proc
+	// as well as the vault. It is a vp check producer rather than a vp audit
+	// vault dimension BECAUSE it is host-local -- the audit's baseline is
+	// committed and shared, so one machine's orphans would reach every other
+	// host as accepted debt.
+	"codex-orphans": func(vaultRoot string) []Result {
+		if vaultRoot == "" {
+			return []Result{{Name: codexOrphansRow, Status: Skip, Summary: "no vault configured"}}
+		}
+		return CheckCodexOrphans(vaultRoot)
+	},
 	// writer-identity needs the root only to HASH it — it reports the resulting
 	// fingerprint and never the path itself.
 	"writer-identity": func(vaultRoot string) []Result {
@@ -164,6 +175,7 @@ var ProducerOrder = []string{
 	"template-drift",
 	"host-surfaces",
 	"codex-host",
+	"codex-orphans",
 	"writer-identity",
 	"stale-mcp",
 	"release-version",

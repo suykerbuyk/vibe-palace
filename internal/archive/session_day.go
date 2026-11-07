@@ -196,9 +196,20 @@ func codexSessionStart(source []byte) (time.Time, bool, error) {
 // UTC day.
 //
 // 🔴 FIRST session_meta wins, and that is load-bearing. One rollout in the live
-// corpus carries two: line 1 is the file's own session, line 2 is the PARENT
-// session with a different id and an EARLIER stamp. A last-wins or
-// earliest-wins rule would date that file by its parent's session.
+// corpus carries two, and they are a SUBAGENT and its parent: record 0 is the
+// subagent's own (thread_source "subagent", parent_thread_id naming the
+// parent), record 1 is the PARENT's, with a different id and an EARLIER stamp.
+// A last-wins or earliest-wins rule would date that file by its parent's
+// session.
+//
+// 🔴 THE TWO RECORDS DO NOT AGREE ABOUT WHICH FIELD IS WHOSE, and an earlier
+// version of this comment had it backwards. Measured 2026-11-06 by spawning one
+// subagent in a throwaway CODEX_HOME: the subagent's session_meta carries
+// payload.id = its OWN thread and payload.session_id = the PARENT's. Nothing
+// here is affected, because this reader takes only payload.timestamp — but a
+// caller that joined on session_id would collapse a subagent into its parent.
+// internal/check's codex-orphans row keys on payload.id for exactly that
+// reason.
 func (codexRawAdapter) SessionStart(source []byte) (time.Time, bool, error) {
 	return codexSessionStart(source)
 }
