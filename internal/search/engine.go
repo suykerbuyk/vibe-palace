@@ -163,8 +163,13 @@ type Engine struct {
 	// never try-locks the run lock to decide whether to build (the spawned child's
 	// own try-lock is the authority), and never spawns a process itself. (The one
 	// engine path that DOES take the run lock is runConvert, decision 3.)
-	// Only the long-lived MCP serving engine injects one (WithRebuildLauncher from
-	// bootstrap); a CLI/one-shot engine leaves it nil and only serves degraded.
+	// The launcher is nil on any engine built without WithRebuildLauncher. Its
+	// production injectors are bootstrap (the long-lived MCP serving engine) and
+	// cmdSearch (cmd/vp/cmd_search.go:112), because ADR-016 decision 4 is "a
+	// cold/stale search in ANY process". An engine built without it records no
+	// want and spawns nothing; on a SEARCH path that means serving degraded, and
+	// the other engines built without it -- `vp index rebuild`, `vp drain
+	// archives`, `vp migrate`, `vp check` -- do not serve searches at all.
 	rebuildLauncher RebuildLauncher
 
 	// indexRunCooldown is the inter-run cooldown window (ADR-016 decision 6)
@@ -223,8 +228,13 @@ func WithBackgroundConverter() EngineOption {
 }
 
 // WithRebuildLauncher injects the detached-rebuild spawn seam (ADR-016 decision
-// 4). Only bootstrap() (the long-lived MCP serving engine) passes it; a CLI or
-// one-shot engine leaves it off and a cold search there only serves degraded.
+// 4). The launcher is nil on any engine built without it. Its production
+// injectors are bootstrap (the long-lived MCP serving engine) and cmdSearch
+// (cmd/vp/cmd_search.go:112), because decision 4 is "a cold/stale search in ANY
+// process". An engine built without it records no want and spawns nothing; on a
+// SEARCH path that means serving degraded, and the other engines built without
+// it -- `vp index rebuild`, `vp drain archives`, `vp migrate`, `vp check` -- do
+// not serve searches at all.
 func WithRebuildLauncher(l RebuildLauncher) EngineOption {
 	return func(e *Engine) { e.rebuildLauncher = l }
 }
@@ -307,8 +317,7 @@ type projectBuild struct {
 	err  error
 }
 
-// NewEngine creates a search engine. opts are applied after construction;
-// WithBackgroundConverter is the only one, and only bootstrap() passes it.
+// NewEngine creates a search engine. opts are applied after construction.
 func NewEngine(emb embedder.Embedder, vault *storage.Vault, cfg storage.Config, opts ...EngineOption) *Engine {
 	cache := NewEmbedCache(vault)
 	if emb != nil {
@@ -656,8 +665,8 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 
 // ensureDetachedRebuild invokes the injected rebuild launcher (ADR-016 decision
 // 4) to record the durable rebuild-corpus want and ensure a detached
-// `vp index rebuild` is running. It is a no-op on an engine with no launcher (a
-// CLI/one-shot engine), which then only serves degraded. The engine never
+// `vp index rebuild` is running. It is a no-op on an engine with no launcher
+// (one built without WithRebuildLauncher), which then only serves degraded. The engine never
 // try-locks the run lock here — the spawned child's own try-lock is the
 // authority. (The one engine path that DOES take the run lock is runConvert,
 // ADR-016 decision 3.)
@@ -840,7 +849,9 @@ func (e *Engine) ensureAllIndexes(ctx context.Context) (map[string]bool, bool, e
 		// with only tracked archives, etc.) is skipped, never built: the skip
 		// is reported only through coverage (ADR-014 decision 8) and the result
 		// array shape is unchanged. Checked before ensureIndex so a skipped
-		// project constructs no embedder and pays no model load.
+		// project pays no index build. It does not save a model load: the one
+		// embedder is process-wide, and Search has already required it ready at
+		// waitEmbedderReady before this loop.
 		empty, err := e.TrulyEmpty(p.Slug)
 		if err != nil {
 			return nil, false, fmt.Errorf("check project emptiness for %s: %w", p.Slug, err)
@@ -938,10 +949,15 @@ func (e *Engine) Search(ctx context.Context, query string, f SearchFilters) ([]S
 	}
 
 	// A truly empty project — nothing any tier could ever index — is an error
-	// that names `vp index rebuild`, not zero hits (ADR-014 decision 8). This
-	// is checked before ensureIndex/Rebuild, so a truly empty search never
-	// constructs the embedder or pays a model load (search-N4). TrulyEmpty is
-	// child 2's predicate; the search path only consumes it.
+	// that names `vp index rebuild`, not zero hits (ADR-014 decision 8).
+	// Checked before waitEmbedderReady below, so this function does not
+	// construct a lazy embedder that is not already ready. It does NOT mean no
+	// caller has loaded the model: an eager caller paid before Search ran, and a
+	// long-lived `vp mcp`'s startup WarmEmbedder (cmd/vp/cmd_mcp.go:91-96) has
+	// usually already forced the construct. search-N4 /
+	// TestTrulyEmptyLoadsNoEmbedder pins zero Embed/EmbedBatch, not zero
+	// construction. TrulyEmpty is child 2's predicate; the search path only
+	// consumes it.
 	if f.Project != "" {
 		empty, err := e.TrulyEmpty(f.Project)
 		if err != nil {

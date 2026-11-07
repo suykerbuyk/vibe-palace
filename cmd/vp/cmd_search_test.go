@@ -396,6 +396,52 @@ func TestSearchDetectedProjectReachesEmbedder(t *testing.T) {
 	}
 }
 
+// TestSearchTrulyEmptyProjectConstructsNoEmbedder is the acceptance test for
+// the lazy embedder at cmdSearch's engine-construction site, and the test that
+// makes runSearch's "the CLI pays no model load" and "inherits the same never
+// hang on a cold index guarantee" comments load-bearing rather than decorative.
+//
+// It runs at cmdSearch().Run scope, NOT runSearch scope, deliberately.
+// TestRunSearchTrulyEmptyExitsNonZero carries the same "must not load the
+// model" sentence but hands runSearch an already-built engine, so it never
+// executes the construction site and has never been able to witness that claim.
+//
+// setupTestVaultEnv installs forbidVaultEmbedder, which t.Errorf's on any
+// construction of the real ONNX model. That seam is one of four arms, and the
+// other three are asserted rather than assumed: without them the test could
+// pass while the command printed "No results found." and exited 0.
+func TestSearchTrulyEmptyProjectConstructsNoEmbedder(t *testing.T) {
+	vaultDir := setupTestVaultEnv(t) // installs forbidVaultEmbedder
+	t.Chdir(t.TempDir())
+	// A bare scaffold: ListAllProjects admits it as a project, TrulyEmpty
+	// reports it empty. Same fixture TestRunSearchTrulyEmptyExitsNonZero builds.
+	if err := os.MkdirAll(filepath.Join(vaultDir, "Projects", "test-proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	var stdout string
+	// Both streams, not only stderr: the zero-hit message goes to the `out`
+	// writer runSearch is handed, which is os.Stdout here, so a stderr-only
+	// capture could never witness arm 3.
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() { code = cmdSearch().Run([]string{"hello", "-p", "test-proj"}) })
+	})
+
+	// 1. exit code
+	if code != cli.ExitUser {
+		t.Errorf("exit code = %d, want ExitUser (%d); stderr:\n%s", code, cli.ExitUser, stderr)
+	}
+	// 2. the remediation text (NothingIndexableError.Error)
+	if !strings.Contains(stderr, "vp index rebuild test-proj") {
+		t.Errorf("stderr does not name `vp index rebuild test-proj`:\n%s", stderr)
+	}
+	// 3. and it must NOT be the zero-hit answer
+	if strings.Contains(stdout, "No results found") || strings.Contains(stderr, "No results found") {
+		t.Errorf("a truly empty project must not print the zero-hit message: stdout=%q stderr=%q", stdout, stderr)
+	}
+	// 4. the seam: forbidVaultEmbedder t.Errorf's if newVaultEmbedder ran at all.
+}
+
 // TestSearchUnreadableProjectsIsSystemError: when the vault's Projects/ exists
 // but cannot be listed, "I could not look" is not "absent" — ExitSystem, not
 // the unknown-project ExitUser.

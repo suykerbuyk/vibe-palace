@@ -13,6 +13,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
+	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -84,12 +85,17 @@ func cmdSearch() *cli.Command {
 				return code
 			}
 
-			emb, err := newVaultEmbedder(vault, cfg)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "vp search: embedder: %v\n", err)
-				return cli.ExitSystem
-			}
-			defer emb.Close()
+			// LAZY, not eager: construction is a ~90 MB download plus an
+			// unbounded pipeline build on a cold cache, and NewONNXBackend takes
+			// no ctx, so an eager construct here sits before the engine exists
+			// and outside every search-path bound. Behind embedder.NewLazy the
+			// construct runs on WarmEmbedder's detached goroutine and the
+			// caller's wait is bounded by readyWait
+			// (internal/search/engine.go:380, be6eca2), which refuses with
+			// *IndexNotBuiltError -- the error runSearch below already maps to
+			// ExitUser. NewLazy cannot fail, so there is no error branch here; a
+			// real construction failure surfaces through that same bounded wait.
+			emb := embedder.NewLazy(func() (embedder.Embedder, error) { return newVaultEmbedder(vault, cfg) })
 
 			// WithRebuildLauncher: ADR-016 decision 4 is "a cold/stale search in
 			// ANY process" — so a CLI `vp search` that degrades on a cold corpus
@@ -104,7 +110,84 @@ func cmdSearch() *cli.Command {
 				// resolves its own [index] transcripts.
 				search.WithConfigFor(vault.LoadConfig),
 				search.WithRebuildLauncher(tools.NewRebuildLauncher(vault, detachlaunch.Launch)))
-			defer eng.Close()
+			// NO `defer eng.Close()`, and no `defer emb.Close()` -- deliberate,
+			// and guarded by the sourceaudit rule oneshotSearchNoEngineClose.
+			//
+			// Engine.Close joins warmWG (internal/search/engine.go:3243) before
+			// closing the embedder (S-D1): correct for `vp mcp`, where Close
+			// means shutdown of a process that keeps running, and wrong here,
+			// where it would make a one-shot `vp search` sit through the whole
+			// cold model load AFTER it has already printed its bounded refusal.
+			// Closing only the embedder instead is not a substitute:
+			// LazyEmbedder.Close does not join the warm goroutine, and it no-ops
+			// while the construct is still in flight.
+			//
+			// Nothing durable is lost. Every durable write on this path -- the
+			// vector commits and generation bumps in finalCommit
+			// (internal/search/engine.go:2083, :2195) and the NoteRebuild want
+			// recorded by the launcher ensureDetachedRebuild invokes
+			// (internal/search/engine.go:656 ->
+			// internal/tools/system_tools.go:1091) -- completes inside Search,
+			// before this point. Engine.Close itself
+			// (internal/search/engine.go:3225-3254) writes nothing durable:
+			// bruteIndex.Close is a documented no-op
+			// (internal/search/vector_index.go:338-339); hnswIndex.Close
+			// (internal/search/hnsw_index.go:622) only cancels and joins an
+			// in-memory tombstone rebuild, and that file touches no os/
+			// indexstore writer at all; this engine is built WITHOUT
+			// WithBackgroundConverter, so the one convertWG.Add
+			// (internal/search/engine.go:2344) is unreachable past the
+			// !convertEnabled return at :2294 and convertWG is empty;
+			// LazyEmbedder.Close no-ops when unbuilt
+			// (internal/embedder/lazy.go:84-90) and ONNXEmbedder.Close
+			// (internal/embedder/onnx.go:525) only destroys an in-process
+			// session; and cmd/vp/main.go:43 os.Exit's as soon as dispatch
+			// returns.
+			//
+			// The model-cache flock is never released by Close on ANY path:
+			// release is a local of NewONNX, and ONNXEmbedder.Close
+			// (internal/embedder/onnx.go:525-537) only destroys the session and
+			// pipeline. A NewONNX that returns ordinarily releases it itself
+			// (internal/embedder/onnx.go:239 acquires, :255-260 defers the
+			// release unless it was handed off). It outlives the process on one
+			// path only: a download that hit modelDownloadTimeout hands release()
+			// to a leaked goroutine (internal/embedder/onnx.go:296-308), and an
+			// exit before that goroutine runs drops the lock with the fds.
+			//
+			// A download cut off that way can leave a snapshot that READS as
+			// complete and is not: localSnapshotComplete
+			// (internal/embedder/onnx.go:168-178) accepts a present
+			// tokenizer.json plus any NONZERO *.onnx. NewONNX's self-heal
+			// (internal/embedder/onnx.go:363-387) is keyed on LOAD FAILURE, so it
+			// recovers such a snapshot only when it actually fails to load, and
+			// only if its one retry download succeeds.
+			//
+			// 🔴 AND AFTER THIS CHANGE, AN INTERRUPTED DOWNLOAD IS THE ORDINARY
+			// OUTCOME OF A COLD `vp search` — NOT AN INVARIABLE ONE, AND NOT AN
+			// ACCIDENT. The condition is readyWait EXPIRING. A construct that
+			// finishes the download and the pipeline build inside the 15 s lets
+			// waitEmbedderReady return nil and the search proceed, and truncates
+			// nothing. When it does not finish, the bounded refusal returns and
+			// cmd/vp/main.go:43 exits with the first-ever ~90 MB fetch still in
+			// flight — by design, and on a cold cache that is the likely case,
+			// not a rare one. Before the lazy wrap it took an external kill,
+			// which was exceptional. So do not read the paragraph above as "the
+			// same window we already had": the window itself is unchanged; what
+			// changed is how routinely it is entered.
+			//
+			// A cold host still gets there, because the remedy the refusal names
+			// is not budgeted: waitEmbedderReady has ONE call site and it is
+			// inside Search (internal/search/engine.go:978), while
+			// `vp index rebuild` drives RebuildExplicit straight into
+			// rebuildAndRemember with indexstore.NoTimeout and refuse=false
+			// (internal/search/engine.go:1545-1546). Survivable, not benign.
+			// Making the download resumable is its own task,
+			// model-cache-download-is-not-resumable.
+			//
+			// Do not reintroduce warmWG.Wait here to "let the lock release
+			// cleanly" — Close never released it — and do not "preserve a
+			// process that can finish the download": that is the unbounded wait
+			// this change exists to remove.
 
 			limit := fv.Int("--limit")
 			if limit == 0 {
@@ -164,6 +247,9 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 	// before the search, so the CLI pays no model load and exits non-zero naming
 	// `vp index rebuild` (ADR-014 decision 8). Engine.Search makes the same check,
 	// so this is belt-and-suspenders for the CLI's own exit-code mapping.
+	//
+	// "pays no model load" is true only because cmdSearch builds the embedder
+	// LAZILY; an eager construct there would have paid it before this check ran.
 	if empty, err := eng.TrulyEmpty(proj); err != nil {
 		fmt.Fprintf(os.Stderr, "vp search: %v\n", err)
 		return cli.ExitSystem
@@ -177,6 +263,10 @@ func runSearch(eng *search.Engine, proj, query, wing, room string, limit int, in
 	// inherits the same "never hang on a cold index" guarantee as the MCP surface
 	// (a stray unbounded Rebuild here would bypass that gate). The unbounded full
 	// rebuild stays reachable only through `vp index rebuild`.
+	//
+	// That inheritance depends on the LAZY embedder in cmdSearch as much as on
+	// this line: an eager construct there would sit outside readyWait and the
+	// guarantee would be the MCP surface's alone.
 	results, err := eng.Search(ctx, query, search.SearchFilters{
 		Project:    proj,
 		Wing:       wing,

@@ -198,6 +198,12 @@ const (
 	// site whose argv does not carry --no-transcripts, so an opt-in host gets
 	// the historical backlog on a trigger with no operator in the loop.
 	KindAutomaticRebuildUnbounded = "automatic-rebuild-unbounded"
+
+	// KindOneshotSearchEngineClose: the one-shot `vp search` path defers a
+	// Close that joins the detached embedder construct, so the command would
+	// print its bounded refusal and then sit through the cold model load
+	// anyway. See oneshotSearchNoEngineClose.
+	KindOneshotSearchEngineClose = "oneshot-search-engine-close"
 )
 
 // ID is the finding's stable identity for baseline comparison. It deliberately
@@ -344,6 +350,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, hermeticTestMain(files)...)
 	findings = append(findings, departureRecordWriter(files)...)
 	findings = append(findings, automaticRebuildBounded(files)...)
+	findings = append(findings, oneshotSearchNoEngineClose(files)...)
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID() < findings[j].ID() })
 	return findings, nil
