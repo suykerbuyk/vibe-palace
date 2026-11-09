@@ -10,6 +10,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/departedpath"
 	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -125,6 +126,14 @@ func LockedUpdate(vaultRoot, absPath string, transform func(current []byte) ([]b
 // every wrap. If one of them ever needs it, add it as an explicit option with a
 // caller that uses it, rather than as a default nobody asked for.
 func (v *Vault) appendUnderLock(absPath string, data []byte) error {
+	// 🔴 FIRST, ABOVE EVERY CONTENT REFUSAL — symmetric with
+	// atomicfile.writeAtomic, and for the same reason. Seated below
+	// RefuseUninitialisedAbs instead, an append into an uninitialised project
+	// of the operator's vault — the exact shape of the incident this guard
+	// exists for — would return a quiet, ignorable typed error and the
+	// tripwire would never fire. A panic here does not strand the flock the
+	// caller holds: every caller releases with defer.
+	surface.GuardTestVaultWrite(v.Root, absPath)
 	// The append half of the write funnel refuses a departed project's trees
 	// like atomicfile.Write does (departedpath).
 	if err := departedpath.RefuseAbs(v.Root, absPath); err != nil {

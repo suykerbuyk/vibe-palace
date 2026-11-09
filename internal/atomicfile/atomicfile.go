@@ -304,6 +304,15 @@ func WriteStream(vaultRoot, absPath string, fill func(io.Writer) error, opts ...
 // fill's error is returned UNWRAPPED. Each caller therefore keeps its own error
 // vocabulary, and the temp file is removed on every failure path.
 func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) error) error {
+	// 🔴 FIRST, ABOVE EVERY CONTENT REFUSAL. The refusals below judge WHERE
+	// inside a vault a write lands; this one judges whether the process may
+	// write this vault AT ALL. If a test is writing the operator's configured
+	// vault, that is the fact worth reporting — not the departed-path or
+	// uninitialised-project error the same write would also have earned. It is
+	// also the only position from which a refusal precedes MkdirAll and the
+	// temp file, so a tripped guard leaves nothing on disk. No-op in a
+	// production binary; see surface.GuardTestVaultWrite.
+	surface.GuardTestVaultWrite(vaultRoot, absPath)
 	// No write lands under a departed project's trees (departedpath): this is
 	// the funnel every storage writer and vaultfs write goes through.
 	if err := departedpath.RefuseAbs(vaultRoot, absPath); err != nil {
