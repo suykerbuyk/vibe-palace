@@ -215,6 +215,11 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 	// a later one is not reported as an obstruction it no longer is.
 	healFailed := map[string]string{}
 
+	// 🔴 AN AMBIENT-COMMIT REFUSAL IS NOT A PER-REMOTE OUTCOME. It is carried
+	// out of the loop and returned as pullCore's own error, never recorded in
+	// RemoteResults — see storage.ErrAmbientVaultCommit for why.
+	var ambientRefusal error
+
 	for i, remote := range remotes {
 		ref := remote + "/" + branch
 
@@ -303,6 +308,14 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 				result.RemoteResults[remote] = nil
 				return false
 			}
+			// Its own class, ahead of every per-remote classification: no remote
+			// did anything wrong, so it must not be recorded against one, and
+			// pullSweepStops must not describe it as a remote that "failed in a
+			// way the pull does not merge past".
+			if errors.Is(err, ErrAmbientVaultCommit) {
+				ambientRefusal = err
+				return true
+			}
 			var conflict *mergeConflictError
 			if errors.As(err, &conflict) {
 				attrs := []any{"remote", remote, "ref", conflict.ref, "tip", conflict.tip, "paths", conflict.paths}
@@ -330,6 +343,13 @@ func pullCore(vaultPath string, remotes []string) (*PullResult, error) {
 		if stop {
 			break
 		}
+	}
+
+	// A refused ambient commit is pullCore's own failure, not a partial sweep:
+	// return it before the reconcile summary so no caller can read a verdict
+	// built from RemoteResults and conclude the pull succeeded.
+	if ambientRefusal != nil {
+		return result, ambientRefusal
 	}
 
 	// Reconcile: report only the paths that were never healed on ANY remote,

@@ -265,6 +265,17 @@ var healConflicts = healDerivedConflicts
 // which only the migration's operator attestation prevents; it is never
 // resolved here, and the caller names it in its error.
 func healDerivedConflicts(vaultPath string, entries []unmergedEntry) (healed, named []string, handled bool, err error) {
+	// SEAT 4, first statement. The ERROR arm, not the panic: this runs under the
+	// pull's vault commit lock, which vaultpull.go releases by hand with no
+	// defer, and a recover() sits on a path that reaches here.
+	//
+	// 🔴 handled MUST stay false here. Returning (_, _, true, nil) would tell
+	// mergeFetchedTip the conflict was handled and send it on to
+	// untrackAfterMerge; returning the error with handled=false is what makes
+	// the refusal reach the caller.
+	if rerr := refuseAmbientCommit(vaultPath, "healDerivedConflicts"); rerr != nil {
+		return nil, nil, false, rerr
+	}
 	var derived []string
 	other := false
 	for _, e := range entries {
@@ -319,6 +330,11 @@ var untrackBeforeCommit = func() error { return nil }
 // Extracted KG records a merge brings in are NOT untracked here; they stay
 // tracked, and the kg-tracked-extracted audit reports them.
 func untrackDerivedAfterMerge(vaultPath string) ([]string, error) {
+	// SEAT 5, first statement. The error arm, same reason as Seat 4: reached
+	// from mergeFetchedTip under the pull's manually-released commit lock.
+	if rerr := refuseAmbientCommit(vaultPath, "untrackDerivedAfterMerge"); rerr != nil {
+		return nil, rerr
+	}
 	out, _, err := gitCmdStdin(vaultPath, 30*time.Second, "", "ls-files", "-z", "--", "palace")
 	if err != nil {
 		return nil, fmt.Errorf("list tracked palace paths: %w", err)

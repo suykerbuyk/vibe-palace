@@ -202,3 +202,90 @@ func TestGuardTestVaultWrite_AmbientRootEmptyDoesNotFire(t *testing.T) {
 		GuardTestVaultWrite(vault, filepath.Join(vault, "Projects", "p", ".surface"))
 	})
 }
+
+// TestGuardTestVaultCommit_RefusesAmbientRoot is the commit guard's one arm.
+//
+// The ambient root is injected as a TEMP directory deliberately: this guard has
+// no non-temp arm, so a temp root proves the refusal came from the ambient
+// comparison and from nothing else.
+func TestGuardTestVaultCommit_RefusesAmbientRoot(t *testing.T) {
+	t.Run("equal_root", func(t *testing.T) {
+		root := t.TempDir()
+		restore := SetAmbientVaultRoot(root)
+		defer restore()
+		r := mustPanic(t, "commit to the ambient vault root", func() {
+			GuardTestVaultCommit(root, "testSeat")
+		})
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "COMMIT") {
+			t.Errorf("panic is not the commit refusal: %v", r)
+		}
+		if !strings.Contains(msg, "testSeat") {
+			t.Errorf("panic does not name the seat: %v", r)
+		}
+	})
+
+	// Non-vacuity control: without it this test passes against a guard that
+	// panics unconditionally.
+	t.Run("different_root", func(t *testing.T) {
+		ambient := t.TempDir()
+		target := t.TempDir()
+		restore := SetAmbientVaultRoot(ambient)
+		defer restore()
+		if ambient == target {
+			t.Fatal("fixture invariant broken: ambient and target are the same directory")
+		}
+		mustNotPanic(t, "commit to a root that is not the ambient one", func() {
+			GuardTestVaultCommit(target, "testSeat")
+		})
+	})
+}
+
+// TestGuardTestVaultCommit_HasNoWaivableArm pins that this guard ignores
+// VP_ALLOW_NONTEMP_VAULT. That variable is the escape hatch for a vault outside
+// the OS temp dir, which is the WRITE guard's arm B; nothing legitimately
+// commits the configured vault under test, so there is nothing to waive.
+//
+// 🔴 FIXTURE INVARIANT: the target MUST equal the injected ambient root, or the
+// guard never fires and this row would pass under its own mutation.
+func TestGuardTestVaultCommit_HasNoWaivableArm(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(allowNonTempVaultEnv, "1")
+	restore := SetAmbientVaultRoot(root)
+	defer restore()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("%s must not waive the commit refusal, but no panic occurred (A=%s T=%s)",
+				allowNonTempVaultEnv, root, root)
+		}
+	}()
+	GuardTestVaultCommit(root, "testSeat")
+}
+
+// TestAmbientVaultRootUnderTest_EmptyRootIsNotAMatch pins the clause that keeps
+// sameRoot off an empty string. filepath.Abs("") is the process cwd, and
+// sameRoot panics on an empty argument rather than comparing it.
+func TestAmbientVaultRootUnderTest_EmptyRootIsNotAMatch(t *testing.T) {
+	restore := SetAmbientVaultRoot(t.TempDir())
+	defer restore()
+	mustNotPanic(t, "empty root", func() {
+		if AmbientVaultRootUnderTest("") {
+			t.Error("an empty root matched the ambient root")
+		}
+	})
+}
+
+// TestAmbientVaultRootUnderTest_NoAmbientRootIsNotAMatch pins the other guard
+// clause: with no configured vault there is nothing to compare, and sameRoot
+// must not be reached.
+func TestAmbientVaultRootUnderTest_NoAmbientRootIsNotAMatch(t *testing.T) {
+	restore := SetAmbientVaultRoot("")
+	defer restore()
+	vault := t.TempDir()
+	mustNotPanic(t, "no ambient root configured", func() {
+		if AmbientVaultRootUnderTest(vault) {
+			t.Error("matched with no ambient root configured")
+		}
+	})
+}

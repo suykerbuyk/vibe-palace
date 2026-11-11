@@ -16,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -670,6 +671,12 @@ func GitAddForce(dir string, paths ...string) error {
 // this with nothing dirty almost always has a fixture bug, and surfacing the
 // real git message is more useful than silently treating it as a no-op.
 func GitCommitAllAt(root, message string, at time.Time) error {
+	// SEAT 3, first statement. This is the helper whose own comment above says
+	// its bare `git add -A` is safe only where dir IS the entire repository on
+	// its own, "never the real, multi-project vault". That half of the
+	// precondition is now code under test, not prose. The "throwaway,
+	// single-purpose repository" half remains prose.
+	surface.GuardTestVaultCommit(root, "GitCommitAllAt")
 	addCmd := exec.Command("git", "-C", root, "add", "-A")
 	addCmd.Env = SafeGitEnv()
 	if out, err := addCmd.CombinedOutput(); err != nil {

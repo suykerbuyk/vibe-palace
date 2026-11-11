@@ -19,6 +19,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/giterr"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
@@ -281,6 +282,11 @@ func CommitAndPushPaths(vaultPath, message string, paths []string, push bool) (*
 // commitAndPushPathsCore is CommitAndPushPaths after its git_enabled gate,
 // for storage-internal composition (the downgrade wrapper).
 func commitAndPushPathsCore(vaultPath, message string, paths []string, push bool) (*PushResult, error) {
+	// SEAT 1 of the ambient-commit guard, first statement: no test commits to
+	// the operator's configured vault. It panics because this function's
+	// vault-root lock is released by a defer (:312 below), so the panic unwinds
+	// through the release. No-op in a production binary.
+	surface.GuardTestVaultCommit(vaultPath, "commitAndPushPathsCore")
 	result, keep, err := prepareCommitPaths(vaultPath, paths)
 	if err != nil || len(keep) == 0 {
 		return result, err
@@ -1015,6 +1021,15 @@ func reconcileIfAhead(vaultPath string, remotes []string, branch string, rep *De
 		var notStarted *mergeNotStartedError
 		var unsafe *vaultTreeUnsafeError
 		switch {
+		// 🔴 AHEAD OF EVERY PER-REMOTE CLASSIFICATION, for the same reason
+		// pullCore checks it first: an ambient-commit refusal is not a remote's
+		// outcome. Recorded in reconcileErrs it is swallowed — BOTH callers test
+		// only the top-level error (vaultsync.go's commit path and
+		// vaultsync_verify.go's pruneMirrors), and pruneMirrors' no-stage early
+		// return then reports success while the refusal is dropped. That is the
+		// same silence this guard exists to replace, one caller further out.
+		case errors.Is(mergeErr, ErrAmbientVaultCommit):
+			return nil, mergeErr
 		case mergeErr == nil:
 			// Reconciled: HEAD merged the remote tip with the prior commit
 			// unchanged; the new commit fast-forwards.
@@ -1495,6 +1510,11 @@ func refuseDepartedInCommit(vaultPath string, paths []string) error {
 // caller is CommitSplitPurgeLocked, whose commit is the one that finishes the
 // pending departure records the guard refuses on.
 func commitPathspec(vaultPath string, limit time.Duration, message string, paths []string) error {
+	// SEAT 2, first statement: the shared primitive every path-scoped commit
+	// bottoms out in, including the callers that never cross Seat 1
+	// (commit_rename, split_purge, CommitRemovals, pruneMirrors). Its callers'
+	// locks are deferred or held upstream, so this seat panics too.
+	surface.GuardTestVaultCommit(vaultPath, "commitPathspec")
 	f, err := os.CreateTemp("", "vp-commit-pathspec-*")
 	if err != nil {
 		return fmt.Errorf("git commit: create pathspec file: %w", err)

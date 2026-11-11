@@ -152,6 +152,14 @@ const (
 	// directory. See gitExecEnvFunnel.
 	KindGitExecUnsafeEnv = "git-exec-unsafe-env"
 
+	// KindUnguardedVaultCommit: a non-test function that runs `git commit`
+	// without carrying the ambient-commit guard, so a commit whose repository
+	// is the operator's configured vault root would land under test. The
+	// ratchet behind the six commit seats; see unguardedVaultCommit. Its
+	// expected baseline is EMPTY — an entry here is a recorded permission to
+	// commit.
+	KindUnguardedVaultCommit = "unguarded-vault-commit"
+
 	// KindEnvIsolationBypass: an internal/integration test sets HOME,
 	// XDG_CONFIG_HOME or CLAUDE_HOME directly via os.Setenv/t.Setenv instead of
 	// routing through testinfra.IsolateEnv, silently reintroducing the
@@ -341,6 +349,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, vaultWriteFunnel(files)...)
 	findings = append(findings, surfaceRemediation(files)...)
 	findings = append(findings, gitExecEnvFunnel(files)...)
+	findings = append(findings, unguardedVaultCommit(files)...)
 	findings = append(findings, envIsolationBypass(files)...)
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)

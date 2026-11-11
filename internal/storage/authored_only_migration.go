@@ -606,6 +606,13 @@ type AuthoredOnlyApplyResult struct {
 // and commits once. The empty-vault path skips the classify/drop steps and adds
 // the vault-level Audits/.surface stamp.
 func (v *Vault) ApplyAuthoredOnlyMigration(plan *AuthoredOnlyPlan, opts AuthoredOnlyApplyOptions) (*AuthoredOnlyApplyResult, error) {
+	// SEAT 6, FIRST STATEMENT. The error arm: this commits the whole index via
+	// gitCmdStdin, and it is a maintenance flow a caller's error check already
+	// covers. Reading v.Root directly rather than after the local assignment so
+	// the seat is literally first and the comment cannot drift from the code.
+	if rerr := refuseAmbientCommit(v.Root, "ApplyAuthoredOnlyMigration"); rerr != nil {
+		return nil, rerr
+	}
 	root := v.Root
 	res := &AuthoredOnlyApplyResult{}
 	var add []string // paths to `git add` explicitly (never -A)

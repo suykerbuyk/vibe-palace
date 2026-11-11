@@ -111,6 +111,69 @@ func GuardTestVaultWrite(vaultPath, writePath string) {
 		writePath, vaultPath, allowNonTempVaultEnv))
 }
 
+// AmbientVaultRootUnderTest reports whether root is the operator's configured
+// vault root and the current process is a `go test` binary. It is the ONE
+// predicate behind both commit refusals, and it is exported because
+// internal/storage needs it directly for the error arm below.
+//
+// It reuses U1's init-time snapshot (ambient.go) and U1's sameRoot, so the
+// definition of "the operator's vault" is identical for a content write and a
+// commit, and there is one place for it to be wrong.
+//
+// 🔴 CLAUSE ORDER IS LOAD-BEARING, exactly as in GuardTestVaultWrite: clause
+// (1) and the `a != ""` test in (4) are what keep sameRoot off an empty string,
+// and sameRoot PANICS on one rather than comparing filepath.Abs("") — the
+// process cwd — against the ambient root.
+func AmbientVaultRootUnderTest(root string) bool {
+	if root == "" {
+		return false // (1) MUST BE FIRST — keeps sameRoot off an empty root
+	}
+	if !testing.Testing() {
+		return false // (2) the signal, set at link time by cmd/go
+	}
+	a := ambientVaultRoot() // (3) U1's init-time snapshot
+	return a != "" && sameRoot(root, a)
+}
+
+// GuardTestVaultCommit panics when a `go test` process is about to COMMIT to the
+// operator's configured vault. what names the committing primitive, so a reader
+// of the panic knows which seat fired.
+//
+// 🔴 ONE PREDICATE, TWO CONSEQUENCES — and the asymmetry is deliberate.
+// This panicking form is used only where the enclosing vault-root lock is
+// released by a DEFER, so a panic unwinds through the release:
+// storage.commitAndPushPathsCore (acquire vaultsync.go:301, defer :312),
+// storage.commitPathspec and storage.GitCommitAllAt.
+//
+// The merge and migration seats do NOT use it. There the release is MANUAL
+// (vaultpull.go has no defer at all; vaultsync.go:866/:872), and a live
+// recover() sits on a path that reaches them (internal/mcp/tools.go). A panic
+// there could leave the vault-root flock held for the life of the process, and
+// vaultlock.Acquire is a no-timeout LOCK_EX, so the next acquisition would block
+// forever. Those seats call AmbientVaultRootUnderTest and return
+// storage.ErrAmbientVaultCommit instead. Converting those sites to defer would
+// mean holding the commit lock across every remote's network fetch, which the
+// pull loop deliberately keeps outside it — a production locking change to serve
+// a test-only guard, which this guard does not ask for.
+//
+// There is no non-temp arm and no override. git legitimately runs against
+// non-temp project checkouts under test, so "outside the temp dir" carries no
+// signal here; and nothing legitimately commits the configured vault under test,
+// so there is nothing for VP_ALLOW_NONTEMP_VAULT to waive.
+func GuardTestVaultCommit(vaultRoot, what string) {
+	if !AmbientVaultRootUnderTest(vaultRoot) {
+		return
+	}
+	panic(fmt.Sprintf(
+		"vp: refusing to COMMIT to the CONFIGURED vault under test\n"+
+			"  seat:  %s\n"+
+			"  vault: %s\n"+
+			"  this is the ambient configured vault root, resolved at process start.\n"+
+			"A test is committing to the operator's real vault — isolate it with "+
+			"t.Setenv(\"XDG_CONFIG_HOME\", t.TempDir()) (or a temp --vault).",
+		what, vaultRoot))
+}
+
 // sameRoot reports whether two vault roots name the same directory. It
 // tolerates a trailing separator (the operator's own config carries one;
 // filepath.Abs cleans it, so the comparison is on cleaned paths and never on
