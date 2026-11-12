@@ -47,7 +47,7 @@ Classify every pane in the targeted session's workspace:
 | **Implementor** | `agent` is set (claude, grok, …) and it is not this pane | Prompt, wait, read, review. |
 | **Operator shell** | no agent, or labels such as Human terminal / User Pane | Never prompt. Never start an agent there. |
 
-Target a **pane id** (`w1:p1`) or a **unique live agent name**. A kind label
+Prefer a **pane id** (`w1:p1`); a **unique live agent name** also works. A kind label
 (`claude`, `grok`) is not a target. Pane **labels** (`Implementor`) are display
 names; they are not agent names. Agent names must match `[a-z][a-z0-9_-]{0,31}`
 and be unique among live agents. If a live agent has no unique name (the
@@ -104,7 +104,7 @@ the operator asked for that topology.
 **When to spawn:** the operator asked for another implementor or more
 parallel capacity; discovery found fewer implementors than the agreed unit
 needs and the operator already authorized parallel work; the Chair needs a
-*different model* for an independent pass.
+*different model* for an independent pass on complex or high-blast-radius work.
 
 **When not to spawn:** the Chair would be implementing "because it would be
 faster" (spawn an implementor instead, or ask); a Human terminal / User Pane

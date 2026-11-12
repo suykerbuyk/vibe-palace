@@ -38,8 +38,9 @@ None of Herdr mode's pane-management concerns apply here:
 
 The same discipline as Herdr mode: review a subordinate's returned diff or
 findings against the artifacts (re-run the check yourself where practical),
-not against its own summary. Plan review, then code review, each potentially
-looped through revise-and-re-review, before anything lands. Accept,
+not against its own summary. Plan review, then code review, each bounded
+by the Convergence rule in the core SKILL.md — one full pass plus one delta pass per half, a
+third only if the delta pass finds a BLOCKER, and the third is the last — before anything lands. Accept,
 send-back-with-named-defects, or escalate — the same three outcomes, just
 without a pane's `idle`/`blocked` state to read; the subagent's return *is*
 the signal that a turn is complete.

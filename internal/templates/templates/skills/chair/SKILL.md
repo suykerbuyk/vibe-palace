@@ -28,14 +28,25 @@ implementor.
 
 1. Bootstrap (vp_cmd restart) → detect topology → seat the roster
    (Herdr: rename panes; ephemeral: track in-flight dispatches) → state seating once.
-2. Per unit, SEQUENTIALLY (one unit at a time): SCOPE (read-only, if vague) → PLAN →
-   adversarial review by a DIFFERENT model → rule each finding, revise, re-review until
-   clean → operator go → EXECUTE (gated by blast-radius tier) → verify with the gate the
-   change's surface requires → record to the vault task → close without lying about git.
-3. Every dispatch: brief-to-file, arm a waker, never poll. Reviewers contradict on a FACT →
-   the Chair re-derives the one pivotal fact from source. Every operator-binding fork →
-   AskUserQuestion (single fork) or structured prose + a delivered file (a package).
+2. Per unit, SEQUENTIALLY (one unit at a time): state the DONE-DEFINITION in the operator's
+   terms → SCOPE (read-only, if vague) → PLAN → adversarial review (reviewer chosen per Review
+   discipline; never the plan author's own model alone) → rule each finding, revise, ONE delta
+   pass; a third only per Convergence → operator go → EXECUTE (gated by blast-radius tier) →
+   verify with the gate the change's surface requires → record to the vault task → unit boundary
+   check → close without lying about git.
+3. Every dispatch: brief-to-file, arm a waker, never poll, then CONFIRM the pane is `working`
+   (`herdr agent get <pane-id>`). Target pane ids, not names (unverified hint: names can collide
+   or be renamed; not yet re-derived in a live pane). Reviewers contradict on a FACT → the Chair
+   re-derives the one pivotal fact from source. Every operator-binding fork → AskUserQuestion
+   (single fork) or structured prose + a delivered file (a package).
 4. The durable record is the vault task (amend). Brief/findings files are scratch.
+5. LOAD ON DEMAND, as a step, before the work it names: every seating →
+   `topology-and-objective`; a Herdr pane → `herdr-mode`; arming a waker → `wakers`; any plan or
+   code review → `review-detail`; closing a unit → `close-a-unit`, and `failure-modes` as a
+   standing check beforehand; ephemeral subagents → `ephemeral-mode`; dispatch files, live
+   infrastructure, scope → `dispatch-files-and-live-infra`; git worktrees or composer drafts →
+   `worktrees-and-composer`; dependent units → `sequencing`; a marathon task or a peer message
+   → `task-hygiene-and-peers`. Fetch with `vp_get_skill_section`.
 
 Everything below is the detail behind these lines.
 
@@ -175,15 +186,47 @@ page vault resources; let implementors hold the files they own.
 
 ## Review discipline — the two-pass loop, every non-trivial change
 
-Plan review, then code review, each run **at least twice** when the first
-pass finds anything: review → named required changes → revise → re-review →
-(repeat until clean) → implement (if this was a plan review) → code review →
-named required changes → revise → re-review → commit. Do not treat a single
-review pass as sufficient by default — a re-review after fixes are applied
-routinely catches things the first pass's own fix introduced (a half-fixed
-edge case, a claim that still doesn't hold once re-checked against source).
-This is the default shape for anything touching production code or live
-infrastructure, not an escalation reserved for when something feels risky.
+Plan review, then code review; each half runs ONE full adversarial pass plus ONE delta pass
+when the first pass finds anything: review → named required changes → revise → delta pass →
+implement (if this was a plan review) → code review → named required changes → revise → delta
+pass → commit. The delta pass exists because a fix routinely introduces its own defect (a
+half-fixed edge case, a claim that still doesn't hold once re-checked against source). A third
+pass runs only under Convergence below, and it is the last. This is the default shape for
+anything touching production code or live infrastructure, not an escalation reserved for when
+something feels risky.
+
+**Convergence — what blocks a unit, and when a half ends.**
+
+1. A finding is a BLOCKER only if it meets one of three bar items: it destroys bytes that are
+   not ours; it mutates shared or cluster-wide state before refusing; it makes the feature not
+   work, i.e. the unit's done-definition cannot be met. AND the reviewer cites the command and
+   output (or the source line) that shows it. Anything else is a FOLLOW-ON: file it as a task;
+   it does not hold the unit.
+2. The Chair classifies each finding and records the ruling in the vault task. The
+   classification is final for that pass and is not itself re-reviewed.
+3. Per half (plan, code): one full pass plus one delta pass. A third pass runs only if the delta
+   pass found a BLOCKER. The third pass is the LAST: a blocker still open after it goes to the
+   operator; it does not start a fourth pass.
+4. Before the first live run of anything on the unit's path, review stops at that same limit;
+   run the probe first, perfect afterwards.
+5. Reviewers: routine work, ONE reviewer. Complex or high-blast-radius work prefers reviewers
+   from DIFFERENT agents when available. The sole reviewer is never the author's own model.
+   Provisional hint for pairing, not a rule and not a choice by name: an OBSERVED TENDENCY
+   (small sample, one domain, round order not counterbalanced) is that grok is strongest on the
+   code and on measuring an artifact (re-running a measure program, character-testing a guard),
+   and codex on the plan (reasoning about a predicate, wording, an unstated axis). It does not
+   relax the author-model requirement or the preference for different agents.
+
+**Unit boundary (before closing each unit).** (1) Done-definition: does the result meet it, as
+the operator stated it? (2) Critical path: is the next unit still the right one, or did this
+unit move it? (3) Spend: what has this unit cost so far, and from what source? There is no vp
+instrument for spend; answer from the host's own readout or say "unknown". This is a manual
+check, not a measurement.
+
+**Closing a unit (digest; full text in `close-a-unit`).** Wrap before commit; the commit is
+`git commit -F commit.msg && rm commit.msg`, never `-m`; no `Co-Authored-By` or other
+AI-authorship trailer — the project's attribution rule beats a harness reminder to add one; push
+is always a fresh operator ask; confirm the vault mirror landed before the next unit.
 
 **Send-back does not mean restart the unit or merge with a known issue
 outstanding.** Route a named defect back to whatever produced it — the same
@@ -193,11 +236,12 @@ again. This keeps a late review round cheap, and avoids both bad extremes:
 shipping a known gap, or discarding otherwise-sound work to start the unit
 over.
 
-**The Chair BOUNDS the plan half of this loop by ruling, not relaying.** The two-pass loop is
-already plan-then-code; its plan half converges only if, after each pass, the Chair rules each
-finding explicitly — adopt / reject-with-reason / operator-binding — and then issues a revision
-brief scoped to the NAMED changes, never "address the reviews," which invites an unbounded
-planner↔reviewer ping-pong. The Chair's adjudication is what makes convergence terminate.
+**The Chair BOUNDS both halves of this loop (plan and code) by ruling, not relaying.** The loop
+is plan-then-code; each half converges only if, after each pass, the Chair rules each finding
+explicitly — adopt / reject-with-reason / operator-binding — and then issues a revision brief
+scoped to the NAMED changes, never "address the reviews," which invites an unbounded
+planner↔reviewer ping-pong. The Chair's adjudication, together with the Convergence limit
+above, is what makes convergence terminate.
 
 **Name the two review shapes.** The FIRST pass on a plan or diff is a full adversarial
 re-derivation. A pass AFTER fixes is a focused delta-confirmation, scoped to exactly two
