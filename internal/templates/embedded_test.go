@@ -721,9 +721,16 @@ func TestHerdrChair_NamedSessionOutsideGate(t *testing.T) {
 		t.Error("herdr.md: must show the wrong --session placement so agents do not use it")
 	}
 
+	// The chair skill is a thin core plus skills/chair/references/*.md; the
+	// rules asserted below may live in either, so read them as one document.
 	chair, ok := body["skills/chair/SKILL.md"]
 	if !ok {
 		t.Fatal("skills/chair/SKILL.md missing")
+	}
+	for _, r := range resources {
+		if strings.HasPrefix(r.RelPath, "skills/chair/references/") {
+			chair += "\n" + string(r.Bytes)
+		}
 	}
 	if strings.Contains(chair, "say you cannot drive panes and stop there") {
 		t.Error("chair skill still hard-stops outside Herdr — named-session seating is dead")
