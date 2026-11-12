@@ -751,6 +751,21 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
     - A graph write or delete (`hnsw.idx` replaced or removed) bumps `gen` only. Another engine's
       in-memory graph stays valid after a save, so no full reload is needed. A discard that
       deletes the graph changes `epoch` as a discard.
+  - **The in-flight flag.** A destructive commit (one that calls `beginDestructive`: a
+    rewrite, a removal, a torn-tail cut) sets an optional third field, `w`, in the counter
+    file with its first bump, and its finishing bump clears it. While the flag is set,
+    `ReadGeneration` returns `ErrWriteInFlight` and the zero value, so every lock-free
+    reader that keys on counter equality (the witnessed load, the heal, the converter, the
+    in-memory remember, the KG cache) fails closed for the whole commit, however many
+    destructive steps it has. A reader never repairs the flag: if the writer died, the next
+    `Lock` finds the flag under the commit lock (a live commit clears it before it releases,
+    and the OS releases a dead process's lock), bumps `gen` with a new epoch and clears it.
+    A reader that meets the flag treats it as "cannot trust the counter": the KG cache
+    decodes uncached and remembers nothing; the heal skips; the search build does not
+    remember a counter it could not read. Mixed binaries are safe: an older reader parses
+    three fields as malformed, which it already treats as an error. **Scope:** this covers
+    destructive commits only. An append-only commit killed before its finishing bump still
+    leaves the append unannounced; that is filed separately.
   - **Where it lives.** Outside `index/<p>/`, so a discard never resets it. A missing counter is
     created with a random `epoch`, so a recreated file never matches an engine's remembered value.
   - **Why not the ledger.** The counter moves on writes the ledger never sees: decision chunks,

@@ -5,6 +5,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -94,6 +95,11 @@ func (e *Engine) HealGraph(ctx context.Context, vaultRoot, project string) (Heal
 	// 4. Mismatch. Capture the gen witness at the lock-free gather, then gather
 	// the cached corpus and build off every lock.
 	builtGen, err := indexstore.ReadGeneration(e.vault, project)
+	if errors.Is(err, indexstore.ErrWriteInFlight) {
+		// A destructive write is running, or its writer died before finishing:
+		// the counter cannot witness the gather. Skip; the next run retries.
+		return HealOutcome{Reason: "store write in flight; next run retries"}, nil
+	}
 	if err != nil {
 		return HealOutcome{}, fmt.Errorf("heal: read generation of %s: %w", project, err)
 	}

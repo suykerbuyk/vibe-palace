@@ -25,7 +25,7 @@ import (
 var writePrimitives = map[string]bool{
 	"writeFile": true, "writeFileFn": true, "removeFile": true, "removeIfExists": true,
 	"appendFile": true, "truncateTornTail": true, "writeGenFile": true,
-	"bumpGenFile": true, "ensureGenFile": true, "vaultfs.Delete": true,
+	"bumpGenFile": true, "bumpGen": true, "ensureGenFile": true, "vaultfs.Delete": true,
 }
 
 // writersOutsideTx are the exported entry points that may write without being

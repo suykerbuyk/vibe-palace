@@ -1185,3 +1185,67 @@ func TestTimelineChronologyAndTieBreaks(t *testing.T) {
 		t.Errorf("timeline = %v, want %v", order, want)
 	}
 }
+
+// While the counter is flagged in-flight (a destructive Tx is running, or its
+// writer died before finishing), loadLocal answers without error, reads the
+// store on every call, and remembers nothing: it neither serves the cache nor
+// stores a decode under a counter that vouches for nothing.
+//
+// Mutation: make the ErrWriteInFlight branch of loadLocal return the error
+// (fail closed): the first flagged query fails. Make it fall through to the
+// cached path: the flagged queries read the store 0 times and the cached entry
+// is the one served.
+func TestLocalKGWhileTheCounterIsInFlightIsDecodedUncached(t *testing.T) {
+	v := newVault(t)
+	var reads atomic.Int64
+	old := readKGFn
+	readKGFn = func(v *storage.Vault, p string) (*indexstore.KGSnapshot, error) {
+		reads.Add(1)
+		return old(v, p)
+	}
+	t.Cleanup(func() { readKGFn = old })
+
+	ingestAll(t, v, ingest{"S1", "aa11", "2026-05-10", s1()})
+	query := func() int {
+		got, err := QueryEntity(v, project, tripleT[0], "", "both")
+		if err != nil {
+			t.Fatalf("QueryEntity: %v", err)
+		}
+		return len(got)
+	}
+	if n := query(); n != 1 || reads.Load() != 1 {
+		t.Fatalf("warm-up: %d triples, %d reads", n, reads.Load())
+	}
+	key := v.Root + "\x00" + project
+	cacheMu.Lock()
+	cached := cache[key]
+	cacheMu.Unlock()
+
+	g, err := indexstore.ReadGeneration(v, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genPath, err := v.IndexGenerationPath(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(genPath, []byte(fmt.Sprintf("%d %d w\n", g.Gen+1, g.Epoch+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexstore.ReadGeneration(v, project); !errors.Is(err, indexstore.ErrWriteInFlight) {
+		t.Fatalf("fixture: counter reads err = %v, want ErrWriteInFlight", err)
+	}
+
+	if n := query(); n != 1 || reads.Load() != 2 {
+		t.Fatalf("first flagged query: %d triples, %d reads; want 1, 2 (the cache must not be served)", n, reads.Load())
+	}
+	if n := query(); n != 1 || reads.Load() != 3 {
+		t.Fatalf("second flagged query: %d triples, %d reads; want 1, 3 (nothing may be remembered)", n, reads.Load())
+	}
+	cacheMu.Lock()
+	after := cache[key]
+	cacheMu.Unlock()
+	if after != cached {
+		t.Fatal("a flagged read replaced the cached decode")
+	}
+}

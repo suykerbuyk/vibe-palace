@@ -77,7 +77,8 @@ type Tx struct {
 // Under the lock it checks that the project still exists
 // (storage.Vault.ProjectExists, the rule search.ProjectExists applies) and
 // returns ErrProjectGone if not. It then makes sure the store counter exists,
-// replacing a malformed one (ensureGenFile).
+// replacing a malformed one, and repairs an in-flight flag a dead writer left
+// set (ensureGenFile).
 //
 // Known limit: Lock on a project that is gone, or was never there, still
 // creates that project's lock file in palace/.local/locks/.
@@ -215,28 +216,60 @@ func (tx *Tx) noteWrite(moreThanAppend bool) {
 	}
 }
 
-// beginDestructive bumps the store counter, with a new epoch, BEFORE the
-// first step of a write that is more than an append (a rewrite, a removal, a
-// torn-tail cut), once per Tx. If this process dies part-way through that
-// write, the counter has already moved, so every other process that cached
-// the store's state (a long-lived MCP server's id set and ledger) reloads it
-// instead of appending against a store that is no longer what it remembers.
+// beginDestructive bumps the store counter, with a new epoch and the
+// in-flight flag set, BEFORE the first step of a write that is more than an
+// append (a rewrite, a removal, a torn-tail cut), once per Tx. It does two
+// jobs.
 //
-// The Tx still bumps the counter again when it finishes, with a new epoch: a
-// lock-free reader may have read the store between this bump and the write,
-// and must see the write's own change. So a commit that did more than append
-// moves gen by two.
+// The new epoch: if this process dies part-way through the write, the counter
+// has already moved, so every other process that cached the store's state (a
+// long-lived MCP server's id set and ledger) reloads it instead of appending
+// against a store that is no longer what it remembers.
+//
+// The flag: two files cannot change atomically, so no pair of bumps can make
+// a lock-free reader's equality witness sound across the write. A reader that
+// read the counter after this bump and again after the write, and found the
+// same value, would conclude nothing changed. While the flag is set,
+// ReadGeneration returns ErrWriteInFlight, so every such reader fails closed
+// for the whole of the Tx, however many destructive steps it takes. The flag
+// is cleared by finishLocked's bump (Commit or Release). A kill reaches
+// neither, so the flag outlives the writer, and the next Lock repairs it
+// (ensureGenFile) with a bump and a new epoch. A step that bumps the counter
+// mid-Tx must use bumpMidTx, which keeps the flag.
+//
+// This covers destructive Txs only. An append-only Tx never sets the flag, so
+// a kill after an append and before the finishing bump leaves that append
+// unannounced (see Commit).
+//
+// The finishing bump still moves the counter again, so a commit that did more
+// than append moves gen by two.
 func (tx *Tx) beginDestructive() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if tx.preBumped {
 		return nil
 	}
-	g, err := bumpGenFile(tx.genPath, true)
+	g, err := bumpGen(tx.genPath, true, true)
 	if err != nil {
 		return err
 	}
 	tx.preBumped, tx.gen = true, g
+	tx.wrote, tx.changeEpoch = true, true
+	return nil
+}
+
+// bumpMidTx bumps the counter with a new epoch in the middle of a Tx, for a
+// step that wants its write announced at once rather than at the Tx's finish.
+// It keeps the in-flight flag set when beginDestructive set it, which a plain
+// bumpGenFile would clear for the rest of the Tx.
+func (tx *Tx) bumpMidTx() error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	g, err := bumpGen(tx.genPath, true, tx.preBumped)
+	if err != nil {
+		return err
+	}
+	tx.gen = g
 	tx.wrote, tx.changeEpoch = true, true
 	return nil
 }
@@ -250,7 +283,9 @@ func (tx *Tx) beginDestructive() error {
 // between the two leaves records no counter announces. A writer still sees
 // them: its cached state is valid only while the store files keep the sizes
 // it recorded (see state). A lock-free reader that keys on the counter alone
-// misses that append until the next counter change.
+// misses that append until the next counter change. This holds for an
+// append-only Tx: only a destructive Tx sets the in-flight flag
+// (beginDestructive).
 func (tx *Tx) Commit() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()

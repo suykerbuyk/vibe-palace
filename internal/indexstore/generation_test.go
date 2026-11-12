@@ -135,7 +135,7 @@ func TestGenerationFileFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := readGen(t, v, "alpha")
-	if want := []byte(formatGen(g)); string(data) != string(want) {
+	if want := []byte(formatGen(g, false)); string(data) != string(want) {
 		t.Fatalf("counter file = %q, want %q", data, want)
 	}
 	ents, err := os.ReadDir(filepath.Dir(path))

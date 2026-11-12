@@ -73,18 +73,17 @@ type TranscriptPurge struct {
 //
 // Every write is atomic (writeFile is atomicfile.Write with fsync and
 // dir-fsync), so no torn file exists, and re-running the purge finishes it:
-// every step converges on the same FOLDED state. The counter is bumped
-// explicitly immediately after the ledger write rather than left to Commit, so
-// the window in which a lock-free, generation-keyed reader could pass an
-// equal-generation witness over pre-write content is one counter write after
-// one file write instead of the whole remainder of the Tx (a whole-file
-// chunks.jsonl rewrite, the KG rewrite and the vector reap).
+// every step converges on the same FOLDED state. beginDestructive sets the
+// counter's in-flight flag before the first write, so for the whole Tx a
+// lock-free, generation-keyed reader gets ErrWriteInFlight from
+// ReadGeneration rather than a counter it could witness equal across a write;
+// a kill leaves the flag set, and the next Lock repairs it. The counter is
+// also bumped explicitly after the ledger write (bumpMidTx, which keeps the
+// flag) rather than left to Commit, so a writer that cached state reloads at
+// that point.
 //
-// 🔴 THAT IS A NARROWING, NOT A FIX, and this method claims nothing more. A
-// kill landing strictly between the ledger write and the bump still leaves a
-// reader able to conclude nothing changed. That window belongs to every
-// destructive write in this package, not to this one, and it is filed as
-// kill-between-generation-bumps-strands-lock-free-readers.
+// An append-only Tx killed before its finishing bump is outside this
+// protection (see Tx.beginDestructive); the purge's Tx is destructive.
 func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (TranscriptPurge, error) {
 	var res TranscriptPurge
 	if err := tx.fail(tx.beginDestructive()); err != nil {
@@ -105,16 +104,11 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	res.LedgerLinesDropped = dropped
 	if dropped > 0 {
 		// The bump, HERE, immediately after the ledger write — see the
-		// interruption note above. bumpGenFile with a new epoch is the same
-		// primitive beginDestructive uses, and tx.gen is updated as it does.
-		g, berr := bumpGenFile(tx.genPath, true)
-		if berr != nil {
+		// interruption note above. bumpMidTx bumps with a new epoch and keeps
+		// the in-flight flag set, and updates tx.gen.
+		if berr := tx.bumpMidTx(); berr != nil {
 			return res, tx.fail(berr)
 		}
-		tx.mu.Lock()
-		tx.gen = g
-		tx.wrote, tx.changeEpoch = true, true
-		tx.mu.Unlock()
 		// The rewrite changed the file under the Tx's cached view; drop it so
 		// AddToBaseline below folds the ledger as it now is.
 		tx.st = nil

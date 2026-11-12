@@ -96,7 +96,6 @@ const (
 	skipEpoch
 	skipStale
 	skipMissingDir
-	skipGenRead  // the store counter could not be read; the save did not happen.
 	skipWriteErr // the write itself failed (not a post-rename sync); nothing to trust.
 	skipDebounce // within the ≥30s save window (Unit C); the in-memory index stays current.
 )
@@ -115,8 +114,6 @@ func (o saveOutcome) String() string {
 		return "skipStale"
 	case skipMissingDir:
 		return "skipMissingDir"
-	case skipGenRead:
-		return "skipGenRead"
 	case skipWriteErr:
 		return "skipWriteErr"
 	case skipDebounce:
@@ -521,10 +518,10 @@ func saveGraph(tx *indexstore.Tx, vault *storage.Vault, project string, h *hnswI
 		return skipMissingDir, statErr
 	}
 
-	cur, err := indexstore.ReadGeneration(vault, project)
-	if err != nil {
-		return skipGenRead, err // N-CR4: the counter could not be read — the save did not happen.
-	}
+	// The Tx's own view of the counter, not ReadGeneration: a Tx that already
+	// began a destructive write has set the counter's in-flight flag itself,
+	// and ReadGeneration would report that as ErrWriteInFlight.
+	cur := tx.Generation()
 	if cur.Epoch != builtAt.Epoch {
 		return skipEpoch, nil // a supersede/discard/relabel happened; the subset save is void.
 	}

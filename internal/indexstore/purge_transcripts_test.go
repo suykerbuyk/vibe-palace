@@ -571,18 +571,11 @@ func TestThePurgeIsANoOpAfterACoarseDiscard(t *testing.T) {
 
 // K1 — WIRING. TestAPurgeKilledAfterTheLedgerStepLeavesTheCounterMoved.
 //
-// 🔴 IT PINS THAT THE BUMP HAPPENED, NOT THE RACE. beginDestructive bumps once
-// per Tx before the first destructive write; the Tx bumps again when it
-// FINISHES, and a kill -9 reaches neither Commit nor Release. The purge
-// therefore bumps explicitly right after the ledger write, so the window in
-// which a lock-free, generation-keyed reader could pass an equal-generation
-// witness over pre-write content is one counter write after one file write
-// instead of the whole remainder of the Tx.
-//
-// 🔴 THAT IS A NARROWING, NOT A FIX, and no guard here observes the
-// stale-reader race itself (see K4 in the plan): the reader-side seams are
-// in-process while the writer must be a separate process to be killable. The
-// race is filed as kill-between-generation-bumps-strands-lock-free-readers.
+// It pins that the purge's explicit mid-Tx bump happened: the counter after
+// a real SIGKILL past the ledger step is two Gen past the pre-purge value,
+// read raw because the in-flight flag it also carries makes ReadGeneration
+// report ErrWriteInFlight. That the flag keeps lock-free readers out is pinned
+// by TestAKilledDestructiveTxLeavesTheCounterInFlightUntilTheNextLock.
 //
 // Q1 PATH: wiring — a real forked process, a real SIGKILL, a durable counter.
 // Q2 VALUE: the counter after the kill must EXCEED the pre-bump value.
@@ -617,12 +610,19 @@ func TestAPurgeKilledAfterTheLedgerStepLeavesTheCounterMoved(t *testing.T) {
 	}
 	_ = h.cmd.Wait()
 
-	after, err := ReadGeneration(v, "alpha")
+	// The raw counter: after the kill ReadGeneration reports ErrWriteInFlight
+	// (TestAKilledDestructiveTxLeavesTheCounterInFlightUntilTheNextLock), so
+	// the Gen is read past the flag.
+	genPath, perr := v.IndexGenerationPath("alpha")
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	after, _, err := readGenRaw(genPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 🔴 TWO, not one. beginDestructive contributes EXACTLY ONE increment
-	// (bumpGenFile advances Gen by one, once per Tx), and it fires before the
+	// (bumpGen advances Gen by one, once per Tx), and it fires before the
 	// first destructive write — so `after > before` holds even with no
 	// post-ledger bump at all, and asserting only that is an INERT guard.
 	// Commit and Release never ran under a SIGKILL, so a SECOND increment can

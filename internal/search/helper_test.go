@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
 	"github.com/suykerbuyk/vibe-palace/internal/index"
@@ -25,6 +27,7 @@ const (
 	helperProjectEnv = "VP_SEARCH_PROJECT"
 	helperContentEnv = "VP_SEARCH_CONTENT"
 	helperFPEnv      = "VP_SEARCH_FINGERPRINT"
+	helperDirEnv     = "VP_SEARCH_DIR"
 )
 
 // runHelper runs one helper mode and returns its exit code.
@@ -36,6 +39,12 @@ func runHelper() int {
 			return 2
 		}
 		return 3 // unreachable: crashAfterCommit exits
+	case "discard-kill":
+		if err := discardKill(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3 // unreachable: discardKill blocks until killed
 	}
 	fmt.Fprintln(os.Stderr, "unknown helper mode")
 	return 2
@@ -103,4 +112,79 @@ func runCrashHelper(t *testing.T, eng *Engine, v *storage.Vault, project, conten
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("crash helper: %v\n%s", err, out)
 	}
+}
+
+// discardKill runs a destructive Tx (Tx.Discard(DiscardChunks)) and blocks, for
+// ever, at the "discard-chunks" step: after the ledger and chunks are removed
+// and before the graph is, so a STALE hnsw.idx is on disk beside a store the
+// destructive write has already changed. It signals "ready" in the directory
+// named by helperDirEnv at that point. Neither Commit nor Release runs; the
+// parent SIGKILLs it.
+func discardKill() error {
+	v := storage.NewVault(os.Getenv(helperVaultEnv))
+	project := os.Getenv(helperProjectEnv)
+	tx, err := indexstore.Lock(context.Background(), v, project, indexstore.NoTimeout)
+	if err != nil {
+		return err
+	}
+	ix, err := palace.ProjectIndexing(v, project)
+	if err != nil {
+		return err
+	}
+	tx.UseRecipe(ix.Recipe)
+	done := make(chan struct{})
+	indexstore.SetCommitStepHook(func(step string) error {
+		if step == "discard-chunks" {
+			if err := os.WriteFile(filepath.Join(os.Getenv(helperDirEnv), "ready"), nil, 0o644); err != nil {
+				return err
+			}
+			<-done // never closed: block until killed
+		}
+		return nil
+	})
+	if err := tx.Discard(indexstore.DiscardChunks); err != nil {
+		return err
+	}
+	return fmt.Errorf("the helper was never killed")
+}
+
+// killDiscardHelper forks discardKill against project and SIGKILLs it at the
+// discard-chunks step.
+func killDiscardHelper(t *testing.T, v *storage.Vault, project string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(),
+		helperModeEnv+"=discard-kill",
+		helperVaultEnv+"="+v.Root,
+		helperProjectEnv+"="+project,
+		helperDirEnv+"="+dir,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the discard helper never reached the discard-chunks step")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
 }

@@ -30,6 +30,7 @@ package kgread
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -85,6 +86,13 @@ var (
 // epoch is a full reload.
 func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 	g, err := indexstore.ReadGeneration(v, project)
+	if errors.Is(err, indexstore.ErrWriteInFlight) {
+		// A destructive write is running, or its writer died before finishing
+		// (the next Lock repairs that). The counter cannot say whether this
+		// decode matches the store, so decode without the cache and remember
+		// nothing: no counter value is stored, and the cache is not read.
+		return decodeUncached(v, project)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read index counter: %w", err)
 	}
@@ -103,6 +111,13 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 		return nil, err
 	}
 	kg.gen = g
+	finishLocal(kg)
+	cache[key] = kg
+	return kg, nil
+}
+
+// finishLocal runs the read collapse (once per load) and sorts the entities.
+func finishLocal(kg *localKG) {
 	kg.readTriples = collapseFn(kg.triples)
 	slices.SortFunc(kg.entities, func(a, b localEntity) int {
 		if c := strings.Compare(a.e.ID, b.e.ID); c != 0 {
@@ -110,7 +125,20 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 		}
 		return strings.Compare(a.id, b.id)
 	})
-	cache[key] = kg
+}
+
+// decodeUncached reads and decodes the project's local KG without touching the
+// cache, for a counter that cannot be trusted (ErrWriteInFlight).
+func decodeUncached(v *storage.Vault, project string) (*localKG, error) {
+	st, err := readKGFn(v, project)
+	if err != nil {
+		return nil, fmt.Errorf("read index store: %w", err)
+	}
+	kg, err := decodeStore(st, project)
+	if err != nil {
+		return nil, err
+	}
+	finishLocal(kg)
 	return kg, nil
 }
 
