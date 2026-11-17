@@ -36,6 +36,7 @@ import (
 // ledger (Chair ruling C4). capture-and-backfill-write-host-local-index-only
 // deletes that call together with the legacy reader and writer.
 func DeleteLegacyLedgerIfUntracked(vault *storage.Vault, project string) (bool, error) {
+	guardAmbientIndex(vault) // FIRST: it deletes through vaultfs.Delete, which takes a vault lock sidecar
 	path, err := vault.IngestedArchivesFile(project)
 	if err != nil {
 		return false, err

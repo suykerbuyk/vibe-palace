@@ -34,6 +34,12 @@ const allowNonTempVaultEnv = "VP_ALLOW_NONTEMP_VAULT"
 // `append-entry-paths-touch-the-vault-before-the-tripwire-fires`; it is NOT
 // this seat's job and is deliberately not attempted here.
 //
+// With an EMPTY vaultPath the vault-root arms below have nothing to compare, and
+// the call is no longer a no-op: the write PATH is judged against the ambient
+// root by GuardTestPathWrite (arm A on the path, non-waivable, symlink-aware).
+// Only a path inside the operator's configured vault is refused; every other
+// empty-vaultPath write is untouched.
+//
 // Two arms, refusing for two different reasons:
 //
 //   - ARM A, HARM: the write is FOR the operator's configured vault root (the
@@ -77,7 +83,13 @@ const allowNonTempVaultEnv = "VP_ALLOW_NONTEMP_VAULT"
 // so that mistake fails loudly instead of silently.
 func GuardTestVaultWrite(vaultPath, writePath string) {
 	if vaultPath == "" {
-		return // (1) MUST BE FIRST — see the clause-order note above
+		// (1) MUST BE FIRST — see the clause-order note above. An empty vaultPath
+		// is a host-local write that asks for no .surface stamp (the derived
+		// index, the embed cache, the rename-pending record), so there is no
+		// vault ROOT to compare. The write PATH is still judged against the
+		// ambient root, by the same non-waivable predicate every other seat uses.
+		GuardTestPathWrite(writePath)
+		return
 	}
 	if !testing.Testing() {
 		return // (2) the signal: a go test binary, set at link time by cmd/go
@@ -109,6 +121,85 @@ func GuardTestVaultWrite(vaultPath, writePath string) {
 			"t.Setenv(\"XDG_CONFIG_HOME\", t.TempDir()) (or a temp --vault).\n"+
 			"Set %s=1 to override.",
 		writePath, vaultPath, allowNonTempVaultEnv))
+}
+
+// GuardTestPathWrite panics when a `go test` process is about to mutate a PATH
+// that lies inside the operator's configured vault (the init-time snapshot in
+// ambient.go). It is arm A judged on the path rather than on a vault root, for
+// writers that carry no vault root: with an empty vaultPath the vault-root arm
+// has nothing to compare, and indexstore, the embed cache and the rename-pending
+// record all write inside the vault that way.
+//
+// It is exported because the seats are not all in atomicfile: indexstore's raw
+// appends, renames, removals, MkdirAll calls and lock-file creation never reach
+// writeAtomic, and a refusal there must come BEFORE the first filesystem effect
+// and before any lock is taken, so the caller calls it as the first statement of
+// the function that would mutate. It is a no-op in a production binary.
+//
+// NOT WAIVABLE by VP_ALLOW_NONTEMP_VAULT, for the reason arm A is not.
+//
+// 🔴 PANIC, AND WHY THAT IS SAFE HERE. The seat sits ahead of every lock
+// acquisition it protects, so a refusal strands nothing. Seats that cannot sit
+// ahead of a lock must not call this form (see GuardTestVaultCommit).
+//
+// 🔴 CLAUSE ORDER IS LOAD-BEARING, as in GuardTestVaultWrite: the empty-path and
+// empty-ambient returns keep every comparison off an empty string, and
+// pathWithin resolves through the deepest EXISTING ancestor so an alias of the
+// vault with a not-yet-created leaf is still caught.
+func GuardTestPathWrite(path string) {
+	if !testing.Testing() {
+		return
+	}
+	if path == "" {
+		return // filepath.Abs("") is the process cwd
+	}
+	a := ambientVaultRoot()
+	if a == "" || !pathWithin(path, a) {
+		return
+	}
+	panic(fmt.Sprintf(
+		"vp: refusing a write inside the CONFIGURED vault under test\n"+
+			"  target: %s\n"+
+			"  vault:  %s\n"+
+			"  this path is inside the ambient configured vault root, resolved at process start.\n"+
+			"A test is writing the operator's real vault — isolate it with "+
+			"t.Setenv(\"XDG_CONFIG_HOME\", t.TempDir()) (or a temp --vault).\n"+
+			"%s does NOT waive this arm.",
+		path, a, allowNonTempVaultEnv))
+}
+
+// pathWithin reports whether p is root or lives beneath it, by cleaned path and
+// by symlink-resolved path. Neither spelling alone is enough: the resolved arm
+// is what catches an alias of the vault, and resolveExisting is what lets it do
+// so for a target that does not exist yet.
+func pathWithin(p, root string) bool {
+	if pathHasPrefix(p, root) {
+		return true
+	}
+	return pathHasPrefix(resolveExisting(p), resolveSymlinks(root))
+}
+
+// resolveExisting symlink-resolves the deepest EXISTING ancestor of p and
+// re-appends the part that does not exist. resolveSymlinks cannot do this: on a
+// path that is not there yet it falls back to the unresolved absolute path, and
+// the first write of a store always targets such a path.
+func resolveExisting(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	rest := ""
+	for cur := abs; ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // AmbientVaultRootUnderTest reports whether root is the operator's configured

@@ -28,7 +28,7 @@ const DefaultRunCooldown = 10 * time.Minute
 // path carries no .surface stamp. It is written only when a run actually
 // embedded, by the caller that completed it.
 func WriteRunCompleted(vault *storage.Vault, t time.Time) error {
-	if err := os.MkdirAll(vault.IndexLocksDir(), 0o755); err != nil {
+	if err := mkdirAll(vault.IndexLocksDir()); err != nil {
 		return err
 	}
 	return writeFile(vault.IndexRunCompletedPath(), []byte(t.UTC().Format(time.RFC3339Nano)+"\n"))

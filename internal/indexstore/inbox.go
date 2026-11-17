@@ -108,7 +108,7 @@ func writeInboxContents(path, dir string, c inboxContents) error {
 	if !c.rebuild && len(c.shas) == 0 {
 		return removeIfExists(path)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return fmt.Errorf("indexstore: create %s: %w", dir, err)
 	}
 	var b strings.Builder

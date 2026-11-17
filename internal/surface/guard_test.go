@@ -289,3 +289,93 @@ func TestAmbientVaultRootUnderTest_NoAmbientRootIsNotAMatch(t *testing.T) {
 		}
 	})
 }
+
+// ---- empty-vaultPath: the path-based arm A --------------------------------
+//
+// Callers that write host-local, git-ignored files inside the vault (the derived
+// index, the embed cache, the rename-pending record) pass vaultPath == "" so no
+// .surface stamp is written. The vault-root arm cannot see those, so with an
+// empty vaultPath arm A judges the write PATH against the ambient root.
+//
+// Every ambient root below is a t.TempDir(): nothing here reads the operator's
+// configuration or touches the real vault.
+
+func TestGuardTestVaultWrite_EmptyVault_RefusesPathInsideAmbient(t *testing.T) { // S1
+	root := t.TempDir()
+	restore := SetAmbientVaultRoot(root)
+	defer restore()
+	r := mustPanic(t, "empty-vaultPath write inside the ambient root", func() {
+		GuardTestVaultWrite("", filepath.Join(root, "palace", ".local", "index", "p", "chunks.jsonl"))
+	})
+	if msg, _ := r.(string); !strings.Contains(msg, "CONFIGURED vault") {
+		t.Errorf("panic came from the wrong arm: %v", r)
+	}
+}
+
+func TestGuardTestVaultWrite_EmptyVault_AllowsPathOutsideAmbient(t *testing.T) { // S2
+	ambient, other := t.TempDir(), t.TempDir()
+	restore := SetAmbientVaultRoot(ambient)
+	defer restore()
+	mustNotPanic(t, "empty-vaultPath write outside the ambient root", func() {
+		GuardTestVaultWrite("", filepath.Join(other, "x"))
+	})
+	// A sibling that merely shares a name prefix is not inside the root.
+	mustNotPanic(t, "empty-vaultPath write beside the ambient root", func() {
+		GuardTestVaultWrite("", ambient+"-sibling/x")
+	})
+}
+
+func TestGuardTestVaultWrite_EmptyVault_EmptyWritePathNoPanic(t *testing.T) { // S3
+	restore := SetAmbientVaultRoot(t.TempDir())
+	defer restore()
+	mustNotPanic(t, `GuardTestVaultWrite("", "")`, func() { GuardTestVaultWrite("", "") })
+}
+
+// S4: an ALIAS of the ambient root, with a leaf that does not exist yet. The
+// first write of a store is exactly this case, and filepath.Abs alone would
+// compare the alias spelling against the root and miss it.
+func TestGuardTestVaultWrite_EmptyVault_RefusesAliasedPathNotYetCreated(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "real-vault")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("symlinks unavailable on this host: %v", err)
+	}
+	restore := SetAmbientVaultRoot(real)
+	defer restore()
+	mustPanic(t, "empty-vaultPath write through an alias, leaf not yet created", func() {
+		GuardTestVaultWrite("", filepath.Join(alias, "palace", ".local", "new", "leaf"))
+	})
+}
+
+func TestGuardTestVaultWrite_EmptyVault_NoAmbientRootRefusesNothing(t *testing.T) { // S5
+	restore := SetAmbientVaultRoot("")
+	defer restore()
+	mustNotPanic(t, "empty-vaultPath write with no ambient root", func() {
+		GuardTestVaultWrite("", filepath.Join(t.TempDir(), "x"))
+		GuardTestVaultWrite("", "relative/x")
+	})
+}
+
+func TestGuardTestVaultWrite_EmptyVault_NotWaivedByOverride(t *testing.T) { // S6
+	t.Setenv(allowNonTempVaultEnv, "1")
+	root := t.TempDir()
+	restore := SetAmbientVaultRoot(root)
+	defer restore()
+	mustPanic(t, "override does not waive the path arm", func() {
+		GuardTestVaultWrite("", filepath.Join(root, "x"))
+	})
+}
+
+// GuardTestPathWrite is the exported form the non-atomicfile seats call.
+func TestGuardTestPathWrite(t *testing.T) {
+	root := t.TempDir()
+	restore := SetAmbientVaultRoot(root)
+	defer restore()
+	mustPanic(t, "the ambient root itself", func() { GuardTestPathWrite(root) })
+	mustPanic(t, "a path beneath it", func() { GuardTestPathWrite(filepath.Join(root, "a", "b")) })
+	mustNotPanic(t, "a path elsewhere", func() { GuardTestPathWrite(filepath.Join(t.TempDir(), "a")) })
+	mustNotPanic(t, "an empty path", func() { GuardTestPathWrite("") })
+}

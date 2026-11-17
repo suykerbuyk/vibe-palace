@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -86,6 +85,7 @@ type Tx struct {
 // project's lock file is left in place: a known, unowned residual of one empty
 // file per slug per host.
 func Lock(ctx context.Context, vault *storage.Vault, project string, timeout time.Duration) (*Tx, error) {
+	guardAmbientIndex(vault) // FIRST: before MkdirAll and the flock, so nothing is held when it fires
 	lockPath, err := vault.IndexCommitLockPath(project)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func Lock(ctx context.Context, vault *storage.Vault, project string, timeout tim
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(vault.IndexLocksDir(), 0o755); err != nil {
+	if err := mkdirAll(vault.IndexLocksDir()); err != nil {
 		return nil, fmt.Errorf("indexstore: create locks dir: %w", err)
 	}
 

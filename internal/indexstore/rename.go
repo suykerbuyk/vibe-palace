@@ -436,7 +436,7 @@ func carryImportsDir(vault *storage.Vault, from, to string) (bool, error) {
 	if !dirExists(src) || dirExists(dst) {
 		return false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := mkdirAll(filepath.Dir(dst)); err != nil {
 		return false, fmt.Errorf("create imports parent: %w", err)
 	}
 	if err := renameDir(src, dst); err != nil {

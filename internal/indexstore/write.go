@@ -11,11 +11,45 @@ import (
 	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
+	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // This file is the only place in the package that touches the filesystem for
 // writing (TestWritesGoThroughThisFile). Everything written is the host-local
 // derived index under palace/.local/, which git ignores (ADR-014 decision 2).
+//
+// # The under-test vault tripwire
+//
+// All of it lives INSIDE the vault, and none of it carries a vault root, so the
+// vault-root arm of the tripwire (surface.GuardTestVaultWrite) never saw it. Each
+// primitive here therefore refuses, as its FIRST statement, a path inside the
+// operator's configured vault under `go test` (surface.GuardTestPathWrite), and
+// every function that creates a directory or a lock file calls mkdirAll or
+// guardAmbientIndex before its first effect. TestWritesGoThroughThisFile pins
+// that no other file mutates the filesystem or takes a lock without that seat.
+// A no-op in a production binary.
+
+// guardAmbientIndex refuses, under `go test`, a vault whose index tree or lock
+// directory lies inside the operator's configured vault. It is the FIRST
+// statement of every function that takes an index lock, ahead of its MkdirAll
+// and its flock: a panic after the flock is taken skips the manual release and
+// would strand it, so the refusal must come while nothing is held.
+//
+// It judges BOTH directories because they are siblings under palace/.local, not
+// parent and child: a lock acquirer creates its file in the locks directory, and
+// that directory can resolve (a symlink) somewhere the index root does not.
+func guardAmbientIndex(vault *storage.Vault) {
+	surface.GuardTestPathWrite(vault.IndexRootDir())
+	surface.GuardTestPathWrite(vault.IndexLocksDir())
+}
+
+// mkdirAll is os.MkdirAll for a directory in the index tree, behind the
+// tripwire. It is the only MkdirAll in the package.
+func mkdirAll(dir string) error {
+	surface.GuardTestPathWrite(dir)
+	return os.MkdirAll(dir, 0o755)
+}
 
 // writeFile replaces path with data durably: temp file, fsync, rename (retried
 // on the transient Windows sharing failures a concurrent lock-free reader
@@ -41,6 +75,7 @@ var writeFileFn = func(path string, data []byte) error {
 // removeFile removes path, retrying the transient Windows sharing failures a
 // concurrent lock-free reader causes.
 func removeFile(path string) error {
+	surface.GuardTestPathWrite(path)
 	return atomicfile.RemoveWithRetry(path)
 }
 
@@ -64,8 +99,9 @@ var fsyncFile = func(f *os.File) error { return f.Sync() }
 // it, and the next append under the commit lock cuts it off first
 // (truncateTornTail), so a torn line is never mistaken for a record.
 func appendFile(path string, data []byte) error {
+	surface.GuardTestPathWrite(path)
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return fmt.Errorf("indexstore: create %s: %w", dir, err)
 	}
 	_, statErr := os.Stat(path)
@@ -98,6 +134,8 @@ func appendFile(path string, data []byte) error {
 // crash. A lifecycle removal moves index/<p>/ to a tombstone this way, so a
 // crash leaves the whole live store or the whole tombstone, never part of each.
 func renameDir(from, to string) error {
+	surface.GuardTestPathWrite(from)
+	surface.GuardTestPathWrite(to)
 	if err := atomicfile.RenameWithRetry(from, to); err != nil {
 		return fmt.Errorf("indexstore: rename %s: %w", from, err)
 	}

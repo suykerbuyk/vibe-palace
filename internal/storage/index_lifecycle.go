@@ -60,6 +60,7 @@ func (v *Vault) RemoveRenamePending(project string) error {
 	if err != nil {
 		return err
 	}
+	surface.GuardTestPathWrite(path) // a removal inside the vault; no-op in a production binary
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove rename-pending record: %w", err)
 	}

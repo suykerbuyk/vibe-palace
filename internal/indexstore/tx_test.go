@@ -287,9 +287,20 @@ func TestLockNoticesACancelDuringAFiniteWait(t *testing.T) {
 // Every file this package writes or removes goes through write.go, so every
 // whole-file write is fsynced with its directory, every append is fsynced, and
 // every rename and removal is retried on Windows: no non-test file calls a raw
-// os write or removal, except write.go's one os.OpenFile for appends.
+// os write or removal, except write.go's one os.OpenFile for appends and its one
+// os.MkdirAll.
+//
+// The same walk keeps the under-test vault tripwire from being missed. write.go's
+// primitives and mkdirAll refuse an ambient-vault path as their first statement,
+// so a mutation through them is covered; the one thing left is a call that takes
+// a lock or reaches vaultfs/atomicfile directly, and that must sit in a function
+// whose FIRST statement is the guard (guardAmbientIndex or
+// surface.GuardTestPathWrite), ahead of any lock or effect.
 func TestWritesGoThroughThisFile(t *testing.T) {
-	banned := map[string]bool{"WriteFile": true, "Rename": true, "Remove": true, "RemoveAll": true, "Create": true, "CreateTemp": true, "OpenFile": true, "Truncate": true}
+	banned := map[string]bool{"WriteFile": true, "Rename": true, "Remove": true, "RemoveAll": true, "Create": true, "CreateTemp": true, "OpenFile": true, "Truncate": true,
+		"MkdirAll": true, "Mkdir": true, "MkdirTemp": true, "Symlink": true, "Link": true, "Chmod": true, "Chtimes": true, "Chown": true}
+	// Packages whose calls mutate the vault or take its locks.
+	guarded := map[string]bool{"vaultlock": true, "vaultfs": true, "atomicfile": true}
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -303,20 +314,83 @@ func TestWritesGoThroughThisFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
+		// Every declaration is walked, write.go included. write.go is exempt for
+		// exactly two call sites, by ENCLOSING FUNCTION: os.OpenFile in appendFile
+		// and os.MkdirAll in mkdirAll. A new function in write.go that opens a file
+		// or takes a lock without the guard is as much a bypass as one anywhere else.
+		for _, decl := range f.Decls {
+			fnName := ""
+			var first ast.Node
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				fnName = fn.Name.Name
+				if fn.Body != nil && len(fn.Body.List) > 0 {
+					first = fn.Body.List[0]
+				}
+			}
+			seated := firstStmtIsAmbientGuard(first)
+			ast.Inspect(decl, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if pkg.Name == "os" && banned[sel.Sel.Name] {
+					if name == "write.go" && ((sel.Sel.Name == "OpenFile" && fnName == "appendFile") ||
+						(sel.Sel.Name == "MkdirAll" && fnName == "mkdirAll")) {
+						return true
+					}
+					t.Errorf("%s: os.%s in %q; write and remove through writeFile and removeFile, create directories through mkdirAll", fset.Position(sel.Pos()), sel.Sel.Name, fnName)
+				}
+				// A call (not a bare reference like vaultlock.ErrLockWaitTimeout) into a
+				// package that mutates the vault or takes its locks. write.go's own
+				// primitives satisfy the same first-statement rule.
+				// The one non-function declaration that reaches a guarded package is
+				// write.go's writeFileFn, whose atomicfile.Write refuses an ambient-vault
+				// path itself (surface.GuardTestVaultWrite at writeAtomic's first statement).
+				viaWriteAtomic := name == "write.go" && fnName == "" && pkg.Name == "atomicfile"
+				if guarded[pkg.Name] && !seated && !viaWriteAtomic && isCallee(decl, sel) {
+					t.Errorf("%s: %s.%s in %q, whose first statement is not guardAmbientIndex or surface.GuardTestPathWrite: a lock or vault mutation must be refused before its first effect under the ambient-vault tripwire",
+						fset.Position(sel.Pos()), pkg.Name, sel.Sel.Name, fnName)
+				}
 				return true
-			}
-			// write.go may open a file for an append; nothing else, and no
-			// other file may do even that.
-			if name == "write.go" && sel.Sel.Name == "OpenFile" {
-				return true
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" && banned[sel.Sel.Name] {
-				t.Errorf("%s: os.%s; write and remove through writeFile and removeFile", fset.Position(sel.Pos()), sel.Sel.Name)
-			}
-			return true
-		})
+			})
+		}
 	}
+}
+
+// isCallee reports whether sel is the function of a call expression somewhere in
+// decl, as opposed to a bare reference such as an error value.
+func isCallee(decl ast.Decl, sel *ast.SelectorExpr) bool {
+	found := false
+	ast.Inspect(decl, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && call.Fun == ast.Expr(sel) {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// firstStmtIsAmbientGuard reports whether stmt is a call to guardAmbientIndex or
+// surface.GuardTestPathWrite.
+func firstStmtIsAmbientGuard(stmt ast.Node) bool {
+	es, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		return fn.Name == "guardAmbientIndex"
+	case *ast.SelectorExpr:
+		pkg, ok := fn.X.(*ast.Ident)
+		return ok && pkg.Name == "surface" && fn.Sel.Name == "GuardTestPathWrite"
+	}
+	return false
 }

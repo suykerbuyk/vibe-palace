@@ -183,6 +183,14 @@ func validateRenameRequest(req *RenameRequest) (from, to string, err error) {
 // is always computed first, by the same code, so the real run cannot do what
 // the dry run did not show; with req.Expect it refuses unless the digests match.
 func ApplyRename(req RenameRequest) (*RenameResult, error) {
+	// FIRST, above the root lock and the lifecycle marker. A real run mutates
+	// req.Vault, and the shared empty-vaultPath arm only catches WriteRenamePending
+	// AFTER the marker is written; a panic there skips this function's error-only
+	// rollback and leaves the marker behind. A dry run writes nothing, so it is not
+	// refused. No-op in a production binary.
+	if !req.DryRun {
+		surface.GuardTestPathWrite(req.Vault)
+	}
 	from, to, err := validateRenameRequest(&req)
 	if err != nil {
 		return nil, err

@@ -50,6 +50,7 @@ type LifecycleTx struct {
 // It takes one commit lock and must be called holding none, and holding no
 // vault root lock: every caller runs after storage has returned.
 func LockLifecycle(ctx context.Context, vault *storage.Vault, project string, timeout time.Duration) (*LifecycleTx, error) {
+	guardAmbientIndex(vault) // FIRST: before MkdirAll and the flock
 	lockPath, err := vault.IndexCommitLockPath(project)
 	if err != nil {
 		return nil, err
@@ -65,7 +66,7 @@ func LockLifecycle(ctx context.Context, vault *storage.Vault, project string, ti
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(vault.IndexLocksDir(), 0o755); err != nil {
+	if err := mkdirAll(vault.IndexLocksDir()); err != nil {
 		return nil, fmt.Errorf("indexstore: create locks dir: %w", err)
 	}
 	record(lockEvent{kind: evCommitWait, project: project})
@@ -195,6 +196,7 @@ func (lt *LifecycleTx) Release() error {
 // is never tried under one). A trigger that collides with this instant sees the
 // lock held and exits, as it would against any run; the next trigger runs.
 func runLockHeld(vault *storage.Vault) bool {
+	guardAmbientIndex(vault) // FIRST: TryAcquireFile creates the lock file
 	record(lockEvent{kind: evRunTry})
 	release, ok, err := vaultlock.TryAcquireFile(vault.IndexRunLockPath())
 	if err != nil {

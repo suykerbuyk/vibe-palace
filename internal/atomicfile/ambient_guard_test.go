@@ -98,3 +98,30 @@ func TestWriteAtomicRefusalCreatesNothing(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, ".vp-atomic-*"))
 	t.Logf("temp-file hygiene (not the pin): %d .vp-atomic-* under %s", len(matches), dir)
 }
+
+// TestWriteAtomicEmptyVaultRefusesPathInsideAmbient is the funnel-level row for
+// the path-based arm: a host-local write passes vaultRoot == "" so no stamp is
+// written, and it is refused anyway when its path is inside the ambient root.
+// The refusal precedes MkdirAll, so nothing is created.
+func TestWriteAtomicEmptyVaultRefusesPathInsideAmbient(t *testing.T) {
+	vault := t.TempDir()
+	restore := surface.SetAmbientVaultRoot(vault)
+	t.Cleanup(restore)
+	target := filepath.Join(vault, "palace", ".local", "index", "p", "chunks.jsonl")
+
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("Write(\"\", path inside the ambient vault) did not panic")
+			}
+			if msg, _ := r.(string); !strings.Contains(msg, "CONFIGURED vault") {
+				t.Fatalf("panic came from the wrong arm: %v", r)
+			}
+		}()
+		_ = Write("", target, []byte("x"))
+	}()
+	if _, err := os.Lstat(filepath.Join(vault, "palace")); err == nil {
+		t.Error("the refusal came after MkdirAll: palace/ was created")
+	}
+}

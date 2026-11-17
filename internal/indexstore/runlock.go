@@ -73,6 +73,7 @@ type RunLock struct {
 // lock it returns ok=false at once; the caller exits (a second ingest trigger)
 // or names the holder with ReadHolder (`vp index rebuild`).
 func TryRunLock(vault *storage.Vault, kind RunKind, project string) (*RunLock, bool, error) {
+	guardAmbientIndex(vault) // FIRST: before MkdirAll, the flock and the holder record
 	switch kind {
 	case KindIngest, KindRebuild, KindLifecycle:
 	default:
@@ -83,7 +84,7 @@ func TryRunLock(vault *storage.Vault, kind RunKind, project string) (*RunLock, b
 			return nil, false, err
 		}
 	}
-	if err := os.MkdirAll(vault.IndexLocksDir(), 0o755); err != nil {
+	if err := mkdirAll(vault.IndexLocksDir()); err != nil {
 		return nil, false, fmt.Errorf("indexstore: create locks dir: %w", err)
 	}
 	release, ok, err := tryRunLockFile(vault)
@@ -104,6 +105,7 @@ func TryRunLock(vault *storage.Vault, kind RunKind, project string) (*RunLock, b
 
 // tryRunLockFile is the one place the run lock is try-locked.
 func tryRunLockFile(vault *storage.Vault) (func() error, bool, error) {
+	guardAmbientIndex(vault) // FIRST: ReleaseAndRecheck reaches this without TryRunLock
 	record(lockEvent{kind: evRunTry})
 	release, ok, err := vaultlock.TryAcquireFile(vault.IndexRunLockPath())
 	if err != nil || !ok {

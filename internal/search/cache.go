@@ -18,6 +18,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // cacheWriteFn is the one file write of the embed cache: a vector or the
@@ -166,6 +167,10 @@ func (c *EmbedCache) putVector(dir, drawerID string, vec []float32) error {
 
 // writeRetrying is putVector's write, shared with the sidecar write.
 func writeRetrying(path string, data []byte) error {
+	// FIRST, ahead of storage.EnsureDir: the cache writes under a held Tx whose
+	// vault need not be the cache's, so the atomicfile guard below would fire only
+	// after the directory had been created. No-op in a production binary.
+	surface.GuardTestPathWrite(filepath.Dir(path))
 	for attempt := 0; ; attempt++ {
 		if err := storage.EnsureDir(filepath.Dir(path)); err != nil {
 			return fmt.Errorf("ensure embed cache dir: %w", err)
@@ -286,6 +291,7 @@ func (c *EmbedCache) deleteLocked(tx *indexstore.Tx, drawerID string) error {
 	if err != nil {
 		return err
 	}
+	surface.GuardTestPathWrite(path) // a removal inside the vault, under a held Tx
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete embed cache: %w", err)
 	}
