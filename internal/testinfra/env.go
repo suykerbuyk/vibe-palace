@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 )
 
 // Env holds one test's isolated HOME/XDG_CONFIG_HOME (and, if requested,
@@ -73,5 +75,11 @@ func (e *Env) Environ(extra ...string) []string {
 	if e.ClaudeHome != "" {
 		env = append(env, "CLAUDE_HOME="+e.ClaudeHome)
 	}
-	return append(env, extra...)
+	env = append(env, extra...)
+	// LAST, so neither the ambient environment nor extra can re-enable detached
+	// launches: a real `vp` run from a test must never start a background
+	// process that outlives it (see detachlaunch.DisableEnv). Covers
+	// subprocesses built from Environ only; a test that builds its own env
+	// opts out of this guarantee by construction.
+	return append(env, detachlaunch.DisableEnv+"=1")
 }

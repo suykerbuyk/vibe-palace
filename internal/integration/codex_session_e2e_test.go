@@ -191,3 +191,36 @@ func TestIntegrationCodexSessionEndBackLinksAPreWrittenMCPNote(t *testing.T) {
 		t.Fatalf("manifest back-link=%q, want the canonical note %q", got, canonical.NotePath)
 	}
 }
+
+// TestIntegrationSessionEndLaunchesNoDetachedIngester proves the harness
+// wiring end to end, with the REAL binary. SessionEnd normally launches a
+// detached `vp drain archives` against the vault; that process outlived its
+// test and wrote into the vault while t.TempDir cleanup ran ("directory not
+// empty"). Env.Environ now carries detachlaunch.DisableEnv, so the hook's
+// launch is refused before the child or its ingester.log exists, while the
+// synchronous work (the archive) still completes.
+func TestIntegrationSessionEndLaunchesNoDetachedIngester(t *testing.T) {
+	env := setupFreshEnv(t)
+	bin := buildVPBinary(t)
+	runVP(t, bin, env, nil, "init", env.projectDir, "--name", "codexproj", "--vault-path", env.vaultPath, "--no-git")
+
+	source := filepath.Join(t.TempDir(), "rollout.jsonl")
+	if err := os.WriteFile(source, []byte("{\"codex_record\":\"no ingester\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	event, _ := json.Marshal(map[string]string{"session_id": "thr_no_ingester", "cwd": env.projectDir, "transcript_path": source, "hook_event_name": "SessionEnd"})
+	run := testinfra.RunCLI(t, env.iso.Environ(), env.projectDir, event, "codex", "hook", "session-end")
+	if run.ExitCode != 0 || !strings.Contains(run.Stdout, "archived:") {
+		t.Fatalf("SessionEnd exit=%d stdout=%s stderr=%s", run.ExitCode, run.Stdout, run.Stderr)
+	}
+	entries, err := archive.ListEntries(env.vaultPath, "codexproj")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("archive entries=%d err=%v; the synchronous work must still complete", len(entries), err)
+	}
+	// Launch opens the child's log BEFORE it starts the child, so this file's
+	// existence is the proof a detached ingester was launched.
+	ingesterLog := filepath.Join(storage.NewVault(env.vaultPath).VaultLocalDir(), "ingester.log")
+	if _, statErr := os.Stat(ingesterLog); !os.IsNotExist(statErr) {
+		t.Fatalf("a detached ingester was launched under the test env (os.Stat %s: %v)", ingesterLog, statErr)
+	}
+}

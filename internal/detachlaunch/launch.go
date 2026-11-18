@@ -41,6 +41,23 @@ type LaunchFunc func(binary string, args []string, logPath string) (pid int, err
 // than a silent pid-0 no-op.
 var ErrRefusedTestBinary = errors.New("detachlaunch: refusing to self-relaunch a Go test binary")
 
+// DisableEnv is a TEST-HARNESS control, not a user feature. When a process's
+// environment carries DisableEnv=1, Launch starts nothing. internal/testinfra's
+// Env.Environ sets it for every subprocess it builds, because the integration
+// tests drive a REAL built `vp` whose SessionEnd hooks launch a detached `vp
+// drain archives` against the test vault: that child outlives the test and
+// writes palace/.local while t.TempDir cleanup runs ("directory not empty").
+// runningUnderGoTest cannot catch it, since the launcher there is a production
+// binary, not a `.test`. Children inherit the variable, so a nested detached
+// launch (the drain's own index rebuild) is gated too. Only the exact value
+// "1" disables, so a stray value never turns production launches off.
+const DisableEnv = "VP_TEST_DISABLE_DETACHED_LAUNCH"
+
+// ErrDetachDisabled is returned by Launch when DisableEnv=1. Like
+// ErrRefusedTestBinary it is a sentinel rather than a silent pid-0 no-op;
+// callers already log a Launch error as non-fatal.
+var ErrDetachDisabled = errors.New("detachlaunch: detached launch disabled by " + DisableEnv)
+
 // runningUnderGoTest reports whether the resolved self-executable is a Go test
 // binary. It replicates the two-pronged idiom of
 // internal/surface/guard.go runningUnderGoTest() — the name ends in ".test",
@@ -91,6 +108,11 @@ func runningUnderGoTest(self string) bool {
 // setDetachedFallback is identical to setDetached, so a retry after a
 // genuine failure (e.g. a missing binary) simply fails the same way again.
 func Launch(binary string, args []string, logPath string) (pid int, err error) {
+	// Checked FIRST: before binary resolution and before the log file is opened,
+	// so a disabled launch leaves no process and no file behind.
+	if os.Getenv(DisableEnv) == "1" {
+		return 0, ErrDetachDisabled
+	}
 	if binary == "" {
 		self, err := os.Executable()
 		if err != nil {

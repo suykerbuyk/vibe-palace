@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/detachlaunch"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 )
@@ -78,5 +79,31 @@ func TestIsolateEnvCannotResolveOutsideFixture(t *testing.T) {
 		if !strings.HasPrefix(path, env.Home) {
 			t.Fatalf("ResolveVaultPath resolved %q (source %q) outside the isolated fixture", path, source)
 		}
+	}
+}
+
+// TestEnvironSetsDetachedLaunchOptOutLast pins the harness invariant behind
+// the integration TempDir-leak fix: every subprocess built from Env.Environ
+// carries the detached-launch opt-out, and it is the LAST entry for its key, so
+// neither the ambient environment nor a caller's extras can re-enable detached
+// launches (os/exec resolves duplicate keys last-wins).
+func TestEnvironSetsDetachedLaunchOptOutLast(t *testing.T) {
+	t.Setenv(detachlaunch.DisableEnv, "0") // ambient value must not leak through
+	e := IsolateEnv(t)
+
+	last := func(env []string) string {
+		got := ""
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, detachlaunch.DisableEnv+"="); ok {
+				got = v
+			}
+		}
+		return got
+	}
+	if got := last(e.Environ()); got != "1" {
+		t.Fatalf("Environ() opt-out = %q, want 1", got)
+	}
+	if got := last(e.Environ(detachlaunch.DisableEnv + "=0")); got != "1" {
+		t.Fatalf("Environ(extra override) opt-out = %q, want 1: extras must not override it", got)
 	}
 }
