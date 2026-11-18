@@ -86,7 +86,9 @@ func (r loadResult) String() string {
 
 // saveOutcome is why a save or delete wrote or did not write. Distinct reasons
 // (S1) let Unit B re-arm a transient skip (skipTimeout, skipRename) while never
-// re-arming a deliberate drop (skipEpoch, skipStale, skipMissingDir).
+// re-arming a deliberate drop (skipEpoch, skipStale, skipMissingDir). skipEpoch is
+// currently unreachable from saveGraph (see its epoch check); convertSave also
+// returns it, loosely, for its own generation-witness miss.
 type saveOutcome int
 
 const (
@@ -495,9 +497,10 @@ func newHNSWIndexFromDisk(vault *storage.Vault, project string, dims int, params
 // --- save / delete (§2), each on a held commit-lock Tx -----------------------
 
 // saveGraph writes data as hnsw.idx through the caller's held Tx. It drops the
-// save when the live graph has moved past the snapshot (B4) or when the store's
-// epoch has changed under the lock, and classifies a write failure (S2/N5). The
-// caller must Commit or Release the Tx (the gen bump happens there).
+// save when the live graph has moved past the snapshot (B4), and classifies a
+// write failure (S2/N5). The caller must Commit or Release the Tx (the gen bump
+// happens there). It does NOT witness that the graph is complete against the
+// store: the epoch check below is inert (see there).
 func saveGraph(tx *indexstore.Tx, vault *storage.Vault, project string, h *hnswIndex, data []byte, w saveWitness, builtAt indexstore.Gen) (saveOutcome, error) {
 	// B4: re-check under h.mu, not the commit lock.
 	h.mu.RLock()
@@ -521,9 +524,15 @@ func saveGraph(tx *indexstore.Tx, vault *storage.Vault, project string, h *hnswI
 	// The Tx's own view of the counter, not ReadGeneration: a Tx that already
 	// began a destructive write has set the counter's in-flight flag itself,
 	// and ReadGeneration would report that as ErrWriteInFlight.
+	//
+	// INERT today: every caller passes builtAt := tx.Generation() under this same
+	// commit lock, so the epochs always match and skipEpoch is unreachable. The
+	// real epoch witnesses are the heal/convert callers' own builtGen checks
+	// (healSave, convertSave); the rebuild path (commitGraphAction) has none.
+	// Tracked by task graph-saves-carry-no-completeness-witness.
 	cur := tx.Generation()
 	if cur.Epoch != builtAt.Epoch {
-		return skipEpoch, nil // a supersede/discard/relabel happened; the subset save is void.
+		return skipEpoch, nil // unreachable while builtAt is read under this lock.
 	}
 
 	if werr := tx.WriteGraph(data); werr != nil {

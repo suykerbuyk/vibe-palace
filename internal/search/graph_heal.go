@@ -327,6 +327,8 @@ func (e *Engine) healSave(ctx context.Context, project string, h *hnswIndex, bui
 	}
 
 	data, w := h.snapshot()
+	// builtAt is read under this same lock, so saveGraph's epoch check is inert;
+	// the witness here is the builtGen check above.
 	builtAt := tx.Generation()
 	out, serr := saveGraph(tx, e.vault, project, h, data, w, builtAt)
 	if serr != nil {

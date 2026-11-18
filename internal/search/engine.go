@@ -2864,6 +2864,8 @@ func (e *Engine) convertSave(ctx context.Context, pl *projectLock, project strin
 		return skipEpoch, false // the store moved under us; abandon the file
 	}
 	data, w := h.snapshot()
+	// builtAt is read under this same lock, so saveGraph's epoch check is inert;
+	// the witness here is the builtGen check above.
 	builtAt := tx.Generation()
 	out, serr := saveGraph(tx, e.vault, project, h, data, w, builtAt)
 	before, after, cerr := pl.finishTx()
@@ -2932,6 +2934,8 @@ func (e *Engine) commitGraphAction(ctx context.Context, pl *projectLock, timeout
 			break
 		}
 		data, w := h.snapshot()
+		// Inert epoch check (builtAt read under this lock); this rebuild path has
+		// no completeness witness: graph-saves-carry-no-completeness-witness.
 		builtAt := tx.Generation()
 		out, err = saveGraph(tx, e.vault, project, h, data, w, builtAt)
 	case graphDelete:
