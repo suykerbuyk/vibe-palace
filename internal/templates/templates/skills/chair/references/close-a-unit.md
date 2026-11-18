@@ -19,10 +19,11 @@ same time.
 
 ### 2. Keep them working
 
-1. Arm a waker at dispatch rather than watching — "Learning that a
-   subordinate finished" above. A finished pane reports `done` or `idle` (both
-   occur in the live population); `blocked` is an approval or question UI.
-2. On **idle/done**: read output, review against the artifacts (not their
+1. Arm a waker at dispatch rather than watching — "Waking when a
+   subordinate pane stops" above — keyed on the brief's deliverable file. A settled pane reports
+   `done` or `idle` (both occur in the live population) but that is a wake-up, not completion;
+   `blocked` is an approval or question UI.
+2. On **deliverable present** (pane done/idle alone: re-arm): read output, review against the artifacts (not their
    recap). Then: **accept**, **send-back** (named defects, same unit),
    **hold**, or **escalate** to the operator.
 3. On **blocked**: classify the question. Answer it if it's in the Chair's

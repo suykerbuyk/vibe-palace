@@ -51,6 +51,9 @@
   that merely finished never reports `idle`, the wait times out, and the
   process still **exits 0** — so the waker never fires, wakes nobody, and
   reports no error. `--until done --until idle`, always.
+- **Treating pane idle/done, or a scrollback token, as completion.** The pane settles while
+  its own background job runs, and a token scrolls away or matches the Chair's own echoed
+  prompt; key the waiter on the deliverable file (`wakers`, "Completion is the deliverable").
 - Polling on a timer to discover that a subordinate finished, when an armed
   waker would have pushed it — or treating the enumeration sweep as the
   primary path rather than the after-a-context-clear/died-rather-than-finished

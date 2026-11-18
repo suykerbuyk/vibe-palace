@@ -34,7 +34,9 @@ implementor.
    pass; a third only per Convergence → operator go → EXECUTE (gated by blast-radius tier) →
    verify with the gate the change's surface requires → record to the vault task → unit boundary
    check → close without lying about git.
-3. Every dispatch: brief-to-file, arm a waker, never poll, then CONFIRM the pane is `working`
+3. Every dispatch: brief-to-file naming ONE output file, arm a waker that keys on that DELIVERABLE
+   (`[ -s <file> ]`, confirmed by pane done/idle and, where relevant, the project's own
+   process-presence check; pane idle alone is never completion), never poll, then CONFIRM the pane is `working`
    (`herdr agent get <pane-id>`). Target pane ids, not names (unverified hint: names can collide
    or be renamed; not yet re-derived in a live pane). Reviewers contradict on a FACT → the Chair
    re-derives the one pivotal fact from source. Every operator-binding fork → AskUserQuestion

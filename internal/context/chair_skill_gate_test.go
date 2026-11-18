@@ -27,7 +27,7 @@ var chairReferenceRules = map[string]string{
 	"sequencing":                    "only fan out the units that depend on it once it",
 	"task-hygiene-and-peers":        "A review finding is not binary between \"fix now\" and \"ignore.\"",
 	"topology-and-objective":        "this process is itself inside a",
-	"wakers":                        "arm a waker at dispatch — the default is a `notify_when_idle` subscription",
+	"wakers":                        "arm ONE waker per dispatch that keys on the DELIVERABLE",
 	"worktrees-and-composer":        "Do not treat these as real defects.",
 }
 

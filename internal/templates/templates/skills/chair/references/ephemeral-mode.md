@@ -60,8 +60,8 @@ tool makes it easy to.
 
 A long-running command (a full test suite, an integration run) dispatched with
 `run_in_background: true` wakes the Chair on exit, and that is the intended
-shape rather than a risk to be minimised — see "Learning that a subordinate
-finished" above for the measurement (15.0, 20.46 and 20.45 minutes, none
+shape rather than a risk to be minimised — see "Waking when a subordinate
+pane stops" above for the measurement (15.0, 20.46 and 20.45 minutes, none
 reaped) and, just as importantly, for what it does not cover. **This section no
 longer advises shortening the window**; that advice predated the measurement,
 and each shortening buys another wake for nothing.

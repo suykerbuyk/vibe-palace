@@ -68,7 +68,8 @@ So the operator does not have to tell the Chair which pane is which; creating th
 idle after unseen background work. CLI reads do not mark a pane seen.
 `blocked` is an approval or question UI. `unknown` does not prove completion.
 A Claude pane finishing a turn goes `working` -> `done` without passing through
-`idle`, so a wait must name **both** — see "Waiting on long-running work".
+`idle`, so a wait must name **both** — see "Waiting on long-running work". Neither status is
+completion: a pane can be `done` while its own background job still runs.
 
 ## Visibility — why panes exist
 
@@ -195,8 +196,8 @@ Then, per role, in order:
 4. Bootstrap it as in How step 6: `herdr agent prompt <born-name> "…" --wait`,
    binding constraints first, then the project's restart command if it needs full
    context.
-5. **Arm a waker for this subordinate** (see "Learning that a subordinate
-   finished", whose limits — same-machine, main-conversation-only, one-shot, and
+5. **Arm a waker for this subordinate** (see "Waking when a subordinate
+   pane stops", whose limits — same-machine, main-conversation-only, one-shot, and
    a measured fire lifetime — all still apply here), kind-conditionally:
    - **claude:** the pane appears in ListAgents by its born name, because
      `agent start <born-name>` passes `--name <born-name>` through to claude
@@ -209,9 +210,10 @@ Then, per role, in order:
      session (`vp-imp1`), NOT on an agent-start pane; it is inferred to cover an
      agent-start pane only because that path sets the same `--name` identity, and a
      self-owned agent-start fire is a trivial future re-confirm. Use it as the
-     default waker, with a backgrounded
+     default wake-up, with a backgrounded
      `herdr agent wait <born-name> --until done --until idle` as the equivalent
-     alternative.
+     alternative; either only wakes the Chair, and completion is the deliverable
+     (`wakers`, "Completion is the deliverable, not the pane going idle").
    - **grok:** the pane does NOT appear in ListAgents (it is not a Claude session),
      so `notify_when_idle` cannot target it — a backgrounded
      `herdr agent wait <born-name> --until done --until idle` (it names the herdr
@@ -221,7 +223,7 @@ Then, per role, in order:
    On posture: a Chair-started claude pane is permission-matched only when step 3
    passed the Chair's own posture flag. On the one inherited-posture trial
    (2026-10-24) the idle notice was delivered to the Chair; the mismatched-mode
-   withhold case is still untested (see "Learning that a subordinate finished", the
+   withhold case is still untested (see "Waking when a subordinate pane stops", the
    permission-mode limit). If this pane's mode is not the Chair's — the operator
    chose not to inherit, or it is a pane this Chair did not start — also arm
    `herdr agent wait <born-name> --until done --until idle`.
@@ -305,14 +307,21 @@ bypass-off recreates the defect above.
 
 ## Canonical dispatch recipe
 
-This is a Herdr-mode DISPATCH convenience — how to land a prompt on a pane and wait for that
-one dispatch to settle. It does NOT change the default completion waker: the `notify_when_idle`
-subscription remains the default (for a **claude** pane; a grok pane is not a `notify_when_idle`
-target — see "Seat the subordinate roster" step 5) (see "Learning that a subordinate finished" and
-the Herdr-mode preference in "Waiting on long-running work" below). Reach here when you want to land-and-wait
-on a single pane dispatch from inside the harness.
+This is a Herdr-mode DISPATCH convenience — how to land a prompt on a pane. Its `--wait` and
+`herdr agent wait` are WAKE-UP signals: the pane settling is never completion. Completion is the
+DELIVERABLE the brief names (an output file), checked by the bounded until-loop in "Completion is
+the deliverable, not the pane going idle" (`wakers`): `[ -s <deliverable> ]` AND pane done/idle
+(AND the project's own background-job check); on a wake with no deliverable, re-arm. The
+`notify_when_idle` subscription (a **claude** pane only; a grok pane is not a `notify_when_idle`
+target — see "Seat the subordinate roster" step 5) is the default wake-up, not the predicate.
 
-Dispatch (in-pane Chair) — background this call; its settle wakes you:
+🔴 **NEVER grep `herdr pane read` scrollback for a completion token, and never type the literal
+token into a follow-up prompt.** It fails in both directions, measured: the token scrolled out of
+the last-N-lines window and the waiter never fired (about 2 h 25 min and about an hour lost), and
+the pane echoed the Chair's own prompt and the grep matched it (false fire). A reply token may
+remain in the brief as a human-readable courtesy; no waiter reads it.
+
+Dispatch (in-pane Chair) — background this call; its settle wakes you, it does not complete the unit:
 
     herdr agent prompt <name> "$(cat <brief-file>)" --wait --timeout <ms>
 
@@ -324,14 +333,16 @@ A `--session`-less recipe drives the DEFAULT session — a listed failure mode. 
 MUST use the prefix and must never run this against a bare/default session.
 
 Same measured limits as any backgrounded wait: the longest PROVEN is 20.46 minutes, one task at
-a time; several concurrent long waits, and a 40-minute dispatch, are UNPROVEN (see "Learning
-that a subordinate finished"). Do not quote the survivals as a ceiling the mechanism is known to
+a time; several concurrent long waits, and a 40-minute dispatch, are UNPROVEN (see "Waking when a
+subordinate pane stops"). Do not quote the survivals as a ceiling the mechanism is known to
 clear, and do not background many in parallel as if proven.
 
-FALLBACK (pane-status predicate, or when the above is unavailable):
+FALLBACK (pane-status wake-up, or when the above is unavailable):
 
     herdr agent get <name>            # confirm agent_status=working → the prompt landed
-    herdr agent wait <name> --until done --until idle --timeout <ms>   # background it
+    herdr agent wait <name> --until done --until idle --timeout <ms>   # background it; a WAKE-UP only
+
+On either wake, check the deliverable (`[ -s <file> ]`) before concluding; absent → re-arm.
 
 A short confirming `--wait` returns `{"error":"timeout"}` exit 1 for real work — EXPECTED, it
 only means work outlived the short window; `get` then confirms it landed. `--until done --until
@@ -350,8 +361,10 @@ Two hazards:
 
 ## Waiting on long-running work
 
-**Prefer the idle subscription** described in "Learning that a subordinate
-finished" above: it costs the target nothing, ties up no backgrounded process,
+**Prefer the idle subscription as the wake-up** (never as completion proof — the deliverable
+is; see "Completion is the deliverable, not the pane going idle" in `wakers`) described in
+"Waking when a subordinate
+pane stops" above: it costs the target nothing, ties up no backgrounded process,
 and **a Herdr pane is precisely the target it was measured against** (the
 **claude** case — a grok Herdr pane was measured ABSENT from ListAgents, so it is
 not a `notify_when_idle` target, see "Seat the subordinate roster" step 5). Reach for
@@ -370,7 +383,7 @@ merely finished. It runs to its `--timeout` and returns
 — demonstrated against a pane that had been finished for roughly three
 minutes.
 
-**The correct invocation is `--until done --until idle`.** The flag is
+**The pane-status wake-up invocation is `--until done --until idle`.** The flag is
 repeatable, and **both statuses are required**: `done` is what a finished turn
 produces, and `idle` is what live panes settle into afterwards. A single census
 showed five panes reading `idle` and three reading `done` at the same moment,
@@ -388,8 +401,8 @@ mistaken for a gate.
 
 Backgrounding a wait is not the fragile move this section used to describe.
 Three background tasks ran 15.0, 20.46 and 20.45 minutes without being reaped;
-the measurement, and the limits it does not reach, are in "Learning that a
-subordinate finished" above. **The former advice to prefer ever-shorter windows
+the measurement, and the limits it does not reach, are in "Waking when a
+subordinate pane stops" above. **The former advice to prefer ever-shorter windows
 is withdrawn** — it reasoned from a ceiling the measurement did not find, and
 shortening a window only multiplies the number of wakes. What is still unproven
 is several concurrent long waits, or a 40-minute one; treat those as untested

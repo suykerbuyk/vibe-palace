@@ -4,8 +4,12 @@ The default dispatch contract, both topologies:
 
 - **The Chair writes a brief file** before dispatching: binding constraints first, then
   the read-these list, the ONE question/deliverable, the output path, and a reply token.
-- **The subordinate writes a findings/verdict file** as it works, and replies with ONLY
-  that path plus a bounded (≤~12-line) summary — never a pasted body.
+- **The subordinate writes a findings/verdict file** as it works, writes its FINAL summary
+  into that file, and replies with ONLY that path plus a bounded (≤~12-line) summary — never a
+  pasted body. That file is what the waiter keys on (`[ -s <file> ]`; see `wakers`): the file
+  existing, not the pane going idle, is completion.
+- **A dispatch whose artifact is not a findings file** (a wrap's `commit.msg`, a commit) names
+  that artifact explicitly in the brief as what the waiter keys on.
 - **The Chair reads the ARTIFACT file directly, never the pane scrollback.**
 
 This keeps the Chair's context thin and makes the loop scrollback-proof and legible: the
