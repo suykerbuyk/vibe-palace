@@ -35,3 +35,11 @@ hook-spawned `vp` (ingest, rebuild, capture).
 **Cost of the new binary.** One extra fsynced counter write per appending commit
 (about 3 ms on a virtio disk) and a non-blocking lock probe per read while a
 marker is seen.
+
+## Claim directory
+
+Session claim sentinels (`claimed-<session-id>`) now live in the `.vibe-palace/`
+of the nearest `.vibe-palace.toml` root, not the raw cwd, so `vp_capture_session`
+and the SessionEnd hook agree wherever each ran inside the project. Upgrade when
+no session is mid-flight outside its project root; at worst one duplicate
+session note per such in-flight session.

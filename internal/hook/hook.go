@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
@@ -199,7 +198,7 @@ type RunOptions struct {
 	VaultRoot   string
 	ProjectSlug string
 	VPVersion   string
-	ClaimDir    string // override for testing; default: <CWD>/.vibe-palace
+	ClaimDir    string // override for testing; default: ClaimDir(payload.CWD), the project root's .vibe-palace
 	// Launch starts the pending-archive ingester as a detached process after a
 	// SessionEnd/PreCompact archive is created. cmd/vp passes detachlaunch.Launch;
 	// a nil Launch (the library/test default) spawns nothing, so a hook library
@@ -304,7 +303,7 @@ func Run(ctx context.Context, payload Payload, opts RunOptions) (*Result, error)
 	// 3. Resolve claim directory.
 	claimDir := opts.ClaimDir
 	if claimDir == "" {
-		claimDir = filepath.Join(payload.CWD, ".vibe-palace")
+		claimDir = ClaimDir(payload.CWD)
 	}
 
 	// 3b. Opportunistic claim-sentinel sweep: purge claimed-<id> sentinels whose

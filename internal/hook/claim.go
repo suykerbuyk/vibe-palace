@@ -14,14 +14,50 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/hostsession"
+	"github.com/suykerbuyk/vibe-palace/internal/project"
 )
 
 const claimPrefix = "claimed-"
 
 // ClaimPath returns the filesystem path for a session's claim sentinel.
-// claimDir is the already-resolved directory (typically <CWD>/.vibe-palace).
+// claimDir is the already-resolved directory (use ClaimDir(cwd): the project
+// root's .vibe-palace, not the raw cwd's).
 func ClaimPath(claimDir, sessionID string) string {
 	return filepath.Join(claimDir, claimPrefix+sessionID)
+}
+
+// claimDirName is the per-checkout sentinel directory.
+const claimDirName = ".vibe-palace"
+
+// ClaimDir resolves the claim directory for a session running in cwd: the
+// .vibe-palace directory of the PROJECT ROOT, the directory holding the nearest
+// .vibe-palace.toml at or above cwd (project.FindMarker, the one marker walk the
+// vault resolver and the hook's own opt-in gate already share).
+//
+// 🔴 EVERY claim reader and writer must derive its directory here. The capture
+// tool (vp_capture_session) writes the claim from the cwd its caller names and
+// the SessionEnd hook reads it from the host's cwd at session end; the two cwds
+// are routinely different directories of one project. A raw cwd join made them
+// disagree, the hook missed the claim, and — because the capture's note is keyed
+// by a minted UUID while the hook's is keyed by the host session id — it wrote a
+// SECOND note for the session.
+//
+// A nested marked tree (a git worktree checkout, a scratch copy) is its own root:
+// the nearest marker wins. With no marker anywhere the raw cwd is kept: the
+// hook's gate refuses such a cwd, so there is no reader to disagree with, and the
+// old behaviour is preserved. An empty cwd returns the raw join BEFORE any walk,
+// since FindMarker("") would resolve the PROCESS cwd.
+//
+// Known gap: a capture and a hook in two DIFFERENT marked roots of one session
+// still disagree (see task claim-store-diverges-across-project-roots).
+func ClaimDir(cwd string) string {
+	if cwd == "" {
+		return filepath.Join(cwd, claimDirName)
+	}
+	if marker, err := project.FindMarker(cwd); err == nil && marker != "" {
+		return filepath.Join(filepath.Dir(marker), claimDirName)
+	}
+	return filepath.Join(cwd, claimDirName)
 }
 
 // IsClaimed reports whether a claim sentinel exists for the given session.
@@ -92,9 +128,12 @@ var claimNow = time.Now
 //   - shared-checkout: purge iff <id> is NOT in liveSet AND the claim's mtime is
 //     older than ttl (a grace window for a claim another host may own).
 //
-// A wrong purge is non-corrupting: the hook's capture dedup keys on the same
-// filename id (SessionKey: payload.SessionID), so at worst a re-capture rewrites
-// the existing note via UpsertSessionByKey — it never mints or deletes one.
+// A wrong purge is non-corrupting for a session the HOOK captured: its dedup keys
+// on the same filename id (SessionKey: payload.SessionID), so a re-capture
+// rewrites that note via UpsertSessionByKey. It is NOT harmless for a session
+// the MCP capture tool captured: that note is keyed by a caller-supplied or
+// minted key, so purging its claim lets the hook write a SECOND note. The sweep
+// never deletes a note either way.
 // removed holds the purged ids. A missing claimDir is not an error (no claims).
 func SweepClaims(claimDir string, liveSet map[string]bool, ttl time.Duration, mode ClaimMode) (removed []string, err error) {
 	entries, err := os.ReadDir(claimDir)
@@ -187,9 +226,9 @@ func LiveSessionSet(claudeHome string, procStart hostsession.ProcStartFunc) map[
 //
 // Only the CURRENT session is protected this way, so in single-host mode on a
 // non-Claude host a PEER session sharing this checkout's .vibe-palace can have
-// its claim purged; the worst that causes is a harmless note REWRITE on that
-// peer's next capture (UpsertSessionByKey keys on the same filename id), never a
-// second note nor a deleted one.
+// its claim purged. If that peer's note came from the hook, the cost is a note
+// REWRITE (same SessionKey); if it came from the MCP capture tool, its claim
+// was the only thing stopping the hook from writing a second note.
 var claimSweepImpl = func(claimDir, currentSessionID string) (removed []string, err error) {
 	home, err := archive.ClaudeHome()
 	if err != nil {

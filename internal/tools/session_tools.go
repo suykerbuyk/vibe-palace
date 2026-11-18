@@ -749,7 +749,7 @@ func captureSessionHandler(vault *storage.Vault, launch detachlaunch.LaunchFunc)
 		// it would be a sentinel with no reader, and on a hook-less host there is
 		// no hook to skip in the first place.
 		if p.CWD != "" && sp.ArchiveSessionID != "" && sp.ArchiveSessionIDSource == storage.ArchiveIDSourceDerived {
-			claimDir := filepath.Join(p.CWD, ".vibe-palace")
+			claimDir := hook.ClaimDir(p.CWD)
 			if claimErr := hook.WriteClaim(claimDir, sp.ArchiveSessionID, result.SessionID); claimErr != nil {
 				slog.Warn("vp_capture_session: claim sentinel write failed", "err", claimErr)
 				result.Failures = append(result.Failures, capture.CaptureFailure{
