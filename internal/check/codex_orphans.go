@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
@@ -384,17 +383,6 @@ func canonicalPath(p string) string {
 		return filepath.Clean(abs)
 	}
 	return filepath.Clean(p)
-}
-
-// fileUID returns a FileInfo's owning uid, or a sentinel that can never equal a
-// real euid when the platform does not expose one.
-func fileUID(fi os.FileInfo) uint32 {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return st.Uid
-	}
-	// No ownership available (non-Unix): inspect the process rather than skip
-	// every one of them, which would silently disable liveness entirely.
-	return uint32(os.Geteuid())
 }
 
 // sameVaultRoot reports whether two vault paths name the same directory.
