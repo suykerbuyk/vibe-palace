@@ -32,14 +32,31 @@ func warmWriter(t *testing.T) *storage.Vault {
 }
 
 // writeThenExit runs the "write-then-exit" helper with write, and checks it
-// left the counter where it found it.
+// left the counter's gen and epoch where it found them.
+//
+// The helper's Tx now sets the append marker before its write (U3), so a dying
+// helper leaves a counter marked "a", and the next Lock would repair it with a
+// gen bump, which invalidates the writer's cached state by gen. These tests
+// pin the OTHER protection: the cache is valid only while the store files keep
+// the sizes it recorded. That is what protects a writer when the dying process
+// left NO marker (a binary older than the marker, or a kill before the marker
+// write). The fixture therefore strips the marker, rewriting the counter to the
+// clean two-field form of the same gen and epoch, which is exactly what such a
+// process leaves.
 func writeThenExit(t *testing.T, v *storage.Vault, write string) {
 	t.Helper()
-	before := genOf(t, v)
+	before := readGen(t, v, "alpha")
 	h := startHelper(t, v, "write-then-exit", "VP_INDEXSTORE_WRITE="+write)
 	h.wait(t)
-	if after := genOf(t, v); after != before {
+	if after := readGen(t, v, "alpha"); after != before {
 		t.Fatalf("fixture: the helper moved the counter %v -> %v; it must exit before its bump", before, after)
+	}
+	gp, err := v.IndexGenerationPath("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gp, []byte(formatGen(before, markNone)), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

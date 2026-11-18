@@ -184,6 +184,9 @@ func (tx *Tx) appendLines(path string, data []byte) error {
 			return err
 		}
 	}
+	if err := tx.beginAppend(); err != nil {
+		return err
+	}
 	if err := appendFile(path, data); err != nil {
 		return err
 	}
@@ -199,6 +202,9 @@ func (tx *Tx) putVectors(vw VectorWriter, vecs map[string][]float32) error {
 	}
 	if vw == nil {
 		return errors.New("indexstore: vectors to write but no VectorWriter")
+	}
+	if err := tx.beginAppend(); err != nil {
+		return err
 	}
 	ids := make([]string, 0, len(vecs))
 	for id := range vecs {

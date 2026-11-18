@@ -763,9 +763,49 @@ graph fingerprint to `hnsw-graph-file-envelope-and-warm-start`.
     A reader that meets the flag treats it as "cannot trust the counter": the KG cache
     decodes uncached and remembers nothing; the heal skips; the search build does not
     remember a counter it could not read. Mixed binaries are safe: an older reader parses
-    three fields as malformed, which it already treats as an error. **Scope:** this covers
-    destructive commits only. An append-only commit killed before its finishing bump still
-    leaves the append unannounced; that is filed separately.
+    three fields as malformed, which it already treats as an error. **Scope:** the `w` flag
+    covers destructive commits; an append-only commit sets the `a` marker (amendment below).
+  - **Amendment (2026-11-18, task `append-only-tx-kill-leaves-append-unannounced`): an
+    append in flight is announced too, in a form readers ignore while the writer lives.**
+    - The third field takes one more value, `a`. An append-only commit sets it on its FIRST
+      write (a vector batch; a chunk, KG or ledger line; the fingerprint; the completeness
+      record; a graph write or delete), before that write, through the same fsynced
+      counter write a bump uses, and its finishing bump clears it. Writing `a` changes
+      neither `gen` nor `epoch`, so an append-only commit still moves `gen` by exactly one;
+      a later destructive step in the same commit replaces `a` with `w` (`gen` +2, as
+      before). A commit whose writes are all no-ops sets no marker.
+    - While the commit lock is held, `ReadGeneration` returns the counter exactly as it stood
+      before the commit, so a live append costs a search nothing: no reader reloads or
+      rebuilds for it. If the marker is present and the commit lock is FREE (a non-blocking
+      probe, taken only when `a` is seen, followed by a re-read), the writer is dead, and
+      `ReadGeneration` returns the same `gen` and `epoch` with `Stale` set. A `Stale` value
+      equals nothing any reader remembers, so every engine and the KG cache reload once,
+      with no writer involved, and then remember it. `ReadGeneration` still never writes;
+      the next `Lock` repairs `a` with `gen`+1 and the SAME epoch.
+    - A `Stale` counter never takes the witnessed load of a persisted graph (which accepts a
+      subset of the corpus, decision 4); it forces a corpus rebuild, and a rebuild that
+      began from a `Stale` counter, including one whose own counter read came after another
+      process repaired the marker, saves its caught-up graph even inside the save debounce.
+    - **Caveat, the same as for an ordinary append.** Where a graph save does not land (the
+      commit lock stays busy, the graph moved under the build, an I/O error), a killed
+      append gets exactly the decision-4 treatment an ordinary append already gets: a
+      persisted graph that omits it can be served until the next catch-up. Closing that for
+      every append needs a completeness witness on graph saves; it is filed as
+      `graph-saves-carry-no-completeness-witness` and is not part of this amendment.
+    - **Cost.** One extra fsynced counter write per appending commit (about 3 ms per commit
+      on a virtio disk), a non-blocking lock probe per read while a marker is seen, and
+      nothing on a clean counter.
+    - **Mixed binaries.** The killed-append guarantee holds only once every writer process on
+      the host runs a binary that knows the marker: every `vp mcp` server and every
+      hook-spawned `vp`. A binary older than this amendment parses `a` as a malformed
+      counter. As a reader it errors (the KG read fails, the search rebuilds) while a new
+      writer's append is in flight. As a writer, its `Lock` replaces a malformed counter with
+      `gen` 0 and a new epoch: every engine reloads and nothing is lost, but a dead new
+      writer's marker is erased, and an old writer's own commits are not marked. Restart
+      every `vp mcp` server and let hook-spawned processes finish after upgrading.
+    - Considered and rejected: setting `w` for appends (every search overlapping an append
+      would rebuild, since `ensureIndex` leaves its fast path on any counter error); a
+      marker file; a no-fsync marker.
   - **Where it lives.** Outside `index/<p>/`, so a discard never resets it. A missing counter is
     created with a random `epoch`, so a recreated file never matches an engine's remembered value.
   - **Why not the ledger.** The counter moves on writes the ledger never sees: decision chunks,

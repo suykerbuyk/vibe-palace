@@ -15,3 +15,16 @@ func SetCommitStepHook(f func(step string) error) (restore func()) {
 	commitStep = f
 	return func() { commitStep = old }
 }
+
+// probeHeldHook, when a test sets it, runs inside readGenFile's commit-lock
+// probe, after the probe's flock was taken and before it is released.
+var probeHeldHook func()
+
+// SetProbeHeldHook is a TEST SEAM: f runs while ReadGeneration's stale-marker
+// probe holds the commit lock. It returns the function that restores the
+// previous hook. Production code never calls it.
+func SetProbeHeldHook(f func()) (restore func()) {
+	old := probeHeldHook
+	probeHeldHook = f
+	return func() { probeHeldHook = old }
+}

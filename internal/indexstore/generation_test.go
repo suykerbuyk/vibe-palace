@@ -5,6 +5,7 @@ package indexstore
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,21 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 )
+
+// readGenFile reads the stored counter without probing: a destructive flag is
+// ErrWriteInFlight (with the zero Gen), an append marker is read as the counter
+// it carries. ReadGeneration is the reader that probes for a dead appender; the
+// tests use this for the stored value.
+func readGenFile(path string) (Gen, error) {
+	g, mark, err := readGenRaw(path)
+	if err != nil {
+		return Gen{}, err
+	}
+	if mark == markDestructive {
+		return Gen{}, fmt.Errorf("%w (%s)", ErrWriteInFlight, path)
+	}
+	return g, nil
+}
 
 func readGen(t *testing.T, v interface {
 	IndexGenerationPath(string) (string, error)
@@ -135,7 +151,7 @@ func TestGenerationFileFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := readGen(t, v, "alpha")
-	if want := []byte(formatGen(g, false)); string(data) != string(want) {
+	if want := []byte(formatGen(g, markNone)); string(data) != string(want) {
 		t.Fatalf("counter file = %q, want %q", data, want)
 	}
 	ents, err := os.ReadDir(filepath.Dir(path))

@@ -28,6 +28,7 @@ const (
 	helperContentEnv = "VP_SEARCH_CONTENT"
 	helperFPEnv      = "VP_SEARCH_FINGERPRINT"
 	helperDirEnv     = "VP_SEARCH_DIR"
+	helperIDEnv      = "VP_SEARCH_ID"
 )
 
 // runHelper runs one helper mode and returns its exit code.
@@ -39,6 +40,12 @@ func runHelper() int {
 			return 2
 		}
 		return 3 // unreachable: crashAfterCommit exits
+	case "append-kill":
+		if err := appendKill(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3 // unreachable: appendKill blocks until killed
 	case "discard-kill":
 		if err := discardKill(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -180,6 +187,81 @@ func killDiscardHelper(t *testing.T, v *storage.Vault, project string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the discard helper never reached the discard-chunks step")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+}
+
+// appendKill is an append-only Tx that dies mid-flight: it locks the project,
+// writes the cached vector of one drawer (id helperIDEnv, text helperContentEnv)
+// through the engine's embed-cache writer, signals "ready" in helperDirEnv and
+// blocks for ever. Neither Commit nor Release runs; the parent SIGKILLs it, so
+// the vector is durable and the counter never learns of it (U3).
+func appendKill() error {
+	v := storage.NewVault(os.Getenv(helperVaultEnv))
+	project, content, id := os.Getenv(helperProjectEnv), os.Getenv(helperContentEnv), os.Getenv(helperIDEnv)
+	tx, err := indexstore.Lock(context.Background(), v, project, indexstore.NoTimeout)
+	if err != nil {
+		return err
+	}
+	cache := NewEmbedCache(v)
+	cache.fingerprint = os.Getenv(helperFPEnv)
+	w, err := cache.Writer(tx)
+	if err != nil {
+		return err
+	}
+	vec, err := embedder.NewMock(384).Embed(context.Background(), content)
+	if err != nil {
+		return err
+	}
+	if err := tx.PutVectors(w, map[string][]float32{id: vec}); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv(helperDirEnv), "ready"), nil, 0o644); err != nil {
+		return err
+	}
+	select {} // block until killed
+}
+
+// killAppendHelper forks appendKill for the drawer and SIGKILLs it once its
+// vector is durable.
+func killAppendHelper(t *testing.T, eng *Engine, v *storage.Vault, project string, d storage.Drawer) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(),
+		helperModeEnv+"=append-kill",
+		helperVaultEnv+"="+v.Root,
+		helperProjectEnv+"="+project,
+		helperContentEnv+"="+d.Content,
+		helperIDEnv+"="+d.ID,
+		helperFPEnv+"="+eng.cache.fingerprint,
+		helperDirEnv+"="+dir,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("append-kill helper never became ready")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

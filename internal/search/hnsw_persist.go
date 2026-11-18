@@ -570,6 +570,11 @@ func classifyWriteError(err error) (saveOutcome, error) {
 // policy constant (a sibling of provisionalHNSWParams), not a config knob. The
 // in-memory index stays current across a skipped save, and a restart reconciles
 // the slightly-stale file by catch-up, so the window never costs correctness.
+//
+// One build is exempt: a rebuild that began from a Stale counter (a dead
+// append-only writer's marker) must save despite the window (genChain.mustSave),
+// because the next search reads the clean post-repair counter and the witnessed
+// load would otherwise reinstall the older persisted graph over the caught-up one.
 const graphSaveDebounce = 30 * time.Second
 
 // nowFn is the clock the debounce reads; a test seam. Production is time.Now.

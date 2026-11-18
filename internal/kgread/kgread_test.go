@@ -1249,3 +1249,73 @@ func TestLocalKGWhileTheCounterIsInFlightIsDecodedUncached(t *testing.T) {
 		t.Fatal("a flagged read replaced the cached decode")
 	}
 }
+
+// U3 (S4): an append marker "a" with the commit lock FREE is a dead appender:
+// the cache decodes once under the Stale value and then serves it; with the
+// lock HELD it is a live appender and the cached decode keeps serving.
+//
+// Red before the change: "a" is a malformed counter, so the first query fails.
+// Mutation: make the probe always report the writer dead (the live row
+// reloads) or always alive (the stale row never reloads).
+func TestLocalKGAppendMarker(t *testing.T) {
+	setup := func(t *testing.T) (*storage.Vault, *atomic.Int64, func() int, string) {
+		v := newVault(t)
+		var reads atomic.Int64
+		old := readKGFn
+		readKGFn = func(v *storage.Vault, p string) (*indexstore.KGSnapshot, error) {
+			reads.Add(1)
+			return old(v, p)
+		}
+		t.Cleanup(func() { readKGFn = old })
+		ingestAll(t, v, ingest{"S1", "aa11", "2026-05-10", s1()})
+		query := func() int {
+			got, err := QueryEntity(v, project, tripleT[0], "", "both")
+			if err != nil {
+				t.Fatalf("QueryEntity: %v", err)
+			}
+			return len(got)
+		}
+		if n := query(); n != 1 || reads.Load() != 1 {
+			t.Fatalf("warm-up: %d triples, %d reads", n, reads.Load())
+		}
+		genPath, err := v.IndexGenerationPath(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v, &reads, query, genPath
+	}
+	mark := func(t *testing.T, v *storage.Vault, genPath string) {
+		g, err := indexstore.ReadGeneration(v, project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(genPath, []byte(fmt.Sprintf("%d %d a\n", g.Gen, g.Epoch)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("dead appender reloads once", func(t *testing.T) {
+		v, reads, query, genPath := setup(t)
+		mark(t, v, genPath)
+		if n := query(); n != 1 || reads.Load() != 2 {
+			t.Fatalf("first query over a stale marker: %d triples, %d reads; want 1, 2 (one reload)", n, reads.Load())
+		}
+		if n := query(); n != 1 || reads.Load() != 2 {
+			t.Fatalf("second query: %d triples, %d reads; want 1, 2 (the Stale value is remembered)", n, reads.Load())
+		}
+	})
+	t.Run("live appender does not reload", func(t *testing.T) {
+		v, reads, query, genPath := setup(t)
+		tx, err := indexstore.Lock(context.Background(), v, project, indexstore.NoTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Release()
+		mark(t, v, genPath) // the held lock makes this a live append
+		for i := 0; i < 3; i++ {
+			if n := query(); n != 1 || reads.Load() != 1 {
+				t.Fatalf("query %d during a live append: %d triples, %d reads; want 1, 1 (cache kept)", i+1, n, reads.Load())
+			}
+		}
+	})
+}

@@ -34,6 +34,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -480,4 +481,40 @@ func canonicalKey(targetAbsPath string) string {
 		}
 		tail = filepath.Join(filepath.Base(dir), tail)
 	}
+}
+
+// CommitLockFree reports whether nobody holds the lock file at path, without
+// waiting and without leaving it held: it opens the EXISTING file (never
+// creating one: a missing file is free), tries an exclusive flock, and if it
+// got the lock runs whileHeld (nil is fine; a test seam) and releases it at
+// once. It is the index store's probe for "is the writer that left an
+// append-in-flight marker still alive": the OS drops a dead process's flock, so
+// a free lock means no live holder.
+//
+// The lock is held for microseconds, so it is a leaf: nothing is acquired while
+// it is held. A writer polling for the lock (pollExclusive retries every 50 ms)
+// is delayed by at most one poll; a writer that tries exactly once (zero
+// timeout) can lose that one attempt.
+func CommitLockFree(path string, whileHeld func()) (free bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0) // NO O_CREATE: a probe never makes a lock file
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("vaultlock: open lock file for probe: %w", err)
+	}
+	got, ferr := flockTryExclusive(f)
+	if ferr != nil {
+		f.Close()
+		return false, fmt.Errorf("vaultlock: probe lock: %w", ferr)
+	}
+	if !got {
+		f.Close()
+		return false, nil
+	}
+	if whileHeld != nil {
+		whileHeld()
+	}
+	_ = funlock(f)
+	return true, f.Close()
 }

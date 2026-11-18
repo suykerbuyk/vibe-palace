@@ -294,6 +294,47 @@ func runHelper(mode string) int {
 		}
 		return fail("the helper was never killed")
 
+	case "append-kill", "append-hold":
+		// U3: Lock alpha, make the append named by VP_INDEXSTORE_WRITE, signal
+		// ready, then either block for ever (append-kill: the parent SIGKILLs
+		// it, so neither Commit nor Release runs) or wait for "go" and Commit
+		// (append-hold: a live append the parent observes).
+		tx, err := Lock(context.Background(), vault, "alpha", NoTimeout)
+		if err != nil {
+			return fail("Lock: %v", err)
+		}
+		tx.UseRecipe(testRecipe)
+		switch w := os.Getenv("VP_INDEXSTORE_WRITE"); w {
+		case "append":
+			err = tx.Append(NoteOwner("n"), withDay([]OwnedChunk{ownedChunk("killed append", "alpha", "d")}, "2026-05-13"))
+		case "putvectors":
+			err = tx.PutVectors(noVectors{}, map[string][]float32{"v1": {1}})
+		case "commit-archive":
+			err = tx.CommitArchive(commitOf("S", "A", "2026-05-13", "X", "Y"), noVectors{})
+		case "graph":
+			err = tx.WriteGraph([]byte("graph-1"))
+		case "completeness":
+			_, err = tx.WriteCompleteness(Completeness{LocalMisses: 3})
+		default:
+			return fail("unknown write %q", w)
+		}
+		if err != nil {
+			return fail("write: %v", err)
+		}
+		if err := sig("ready"); err != nil {
+			return fail("%v", err)
+		}
+		if mode == "append-hold" {
+			if !await("go") {
+				return fail("never told to go")
+			}
+			if err := tx.Commit(); err != nil {
+				return fail("Commit: %v", err)
+			}
+			return 0
+		}
+		select {} // block until killed
+
 	case "run-hold":
 		// Take the run lock, optionally report progress, signal, and hold
 		// until told to go (or until killed).

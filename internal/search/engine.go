@@ -83,7 +83,9 @@ type Engine struct {
 	// the counter still reads that value: any change to gen or epoch means
 	// another process (or this one, out of step) wrote the store, and the next
 	// search rebuilds the project in full (Scope 7's reload rule; there is no
-	// incremental load). A project with no entry has never been built, or was
+	// incremental load). A remembered value can be Stale (a dead append-only
+	// writer's marker, indexstore.Gen): it equals no ordinary reading, so the
+	// project reloads once on it and then matches it until the repair. A project with no entry has never been built, or was
 	// invalidated (a capture insert that timed out), and the next search
 	// builds it.
 	//
@@ -450,6 +452,11 @@ var corpusWalkItemHook func(kind string, n int)
 // *IndexNotBuiltError or serve-as-is. Production leaves it nil.
 var buildErrHook func(project string, err error)
 
+// afterEnsureReadHook, when a test sets it, runs in ensureIndex between its
+// counter read and the rebuild it falls through to, so a test can act (repair
+// the counter) between that read and rebuildAndRemember's own.
+var afterEnsureReadHook func(project string, g indexstore.Gen)
+
 // joinBuildHook, when a test sets it, runs when a search joins another
 // search's in-flight build of the same project.
 var joinBuildHook func(project string)
@@ -632,7 +639,13 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 	// with an hnsw.idx and a moved generation, so it carries its own budget. This
 	// is additive with rebuild's, not shared: see the task's section 8 Q1.
 	wctx, wcancel := searchBuildCtx(ctx, searchBuildBudget)
-	consumed := gerr == nil && e.tryWitnessedLoad(wctx, project, g)
+	//
+	// A Stale counter (an append-only writer died before its finishing bump)
+	// never takes the witnessed load: that path accepts a persisted graph whose
+	// ids are a SUBSET of the corpus (below), and the dead writer's append may
+	// be missing from the persisted graph. Only the corpus rebuild catches the
+	// graph up (catchUpGraph), so a Stale value forces it.
+	consumed := gerr == nil && !g.Stale && e.tryWitnessedLoad(wctx, project, g)
 	wcancel()
 	if consumed {
 		finished = true
@@ -641,7 +654,14 @@ func (e *Engine) ensureIndex(ctx context.Context, project string) error {
 		return nil
 	}
 
-	_, rerr := e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch, true)
+	if afterEnsureReadHook != nil {
+		afterEnsureReadHook(project, g)
+	}
+	// g.Stale travels into the build: rebuildAndRemember re-reads the counter,
+	// and another process's Lock may repair the marker between the two reads, so
+	// the second read can be clean although THIS rebuild exists because the
+	// first one was Stale.
+	_, rerr := e.rebuildAndRemember(ctx, project, searchLockTimeout, modeSearch, true, g.Stale)
 	finished = true
 	if buildErrHook != nil {
 		buildErrHook(project, rerr)
@@ -1507,7 +1527,7 @@ type RebuildStats struct {
 // for the project's mutex and commit lock with no timeout. The lazy search
 // path (ensureIndex) builds through the same code with searchLockTimeout.
 func (e *Engine) Rebuild(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeSearch, false)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeSearch, false, false)
 }
 
 // rebuildMode selects how a rebuild treats cache misses, tier by tier (the
@@ -1543,7 +1563,7 @@ var (
 // every local-tier cache miss, so a completed `vp index rebuild` leaves no
 // missing vector. The rebuild driver calls it.
 func (e *Engine) RebuildExplicit(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeExplicit, false)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeExplicit, false, false)
 }
 
 // RebuildNoEmbed rebuilds from embed-cache hits only, embedding nothing. A
@@ -1551,7 +1571,7 @@ func (e *Engine) RebuildExplicit(ctx context.Context, project string) (RebuildSt
 // `--no-embed` run can never read current with no vectors. The rebuild driver
 // calls it for `--no-embed`.
 func (e *Engine) RebuildNoEmbed(ctx context.Context, project string) (RebuildStats, error) {
-	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeNoEmbed, false)
+	return e.rebuildAndRemember(ctx, project, indexstore.NoTimeout, modeNoEmbed, false, false)
 }
 
 // rebuildAndRemember rebuilds project and remembers the store counter its
@@ -1560,13 +1580,17 @@ func (e *Engine) RebuildNoEmbed(ctx context.Context, project string) (RebuildSta
 // counter past the remembered value, and the next search rebuilds again. The
 // cache forgets its remembered regime, so a regime another process replaced
 // is read afresh.
-func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool) (RebuildStats, error) {
+//
+// staleObserved says the caller already saw a Stale counter (ensureIndex), which
+// this function's own read may no longer show if the marker was repaired in
+// between; it reaches the build as buildStart.staleObserved.
+func (e *Engine) rebuildAndRemember(ctx context.Context, project string, timeout time.Duration, mode rebuildMode, refuse bool, staleObserved bool) (RebuildStats, error) {
 	e.buildMu.Lock()
 	inv := e.invalidated[project]
 	e.buildMu.Unlock()
 	g, gerr := indexstore.ReadGeneration(e.vault, project)
 	e.cache.Forget(project)
-	return e.rebuild(ctx, project, timeout, mode, refuse, buildStart{gen: g, readable: gerr == nil, invalidated: inv})
+	return e.rebuild(ctx, project, timeout, mode, refuse, buildStart{gen: g, readable: gerr == nil, invalidated: inv, staleObserved: staleObserved})
 }
 
 // buildStart is what a build knew when it started: the store counter (and
@@ -1575,6 +1599,9 @@ type buildStart struct {
 	gen         indexstore.Gen
 	readable    bool
 	invalidated uint64
+	// staleObserved: the search that started this build saw a Stale counter
+	// (a dead append-only writer), whatever this build's own read shows.
+	staleObserved bool
 }
 
 // remember records the counter project's in-memory index now matches. It is
@@ -1607,6 +1634,12 @@ type genChain struct {
 	cur     indexstore.Gen
 	broken  bool
 	skipped bool // a write was skipped because the commit lock was busy
+	// mustSave: the build began from a Stale counter, so it caught the graph up
+	// past what is persisted, and the persisted graph must be replaced even
+	// inside graphSaveDebounce. The next search reads the clean post-repair
+	// counter, where the witnessed load would otherwise reinstall the older
+	// persisted subset graph over the caught-up one.
+	mustSave bool
 }
 
 func (c *genChain) step(before, after indexstore.Gen) {
@@ -1974,7 +2007,7 @@ func (e *Engine) rebuild(ctx context.Context, project string, timeout time.Durat
 		return stats, err
 	}
 	defer pl.release()
-	chain := genChain{cur: start.gen}
+	chain := genChain{cur: start.gen, mustSave: start.gen.Stale || start.staleObserved}
 
 	// The embed cache's directory first: resolving it runs the cache's one-time
 	// layout sweep (legacy caches migrated, husks healed, orphan caches reaped)
@@ -2892,7 +2925,9 @@ func (e *Engine) commitGraphAction(ctx context.Context, pl *projectLock, timeout
 		// trigger past the window (or a restart's catch-up) persists it. A missing
 		// file is not debounced (the first convert always saves); a stat error
 		// falls through to saveGraph (the safe direction), never a silent skip.
-		if mt, present, serr := graphFileModTime(e.vault, project); serr == nil && present && nowFn().Sub(mt) < graphSaveDebounce {
+		// A build that began from a Stale counter (chain.mustSave) is not
+		// debounced: see genChain.mustSave.
+		if mt, present, serr := graphFileModTime(e.vault, project); !chain.mustSave && serr == nil && present && nowFn().Sub(mt) < graphSaveDebounce {
 			out = skipDebounce
 			break
 		}

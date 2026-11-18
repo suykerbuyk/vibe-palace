@@ -227,6 +227,12 @@ func (tx *Tx) rewriteLedgerDroppingSessions() (int, []string, error) {
 		buf.Write(l)
 		buf.WriteByte('\n')
 	}
+	// DropTranscriptTier already called beginDestructive (a no-op here); the
+	// call keeps the seat in the function that writes, which the seat ratchet
+	// (TestEveryNoteWriteIsSeatedFirst) requires.
+	if err := tx.beginDestructive(); err != nil {
+		return 0, nil, err
+	}
 	if err := writeFile(tx.files.ledger, buf.Bytes()); err != nil {
 		return 0, nil, err
 	}

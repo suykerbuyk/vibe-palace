@@ -112,6 +112,9 @@ func (tx *Tx) ensureChunkFingerprint() error {
 	if r == nil {
 		return ErrNoRecipe
 	}
+	if err := tx.beginAppend(); err != nil {
+		return err
+	}
 	if err := writeFile(tx.files.fingerprint, []byte(r.Sum())); err != nil {
 		return err
 	}

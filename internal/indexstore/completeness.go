@@ -161,6 +161,9 @@ func (tx *Tx) WriteCompleteness(c Completeness) (bool, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("indexstore: read %s: %w", tx.files.completeness, err)
 	}
+	if err := tx.beginAppend(); err != nil {
+		return false, err
+	}
 	if err := mkdirAll(tx.files.dir); err != nil {
 		return false, fmt.Errorf("indexstore: create %s: %w", tx.files.dir, err)
 	}

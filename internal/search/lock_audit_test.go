@@ -119,6 +119,10 @@ func calls(fn *ast.FuncDecl) []string {
 //     process deadlocks);
 //   - only (*CacheWriter).Put calls the cache's unexported putVector, so every
 //     vector is written under a held commit lock;
+//   - indexstore.ReadGeneration may try-lock the commit lock for an instant (the
+//     stale append-marker probe, vaultlock.CommitLockFree): it is a leaf, taken
+//     and released inside one call, and it is not indexstore.Lock, so this test
+//     does not see it;
 //   - only Engine.runConvert takes the index run lock, and only via TryRunLock as
 //     a transient holder (ADR-016 decision 3); the corpus-build paths never do
 //     (decision 1), and runConvert must still take it (checked below).

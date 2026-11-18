@@ -78,10 +78,15 @@ func TestGenerationReload(t *testing.T) {
 }
 
 // TestALaterCommitSurfacesRecordsACrashLeftUnannounced (R-11): a process that
-// dies after its records are durable and before it bumps the counter leaves
-// them unannounced: a warm engine does not reload for them (documented, not
-// required). The next commit by anyone moves the counter, and the full reload
-// it triggers finds them.
+// dies after its records are durable and before it bumps the counter used to
+// leave them unannounced. Since U3 the Tx set the append marker before its
+// first write, so the counter reads Stale (the same gen and epoch) and the warm
+// engine's NEXT search reloads and serves the records with no writer at all. A
+// later commit by anyone still works: its repairing Lock bumps the counter and
+// the engine reloads again.
+//
+// Mutation: drop the marker (beginAppend) from putVectors/appendLines; the warm
+// engine then misses the records until the later commit.
 func TestALaterCommitSurfacesRecordsACrashLeftUnannounced(t *testing.T) {
 	a, v := testEngine(t)
 	writeSessionNote(t, v.Root, "proj", "2026-05-13-aaaa0000-01", "2026-05-13", "wrap", "a note")
@@ -89,11 +94,11 @@ func TestALaterCommitSurfacesRecordsACrashLeftUnannounced(t *testing.T) {
 	const crashed = "a chunk a crashed ingester committed"
 	g0, _ := indexstore.ReadGeneration(v, "proj")
 	runCrashHelper(t, a, v, "proj", crashed)
-	if g, _ := indexstore.ReadGeneration(v, "proj"); g != g0 {
-		t.Fatalf("precondition: the crash helper moved the counter (%v -> %v)", g0, g)
+	if g, err := indexstore.ReadGeneration(v, "proj"); err != nil || !g.Stale || g.Gen != g0.Gen || g.Epoch != g0.Epoch {
+		t.Fatalf("precondition: after the crash the counter reads %+v (err %v); want %+v with Stale set", g, err, g0)
 	}
-	if hasContent(search(t, a, "proj", crashed), crashed) {
-		t.Log("the warm engine saw the unannounced records early (allowed)")
+	if !hasContent(search(t, a, "proj", crashed), crashed) {
+		t.Fatal("the warm engine did not serve the crashed process's records: the Stale marker did not trigger a reload")
 	}
 	writer := NewEmbedCache(v)
 	writer.fingerprint = a.cache.fingerprint

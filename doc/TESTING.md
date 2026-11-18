@@ -1586,7 +1586,7 @@ goroutine nests two index commit locks or tries the run lock while holding one.
 | `TestSharedRecordDating` | A shared chunk's fields come from the live owner with the earliest day, in any ingest order; a batch's day comes from the ledger |
 | `TestReplaceOwned` | `ReplaceOwned` adds, rewrites a re-dated owner line, removes and deletes; the epoch changes exactly when more than an append happened |
 | `TestReplaceOwnedAppendsAgainstTheFileItRead` | The append branch indexes from the file it read, not a stale cache |
-| `TestStoreCounterAcrossWrites` | Each kind of write moves the counter as specified (a destructive one by two); a failed append moves nothing; a failed destructive write has already moved it |
+| `TestStoreCounterAcrossWrites` | Each kind of write moves the counter as specified (a destructive one by two); a failed append moves it by one, with the same epoch (its append marker was set before the write); a failed destructive write has already moved it |
 | `TestGraphWrites` | Graph writes move `gen` only, leave records byte-identical, and a failed one keeps the old graph |
 | `TestDiscardScope` | Each discard removes exactly its files; a vector discard keeps the embed cache's sidecar |
 | `TestDiscardChunksKilledPartWay` | A chunk discard killed after any step leaves no live session over missing chunks |
@@ -3537,6 +3537,33 @@ real inert guard in this feature:
 | `TestThePurgeIsANoOpAfterACoarseDiscard` | COMPONENT | same | make the purge error when it finds no archive owner |
 | the five `TestAutomaticRebuildBounded*` fixture tests | COMPONENT | `internal/sourceaudit/automatic_rebuild_bounded_test.go` | census'd in *Every rule, and where it is tested* above, under `automatic-rebuild-unbounded`. The REAL-tree mutations (remove the flag from either live spawn site) redden `TestSourceAuditGate` and the finding NAMES the site |
 | `TestAPurgeKilledAfterTheLedgerStepLeavesTheCounterMoved` | WIRING | same | remove the explicit post-ledger bump. 🔴 It asserts the counter moved by **two**, not one: `beginDestructive` contributes exactly one, so `after > before` alone is an INERT assertion that stays green on this mutation |
+
+### The append marker (task `append-only-tx-kill-leaves-append-unannounced`)
+
+An append-only Tx sets the counter's third field to `a` before its first write
+(`Tx.beginAppend`) without moving `gen` or `epoch`; a lock-free reader sees the
+pre-Tx value while the commit lock is held and a `Stale` value when the marker
+is set and the lock is free (a dead writer). Tests were written first and run
+red against the tree without the change (the three seam declarations aside).
+
+| Test | Kind | File | What it pins / the mutation that must turn it red |
+|---|---|---|---|
+| `TestAKilledAppendOnlyTxIsStaleToLockFreeReaders` | WIRING (5 write kinds: append, putvectors, commit-archive, graph, completeness) | `internal/indexstore/appendflag_test.go` | after a real SIGKILL the raw counter carries `a`, gen/epoch are unchanged, `ReadGeneration` is `Stale` and unequal to the remembered value, and the read writes nothing. Delete `beginAppend` from that kind's seat |
+| `TestAKilledAppendIsRepairedByTheNextLockWithoutAnEpochChange` | WIRING | same | the next `Lock` bumps gen by one, keeps the epoch, clears the marker. Stop repairing `a` in `ensureGenFile`; or repair it with a new epoch |
+| `TestALiveAppendTxIsInvisibleToLockFreeReaders` | WIRING | same | while the appender lives `ReadGeneration` returns exactly the pre-Tx `Gen`, no error, not Stale; Commit clears the marker at gen+1. Make the probe always report the writer dead |
+| `TestADestructiveStepSupersedesTheAppendMarker` | WIRING | same | append then `Rewrite`: `a` becomes `w`, `ErrWriteInFlight` after, gen+2 and a new epoch. Make `beginDestructive` skip its bump when the Tx holds `a` |
+| `TestATxWithNoEffectiveWriteSetsNothing` | WIRING | same | `Lock`/empty `PutVectors`/records already present/`DeleteGraph` with no graph/zero `WriteCompleteness`/`Release`: the counter file is byte-identical. Seat `beginAppend` ahead of a no-op guard |
+| `TestAFailedAppendMovesTheCounterAndClearsTheMarker` | WIRING | same | a failed append leaves gen+1, same epoch, marker cleared. Drop `tx.wrote = true` in `beginAppend` |
+| `TestTheStaleCheckDoesNotCallAFinishedWriterStale` | WIRING | same | marker set, lock free, but the writer's finish lands before the re-read: the fresh clean counter is returned. Drop the re-read |
+| `TestEveryNoteWriteIsSeatedFirst` | RATCHET | same | every function calling `tx.noteWrite` calls `beginAppend`/`beginDestructive` earlier in the same function. Delete a seat, or move it after its effect |
+| `TestAProbeHeldAcrossAWriterAttempt` | WIRING (seam) | same | the probe holds the commit lock while a ZERO-timeout `Lock` fails (`ErrLockWaitTimeout`) and a 5 s `Lock` waits out the probe and its write is announced. Stop calling the held hook, or keep the lock after the probe |
+| `TestCommitLockFree` | COMPONENT | `internal/vaultlock/vaultlock_test.go` | free with no holder, held while another descriptor holds it, free and creating nothing for a missing file, leaves nothing held. Report held for a missing file; keep the lock; create the file |
+| `TestAKilledAppendSurvivesTheDebouncedGraphAndTheRepairInducedGen` | WIRING | `internal/search/append_marker_test.go` | warm HNSW project, save debounce ACTIVE, killed append: search 1 and the next 29 all return it, the durable graph holds it, at most two builds then none, and a fresh engine returns it. Drop the Stale-to-rebuild condition at `ensureIndex`; drop the `!chain.mustSave` debounce bypass |
+| `TestAKilledAppendIsServedFromABruteIndexWithoutAnyNewWriter` | WIRING | same | the same on a brute-served project |
+| `TestASearchOverlappingALiveAppendKeepsTheFastPath` | WIRING | same | 20 searches during a live append: zero rebuilds, none blocks on the commit lock, and the commit is picked up after. Make `a` return `ErrWriteInFlight`, or the probe always report the writer dead |
+| `TestTheStaleObservationSurvivesARepairBetweenTheTwoReads` | WIRING (seam) | same | `afterEnsureReadHook` repairs the marker between `ensureIndex`'s read and `rebuildAndRemember`'s: the carried bit still forces the graph save, the current and a fresh engine serve the item. Derive `mustSave` from the second read only |
+| `TestASkippedCaptureInsertIsRetriedByTheNextSearch` | WIRING (seam) | same | the probe holds the lock while `indexDrawers(…, 0)` runs: it is skipped, `insertSkipped` marks the project out of date, and the next search serves the drawer. Stop `insertSkipped` marking the project |
+| `TestLocalKGAppendMarker` | WIRING | `internal/kgread/kgread_test.go` | a dead appender's marker reloads the KG cache once and is then remembered; a live one does not reload. Make the probe always dead / always alive |
 
 ### 🔴 What NO guard here covers
 

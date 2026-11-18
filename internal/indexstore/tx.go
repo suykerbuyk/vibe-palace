@@ -44,9 +44,9 @@ type Tx struct {
 	gen         Gen          // the counter: as found by Lock, then as left by Commit
 	wrote       bool
 	changeEpoch bool
-	preBumped   bool   // the counter was bumped before a destructive step
-	st          *state // loaded on the first write or read that needs it
-	broken      bool   // a write failed part-way: the cached state is not trusted
+	mark        genMark // the marker this Tx holds in the counter file (markNone until a first write)
+	st          *state  // loaded on the first write or read that needs it
+	broken      bool    // a write failed part-way: the cached state is not trusted
 
 	// chunks is chunks.jsonl folded, read and folded at most ONCE per Tx
 	// (Tx.chunkFold); nil means not loaded yet. syncedFold is the fold object
@@ -186,13 +186,19 @@ func (tx *Tx) Held() bool {
 // the lock and committed here in batches (ADR-014 decision 7, the tier table's
 // "notes embed and glide-path lazy embed" row). It refuses a finished Tx.
 //
-// A vector write is an append: the counter's gen moves when the Tx finishes,
-// so every running engine reloads and sees the new cache hits, and the epoch
-// is left alone. A batch that failed part-way still moves gen, because some
-// of its vectors may be on disk.
+// A vector write is an append: the Tx sets the counter's append marker before
+// the first vector (beginAppend), and the counter's gen moves when the Tx
+// finishes, so every running engine reloads and sees the new cache hits, and
+// the epoch is left alone. A batch that failed part-way still moves gen, because
+// some of its vectors may be on disk.
 func (tx *Tx) PutVectors(vw VectorWriter, vecs map[string][]float32) error {
 	if !tx.Held() {
 		return errors.New("indexstore: PutVectors on a finished Tx")
+	}
+	if len(vecs) > 0 {
+		if err := tx.beginAppend(); err != nil {
+			return err
+		}
 	}
 	if err := tx.putVectors(vw, vecs); err != nil {
 		if len(vecs) > 0 {
@@ -217,8 +223,8 @@ func (tx *Tx) noteWrite(moreThanAppend bool) {
 }
 
 // beginDestructive bumps the store counter, with a new epoch and the
-// in-flight flag set, BEFORE the first step of a write that is more than an
-// append (a rewrite, a removal, a torn-tail cut), once per Tx. It does two
+// destructive flag ("w") set, BEFORE the first step of a write that is more than
+// an append (a rewrite, a removal, a torn-tail cut), once per Tx. It does two
 // jobs.
 //
 // The new epoch: if this process dies part-way through the write, the counter
@@ -235,37 +241,62 @@ func (tx *Tx) noteWrite(moreThanAppend bool) {
 // is cleared by finishLocked's bump (Commit or Release). A kill reaches
 // neither, so the flag outlives the writer, and the next Lock repairs it
 // (ensureGenFile) with a bump and a new epoch. A step that bumps the counter
-// mid-Tx must use bumpMidTx, which keeps the flag.
+// mid-Tx must use bumpMidTx, which keeps the marker.
 //
-// This covers destructive Txs only. An append-only Tx never sets the flag, so
-// a kill after an append and before the finishing bump leaves that append
-// unannounced (see Commit).
-//
-// The finishing bump still moves the counter again, so a commit that did more
-// than append moves gen by two.
+// A Tx that already holds the append marker ("a", beginAppend) is upgraded: the
+// bump replaces "a" with "w", so the destructive protection wins and the totals
+// match a Tx that was destructive from the start (Gen+1 here, Gen+1 at the
+// finish). The finishing bump still moves the counter again, so a commit that
+// did more than append moves gen by two.
 func (tx *Tx) beginDestructive() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
-	if tx.preBumped {
+	if tx.mark == markDestructive {
 		return nil
 	}
-	g, err := bumpGen(tx.genPath, true, true)
+	g, err := bumpGen(tx.genPath, true, markDestructive)
 	if err != nil {
 		return err
 	}
-	tx.preBumped, tx.gen = true, g
+	tx.mark, tx.gen = markDestructive, g
 	tx.wrote, tx.changeEpoch = true, true
 	return nil
 }
 
+// beginAppend sets the append marker ("a") in the counter file BEFORE the first
+// write of an append-only Tx, once per Tx, through the same full-fsync file
+// write a bump uses. It changes neither gen nor epoch: a lock-free reader that
+// sees the marker while this Tx holds the commit lock gets the unchanged
+// counter (ReadGeneration), and only a marker whose writer died, which a reader
+// finds by probing the commit lock, is reported as Stale. The finishing bump
+// (finishLocked) clears it; a kill reaches that bump never, so the next Lock
+// repairs the marker with a Gen bump (ensureGenFile).
+//
+// It is a no-op once the Tx holds any marker, and it is called only where a
+// write will really happen (after every no-op early return), so a Tx whose
+// writes are all no-ops sets nothing and leaves the counter byte-identical.
+//
+// The Tx counts as having written from here on: if the write that follows
+// fails, or the file write itself fails after the rename, the finishing bump
+// still announces whatever may be on disk.
+func (tx *Tx) beginAppend() error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if tx.mark != markNone {
+		return nil
+	}
+	tx.mark, tx.wrote = markAppend, true
+	return writeGenFile(tx.genPath, tx.gen, markAppend)
+}
+
 // bumpMidTx bumps the counter with a new epoch in the middle of a Tx, for a
 // step that wants its write announced at once rather than at the Tx's finish.
-// It keeps the in-flight flag set when beginDestructive set it, which a plain
-// bumpGenFile would clear for the rest of the Tx.
+// It keeps the Tx's marker, which a plain bumpGenFile would clear for the rest
+// of the Tx.
 func (tx *Tx) bumpMidTx() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
-	g, err := bumpGen(tx.genPath, true, tx.preBumped)
+	g, err := bumpGen(tx.genPath, true, tx.mark)
 	if err != nil {
 		return err
 	}
@@ -280,12 +311,11 @@ func (tx *Tx) bumpMidTx() error {
 // Calling it twice is an error; Release after Commit is a no-op.
 //
 // The counter is bumped after the records are written, so a process that dies
-// between the two leaves records no counter announces. A writer still sees
-// them: its cached state is valid only while the store files keep the sizes
-// it recorded (see state). A lock-free reader that keys on the counter alone
-// misses that append until the next counter change. This holds for an
-// append-only Tx: only a destructive Tx sets the in-flight flag
-// (beginDestructive).
+// between the two leaves records the bump never announces. The Tx marks the
+// counter before its first write (beginAppend for an append, beginDestructive
+// for more), so such a process leaves a marker: a lock-free reader sees an
+// append marker whose writer is dead as a Stale counter (or a destructive flag
+// as ErrWriteInFlight), and the next Lock repairs it (ensureGenFile).
 func (tx *Tx) Commit() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()

@@ -29,8 +29,9 @@ import (
 // cache also remembers the sizes of the three files a Tx appends to
 // (storeSizes), and is valid only while they are unchanged. Appends only grow
 // those files, and every write that is more than an append bumps the counter
-// first (beginDestructive), so the counter and the sizes together announce
-// every change.
+// first (beginDestructive), while an append sets the counter's append marker
+// before its first write (beginAppend) and bumps at the finish, so the counter
+// and the sizes together announce every change.
 type state struct {
 	gen        Gen
 	sizes      storeSize

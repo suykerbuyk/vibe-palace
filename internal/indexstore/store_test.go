@@ -1012,7 +1012,10 @@ func TestStoreCounterAcrossWrites(t *testing.T) {
 		t.Fatalf("the counter after the discard is %+v; it must keep counting", g)
 	}
 
-	// A failed append moves nothing: no record was written.
+	// A failed append moves the counter by one, with the same epoch: the append
+	// marker was set before the write (Tx.beginAppend), so the Release bump
+	// announces whatever the failed write may have left. (Before U3 it moved
+	// nothing.)
 	before := readGen(t, v, "alpha")
 	oldSync := fsyncFile
 	fsyncFile = func(f *os.File) error {
@@ -1028,8 +1031,8 @@ func TestStoreCounterAcrossWrites(t *testing.T) {
 	if err == nil {
 		t.Fatal("the injected append error was not returned")
 	}
-	if g := readGen(t, v, "alpha"); g != before {
-		t.Fatalf("a failed append moved the counter %+v -> %+v", before, g)
+	if g := readGen(t, v, "alpha"); g.Gen != before.Gen+1 || g.Epoch != before.Epoch {
+		t.Fatalf("a failed append moved the counter %+v -> %+v, want gen+1 and the same epoch", before, g)
 	}
 
 	// A failed destructive write has already moved the counter, with a new

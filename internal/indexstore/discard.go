@@ -145,6 +145,9 @@ func (tx *Tx) discardVectors() error {
 // ledger or KG record, so it bumps the change counter's gen and leaves its
 // epoch alone: an engine's in-memory graph stays valid.
 func (tx *Tx) WriteGraph(data []byte) error {
+	if err := tx.beginAppend(); err != nil {
+		return err
+	}
 	if err := tx.fail(writeFile(tx.files.graph, data)); err != nil {
 		return err
 	}
@@ -156,6 +159,16 @@ func (tx *Tx) WriteGraph(data []byte) error {
 // longer matches). Like WriteGraph it bumps gen only. Deleting a graph that is
 // not there writes nothing.
 func (tx *Tx) DeleteGraph() error {
+	// A missing graph is a no-op that must set no marker, so look before the
+	// marker is set (the Tx holds the commit lock: nothing else removes it).
+	if _, err := os.Stat(tx.files.graph); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("indexstore: stat %s: %w", tx.files.graph, err)
+	}
+	if err := tx.beginAppend(); err != nil {
+		return err
+	}
 	err := removeFile(tx.files.graph)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil

@@ -675,3 +675,54 @@ func TestAcquireWithTimeoutNegativeTriesOnce(t *testing.T) {
 		}
 	})
 }
+
+// CommitLockFree is the index store's "is the appender alive" probe: free with
+// no holder, held while another descriptor holds the lock, free when the file
+// is missing (and it creates nothing), and it leaves nothing held (a following
+// try-acquire succeeds). whileHeld runs only when the probe really holds it.
+//
+// Mutation: report held when the file is missing; keep the lock after
+// returning; create the file; call whileHeld without holding.
+func TestCommitLockFree(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "p.commit.lock")
+
+	var ran bool
+	free, err := CommitLockFree(lock, func() { ran = true })
+	if err != nil || !free || ran {
+		t.Fatalf("missing file: free=%v ran=%v err=%v; want free, no hook (nothing was held)", free, ran, err)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatalf("the probe created the lock file (stat err %v)", err)
+	}
+
+	rel, ok, err := TryAcquireFile(lock)
+	if err != nil || !ok {
+		t.Fatalf("fixture acquire: ok=%v err=%v", ok, err)
+	}
+	ran = false
+	free, err = CommitLockFree(lock, func() { ran = true })
+	if err != nil || free || ran {
+		t.Fatalf("held by another descriptor: free=%v ran=%v err=%v; want not free, no hook", free, ran, err)
+	}
+	if err := rel(); err != nil {
+		t.Fatal(err)
+	}
+
+	var heldDuring bool
+	free, err = CommitLockFree(lock, func() {
+		_, ok, _ := TryAcquireFile(lock)
+		heldDuring = !ok
+	})
+	if err != nil || !free {
+		t.Fatalf("unheld file: free=%v err=%v", free, err)
+	}
+	if !heldDuring {
+		t.Fatal("whileHeld ran without the probe holding the lock")
+	}
+	rel2, ok, err := TryAcquireFile(lock)
+	if err != nil || !ok {
+		t.Fatalf("after the probe the lock is still held: ok=%v err=%v", ok, err)
+	}
+	_ = rel2()
+}

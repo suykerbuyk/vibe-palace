@@ -84,9 +84,9 @@ func TestAKilledDestructiveTxLeavesTheCounterInFlightUntilTheNextLock(t *testing
 		t.Fatalf("(a) raw counter after SIGKILL = %q, want %q as its third field", flagged, inFlightMark)
 	}
 	gp, _ := v.IndexGenerationPath("alpha")
-	_, flaggedInFile, err := readGenRaw(gp)
-	if err != nil || !flaggedInFile {
-		t.Fatalf("(a) readGenRaw = flag %v err %v, want flag set", flaggedInFile, err)
+	_, flaggedMark, err := readGenRaw(gp)
+	if err != nil || flaggedMark != markDestructive {
+		t.Fatalf("(a) readGenRaw = mark %q err %v, want the destructive flag", flaggedMark, err)
 	}
 	rawG, _, _ := readGenRaw(gp)
 
@@ -198,20 +198,23 @@ func TestReleaseOfADestructiveTxClearsTheFlag(t *testing.T) {
 	}
 }
 
-// TestTheCounterFlagGrammar: a third field "w" is the flag; any other third
-// field, or a fourth, is malformed; the two-field form is unchanged.
+// TestTheCounterFlagGrammar: a third field "w" is the destructive flag and "a"
+// the append marker; any other third field, or a fourth, is malformed; the
+// two-field form is unchanged.
 func TestTheCounterFlagGrammar(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
-		text     string
-		inFlight bool
-		bad      bool
+		text string
+		mark genMark
+		bad  bool
 	}{
-		{"3 77\n", false, false},
-		{"3 77 w\n", true, false},
-		{"3 77 x\n", false, true},
-		{"3 77 w w\n", false, true},
-		{"3\n", false, true},
+		{"3 77\n", markNone, false},
+		{"3 77 w\n", markDestructive, false},
+		{"3 77 a\n", markAppend, false},
+		{"3 77 x\n", markNone, true},
+		{"3 77 w w\n", markNone, true},
+		{"3 77 a a\n", markNone, true},
+		{"3\n", markNone, true},
 	}
 	for _, c := range cases {
 		p := filepath.Join(dir, "g")
@@ -225,8 +228,8 @@ func TestTheCounterFlagGrammar(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || fl != c.inFlight || g != (Gen{Gen: 3, Epoch: 77}) {
-			t.Errorf("%q: got %v flag %v err %v", c.text, g, fl, err)
+		if err != nil || fl != c.mark || g != (Gen{Gen: 3, Epoch: 77}) {
+			t.Errorf("%q: got %v mark %q err %v", c.text, g, fl, err)
 		}
 	}
 }

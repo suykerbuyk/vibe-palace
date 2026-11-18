@@ -91,6 +91,9 @@ func loadLocal(v *storage.Vault, project string) (*localKG, error) {
 		// (the next Lock repairs that). The counter cannot say whether this
 		// decode matches the store, so decode without the cache and remember
 		// nothing: no counter value is stored, and the cache is not read.
+		// (An append marker never arrives here as an error: while its writer
+		// lives ReadGeneration returns the pre-Tx counter, and once it died the
+		// counter is Gen.Stale, which the cache below treats as any new value.)
 		return decodeUncached(v, project)
 	}
 	if err != nil {
