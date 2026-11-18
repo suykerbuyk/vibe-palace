@@ -94,10 +94,11 @@ func TestAnAuthoredProjectIsNotTalliedAsAProblem(t *testing.T) {
 			"vault this guard cannot see the tally predicate at all: %s", oc.State, search.CoverageAuthored, oc.Reason)
 	}
 
-	rep := computeIndexCoverage(vault, "boot")
-	if rep == nil {
-		t.Fatal("computeIndexCoverage returned nil")
+	bootCov, err := coverageForProject(vault, "boot")
+	if err != nil {
+		t.Fatal(err)
 	}
+	rep := completeIndexCoverage(vault, "boot", bootCov)
 	if n := rep.Others[string(search.CoverageAuthored)]; n != 0 {
 		t.Fatalf("the bootstrap tally counted %d authored project(s) as a problem: %v. A host that "+
 			"excludes transcripts everywhere would report others: {authored: N} at every session "+

@@ -326,12 +326,39 @@ func stopEndsRun(stopped string) bool {
 // leaves the want for the next trigger — and whether it embedded (reached
 // RebuildExplicit; U4 site (b-stamp), ORed by the caller to arm the cooldown).
 func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string, transcripts bool) (RunResult, bool, bool, error) {
+	// 🔴 ONE per-project purge field, attached on EVERY return. The steps fill pp
+	// as they go; the attachment lives here, outside them, so no return path
+	// below (the purge's own error, RunHeld's, RebuildExplicit's, success) can
+	// forget it. Rebuild appends it to the aggregate through RunResult.add.
+	var pp ProjectPurge
+	res, served, embedded, err := rebuildProjectSteps(ctx, d, held, eng, wd, o, p, transcripts, &pp)
+	if pp.Project != "" {
+		res.Purge = &pp
+	}
+	return res, served, embedded, err
+}
+
+// ProjectPurge is one project's `--drop-transcripts` outcome: what the
+// archive-owner purge removed (committed vs attempted, see
+// indexstore.TranscriptPurge) and whether the store was discarded BEFORE the
+// purge on a fingerprint mismatch, which makes a zero purge a no-op over a store
+// already emptied rather than a statement that nothing was there.
+type ProjectPurge struct {
+	Project string
+	indexstore.TranscriptPurge
+	// StoreDiscardedEarlier is "chunks", "vectors" or "chunks+vectors" when
+	// step 3's discardOnMismatch acted before the purge, "" otherwise.
+	StoreDiscardedEarlier string
+}
+
+func rebuildProjectSteps(ctx context.Context, d Deps, held *indexstore.RunLock, eng rebuildEngine, wd *watchdog, o RebuildOptions, p string, transcripts bool, pp *ProjectPurge) (RunResult, bool, bool, error) {
 	var res RunResult
 	var embedded bool
 
 	// Step 3: discard, only here, only what a present-and-different fingerprint
 	// covers, in one commit step. A missing fingerprint discards nothing.
-	if err := discardOnMismatch(ctx, d, p); err != nil {
+	discarded, err := discardOnMismatch(ctx, d, p)
+	if err != nil {
 		return res, false, embedded, err
 	}
 
@@ -341,7 +368,12 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// already-built store back under the chunk-store size cliff and makes the
 	// `authored` coverage state reachable.
 	if o.DropTranscripts {
-		if _, err := eng.DropTranscriptTier(ctx, p); err != nil {
+		*pp = ProjectPurge{Project: p, StoreDiscardedEarlier: discarded}
+		tp, err := eng.DropTranscriptTier(ctx, p)
+		// Kept on the error return too: the purge commits step by step, so a
+		// partial purge has removed data the caller must be told about.
+		pp.TranscriptPurge = tp
+		if err != nil {
 			return res, false, embedded, fmt.Errorf("drop transcript tier: %w", err)
 		}
 	}
@@ -392,7 +424,6 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 	// stop the tiers are rebuilt from what is ledgered, so search stays
 	// coherent; completion below is what the stop prevents.
 	var stats search.RebuildStats
-	var err error
 	if o.NoEmbed {
 		stats, err = eng.RebuildNoEmbed(ctx, p)
 	} else {
@@ -467,10 +498,10 @@ func rebuildProject(ctx context.Context, d Deps, held *indexstore.RunLock, eng r
 // A graph-fingerprint mismatch is NOT discarded here (step 5b heals it). A
 // missing fingerprint discards nothing, and nothing else in the system
 // discards.
-func discardOnMismatch(ctx context.Context, d Deps, p string) error {
+func discardOnMismatch(ctx context.Context, d Deps, p string) (string, error) {
 	_, reasons, err := d.Engine.Stale(p)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var discardChunks, discardVectors bool
 	for _, r := range reasons {
@@ -485,32 +516,42 @@ func discardOnMismatch(ctx context.Context, d Deps, p string) error {
 		}
 	}
 	if !discardChunks && !discardVectors {
-		return nil
+		return "", nil
 	}
 	ix, err := palace.ProjectIndexing(d.Vault, p)
 	if err != nil {
-		return err
+		return "", err
 	}
 	tx, err := indexstore.Lock(ctx, d.Vault, p, indexstore.NoTimeout)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Release()
 	if discardChunks {
 		// discardChunks needs the recipe to write the fresh fingerprint.
 		tx.UseRecipe(ix.Recipe)
 		if err := tx.Discard(indexstore.DiscardChunks); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if discardVectors {
 		if err := tx.Discard(indexstore.DiscardVectors); err != nil {
-			return err
+			return "", err
 		}
 	}
 	slog.Info("vp index rebuild: discarded on a fingerprint mismatch", "project", p,
 		"chunks", discardChunks, "vectors", discardVectors)
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	switch {
+	case discardChunks && discardVectors:
+		return "chunks+vectors", nil
+	case discardChunks:
+		return "chunks", nil
+	default:
+		return "vectors", nil
+	}
 }
 
 // everyLiveArchiveAccounted reports whether every session with an archive on

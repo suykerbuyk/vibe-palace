@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/palace"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -350,6 +351,12 @@ func traverseHandler(vault *storage.Vault) mcp.HandlerFunc {
 
 		nodes, err := g.Traverse(p.Start, maxHops)
 		if err != nil {
+			// The palace graph is built from the chunk store, not the KG; on an
+			// excluded transcript tier its transcript-derived rooms are absent,
+			// which a bare "not found" would hide.
+			if st, _ := kgWhy(vault, p.Project, true); st == search.KGTierExcluded {
+				return nil, fmt.Errorf("traverse: %w; this host excludes the transcript tier, so transcript-derived rooms are not in the graph", err)
+			}
 			return nil, fmt.Errorf("traverse: %w", err)
 		}
 

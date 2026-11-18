@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
+	"strings"
+
+	"github.com/suykerbuyk/vibe-palace/internal/index"
 )
 
 // TranscriptPurge reports what one DropTranscriptTier did.
@@ -23,6 +26,30 @@ type TranscriptPurge struct {
 	KGDropped bool
 	// VectorsReaped is the orphaned *.vec files the reap removed.
 	VectorsReaped int
+
+	// KGEntitiesDropped and KGTriplesDropped count the KG RECORDS the purge
+	// removed: a record is removed only when every one of its owners was an
+	// archive owner, so a record a mempalace batch also owns survives (trimmed)
+	// and is not counted. They are fold records, not the collapsed union
+	// vp_kg_stats shows, so they do not equal its entity and triple counts.
+	KGEntitiesDropped int
+	KGTriplesDropped  int
+
+	// Completed names the steps that COMMITTED, in order (purge-ledger,
+	// purge-chunks, purge-kg, purge-vectors). Every count above is
+	// committed-only: it is set after its step's commit succeeded.
+	Completed []string
+	// The *Attempted counts are what the step IN FLIGHT was about to remove
+	// when its commit failed; they are zero on a purge that did not fail at
+	// that step. They are not removals a caller may rely on.
+	LedgerLinesAttempted int
+	ChunksAttempted      int
+	KGEntitiesAttempted  int
+	KGTriplesAttempted   int
+	// Err is the failure that stopped the purge ("<step>: <error>"), "" when it
+	// ran to the end. The error is also returned; this keeps it with the
+	// partial counts when only the struct travels.
+	Err string
 }
 
 // DropTranscriptTier removes every ARCHIVE-OWNED chunk, KG record and ledger
@@ -86,8 +113,22 @@ type TranscriptPurge struct {
 // protection (see Tx.beginDestructive); the purge's Tx is destructive.
 func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (TranscriptPurge, error) {
 	var res TranscriptPurge
-	if err := tx.fail(tx.beginDestructive()); err != nil {
+	// failed records the stopping error with the step it stopped at, keeps the
+	// partial result, and returns the error unchanged.
+	failed := func(step string, err error) (TranscriptPurge, error) {
+		res.Err = step + ": " + err.Error()
 		return res, err
+	}
+	// done runs a step's commitStep; on success the step is recorded complete.
+	done := func(step string) error {
+		if err := commitStep(step); err != nil {
+			return err
+		}
+		res.Completed = append(res.Completed, step)
+		return nil
+	}
+	if err := tx.fail(tx.beginDestructive()); err != nil {
+		return failed("begin", err)
 	}
 
 	// ---- step: purge-ledger -------------------------------------------
@@ -95,19 +136,18 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	// yet loaded the graph finds none and installs nothing, rather than
 	// serving a graph built over transcripts this purge is removing.
 	if err := tx.fail(removeIfExists(tx.files.graph)); err != nil {
-		return res, err
+		return failed("purge-ledger", err)
 	}
 	dropped, shas, err := tx.rewriteLedgerDroppingSessions()
 	if err != nil {
-		return res, tx.fail(err)
+		return failed("purge-ledger", tx.fail(err))
 	}
-	res.LedgerLinesDropped = dropped
 	if dropped > 0 {
 		// The bump, HERE, immediately after the ledger write — see the
 		// interruption note above. bumpMidTx bumps with a new epoch and keeps
 		// the in-flight flag set, and updates tx.gen.
 		if berr := tx.bumpMidTx(); berr != nil {
-			return res, tx.fail(berr)
+			return failed("purge-ledger", tx.fail(berr))
 		}
 		// The rewrite changed the file under the Tx's cached view; drop it so
 		// AddToBaseline below folds the ledger as it now is.
@@ -115,24 +155,26 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	}
 	if len(shas) > 0 {
 		if err := tx.AddToBaseline(shas); err != nil {
-			return res, err
+			return failed("purge-ledger", err)
 		}
-		res.BaselineAdded = len(shas)
 	}
-	if err := commitStep("purge-ledger"); err != nil {
-		return res, tx.fail(err)
+	if err := done("purge-ledger"); err != nil {
+		res.LedgerLinesAttempted = dropped
+		return failed("purge-ledger", tx.fail(err))
 	}
+	res.LedgerLinesDropped = dropped
+	res.BaselineAdded = len(shas)
 
 	// ---- step: purge-chunks -------------------------------------------
 	s, err := tx.state()
 	if err != nil {
-		return res, err
+		return failed("purge-chunks", err)
 	}
 	f, err := tx.chunkFold()
 	if err != nil {
-		return res, err
+		return failed("purge-chunks", err)
 	}
-	res.ChunksDropped = f.countOwnersOfKind(OwnerArchive)
+	chunksDropped := f.countOwnersOfKind(OwnerArchive)
 	// ONE pass and ONE whole-file rewrite. Not ReplaceOwned(ArchiveOwner(sha),
 	// nil) per archive, which is O(archives x store).
 	changed := f.dropOwnersWhere(func(o Owner) bool { return o.Kind == OwnerArchive }, nil)
@@ -141,12 +183,14 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	}
 	if changed {
 		if err := tx.fail(tx.writeChunkFold(s, f)); err != nil {
-			return res, err
+			return failed("purge-chunks", err)
 		}
 	}
-	if err := commitStep("purge-chunks"); err != nil {
-		return res, tx.fail(err)
+	if err := done("purge-chunks"); err != nil {
+		res.ChunksAttempted = chunksDropped
+		return failed("purge-chunks", tx.fail(err))
 	}
+	res.ChunksDropped = chunksDropped
 
 	// ---- step: purge-kg -----------------------------------------------
 	// 🔴 A SEPARATE PREDICATE ON A SEPARATE FUNCTION. kgFold.dropOwnersWhere
@@ -155,17 +199,23 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	// KG with every chunk-side assertion green.
 	k, err := tx.readKGFold()
 	if err != nil {
-		return res, err
+		return failed("purge-kg", err)
 	}
-	if k.dropOwnersWhere(func(o Owner) bool { return o.Kind == OwnerArchive }) {
-		res.KGDropped = true
+	isArchive := func(o Owner) bool { return o.Kind == OwnerArchive }
+	// Counted BEFORE the drop: afterwards the records are gone.
+	entities, triples := k.countOwnerlessAfter(isArchive)
+	removedAny := k.dropOwnersWhere(isArchive)
+	if removedAny {
 		if err := tx.fail(tx.writeKGFold(s, k)); err != nil {
-			return res, err
+			return failed("purge-kg", err)
 		}
 	}
-	if err := commitStep("purge-kg"); err != nil {
-		return res, tx.fail(err)
+	if err := done("purge-kg"); err != nil {
+		res.KGEntitiesAttempted, res.KGTriplesAttempted = entities, triples
+		return failed("purge-kg", tx.fail(err))
 	}
+	res.KGDropped = removedAny
+	res.KGEntitiesDropped, res.KGTriplesDropped = entities, triples
 
 	// ---- step: purge-vectors ------------------------------------------
 	// The orphaned *.vec files, through Reap's existing live-set path: the
@@ -173,14 +223,34 @@ func (tx *Tx) DropTranscriptTier(otherLive func() (map[string]bool, error)) (Tra
 	if otherLive != nil {
 		reaped, rerr := tx.Reap(otherLive)
 		if rerr != nil {
-			return res, rerr
+			return failed("purge-vectors", rerr)
 		}
 		res.VectorsReaped = len(reaped)
 	}
-	if err := commitStep("purge-vectors"); err != nil {
-		return res, tx.fail(err)
+	if err := done("purge-vectors"); err != nil {
+		return failed("purge-vectors", tx.fail(err))
 	}
 	return res, nil
+}
+
+// countOwnerlessAfter counts, by record-id prefix, the entity and triple
+// records that would be left with NO owner if every owner for which drop is
+// true were removed: the records a purge actually deletes. A record another
+// owner (a mempalace batch) also holds is not counted.
+func (f *kgFold) countOwnerlessAfter(drop func(Owner) bool) (entities, triples int) {
+	for _, id := range f.order {
+		os := f.owners[id]
+		if len(os) == 0 || slices.ContainsFunc(os, func(o Owner) bool { return !drop(o) }) {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(id, index.EntityIDPrefix):
+			entities++
+		case strings.HasPrefix(id, index.TripleIDPrefix):
+			triples++
+		}
+	}
+	return entities, triples
 }
 
 // rewriteLedgerDroppingSessions rewrites ledger.jsonl in place, keeping every

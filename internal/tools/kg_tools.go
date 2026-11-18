@@ -11,6 +11,7 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/kgread"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
+	"github.com/suykerbuyk/vibe-palace/internal/search"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
 
@@ -105,6 +106,37 @@ type kgEntityParams struct {
 type kgStatsResult struct {
 	storage.KGStats
 	TypeBreakdown map[string]int `json:"type_breakdown"`
+
+	// KGStatus and KGReason say WHY the graph lacks facts when this host
+	// excludes the transcript tier (or coverage cannot say). Additive: the
+	// counts above are never replaced, and both are omitted when there is
+	// nothing to explain.
+	KGStatus search.KGStatus `json:"kg_status,omitempty"`
+	KGReason string          `json:"kg_reason,omitempty"`
+}
+
+// kgWhy is the one place the tools turn a project's coverage into a KG
+// status: KGHonesty over the shared no-embedder coverage derivation, with the
+// derivation's error passed through (never swallowed). It costs a coverage
+// derivation (a manifest scan), so query/timeline call it only for an EMPTY
+// result.
+func kgWhy(vault *storage.Vault, project string, kgEmpty bool) (search.KGStatus, string) {
+	cov, err := coverageForProject(vault, project)
+	if err != nil {
+		return search.KGHonesty(nil, err, kgEmpty)
+	}
+	return search.KGHonesty(&cov, nil, kgEmpty)
+}
+
+// kgEmptyResultWhy is kgWhy for a query/timeline result that came back empty.
+// `empty` is dropped: an entity with no facts says nothing about the graph, and
+// omitting it keeps a non-excluded host's output byte-identical.
+func kgEmptyResultWhy(vault *storage.Vault, project string) (search.KGStatus, string) {
+	st, reason := kgWhy(vault, project, true)
+	if st == search.KGEmpty {
+		return "", ""
+	}
+	return st, reason
 }
 
 // kgTripleListResult wraps a triple slice as an object so structuredContent is
@@ -121,6 +153,12 @@ type kgStatsResult struct {
 // to say it was cut.
 type kgTripleListResult struct {
 	Triples []storage.Triple `json:"triples"`
+
+	// KGStatus and KGReason are set only when Triples is EMPTY and there is a
+	// reason to give (an excluded transcript tier, unreadable coverage, an
+	// unbuilt/absent/stale/legacy index). They sit BEFORE the sentinel.
+	KGStatus search.KGStatus `json:"kg_status,omitempty"`
+	KGReason string          `json:"kg_reason,omitempty"`
 
 	// 🔴 THE TERMINAL SENTINEL — last field, no omitempty, always true on a
 	// successful return. Its ABSENCE is the signal: absent ⇒ the host cut this
@@ -141,7 +179,8 @@ func KGQueryTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_kg_query",
 		Description: "Query the knowledge graph for facts about an entity. The result ENDS with `complete`: " +
-			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist.",
+			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist. " +
+			"An EMPTY result may carry `kg_status`/`kg_reason` saying why (for example `tier_excluded`: this host excludes the transcript tier, so archive-extracted facts are absent).",
 		Schema:  kgQuerySchema,
 		Handler: kgQueryHandler(vault),
 	}
@@ -174,7 +213,8 @@ func KGTimelineTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
 		Name: "vp_kg_timeline",
 		Description: "Get the chronological timeline of facts involving an entity. The result ENDS with `complete`: " +
-			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist.",
+			"if you do not see `complete: true`, your host truncated it and `triples` is a PREFIX — do not read the missing facts as facts that do not exist. " +
+			"An EMPTY result may carry `kg_status`/`kg_reason` saying why (for example `tier_excluded`: this host excludes the transcript tier, so archive-extracted facts are absent).",
 		Schema:  kgTimelineSchema,
 		Handler: kgTimelineHandler(vault),
 	}
@@ -183,10 +223,11 @@ func KGTimelineTool(vault *storage.Vault) mcp.Tool {
 // KGStatsTool returns the MCP tool for vp_kg_stats.
 func KGStatsTool(vault *storage.Vault) mcp.Tool {
 	return mcp.Tool{
-		Name:        "vp_kg_stats",
-		Description: "Get knowledge graph statistics: entity/triple counts, predicate types, type breakdown.",
-		Schema:      kgStatsSchema,
-		Handler:     kgStatsHandler(vault),
+		Name: "vp_kg_stats",
+		Description: "Get knowledge graph statistics: entity/triple counts, predicate types, type breakdown. " +
+			"`kg_status`/`kg_reason` say why the graph lacks facts when this host excludes the transcript tier (`tier_excluded`) or the index is unbuilt/absent/stale/legacy.",
+		Schema:  kgStatsSchema,
+		Handler: kgStatsHandler(vault),
 	}
 }
 
@@ -218,7 +259,11 @@ func kgQueryHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return kgTripleListResult{Triples: triples, Complete: true}, nil
+		res := kgTripleListResult{Triples: triples, Complete: true}
+		if len(triples) == 0 {
+			res.KGStatus, res.KGReason = kgEmptyResultWhy(vault, p.Project)
+		}
+		return res, nil
 	}
 }
 
@@ -312,7 +357,11 @@ func kgTimelineHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if triples == nil {
 			triples = []storage.Triple{}
 		}
-		return kgTripleListResult{Triples: triples, Complete: true}, nil
+		res := kgTripleListResult{Triples: triples, Complete: true}
+		if len(triples) == 0 {
+			res.KGStatus, res.KGReason = kgEmptyResultWhy(vault, p.Project)
+		}
+		return res, nil
 	}
 }
 
@@ -346,10 +395,12 @@ func kgStatsHandler(vault *storage.Vault) mcp.HandlerFunc {
 			breakdown[e.Type]++
 		}
 
-		return kgStatsResult{
+		res := kgStatsResult{
 			KGStats:       stats,
 			TypeBreakdown: breakdown,
-		}, nil
+		}
+		res.KGStatus, res.KGReason = kgWhy(vault, p.Project, stats.EntityCount == 0 && stats.TripleCount == 0)
+		return res, nil
 	}
 }
 

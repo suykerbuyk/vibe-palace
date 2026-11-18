@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/embedder"
@@ -27,7 +28,7 @@ var indexRebuildFlags = []cli.FlagDef{
 	{Name: "--vault-root", Arg: "PATH", Help: "Absolute vault root (optional; resolved from the working directory otherwise). Set by the detached MCP launch."},
 	{Name: "--transcripts", Help: "Ingest and embed the transcript tier on this run, whatever the config says (the historical backlog included). This is the days-long run on a large vault."},
 	{Name: "--no-transcripts", Help: "Do not INGEST transcript archives on this run, whatever the config says. Archive chunks already in the store keep their place in the index; only unembedded ones are left out, and never embedded. The automatic launchers always pass it."},
-	{Name: "--drop-transcripts", Help: "Remove every archive-owned chunk, KG record and ledger session row from this project's store. The purge itself keeps imported batches and the baseline set; a chunks-recipe mismatch on the same run discards the whole store first, imported batches included."},
+	{Name: "--drop-transcripts", Help: "Remove every archive-owned chunk, KG record and ledger session row from this project's store; the counts removed are printed (committed, and attempted if a step failed). The knowledge graph's archive-extracted records come from the transcript tier, so on a project whose graph was all archive-extracted this empties it (it reports tier_excluded afterwards). The purge itself keeps imported batches and the baseline set; a chunks-recipe mismatch on the same run discards the whole store first, imported batches included."},
 }
 
 // transcriptsFromFlags turns --transcripts / --no-transcripts into the
@@ -212,6 +213,10 @@ func runIndexRebuild(ctx context.Context, a indexRebuildArgs, out, errOut io.Wri
 
 	res, err := ingest.Rebuild(ctx, d, opts)
 	if err != nil {
+		// 🔴 BEFORE the error and before the exit code is chosen: the purge
+		// commits step by step, so a failed run may already have removed data
+		// the operator must be told about. The code below it is unchanged.
+		printPurges(out, res.Purges)
 		fmt.Fprintf(errOut, "vp index rebuild: %v\n", err)
 		if errors.Is(err, ingest.ErrRunLockHeld) || errors.Is(err, ingest.ErrReserve) {
 			return cli.ExitUser
@@ -220,7 +225,56 @@ func runIndexRebuild(ctx context.Context, a indexRebuildArgs, out, errOut io.Wri
 	}
 	fmt.Fprintf(out, "vp index rebuild: committed=%d failed=%d repaired=%d projects=%v stopped=%q\n",
 		res.Committed, res.Failed, res.Repaired, res.Projects, res.Stopped)
+	printPurges(out, res.Purges)
 	return cli.ExitOK
+}
+
+// printPurges reports, per project, what `--drop-transcripts` removed.
+// Counts are COMMITTED removals; a step that failed is reported separately as
+// attempted, never folded into them. A zero is phrased by phase: a purge that
+// ran over a store the same run had already discarded on a fingerprint
+// mismatch says so, because there "zero" does not mean the data was left
+// intact. The counts are KG records in the store's fold, not the collapsed
+// entity/triple totals vp_kg_stats shows.
+func printPurges(out io.Writer, purges []ingest.ProjectPurge) {
+	for _, p := range purges {
+		committed := p.ChunksDropped + p.KGEntitiesDropped + p.KGTriplesDropped + p.LedgerLinesDropped + p.VectorsReaped
+		if committed > 0 || p.Err != "" {
+			fmt.Fprintf(out, "vp index rebuild: %s transcript-tier purge: committed chunks=%d kg_entities=%d kg_triples=%d ledger_lines=%d vectors_reaped=%d\n",
+				p.Project, p.ChunksDropped, p.KGEntitiesDropped, p.KGTriplesDropped, p.LedgerLinesDropped, p.VectorsReaped)
+		}
+		if p.Err != "" {
+			step, msg, _ := strings.Cut(p.Err, ": ")
+			var tried string
+			switch step {
+			case "purge-ledger":
+				tried = fmt.Sprintf(" ledger_lines=%d", p.LedgerLinesAttempted)
+			case "purge-chunks":
+				tried = fmt.Sprintf(" chunks=%d", p.ChunksAttempted)
+			case "purge-kg":
+				tried = fmt.Sprintf(" kg_entities=%d kg_triples=%d", p.KGEntitiesAttempted, p.KGTriplesAttempted)
+			}
+			fmt.Fprintf(out, "vp index rebuild: %s transcript-tier purge: attempted (not committed): %s%s; purge stopped at %s: %s\n",
+				p.Project, step, tried, step, msg)
+			continue
+		}
+		if committed == 0 {
+			if p.StoreDiscardedEarlier != "" {
+				note := ""
+				if strings.Contains(p.StoreDiscardedEarlier, "chunks") {
+					note = "; a chunks discard removed the knowledge graph, it was not left intact"
+				}
+				fmt.Fprintf(out, "vp index rebuild: %s archive-owner purge removed zero records; the store was discarded earlier in this run on fingerprint mismatch (%s)%s\n",
+					p.Project, p.StoreDiscardedEarlier, note)
+			} else {
+				fmt.Fprintf(out, "vp index rebuild: %s archive-owner purge removed zero records (the store held no archive-owned records)\n", p.Project)
+			}
+			continue
+		}
+		if p.KGEntitiesDropped+p.KGTriplesDropped > 0 {
+			fmt.Fprintf(out, "vp index rebuild: %s knowledge graph now holds only imported/authored facts\n", p.Project)
+		}
+	}
 }
 
 // printDryRun renders a dry-run report: per project the pending archives and

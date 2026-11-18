@@ -360,6 +360,16 @@ type BootstrapResult struct {
 	// an absent snapshot used to mean "no graph" and "graph unreadable" at once.
 	KGUnreadable string `json:"kg_unreadable,omitempty"`
 
+	// KGStatus and KGReason say WHY the knowledge graph lacks facts when this
+	// host excludes the transcript tier (tier_excluded), the index is
+	// unbuilt/absent/stale/legacy, or coverage could not be read
+	// (coverage_unavailable). They are the discriminator kg_snapshot's bare
+	// zeros cannot give. Decided ABOVE the stop-class early return, so every
+	// payload carrying the snapshot carries them. kg_unreadable stays the
+	// separate signal for a graph that could not be read.
+	KGStatus search.KGStatus `json:"kg_status,omitempty"`
+	KGReason string          `json:"kg_reason,omitempty"`
+
 	// IndexCoverageDetail is the FULL coverage report for the bootstrapped
 	// project — state, reason, the n-of-m session counts, the
 	// pending/backlog/failing split, the run in progress, and a count of the
@@ -630,33 +640,21 @@ func coverageForProject(vault *storage.Vault, project string) (search.Coverage, 
 	return eng.CoverageState(project)
 }
 
-// computeIndexCoverage derives coverage for the bootstrapped project and tallies
-// the other projects' states, each over a NO-EMBEDDER engine built from its OWN
-// config (SF1). The run lock's holder record is read once per vault (Scope 5,
-// Scope 10). It is graceful: any error yields nil, so a coverage read never
-// fails bootstrap.
-func computeIndexCoverage(vault *storage.Vault, project string) *indexCoverageReport {
-	cfg, err := vault.LoadConfig(project)
-	if err != nil {
-		return nil
-	}
-	eng := search.NewCoverageEngine(vault, cfg)
-	defer eng.Close()
-
-	cov, err := eng.CoverageState(project)
-	if err != nil {
-		return nil
-	}
-	// The run in progress, read ONCE for the whole vault (not per project).
-	if run, err := eng.RunInProgress(); err == nil {
-		cov.Run = run
+// completeIndexCoverage adds to an already-derived project coverage the run in
+// progress (read ONCE for the whole vault, Scope 5/10) and a tally of the OTHER
+// projects' states, each over a NO-EMBEDDER engine built from its OWN config
+// (SF1). Graceful per project: one that cannot be read is skipped, not fatal.
+func completeIndexCoverage(vault *storage.Vault, project string, cov search.Coverage) *indexCoverageReport {
+	if cfg, err := vault.LoadConfig(project); err == nil {
+		eng := search.NewCoverageEngine(vault, cfg)
+		if run, err := eng.RunInProgress(); err == nil {
+			cov.Run = run
+		}
+		eng.Close()
 	}
 
 	rep := &indexCoverageReport{Coverage: cov}
 
-	// Tally the OTHER projects by state, excluding current, each with its own
-	// config (SF1). Graceful per project: one project that cannot be read is
-	// skipped, not fatal.
 	if others, err := vault.ListAllProjects(); err == nil {
 		counts := map[string]int{}
 		for _, p := range others {
@@ -831,6 +829,29 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 		result.KGSnapshot = &stats
 	} else {
 		result.KGUnreadable = err.Error()
+	}
+
+	// KG honesty — decided HERE, once, ABOVE the stop-class early return below,
+	// so every return that carries the snapshot carries the explanation too.
+	//
+	// 🔴 THE COVERAGE ERROR IS KEPT, NOT SWALLOWED. An empty graph whose
+	// coverage cannot be read says `coverage_unavailable` with the error; it
+	// never degrades to "no kg_status", which would be the bare zero again. The
+	// one derivation is reused below the gate for index_coverage, so the stop
+	// class path pays for exactly one CoverageState and no tally. A graph that
+	// could not be READ keeps its own signal (kg_unreadable) and gets no status.
+	var projCov search.Coverage
+	var projCovErr error
+	if project != "" {
+		projCov, projCovErr = coverageForProject(vault, project)
+		if result.KGSnapshot != nil {
+			covArg := &projCov
+			if projCovErr != nil {
+				covArg = nil
+			}
+			kgEmpty := result.KGSnapshot.EntityCount == 0 && result.KGSnapshot.TripleCount == 0
+			result.KGStatus, result.KGReason = search.KGHonesty(covArg, projCovErr, kgEmpty)
+		}
 	}
 
 	// Inbox COUNT — the true total of capture-inbox entries, never capped.
@@ -1055,7 +1076,11 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// leads the directive and survives a cut. Nothing here loads a model; each
 	// project is read over its own config (SF1).
 	if project != "" {
-		if cov := computeIndexCoverage(vault, project); cov != nil {
+		var cov *indexCoverageReport
+		if projCovErr == nil {
+			cov = completeIndexCoverage(vault, project, projCov)
+		}
+		if cov != nil {
 			// The bounded prefix instrument: the state alone (survives a cut).
 			result.IndexCoverage = &indexCoverageBrief{State: cov.State}
 			// The full report beside kg_snapshot (behind the cut).

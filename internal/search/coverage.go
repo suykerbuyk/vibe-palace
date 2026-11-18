@@ -89,6 +89,11 @@ type Coverage struct {
 	// them ownerless — so this is a disk-space fact, and it is deliberately
 	// NOT an input to the authored predicate.
 	UnreclaimedTranscriptChunks int `json:"unreclaimed_transcript_chunks,omitempty"`
+	// KGStatus and KGReason say why this host's knowledge graph lacks
+	// archive-extracted facts. They are set only for the excluded-tier state
+	// (KGHonesty), without reading the graph, so the coverage cost bound holds.
+	KGStatus KGStatus `json:"kg_status,omitempty"`
+	KGReason string   `json:"kg_reason,omitempty"`
 	// Run is the index run in progress on this host, when the holder record
 	// names a live pid; nil otherwise (Scope 5). It is vault-wide, read once.
 	Run *CoverageRun `json:"run,omitempty"`
@@ -297,6 +302,7 @@ func (e *Engine) CoverageState(project string) (Coverage, error) {
 	if !e.indexTranscripts(project) && slices.Contains(rec.ExcludedTiers, tierTranscripts) {
 		cov.State = CoverageAuthored
 		cov.Reason = authoredReason(m, unreclaimed)
+		cov.KGStatus, cov.KGReason = KGHonesty(&cov, nil, false)
 		return cov, nil
 	}
 

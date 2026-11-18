@@ -301,6 +301,10 @@
       "reason": "TODO: accepted at baseline creation — explain or fix"
     },
     {
+      "id": "uninvoked search.SetCoverageListEntriesHook",
+      "reason": "TEST SEAM, deliberately uninvoked in production, the shape of uninvoked indexstore.SetCommitStepHook: it lets internal/tools count how many CoverageState derivations one vp_bootstrap_context performs (TestBootstrapDerivesProjectCoverageOnce), which pins that the KG honesty decision above the stop-class return and the index_coverage fields below it SHARE one derivation rather than computing coverage twice. A derivation lists the transcript directory, so the listing call is the only trace it leaves. It only swaps the package's own coverageListEntries seam and returns the restore; no production code calls it."
+    },
+    {
       "id": "uninvoked sourceaudit.Baseline.Diff",
       "reason": "TEST-ONLY BY CONSTRUCTION. This gate IS a go test, so its own baseline machinery can have no non-test caller — the analyzer is flagging itself. Accepted, and the irony is noted. ADR-006 verdict: DECLARE + ENFORCE (doc/adr/006-derive-dont-ask.md, 'Decision: the line') — test-only-by-construction is structural intent no parse recovers; declared here, enforced by the baseline ratchet. Do NOT wire a fake production caller to clear this."
     },

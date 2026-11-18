@@ -114,6 +114,9 @@ func printCoverage(out io.Writer, cov search.Coverage) {
 	if len(cov.ExcludedTiers) > 0 {
 		fmt.Fprintf(out, "  excluded tiers: %s\n", strings.Join(cov.ExcludedTiers, ", "))
 	}
+	if cov.KGStatus != "" {
+		fmt.Fprintf(out, "  knowledge graph: %s: %s\n", cov.KGStatus, cov.KGReason)
+	}
 	if cov.UnreclaimedTranscriptChunks > 0 {
 		fmt.Fprintf(out, "  unreclaimed transcript chunks: %d (reclaim with `vp index rebuild %s --drop-transcripts`)\n",
 			cov.UnreclaimedTranscriptChunks, cov.Project)

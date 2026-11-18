@@ -193,6 +193,15 @@ type RunResult struct {
 	// record in this run, so the rebuild driver can prove a completed rebuild
 	// (RunLock.CompletedRebuild) that keeps those failures named.
 	FailedSHAs []string
+
+	// Purge is ONE project's --drop-transcripts outcome, set by rebuildProject
+	// on the PER-TARGET result on every return after the purge was attempted. It
+	// is nil on the aggregate; RunResult.add moves it into Purges.
+	Purge *ProjectPurge
+	// Purges is the aggregate: every purged target's outcome in run order, kept
+	// on every error return of Rebuild (`--all` with a later target failing
+	// included), so the command can print what already committed.
+	Purges []ProjectPurge
 }
 
 // ErrNoTarget: a run was not given a vault root and a project.
@@ -359,6 +368,10 @@ func (r *RunResult) add(o RunResult) {
 	}
 	if o.Stopped != "" {
 		r.Stopped = o.Stopped
+	}
+	// The ONE transfer point from the per-target field to the aggregate.
+	if o.Purge != nil {
+		r.Purges = append(r.Purges, *o.Purge)
 	}
 }
 
