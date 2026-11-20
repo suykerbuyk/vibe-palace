@@ -160,6 +160,13 @@ const (
 	// commit.
 	KindUnguardedVaultCommit = "unguarded-vault-commit"
 
+	// KindVaultDirCreation: a raw directory creator (os.Mkdir/MkdirAll/MkdirTemp)
+	// in a package that can write into a vault root, not bound to
+	// surface.GuardTestPathWrite on the same expression and not in the closed
+	// per-call-site allowlist. See vaultDirCreation. Its expected baseline is
+	// EMPTY.
+	KindVaultDirCreation = "vault-dir-creation"
+
 	// KindEnvIsolationBypass: an internal/integration test sets HOME,
 	// XDG_CONFIG_HOME or CLAUDE_HOME directly via os.Setenv/t.Setenv instead of
 	// routing through testinfra.IsolateEnv, silently reintroducing the
@@ -350,6 +357,7 @@ func Run(roots ...string) ([]Finding, error) {
 	findings = append(findings, surfaceRemediation(files)...)
 	findings = append(findings, gitExecEnvFunnel(files)...)
 	findings = append(findings, unguardedVaultCommit(files)...)
+	findings = append(findings, vaultDirCreation(files)...)
 	findings = append(findings, envIsolationBypass(files)...)
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)

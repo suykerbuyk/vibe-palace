@@ -170,6 +170,13 @@ func writeRetrying(path string, data []byte) error {
 	// FIRST, ahead of storage.EnsureDir: the cache writes under a held Tx whose
 	// vault need not be the cache's, so the atomicfile guard below would fire only
 	// after the directory had been created. No-op in a production binary.
+	//
+	// Since task archive-and-absorb-mkdirs-run-before-the-tripwire, EnsureDir
+	// carries its own first-statement seat on the same path, so this one is a
+	// REDUNDANT first layer: deleting it alone turns no row red, because the
+	// EnsureDir seat refuses before any effect with the same snapshot. It stays so
+	// the refusal precedes the loop's first statement and does not depend on a
+	// callee's seat.
 	surface.GuardTestPathWrite(filepath.Dir(path))
 	for attempt := 0; ; attempt++ {
 		if err := storage.EnsureDir(filepath.Dir(path)); err != nil {

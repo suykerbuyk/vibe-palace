@@ -311,7 +311,11 @@ func (r *VaultReconciler) Apply(_ context.Context, p Plan) (Report, error) {
 					continue
 				}
 			default:
-				// vault directory itself
+				// vault directory itself. Bound to the sink: the configured vault path
+				// can itself be absent, and a test must not create it. Nothing is held
+				// here: every other action in this loop takes and releases its own
+				// lock before returning, and nothing is acquired across iterations.
+				surface.GuardTestPathWrite(a.Target)
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {
 					rep.Errors = append(rep.Errors, vaultApplyErr(VaultArtifactDir, "mkdir vault", err))
 					continue

@@ -412,8 +412,7 @@ func acquireGCShared(vaultRoot string) (release func() error, err error) {
 	if !filepath.IsAbs(vaultRoot) {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must be absolute, got %q", vaultRoot)
 	}
-	lockDir := filepath.Join(vaultRoot, ".vp-locks")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+	if err := os.MkdirAll(lockDirPath(vaultRoot), 0o755); err != nil { // the identical expression the seat judged
 		return nil, fmt.Errorf("vaultlock: create lock dir: %w", err)
 	}
 	f, err := os.OpenFile(gcLockPath(vaultRoot), os.O_CREATE|os.O_RDWR, 0o644)

@@ -220,9 +220,8 @@ func sweepDeadLocks(vaultRoot string, dryRun bool, acquireTimeout time.Duration)
 // blocks a shared acquirer (the keystone of the quiescence design). On success it
 // returns a release and got=true; on timeout, got=false and nothing held.
 func acquireGCExclusiveBounded(vaultRoot string, timeout time.Duration) (release func() error, got bool, err error) {
-	surface.GuardTestPathWrite(lockDirPath(vaultRoot)) // first statement: before .gc is created or locked
-	lockDir := filepath.Join(vaultRoot, ".vp-locks")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+	surface.GuardTestPathWrite(lockDirPath(vaultRoot))                 // first statement: before .gc is created or locked
+	if err := os.MkdirAll(lockDirPath(vaultRoot), 0o755); err != nil { // the identical expression the seat judged
 		return nil, false, fmt.Errorf("vaultlock: create lock dir: %w", err)
 	}
 	f, err := os.OpenFile(gcLockPath(vaultRoot), os.O_CREATE|os.O_RDWR, 0o644)

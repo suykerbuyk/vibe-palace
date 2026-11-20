@@ -108,6 +108,14 @@ func GuardTestVaultWrite(vaultPath, writePath string) {
 				"%s does NOT waive this arm.",
 			writePath, vaultPath, allowNonTempVaultEnv))
 	}
+	// ARM A', NON-WAIVABLE, and the half that arm A cannot see: the write PATH is
+	// judged against the ambient root too. Arm A compares the vault ROOT, so a
+	// write whose vaultPath is a temp vault but whose target lies under the
+	// operator's configured vault was admitted here (and, in atomicfile, its
+	// MkdirAll then created a directory in the real vault). It sits AFTER arm A,
+	// so every refusal arm A already made keeps its exact text, and BEFORE arm B,
+	// the only waivable arm. A no-op unless the path is inside the ambient root.
+	GuardTestPathWrite(writePath)
 	// ARM B, and only arm B, is waivable.
 	if os.Getenv(allowNonTempVaultEnv) != "" {
 		return

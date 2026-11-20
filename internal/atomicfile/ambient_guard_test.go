@@ -50,8 +50,11 @@ func TestWriteAtomicRefusesAmbientVaultUnderTest(t *testing.T) {
 				t.Fatalf("atomicfile.Write returned %v for a write to the ambient vault root %s; expected a panic", err, vault)
 			}
 			msg, _ := r.(string)
-			if !strings.Contains(msg, "CONFIGURED vault") {
-				t.Fatalf("panic came from the wrong arm: %v", r)
+			// Arm A's OWN text ("a write to ..."): the path arm refuses a target inside
+			// the ambient root too ("a write inside ..."), so the generic phrase would
+			// stay green with arm A deleted.
+			if !strings.Contains(msg, "a write to the CONFIGURED vault") {
+				t.Fatalf("panic did not come from arm A: %v", r)
 			}
 			if !strings.Contains(msg, vault) {
 				t.Errorf("panic message does not name the configured root %s: %v", vault, r)

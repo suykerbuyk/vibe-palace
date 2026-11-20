@@ -595,6 +595,13 @@ func (r *TemplateTreeReconciler) applyScaffold(p Plan) (Report, error) {
 				}
 				rep.Created++
 			} else {
+				// Bound to the sink: this scaffold is a vault write (the project's
+				// commands/ and skills/ directories) and cannot route through
+				// EnsureVaultDir, which refuses the very project it is creating. A
+				// test aimed at the configured vault must be refused before the
+				// directory exists. Nothing is held here (each vaultfs.Create above
+				// releases its own lock before returning).
+				surface.GuardTestPathWrite(a.Target)
 				if err := os.MkdirAll(a.Target, 0o755); err != nil {
 					rep.Errors = append(rep.Errors, fmt.Errorf("mkdir %s: %w", a.Target, err))
 					continue

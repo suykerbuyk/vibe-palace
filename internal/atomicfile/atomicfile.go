@@ -342,6 +342,13 @@ func writeAtomic(vaultRoot, absPath string, cfg config, fill func(*os.File) erro
 		}
 	}
 	dir := filepath.Dir(absPath)
+	// Bound to the sink: the tripwire judges the very directory about to be
+	// created. With the path arm of GuardTestVaultWrite this adds no behavioural
+	// protection (a directory inside the ambient root means absPath is inside it,
+	// which the first-statement seat already refused); it exists so the
+	// vault-dir-creation audit rule accepts this MkdirAll as bound, with no
+	// allowlist entry.
+	surface.GuardTestPathWrite(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}

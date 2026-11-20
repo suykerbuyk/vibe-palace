@@ -16,6 +16,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -434,6 +435,12 @@ func renderResumeScratch(items []Item, pointerLines []string, date string) strin
 func rewriteSourceFile(ps PlannedSource, opts WriteOptions) (string, error) {
 	// Backup.
 	backupDir := filepath.Join(opts.ProjectRoot, ".vibe-palace")
+	// ProjectRoot is a caller option (and --project-root on the CLI), so it can
+	// point into a vault project tree. Under test that must be refused before the
+	// directory exists; this also covers the backup write below. Nothing is held:
+	// the per-destination lock's closure has returned (and released) before source
+	// rewrites begin.
+	surface.GuardTestPathWrite(backupDir)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir backup dir: %w", err)
 	}

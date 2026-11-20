@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -20,7 +21,6 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
 	"github.com/suykerbuyk/vibe-palace/internal/gitenv"
-	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
@@ -180,14 +180,23 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	}
 
 	transcriptsDir := filepath.Join(opts.VaultRoot, "Projects", opts.ProjectSlug, "transcripts")
-	// The directory is made here, before atomicfile's gated writes, so the
-	// uninitialised-project gate is applied first: a refused archive must not
-	// leave an empty Projects/<slug>/transcripts/ (projectdir).
-	if err := projectdir.RefuseUninitialisedDirAbs(opts.VaultRoot, transcriptsDir); err != nil {
+	// The directory is made here, before atomicfile's gated writes, through the
+	// vault's own seated directory chokepoint: EnsureVaultDir applies the
+	// uninitialised-project gate first (a refused archive must not leave an empty
+	// Projects/<slug>/transcripts/) and, under test, the ambient-vault tripwire
+	// before that, so a test aimed at the operator's configured vault creates
+	// nothing in it.
+	if err := storage.NewVault(opts.VaultRoot).EnsureVaultDir(transcriptsDir); err != nil {
+		// A REFUSAL (uninitialised project, departed project) is returned exactly
+		// as projectdir words it, unwrapped, as it was before this went through
+		// EnsureVaultDir: callers and tests match its text and sentinel. Only a
+		// genuine mkdir failure (an *fs.PathError from os.MkdirAll) carries the
+		// "create transcripts dir:" prefix, as before.
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			return nil, fmt.Errorf("create transcripts dir: %w", err)
+		}
 		return nil, err
-	}
-	if err := os.MkdirAll(transcriptsDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create transcripts dir: %w", err)
 	}
 
 	day := storage.NewVault(opts.VaultRoot).CalendarDay(opts.Now)
@@ -289,8 +298,10 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	// Through the F2 sink: this is a RENAME of an existing vault file, not
 	// a content write, so it belongs to the removal/rename family and not
 	// to atomicfile. The Option E census originally filed archive.Create
-	// under F1 on the strength of the MkdirAll two dozen lines up; the
-	// MkdirAll is F3 and lands in a later phase, and this line is F2.
+	// under F1 on the strength of the directory creation two dozen lines up;
+	// that is now routed through (*Vault).EnsureVaultDir (the earlier "F3 lands
+	// in a later phase" ruling was reversed by the operator on 2026-11-20), and
+	// this line is F2.
 	//
 	// SERIALIZED as of the per-manifest lock taken above (ADR-003). This
 	// rename used to be unserialized against a concurrent writer of the same

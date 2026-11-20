@@ -107,8 +107,11 @@ func TestGuardTestVaultWrite_RefusesAmbientRootEvenUnderTempDir(t *testing.T) {
 		r := mustPanic(t, "write for the ambient vault root", func() {
 			GuardTestVaultWrite(root, filepath.Join(root, "Projects", "p", ".surface"))
 		})
-		if msg, _ := r.(string); !strings.Contains(msg, "CONFIGURED vault") {
-			t.Errorf("panic came from the wrong arm: %v", r)
+		// ARM A's OWN text. The path arm (A') also refuses a target inside the
+		// ambient root, with different text ("a write inside ..."); asserting only
+		// the generic phrase would let this row stay green with arm A deleted.
+		if msg, _ := r.(string); !strings.Contains(msg, "a write to the CONFIGURED vault") {
+			t.Errorf("panic did not come from arm A: %v", r)
 		}
 	})
 
@@ -154,8 +157,9 @@ func TestGuardTestVaultWrite_RefusesAmbientRootThroughASymlink(t *testing.T) {
 	r := mustPanic(t, fmt.Sprintf("alias %q of ambient root %q", alias, real), func() {
 		GuardTestVaultWrite(alias, filepath.Join(alias, "Projects", "p", "x.md"))
 	})
-	if msg, _ := r.(string); !strings.Contains(msg, "CONFIGURED vault") {
-		t.Errorf("panic came from the wrong arm: %v", r)
+	// ARM A's OWN text (see equal_root): the path arm would also refuse this.
+	if msg, _ := r.(string); !strings.Contains(msg, "a write to the CONFIGURED vault") {
+		t.Errorf("panic did not come from arm A: %v", r)
 	}
 }
 

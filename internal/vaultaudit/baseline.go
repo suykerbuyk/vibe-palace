@@ -59,7 +59,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 
 	"github.com/suykerbuyk/vibe-palace/internal/atomicfile"
@@ -359,15 +358,11 @@ func (b Baseline) Save(vaultRoot, path string) error {
 	}
 	// The first baseline is written into an Audits/ directory that does not exist
 	// yet on any vault that has never been audited — which is every vault, once.
-	//
-	// atomicfile.Write would MkdirAll this itself, so the call is redundant
-	// rather than load-bearing. It stays: routing directory creation into a
-	// vault-aware primitive (the old F3 family) is OFF the plan permanently, not
-	// deferred, and deleting the line here would be the first step of exactly
-	// that work.
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create baseline dir: %w", err)
-	}
+	// atomicfile.Write creates it, AFTER its under-test tripwire, so no separate
+	// MkdirAll belongs here: a raw one made the directory in the vault before any
+	// guard ran. (An older note here said routing directory creation into a
+	// vault-aware primitive was off the plan permanently; the operator reversed
+	// that on 2026-11-20, and the creation now lives in the seated primitive.)
 	// Audits/baseline.json is committed, diffed and reviewed week over week, so
 	// it gets the atomic replace and the stamp rather than a raw os.WriteFile.
 	// Encoder.Encode already terminates with a newline, so the buffer goes out

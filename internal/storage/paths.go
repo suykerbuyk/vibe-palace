@@ -276,7 +276,15 @@ func (v *Vault) IndexCommitLockPath(project string) (string, error) {
 // with EnsureVaultDir, which refuses a project the vault has not initialised;
 // the creating-project-owner source-audit rule refuses EnsureDir inside
 // internal/storage.
+//
+// 🔴 THE UNDER-TEST TRIPWIRE IS ITS FIRST STATEMENT, bound to the very path it
+// creates. Despite the doc above, vault-bound callers exist (the vibe-vault
+// import markers under palace/<p>/), so a test aimed at the operator's configured
+// vault must be refused before the directory exists. It is a no-op outside
+// go test and for any path outside the ambient vault, so host-directory callers
+// are unaffected.
 func EnsureDir(path string) error {
+	surface.GuardTestPathWrite(path)
 	return os.MkdirAll(path, 0755)
 }
 

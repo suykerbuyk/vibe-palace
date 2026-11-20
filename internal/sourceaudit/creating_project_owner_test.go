@@ -5,6 +5,7 @@ package sourceaudit
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -107,18 +108,6 @@ import "example.com/vaultfs"
 
 func moveIt() { _ = vaultfs.RenameNoLock("a", "b") }
 `, []string{"raw-sink tools.moveIt"}},
-		{"a new os.MkdirAll in a vault writer", "archive", `package archive
-
-import "os"
-
-func mk() { _ = os.MkdirAll("x", 0o755) }
-`, []string{"raw-sink archive.mk"}},
-		{"a new os.Mkdir in a vault writer", "hook", `package hook
-
-import "os"
-
-func mk() { _ = os.Mkdir("x", 0o755) }
-`, []string{"raw-sink hook.mk"}},
 		{"EnsureDir inside storage", "storage", cpStorage + `
 func writeIt() { _ = EnsureDir("x") }
 `, []string{"storage-ensuredir storage.writeIt"}},
@@ -131,16 +120,18 @@ func writeIt() { _ = EnsureDir("x") }
 	}
 }
 
-// os.MkdirAll outside the vault-writing packages is not this rule's business.
-func TestCreatingProjectOwnerIgnoresMkdirAllOutsideVaultWriters(t *testing.T) {
-	got := cpFindings(t, map[string]string{"cache": `package cache
-
-import "os"
-
-func mk() { _ = os.MkdirAll("x", 0o755) }
-`})
-	if len(got) != 0 {
-		t.Fatalf("findings = %q, want none", got)
+// Directory creators are NOT this rule's business any more: the directory-sink
+// check was consolidated into vault-dir-creation. A raw os.MkdirAll or os.Mkdir
+// in a vault-writing package produces no creating-project-owner finding here
+// (the other rule reports it; see vault_dir_creation_test.go).
+func TestCreatingProjectOwnerNoLongerMatchesDirectoryCreators(t *testing.T) {
+	for _, pkg := range []string{"archive", "hook", "storage", "cache"} {
+		got := cpFindings(t, map[string]string{pkg: "package " + pkg + "\n\nimport \"os\"\n\nfunc mk() { _ = os.MkdirAll(\"x\", 0o755); _ = os.Mkdir(\"y\", 0o755) }\n"})
+		for _, f := range got {
+			if strings.Contains(f, "raw-sink") {
+				t.Errorf("%s: a directory creator was reported by creating-project-owner: %q", pkg, got)
+			}
+		}
 	}
 }
 
