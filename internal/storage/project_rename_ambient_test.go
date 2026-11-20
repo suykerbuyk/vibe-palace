@@ -108,20 +108,59 @@ func TestApplyRenameRefusesAmbientVault(t *testing.T) {
 	}
 }
 
-// A DRY run is read-only, so the ambient vault is not refused for one.
-func TestApplyRenameDryRunNotRefused(t *testing.T) {
+// TestApplyRenameDryRunIsRefusedBeforeTheLockDir pins that a DRY run of
+// ApplyRename against the ambient vault is refused, and refused BEFORE
+// <vault>/.vp-locks exists.
+//
+// 🔴 THIS ROW USED TO SAY THE OPPOSITE ("a dry run is read-only, so the ambient
+// vault is not refused for one"), and the premise was wrong at the lock.
+// ApplyRename takes the vault commit lock (AcquireHeld, project_rename.go) before
+// it knows the run is a dry one, and taking that lock creates
+// <vault>/.vp-locks/ — a write to the vault, which task
+// `append-entry-paths-touch-the-vault-before-the-tripwire-fires` forbids under
+// test. So the dry run is now refused at the vaultlock seat, as the first
+// statement of the lock acquisition and with nothing held. Production is
+// unaffected: the guard is a no-op outside a go test binary.
+//
+// The ABSENCE of .vp-locks is the assertion that discriminates; "it panicked"
+// alone would also pass if the seat sat after the MkdirAll. The fixture is
+// checked first, so an absent directory cannot mean "the call never ran" (a
+// control with a non-ambient root does create it).
+func TestApplyRenameDryRunIsRefusedBeforeTheLockDir(t *testing.T) {
+	// Control: against a non-ambient vault the dry run succeeds and DOES create
+	// the lock directory, so the assertion below can discriminate.
+	ctl := newRenFix(t)
+	creq := ctl.req()
+	creq.DryRun = true
+	if _, err := ApplyRename(creq); err != nil {
+		t.Fatalf("control dry run on a non-ambient vault: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(ctl.V, ".vp-locks")); err != nil {
+		t.Fatalf("control: the dry run did not create .vp-locks (%v), so this row cannot discriminate", err)
+	}
+
 	f := newRenFix(t)
 	restore := surface.SetAmbientVaultRoot(f.V)
 	t.Cleanup(restore)
 	req := f.req()
 	req.DryRun = true
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("a dry run of the ambient vault panicked: %v", r)
-		}
+	if _, err := os.Lstat(filepath.Join(f.V, ".vp-locks")); err == nil {
+		t.Fatal("fixture: .vp-locks already exists in the ambient vault before the call")
+	}
+	var msg string
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = fmt.Sprint(r)
+			}
+		}()
+		_, _ = ApplyRename(req)
 	}()
-	if _, err := ApplyRename(req); err != nil {
-		t.Fatalf("dry run: %v", err)
+	if !strings.Contains(msg, "CONFIGURED vault") {
+		t.Fatalf("a dry run of the ambient vault was not refused, got %q", msg)
+	}
+	if _, err := os.Lstat(filepath.Join(f.V, ".vp-locks")); err == nil {
+		t.Error(".vp-locks was created in the ambient vault before the refusal")
 	}
 }
 

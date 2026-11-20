@@ -5,6 +5,8 @@ package storage
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +14,39 @@ import (
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// ambientViaAlias returns an ALIAS of root whose lock directory has been
+// redirected outside root, for use as the vault path of an operation that takes
+// the vault-root lock inside production code (Pull, the verified prune).
+//
+// 🔴 WHY THE ROWS THAT USE IT NEED IT. They are BACKSTOP tests behind the vaultlock
+// seats of task `append-entry-paths-touch-the-vault-before-the-tripwire-fires`.
+// With the ambient root set to the vault being pulled, the production lock
+// acquisition is now refused (a panic, before anything is held) and the commit
+// seats these rows name are never reached. The vaultlock seat judges where the
+// lock is WRITTEN, by raw spelling and by symlink resolution; the commit seats
+// compare the repository ROOT, by resolution. So an alias spelling of the root
+// whose .vp-locks resolves OUTSIDE the ambient root passes the lock seat (the
+// lock really is written elsewhere) while sameRoot(alias, ambient) is still true:
+// the commit seats, and U2's returned ErrAmbientVaultCommit (which exists because
+// those holders release by hand), are exercised through the real production path,
+// unweakened. Redirecting without the alias does not work: the raw spelling of
+// <root>/.vp-locks is inside the ambient root and is refused whatever it links to.
+func ambientViaAlias(t *testing.T, root string) string {
+	t.Helper()
+	link := filepath.Join(root, ".vp-locks")
+	if err := os.RemoveAll(link); err != nil { // lock litter from fixture setup, never content
+		t.Fatalf("clear %s: %v", link, err)
+	}
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatalf("redirect %s: %v", link, err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatalf("alias %s: %v", alias, err)
+	}
+	return alias
+}
 
 // ambientCommitFixture builds a committable git repo and installs it as the
 // ambient configured vault root, returning the root and a vault-relative path
@@ -269,10 +304,11 @@ func TestHealDerivedConflictsRefusesAmbientVault(t *testing.T) {
 
 	t.Run("refuses", func(t *testing.T) {
 		_, mig := setup(t)
+		alias := ambientViaAlias(t, mig) // backstop test behind the U3 vaultlock seats
 		restore := surface.SetAmbientVaultRoot(mig)
 		defer restore()
 
-		_, err := Pull(mig, []string{"origin"})
+		_, err := Pull(alias, []string{"origin"})
 		if !errors.Is(err, ErrAmbientVaultCommit) {
 			t.Fatalf("Pull err = %v, want ErrAmbientVaultCommit", err)
 		}
@@ -350,10 +386,11 @@ func TestAmbientCommitErrorIsNotSwallowed(t *testing.T) {
 	gitRun(t, root, "push", "-q", "origin", "main")
 	_ = rel
 
+	alias := ambientViaAlias(t, root) // backstop test behind the U3 vaultlock seats
 	restore := surface.SetAmbientVaultRoot(root)
 	defer restore()
 
-	res, err := Pull(root, []string{"origin"})
+	res, err := Pull(alias, []string{"origin"})
 	if !errors.Is(err, ErrAmbientVaultCommit) {
 		t.Fatalf("Pull err = %v, want ErrAmbientVaultCommit — a refused commit reported as a successful pull", err)
 	}
@@ -435,11 +472,12 @@ func TestPruneMirrorsReconcileRefusalIsNotSwallowed(t *testing.T) {
 
 	t.Run("refuses_and_the_refusal_surfaces", func(t *testing.T) {
 		mig := setup(t)
+		alias := ambientViaAlias(t, mig) // backstop test behind the U3 vaultlock seats
 		restore := surface.SetAmbientVaultRoot(mig)
 		defer restore()
 
 		head := gitRun(t, mig, "rev-parse", "HEAD")
-		_, _, _, err := PruneMirrorsVerifiedWithDowngrade(mig, []string{"notes.md"}, true, acceptOnly(nil))
+		_, _, _, err := PruneMirrorsVerifiedWithDowngrade(alias, []string{"notes.md"}, true, acceptOnly(nil))
 		if !errors.Is(err, ErrAmbientVaultCommit) {
 			t.Fatalf("PruneMirrorsVerifiedWithDowngrade err = %v, want ErrAmbientVaultCommit — "+
 				"the reconcile's refusal was swallowed and the prune reported success", err)

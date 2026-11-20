@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // GC of the .vp-locks sidecar litter (ADR-003 amendment 2026-10-27,
@@ -131,6 +133,7 @@ func SweepDeadLocks(vaultRoot string, dryRun bool) (SweepReport, error) {
 // exclusive poll. Split out so tests can drive the abort path with a short
 // timeout instead of waiting the production two seconds.
 func sweepDeadLocks(vaultRoot string, dryRun bool, acquireTimeout time.Duration) (SweepReport, error) {
+	surface.GuardTestPathWrite(lockDirPath(vaultRoot)) // first statement: this sweep UNLINKS sidecars
 	if vaultRoot == "" {
 		return SweepReport{}, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
@@ -217,6 +220,7 @@ func sweepDeadLocks(vaultRoot string, dryRun bool, acquireTimeout time.Duration)
 // blocks a shared acquirer (the keystone of the quiescence design). On success it
 // returns a release and got=true; on timeout, got=false and nothing held.
 func acquireGCExclusiveBounded(vaultRoot string, timeout time.Duration) (release func() error, got bool, err error) {
+	surface.GuardTestPathWrite(lockDirPath(vaultRoot)) // first statement: before .gc is created or locked
 	lockDir := filepath.Join(vaultRoot, ".vp-locks")
 	if err := os.MkdirAll(lockDir, 0o755); err != nil {
 		return nil, false, fmt.Errorf("vaultlock: create lock dir: %w", err)

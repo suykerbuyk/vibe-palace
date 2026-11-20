@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suykerbuyk/vibe-palace/internal/testutil"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultlock"
 )
 
@@ -297,8 +298,7 @@ func TestLockNoticesACancelDuringAFiniteWait(t *testing.T) {
 // whose FIRST statement is the guard (guardAmbientIndex or
 // surface.GuardTestPathWrite), ahead of any lock or effect.
 func TestWritesGoThroughThisFile(t *testing.T) {
-	banned := map[string]bool{"WriteFile": true, "Rename": true, "Remove": true, "RemoveAll": true, "Create": true, "CreateTemp": true, "OpenFile": true, "Truncate": true,
-		"MkdirAll": true, "Mkdir": true, "MkdirTemp": true, "Symlink": true, "Link": true, "Chmod": true, "Chtimes": true, "Chown": true}
+	banned := testutil.FSMutatorCalls
 	// Packages whose calls mutate the vault or take its locks.
 	guarded := map[string]bool{"vaultlock": true, "vaultfs": true, "atomicfile": true}
 	fset := token.NewFileSet()

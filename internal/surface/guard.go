@@ -22,17 +22,19 @@ const allowNonTempVaultEnv = "VP_ALLOW_NONTEMP_VAULT"
 // runs before any refusal those funnels make and before the content write, and
 // it is a no-op in a production binary.
 //
-// 🔴 IT IS NOT "BEFORE ANY FILESYSTEM EFFECT" ON THE APPEND PATH, AND THIS
-// COMMENT WILL NOT CLAIM OTHERWISE. On the whole-file funnel the seat does
-// precede every effect: writeAtomic's MkdirAll and temp file both come after
-// it. On the append path a CALLER may already have touched the vault before
-// appendUnderLock is entered — AppendIterationOwned calls EnsureVaultDir and
-// then vaultlock.Acquire, and Acquire creates <vault>/.vp-locks/ and a lock
-// sidecar which vaultlock never unlinks. So a test appending to the operator's
-// configured vault leaves those behind and only then panics. Closing that is
-// the filed follow-on task
-// `append-entry-paths-touch-the-vault-before-the-tripwire-fires`; it is NOT
-// this seat's job and is deliberately not attempted here.
+// 🔴 THIS SEAT ALONE IS NOT "BEFORE ANY FILESYSTEM EFFECT" ON THE APPEND PATH.
+// On the whole-file funnel it does precede every effect: writeAtomic's MkdirAll
+// and temp file both come after it. On the append path a CALLER used to touch the
+// vault first — AppendIterationOwned calls EnsureVaultDir and then
+// vaultlock.Acquire, which creates <vault>/.vp-locks/ and a lock sidecar that is
+// never unlinked. Task `append-entry-paths-touch-the-vault-before-the-tripwire-
+// fires` closed that with two more seats, each a first statement with nothing
+// held: every vaultlock function that creates or removes something
+// (acquireGCShared, acquireGCExclusiveBounded, sweepDeadLocks, TryAcquireFile,
+// AcquireFileWithTimeout, and AcquirePair's pre-checks) and EnsureVaultDir. This
+// seat is now the backstop behind them. What is still NOT covered: other raw
+// directory creation in the vault (internal/archive's MkdirAll of the transcripts
+// directory, absorb's backup directory), filed as a follow-on.
 //
 // With an EMPTY vaultPath the vault-root arms below have nothing to compare, and
 // the call is no longer a no-op: the write PATH is judged against the ambient

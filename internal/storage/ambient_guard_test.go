@@ -23,47 +23,58 @@ import (
 // the two write funnels. It has two sub-tests that use DIFFERENT INSTRUMENTS on
 // purpose, because they pin different things and one instrument cannot do both.
 //
-//   - seat_fires drives the public entry point, AppendIterationOwned, and pins
-//     that the seat fires on the real production path. For that the project
-//     must be INITIALISED, because AppendIterationOwned calls EnsureVaultDir
-//     before it takes the lock and EnsureVaultDir refuses an uninitialised
-//     project first.
+//   - seat_fires pins that the seat fires on an INITIALISED project, ahead of
+//     every refusal below it, and uninitialised_project pins where in the
+//     refusal band it sits (ahead of projectdir's refusal).
 //
-//   - uninitialised_project pins WHERE IN THE REFUSAL BAND the seat sits, and
-//     it CANNOT use the public entry point for exactly the reason above: with
-//     an uninitialised project, EnsureVaultDir returns the same error whether
-//     the guard is first or last, so the public entry point is green either way
-//     and the ordering stays unpinned. It therefore calls the production
-//     primitive directly, holding the lock the primitive's contract requires
-//     (internal/storage/project_gate_test.go already calls appendUnderLock
-//     directly; this one also acquires, because the guard-first arm panics and
-//     a deferred release must unwind it).
+// 🔴 BOTH ROWS ARE NOW BACKSTOP TESTS BEHIND THE U3 SEATS, AND BOTH CALL THE
+// PRIMITIVE DIRECTLY. Since task
+// `append-entry-paths-touch-the-vault-before-the-tripwire-fires`, every entry
+// path (AppendIterationOwned and the rest) is refused earlier, at EnsureVaultDir
+// and at vaultlock, so a row driving an entry path stays green when THIS seat is
+// deleted and proves nothing about it (mutation M4 showed exactly that). The
+// primitive holds the lock its contract requires, so each row takes that lock
+// BEFORE installing the ambient root (the vaultlock seat would otherwise refuse
+// the acquisition) and releases it by defer. The entry paths are covered by
+// TestAmbientAppendEntryPathsRefuseBeforeCreatingAnything.
+//
+// The assertions name the PRIMITIVE's own panic text ("a write to the CONFIGURED
+// vault"), not the U3 seats' ("a write inside the CONFIGURED vault"), so a
+// refusal from an earlier seat cannot satisfy them.
 func TestAppendUnderLockRefusesAmbientVault(t *testing.T) {
 	t.Run("seat_fires", func(t *testing.T) {
 		root := t.TempDir()
-		testutil.InitProject(t, root, "p") // scaffold markers: past EnsureVaultDir
+		testutil.InitProject(t, root, "p") // scaffold markers: an initialised project
+		v := NewVault(root)
+		abs := filepath.Join(root, "Projects", "p", "iterations.md")
+
+		// Lock FIRST, ambient root second: the U3 vaultlock seat refuses an
+		// acquisition inside the ambient vault, and this row is about the
+		// primitive behind it.
+		release, lerr := vaultlock.Acquire(v.Root, abs)
+		if lerr != nil {
+			t.Fatalf("acquire: %v", lerr)
+		}
+		defer release()
 		restore := surface.SetAmbientVaultRoot(root)
 		defer restore()
-		v := NewVault(root)
 
-		var n, derived int
 		var err error
 		func() {
 			defer func() {
 				r := recover()
 				if r == nil {
-					t.Fatalf("AppendIterationOwned returned (n=%d, derived=%d, err=%v) for an append into the ambient vault root %s; expected a panic",
-						n, derived, err, root)
+					t.Fatalf("appendUnderLock returned %v for an append into the ambient vault root %s; expected a panic", err, root)
 				}
 				msg, _ := r.(string)
-				if !strings.Contains(msg, "CONFIGURED vault") {
-					t.Fatalf("panic came from the wrong arm: %v", r)
+				if !strings.Contains(msg, "a write to the CONFIGURED vault") {
+					t.Fatalf("panic did not come from the primitive's own seat: %v", r)
 				}
 				if !strings.Contains(msg, root) {
 					t.Errorf("panic message does not name the configured root %s: %v", root, r)
 				}
 			}()
-			n, derived, err = v.AppendIterationOwned("p", "t", "b", nil)
+			err = v.appendUnderLock(abs, []byte("line\n"))
 		}()
 
 		// The pre-emption check: if this fires, the sub-test stopped reaching
@@ -75,16 +86,17 @@ func TestAppendUnderLockRefusesAmbientVault(t *testing.T) {
 
 	t.Run("uninitialised_project", func(t *testing.T) {
 		root := t.TempDir() // deliberately NO scaffold marker
-		restore := surface.SetAmbientVaultRoot(root)
-		defer restore()
 		v := NewVault(root)
 		abs := filepath.Join(root, "Projects", "p", "iterations.md")
 
+		// Lock FIRST, ambient root second (see the doc above).
 		release, err := vaultlock.Acquire(v.Root, abs)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
 		defer release()
+		restore := surface.SetAmbientVaultRoot(root)
+		defer restore()
 
 		// With the guard seated FIRST the ambient refusal wins. Seated below
 		// projectdir it would never run and the caller would see a quiet,
@@ -100,8 +112,8 @@ func TestAppendUnderLockRefusesAmbientVault(t *testing.T) {
 						appendErr, root)
 				}
 				msg, _ := r.(string)
-				if !strings.Contains(msg, "CONFIGURED vault") {
-					t.Fatalf("panic came from the wrong arm: %v", r)
+				if !strings.Contains(msg, "a write to the CONFIGURED vault") {
+					t.Fatalf("panic did not come from the primitive's own seat: %v", r)
 				}
 			}()
 			appendErr = v.appendUnderLock(abs, []byte("line\n"))

@@ -23,9 +23,13 @@
 // same lock key and contend on the same lock file — including for a file whose
 // directories do not exist yet, and before and after they are created.
 //
-// vaultlock is a near-leaf package: it imports only the standard library,
-// except on the windows build, whose flock_windows.go pulls in
+// vaultlock is a near-leaf package: it imports only the standard library and
+// internal/surface (which itself imports only the standard library, so no cycle
+// is possible), except on the windows build, whose flock_windows.go pulls in
 // golang.org/x/sys/windows for the LockFileEx/UnlockFileEx byte-range lock.
+// surface is here for ONE reason: the under-test vault tripwire. Every function
+// below that creates or removes something on disk refuses an ambient-vault path
+// as its FIRST statement, before any lock is taken (see lockDirPath).
 package vaultlock
 
 import (
@@ -39,6 +43,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
 
 // ErrLockWaitTimeout is returned by AcquireWithTimeout and
@@ -93,6 +99,13 @@ func acquireByKey(vaultRoot, key string) (release func() error, err error) {
 // is idempotent and returns the first error.
 func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err error) {
 	lo, hi := canonicalKey(pathA), canonicalKey(pathB)
+	// The under-test tripwire, judged for the shared lock dir and BOTH sidecar
+	// paths before the first leg acquires anything. A refusal here strands
+	// nothing. It is not sufficient on its own: the verdict reads live
+	// filesystem state, so acquireSecondLeg carries its own release-on-unwind.
+	surface.GuardTestPathWrite(lockDirPath(vaultRoot))
+	surface.GuardTestPathWrite(lockFilePath(vaultRoot, lo))
+	surface.GuardTestPathWrite(lockFilePath(vaultRoot, hi))
 	if lo == hi {
 		return acquireByKey(vaultRoot, lo)
 	}
@@ -103,9 +116,8 @@ func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err erro
 	if err != nil {
 		return nil, err
 	}
-	releaseHi, err := acquireByKey(vaultRoot, hi)
+	releaseHi, err := acquireSecondLeg(vaultRoot, hi, releaseLo)
 	if err != nil {
-		_ = releaseLo()
 		return nil, err
 	}
 	var once sync.Once
@@ -122,6 +134,50 @@ func AcquirePair(vaultRoot, pathA, pathB string) (release func() error, err erro
 		})
 		return rerr
 	}, nil
+}
+
+// acquireSecondLeg takes the higher key while releaseLo is held, and guarantees
+// releaseLo is called on EVERY way out that is not success: an error return, a
+// panic (the under-test tripwire can refuse here if the filesystem changed
+// between the legs, because its verdict reads live state), or runtime.Goexit.
+//
+// 🔴 A deferred release driven by a success flag, NOT recover-and-re-panic: with
+// no recover the original panic value and stack reach the caller untouched, so
+// the tripwire's text is not rewrapped and nothing can swallow it. releaseLo is
+// idempotent, so a later caller-side release is harmless.
+func acquireSecondLeg(vaultRoot, key string, releaseLo func() error) (release func() error, err error) {
+	ok := false
+	defer func() {
+		if !ok {
+			_ = releaseLo()
+		}
+	}()
+	runPairLegHook()
+	release, err = acquireByKey(vaultRoot, key)
+	if err != nil {
+		return nil, err
+	}
+	ok = true
+	return release, nil
+}
+
+// pairLegHook, when a test sets it, runs between AcquirePair's two legs, so a
+// test can change the filesystem at the one moment that matters instead of
+// hoping for a race. Production never sets it, and nothing outside the package
+// can: the setter lives in the package's tests.
+var (
+	pairLegHookMu sync.Mutex
+	pairLegHook   func()
+)
+
+// runPairLegHook runs the hook when one is set; nil-safe.
+func runPairLegHook() {
+	pairLegHookMu.Lock()
+	f := pairLegHook
+	pairLegHookMu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 // TryAcquire is the NON-BLOCKING form of Acquire. It attempts an exclusive
@@ -166,6 +222,7 @@ func TryAcquire(vaultRoot, targetAbsPath string) (release func() error, ok bool,
 // release: removing a lock file while another process may have it open would
 // let two holders lock two different files.
 func TryAcquireFile(lockPath string) (release func() error, ok bool, err error) {
+	surface.GuardTestPathWrite(absOrEmpty(lockPath)) // first statement: nothing is held or created yet
 	if !filepath.IsAbs(lockPath) {
 		return nil, false, fmt.Errorf("vaultlock: lock path must be absolute, got %q", lockPath)
 	}
@@ -228,6 +285,7 @@ func AcquireWithTimeout(vaultRoot, targetAbsPath string, timeout time.Duration) 
 // The ingester and the rebuild pass a negative timeout and bound the wait by
 // ctx; searches pass a finite timeout and skip their write when it expires.
 func AcquireFileWithTimeout(ctx context.Context, lockPath string, timeout time.Duration) (release func() error, err error) {
+	surface.GuardTestPathWrite(absOrEmpty(lockPath)) // first statement: nothing is held or created yet
 	if !filepath.IsAbs(lockPath) {
 		return nil, fmt.Errorf("vaultlock: lock path must be absolute, got %q", lockPath)
 	}
@@ -344,6 +402,10 @@ func gcLockPath(vaultRoot string) string {
 // in-place upgrade with ERROR_LOCK_VIOLATION. Close and reopen, or use a distinct
 // fd.
 func acquireGCShared(vaultRoot string) (release func() error, err error) {
+	// THE SEAT FOR EVERY ACQUIRE/TRY/TIMED/HELD/PAIR ENTRY: the first effect of
+	// each is this function's MkdirAll of <root>/.vp-locks, so refusing here, as
+	// the first statement, is before anything exists or is held.
+	surface.GuardTestPathWrite(lockDirPath(vaultRoot))
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")
 	}
@@ -388,11 +450,49 @@ func openLockFile(vaultRoot, key string) (f *os.File, gcRelease func() error, er
 	return f, gcRelease, nil
 }
 
+// lockDirPath is the lock directory a vaultRoot's sidecars live in, or "" when
+// vaultRoot is empty or not absolute (the callers refuse those with an error, and
+// surface.GuardTestPathWrite treats "" as nothing to judge: a relative path would
+// otherwise be judged against the process cwd).
+func lockDirPath(vaultRoot string) string {
+	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
+		return ""
+	}
+	return filepath.Join(vaultRoot, ".vp-locks")
+}
+
+// lockFilePath is the sidecar path for key under vaultRoot ("" as lockDirPath).
+// One source for the name, shared by the opener and AcquirePair's guards.
+func lockFilePath(vaultRoot, key string) string {
+	dir := lockDirPath(vaultRoot)
+	if dir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(dir, hex.EncodeToString(sum[:])+".lock")
+}
+
+// absOrEmpty returns p when it is absolute and "" otherwise, for the same reason
+// as lockDirPath.
+func absOrEmpty(p string) string {
+	if !filepath.IsAbs(p) {
+		return ""
+	}
+	return p
+}
+
 // openLockFileNoGC validates the root and opens (creating if needed) the sidecar
 // lock file named by key. It performs NO locking and takes NO .gc coordination —
 // it is the raw opener. The GC sweep is the one caller that opens a sidecar
 // without .gc: it already holds .gc EXCLUSIVE, so taking .gc shared here would
 // self-deadlock against its own exclusive hold.
+//
+// 🔴 IT CARRIES NO TRIPWIRE SEAT, ON PURPOSE. It runs after acquireGCShared has
+// created .vp-locks/.gc and taken its shared flock, and openLockFile does not
+// defer that release around a panic, so a panic seat here would strand the .gc
+// flock. It is a private post-seat helper: its only non-test caller is
+// openLockFile, which reaches it only after the seated acquireGCShared.
+// TestFilesystemEffectsAreSeatedFirst re-proves that on every run.
 func openLockFileNoGC(vaultRoot, key string) (*os.File, error) {
 	if vaultRoot == "" {
 		return nil, fmt.Errorf("vaultlock: vaultRoot must not be empty")

@@ -6,7 +6,7 @@ lost-update hole*, then *compare-and-set on blind whole-file overwrites*),
 first if you are here to write to `resume.md`*), 2026-08-18 (Windows
 `LockFileEx` and the atomic-rename retry), 2026-09-19 (one ordered pair
 acquisition, `AcquirePair`), 2026-09-27 (what the repo-root key covers),
-2026-10-09 (ADR-014's index locks are separate from this ADR's locks); dated
+2026-10-09 (ADR-014's index locks are separate from this ADR's locks), 2026-11-19 (the lock primitive refuses an ambient vault under test); dated
 in-place corrections 2026-09-28
 **Deciders:** Project owner
 **Context:** Vibe-palace vault-write-concurrency — serializing vault read-modify-write
@@ -1038,3 +1038,33 @@ asserts it is declared ungated (it reaches no vault-write funnel sink).
   / `doc/*.md` writes took no `vaultlock`) — absorb now holds `vaultlock.Acquire`
   across each destination's read-dedup-append (`internal/absorb/writer.go`,
   since 2026-07-22)
+
+## Amendment 2026-11-19 — the lock primitive refuses an ambient vault under test
+
+A test that appended to the operator's configured vault was refused at the
+append primitive, but only after `vaultlock.Acquire` had created
+`<vault>/.vp-locks/`, `.gc` and a lock sidecar (never unlinked) and
+`EnsureVaultDir` had created the project directory. Both now refuse first.
+
+- Every `vaultlock` function that creates or removes something on disk calls
+  `surface.GuardTestPathWrite` as its **first statement**, ahead of any lock:
+  `acquireGCShared` (the first effect of `Acquire`, `AcquirePair`, `TryAcquire`,
+  `AcquireWithTimeout`, `AcquireHeld`), `acquireGCExclusiveBounded`,
+  `sweepDeadLocks`, `TryAcquireFile`, `AcquireFileWithTimeout`; and
+  `(*Vault).EnsureVaultDir`. A no-op outside `go test`.
+- **No panic-capable seat may run after a lock is held.** `openLockFileNoGC` runs
+  after the `.gc` shared flock is taken and carries no seat; it is reachable only
+  through `openLockFile`, which calls the seated `acquireGCShared` first, and
+  `TestFilesystemEffectsAreSeatedFirst` re-proves that on every run.
+- `AcquirePair` is the one sanctioned nested acquisition, so its second leg is the
+  one place a refusal could fire with a lock held (the verdict reads live
+  filesystem state). `acquireSecondLeg` releases the lower lock on every way out
+  that is not success, by a deferred release driven by a success flag (no
+  `recover`, so the tripwire's panic reaches the caller unchanged).
+- The nested holders that take a per-path lock under a caller's root lock
+  (`vaultfs.WriteDepartureRecord` and `RemoveDepartureRecord`) rely on every
+  caller releasing the root lock by `defer`; that is true of all `AcquireHeld`
+  call sites today and is not enforced by a test.
+- Not covered: other raw directory creation in the vault (`internal/archive`'s
+  `MkdirAll` of the transcripts directory, absorb's backup directory), filed as a
+  follow-on.

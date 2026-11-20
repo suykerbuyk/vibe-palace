@@ -15,6 +15,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/project"
 	"github.com/suykerbuyk/vibe-palace/internal/projectdir"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
+	"github.com/suykerbuyk/vibe-palace/internal/surface"
 	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
@@ -283,7 +284,14 @@ func EnsureDir(path string) error {
 // a directory under a project the vault has not initialised
 // (projectdir.RefuseUninitialisedDirAbs), so a refused write never leaves an
 // empty Projects/<p>/ behind, a Phantom other readers would then accept.
+//
+// 🔴 THE UNDER-TEST TRIPWIRE IS ITS FIRST STATEMENT. Twenty callers create a
+// project directory here BEFORE they take a lock, so a seat only in the lock or
+// the append primitive would let a test create a directory in the operator's
+// configured vault and only then be refused. It holds nothing, so a refusal
+// strands nothing; a same-root lock holder cannot exist (vaultlock refuses first).
 func (v *Vault) EnsureVaultDir(path string) error {
+	surface.GuardTestPathWrite(path)
 	if err := projectdir.RefuseUninitialisedDirAbs(v.Root, path); err != nil {
 		return err
 	}
