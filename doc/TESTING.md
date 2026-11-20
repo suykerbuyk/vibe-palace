@@ -1136,6 +1136,16 @@ see the "Fixed, not merely ported" note below.
 | `TestIntegrationE2EInitPositionalAndVault` | Both a positional project dir AND `--vault-path` land independently |
 | `TestIntegrationE2EInitNonexistentPositional` | A nonexistent positional path aborts ExitUser BEFORE any filesystem write, stderr names `--vault-path` |
 | `TestIntegrationE2EInitNoGitFlag` | `--no-git` creates the vault dir without `.git` |
+
+#### `cmd/vp/init_vault_report_test.go` (vault reporting, run with `-run 'TestInitReports|TestInitVaultReport|TestProjectVault|TestInitDoesNot'`)
+| Test | What it asserts |
+|------|-----------------|
+| `TestInitReportsTheResolvedVaultAndItsSource` | The `Project vault` row and the stderr line name the vault the real resolver returned and its source/tier (tier 3, tier 1 override, tier 2 binding), and that vault is the one scaffolded; the fixtures resolve to different vaults, so a fixed string cannot pass |
+| `TestInitVaultReportFiresBeforeProjectScaffolding` | The vault is reported before `Projects/<slug>` exists; the row says "before project scaffolding and its commit", never "before any vault write" |
+| `TestProjectVaultResolvesOnce` | One resolution feeds the line, the row and the opened vault |
+| `TestProjectVaultRowForTheLegacyMarkerSource` | The legacy `cwd:` source, its tier gloss and the resolver's DEPRECATED warning |
+| `TestInitDoesNotClaimAnUnverifiedVault` | No "already configured": a host with no default `vault_path` says so, a resolution failure is its own `[FAIL]` row, and the Vault row sits above a failed binding without contradicting it |
+| `TestInitReportsAnInertNoGit` | `--no-git` with no vault being created is reported ignored (and the scaffold commit really happens); honoured on a new vault (no row); the tier-1 override note for an existing path |
 | `TestIntegrationE2EInitCleanupIsolation` | Meta-safety: HOME resolves entirely under the harness sandbox (construction-guaranteed by `testinfra.IsolateEnv`, kept for documentation value) |
 | `TestIntegrationE2EInitReinitIdempotent` | A second `vp init` converges: exit 0, no `[FAIL]` row, `.vibe-palace.toml` byte-identical, vault artifacts survive |
 | `TestIntegrationE2EInitSkillShimFallbackReachable` | The persona shims' MCP-less `vp skills show <name>` fallback works verbatim, embedded then project-override; no shim names a vault path |

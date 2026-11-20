@@ -117,6 +117,17 @@ func cmdInit(info cli.BuildInfo) *cli.Command {
 				results = append(results, ovRows...)
 			}
 
+			// Resolve the project vault ONCE, here: after the bind / override
+			// writes above (they change the answer) and before project
+			// scaffolding and its commit. Onboarding opens the same resolution,
+			// so the vault named is the vault written. The guarantee is exactly
+			// that: not "before any vault write" (initGlobal creates and commits
+			// a new --vault-path vault first, by design).
+			pv := newProjectVault(req.ProjectDir)
+			req.OpenVault = pv.Open
+			initVaultReport(pv.Line())
+			results = append(results, pv.Row())
+
 			res, err := onboard.Run(context.Background(), req, onboard.ScopeCLI)
 			if err != nil {
 				// An accounting failure, never a step failure. It means a step
@@ -187,9 +198,11 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 		return results, cli.ExitSystem
 	}
 
-	// When the global config already exists, treat it as authoritative —
-	// skip the vault re-check and emit two [info] rows. Matches prior init
-	// behavior so users see the same "already configured" message.
+	// When the global config already exists, treat it as authoritative and
+	// create no vault. The Vault row reports only what this run computed: the
+	// host default vault the config resolves to, or that none is set
+	// (existingConfigVaultRow); the Project vault row later states the vault
+	// this project actually resolves to.
 	//
 	// One exception: an explicit --vault-path naming a directory that does not
 	// exist yet. That is the operator asking for a new vault, so it gets the
@@ -208,7 +221,13 @@ func initGlobal(fv *cli.FlagValues) ([]check.Result, int) {
 			return results, cli.ExitUser
 		}
 		if newVault == "" {
-			results = append(results, check.Result{Name: "Vault", Status: check.Info, Summary: "already configured"})
+			// Report only what was computed here (init_vault_report.go). The old
+			// row said "already configured" and checked nothing: it meant "I am
+			// not creating a vault", and was printed on a host with no vault_path.
+			results = append(results, existingConfigVaultRow(fv))
+			if r, ok := noGitInertRow(fv); ok {
+				results = append(results, r)
+			}
 			return results, cli.ExitOK
 		}
 		cwd, err := os.Getwd()
@@ -749,10 +768,10 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 		return onboard.Request{}, results, cli.ExitSystem, false
 	}
 
-	// The one vault resolver every step shares. It walks up from the PROJECT
-	// directory rather than the process cwd — see the comment on the shim step
-	// in internal/onboard/steps.go.
-	openVault := func() (*storage.Vault, error) { return OpenProjectVaultAt(dir) }
+	// The vault opener (req.OpenVault) is installed by the caller, after the
+	// bind / override writes: see newProjectVault. It walks up from the PROJECT
+	// directory (req.ProjectDir), not the process cwd — see the comment on the
+	// shim step in internal/onboard/steps.go.
 
 	signal := project.DetectSignal(dir)
 	if signal == project.SignalNone {
@@ -812,7 +831,6 @@ func initProject(fv *cli.FlagValues) (onboard.Request, []check.Result, int, bool
 	}
 
 	return onboard.Request{
-		OpenVault:         openVault,
 		Slug:              name,
 		ProjectDir:        dir,
 		Domain:            fv.Get("--domain"),

@@ -66,6 +66,17 @@ vp init --no-git
 If you already have a config file, `vp init` skips global setup and proceeds
 to project initialization (if you're in a project directory).
 
+On an existing install, `vp init` names the vault it will write the project
+into, and why, before it scaffolds the project and commits that scaffold: a
+`Project vault` row (path plus its source — `cwd-local:` override, a
+`binding:` entry, or the `global:` host default) and the same line on stderr.
+That is the whole guarantee: it is not "before any vault write" — `--vault-path`
+naming a directory that does not exist yet creates and commits that new vault
+first, because you named it. `--no-git` only decides whether a *new* vault gets
+a git repository; where no vault is being created, `vp init` reports it as
+ignored (`[skip] --no-git`), and the project scaffold is still committed
+whenever the project vault is a git repository.
+
 ### Init Status Output
 
 Each `vp init` run ends with a status table that tells you exactly what
@@ -168,7 +179,15 @@ vp init — vibe-palace <version>
 [info] Global config:
        /home/you/.config/vibe-palace/config.toml (already exists, skipped)
 [info] Vault:
-       already configured
+       no vault created; existing config kept. Host default vault:
+         /home/you/vibe-palace-vault (global:/home/you/.config/vibe-palace/config.toml)
+[info] Project vault:
+       /home/you/vibe-palace-vault
+       source: global:/home/you/.config/vibe-palace/config.toml (tier 3, the
+         host default vault)
+       no per-project binding applies: this project's scaffold is written and
+         committed into the host default vault
+       reported before project scaffolding and its commit
 [pass] Project config:
        /home/you/code/myapp/.vibe-palace.toml (myapp, .vibe-palace.toml
          detected)
