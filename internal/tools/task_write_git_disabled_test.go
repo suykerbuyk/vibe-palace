@@ -142,7 +142,7 @@ func TestBootstrapDirtAlertOnAGitDisabledHost(t *testing.T) {
 			dirtyFile(t, vault.Root, "Projects/test-proj/tasks/hand-edited.md", "# Hand edited\n\nbody\n")
 			hostGitConfig(t, tc.config)
 
-			vd := computeVaultDirt(vault.Root)
+			vd, _ := computeVaultDirt(vault.Root)
 			if vd == nil {
 				t.Fatal("no alert on a dirty vault")
 			}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +31,8 @@ type TidyResult struct {
 	Swept               []string         // vault-relative paths staged+committed
 	Reported            []string         // dirt that needs human eyes; never staged (full catch-all)
 	ReportedUserContent []string         // subset of Reported that is user memory (Projects/<slug>/memory/...); expected, not dirt
-	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk; left untracked, not committed, not blocking
+	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk and is younger than transcriptPairGrace; left untracked, not committed, not blocking
+	Orphaned            []string         // the same shape OLDER than transcriptPairGrace: a capture that died between the two writes. Never swept, never committed, never blocking — but reported loudly (OrphanedNotice), because it will not complete by itself
 	LeftDeparted        []string         // "<path>: left untouched: departed project <p>" — artifacts under a departed project's trees, never committed, never blocking the rest
 	Committed           bool             // true if a commit was created
 	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
@@ -512,15 +514,72 @@ func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, 
 	if err != nil {
 		return nil, err
 	}
+	return tidyResultFromRaw(vaultPath, raw, migrated, os.Stat), nil
+}
+
+// transcriptPairGrace is how long a lone .jsonl.zst may wait for its manifest
+// before it stops being "mid-write" and becomes an orphan. The real gap between
+// the two writes is milliseconds; the cost of choosing too short is a false
+// orphan REPORT, never data loss, because nothing here commits or deletes it.
+const transcriptPairGrace = 10 * time.Minute
+
+// tidyResultFromRaw is the one classification path over a raw `-z -uall`
+// porcelain scan, shared by TidyScanWithTimeout and PushPlain so the push guard
+// and the sweep cannot read the same tree two ways. stat is the seam
+// splitOrphanedDeferred ages deferred archives through; production passes
+// os.Stat.
+func tidyResultFromRaw(vaultPath, raw string, migrated bool, stat func(string) (os.FileInfo, error)) *TidyResult {
 	swept, reported, deferred := classifyDirty(vaultPath, parsePorcelainZ(raw), migrated)
 	swept, leftDeparted := splitDepartedSweep(vaultPath, swept)
+	deferred, orphaned := splitOrphanedDeferred(vaultPath, deferred, stat, time.Now())
 	return &TidyResult{
 		Swept:               swept,
 		LeftDeparted:        leftDeparted,
 		Reported:            reported,
 		ReportedUserContent: classifyReportedUserContent(reported),
 		Deferred:            deferred,
-	}, nil
+		Orphaned:            orphaned,
+	}
+}
+
+// splitOrphanedDeferred moves out of the deferred set every archive whose mtime
+// is at least transcriptPairGrace old. It is a post-step on classifyDirty's
+// output, the same shape as splitDepartedSweep, so classifyDirty is untouched.
+// Uncertainty never escalates: a stat failure, or an mtime in the future, leaves
+// the path deferred.
+func splitOrphanedDeferred(vaultPath string, deferred []string, stat func(string) (os.FileInfo, error), now time.Time) (young, orphaned []string) {
+	for _, rel := range deferred {
+		info, err := stat(filepath.Join(vaultPath, filepath.FromSlash(rel)))
+		if err == nil && now.Sub(info.ModTime()) >= transcriptPairGrace {
+			orphaned = append(orphaned, rel)
+			continue
+		}
+		young = append(young, rel)
+	}
+	return young, orphaned
+}
+
+// OrphanedNotice is the user-facing text for TidyResult.Orphaned, rendered by
+// every front-end so the wording cannot drift. It is empty when there are none.
+func OrphanedNotice(orphaned []string) string {
+	if len(orphaned) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "ORPHANED %d transcript archive(s): the .jsonl.zst was written but its manifest never arrived "+
+		"(older than %s) — the capture died mid-write and will not complete by itself. Not committed, not blocking. "+
+		"Repair: re-archive it with `vp archive create` (this re-dates the archive) or delete the failed capture:",
+		len(orphaned), transcriptPairGrace)
+	// One path per line, never joined: a comma is legal in a filename, so a
+	// joined list cannot be split back into paths. A path with a line break would
+	// still forge a line, so that one is Go-quoted.
+	for _, p := range orphaned {
+		if strings.ContainsAny(p, "\n\r") {
+			p = strconv.Quote(p)
+		}
+		b.WriteString("\n  " + p)
+	}
+	return b.String()
 }
 
 // splitDepartedSweep takes out of the sweep every artifact that lies under a

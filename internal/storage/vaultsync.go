@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,7 +121,12 @@ type PlainPushResult struct {
 // It NEVER writes to os.Stderr.
 //
 // PushPlain refuses a dirty working tree: a plain push would publish a HEAD
-// that leaves the uncommitted work behind. That refuse-on-dirty precheck used
+// that leaves the uncommitted work behind. The one exception is a transcript
+// archive whose manifest has not arrived (Deferred, in flight, or Orphaned, a
+// crashed capture): it is never committed, so there is nothing for the push to
+// leave behind, and refusing on it would let one dead capture wedge every push
+// of every project. The exemption is by EXACT path from the same scan TidyScan
+// runs, never by directory. That refuse-on-dirty precheck used
 // to exist twice, as a raw `git status --porcelain` in each front-end (CLI
 // pushAll, MCP gitPush) — two implementations that agreed only by being kept
 // in step. It lives here once now, after the git_enabled gate, and returns a
@@ -140,34 +146,70 @@ func PushPlain(vaultPath string, remotes []string) (*PlainPushResult, error) {
 	if err := RefuseIfGitDisabled(vaultPath, "push"); err != nil {
 		return empty, err
 	}
-	porcelain, err := porcelainStatus(vaultPath)
+	// The same NUL-delimited -uall entries TidyScan classifies, through the same
+	// classification path. A raw `git status --porcelain` collapses a new
+	// untracked directory to one "?? dir/" line that no classified file path can
+	// match, and would also disagree with SyncVault about what is dirt.
+	migrated, err := VaultMigrated(vaultPath)
 	if err != nil {
-		return empty, fmt.Errorf("git status: %w", err)
+		return empty, fmt.Errorf("push: %w", err)
 	}
-	if strings.TrimSpace(porcelain) != "" {
-		return empty, &DirtyTreeError{Porcelain: porcelain}
+	raw, err := scanPorcelain(vaultPath, DefaultTidyScanTimeout)
+	if err != nil {
+		return empty, err
+	}
+	scan := tidyResultFromRaw(vaultPath, raw, migrated, os.Stat)
+	// Exempt only EXACT untracked paths the classifier deferred or orphaned: a
+	// push publishes committed HEAD and those files are never committed. Every
+	// other entry still blocks; no parent directory is ever exempted.
+	exempt := make(map[string]bool, len(scan.Deferred)+len(scan.Orphaned))
+	for _, p := range scan.Deferred {
+		exempt[p] = true
+	}
+	for _, p := range scan.Orphaned {
+		exempt[p] = true
+	}
+	var blocking []PorcelainEntry
+	for _, e := range parsePorcelainZ(raw) {
+		if e.Status == "??" && exempt[e.Path] {
+			continue
+		}
+		blocking = append(blocking, e)
+	}
+	if len(blocking) > 0 {
+		return empty, &DirtyTreeError{Porcelain: renderPorcelain(blocking)}
 	}
 	return pushPlainCore(vaultPath, remotes)
 }
 
-// DirtyTreeError is PushPlain's refuse-on-dirty verdict. Porcelain is git's
-// untrimmed `status --porcelain` output, so a front-end can print it verbatim
-// (the CLI) or parse the paths out of it (MCP) without re-running git.
+// renderPorcelain re-renders entries as `XY <path>` lines for DirtyTreeError.
+// Paths come from the NUL-delimited scan, so they are raw: one carrying a
+// newline, " -> " or edge whitespace would be mis-split or mis-trimmed by a
+// line-oriented reader. Such a path is rendered as a Go-quoted string, which
+// front-ends already unquote.
+func renderPorcelain(entries []PorcelainEntry) string {
+	var b strings.Builder
+	for _, e := range entries {
+		path := e.Path
+		if strings.ContainsAny(path, "\n\r\"") || strings.Contains(path, " -> ") || path != strings.TrimSpace(path) {
+			path = strconv.Quote(path)
+		}
+		b.WriteString(e.Status + " " + path + "\n")
+	}
+	return b.String()
+}
+
+// DirtyTreeError is PushPlain's refuse-on-dirty verdict. Porcelain is
+// renderPorcelain of the entries that SURVIVED the Deferred/Orphaned exemption
+// — `XY <path>` lines, one per entry, from the NUL-delimited -uall scan (not
+// git's own `status --porcelain` text). A path a line reader would mis-split
+// (line break, quote, " -> ", leading/trailing space) is Go-quoted, so a
+// front-end can print it verbatim (the CLI) or parse the paths out of it (MCP).
 type DirtyTreeError struct {
 	Porcelain string
 }
 
 func (e *DirtyTreeError) Error() string { return "vault has uncommitted changes" }
-
-// porcelainStatus returns `git status --porcelain` for vaultPath, untrimmed:
-// gitCmd trims its output, which would strip the leading status column of the
-// first line (" M path") that a front-end parses.
-func porcelainStatus(vaultPath string) (string, error) {
-	cmd := exec.Command("git", "-C", vaultPath, "status", "--porcelain")
-	cmd.Env = SafeGitEnv()
-	out, err := cmd.Output()
-	return string(out), err
-}
 
 // pushPlainCore is PushPlain after its git_enabled gate, for storage-internal
 // composition (SyncVault).

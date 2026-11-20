@@ -159,14 +159,18 @@ func vaultDirtMessageFor(count int, gitEnabled bool, readErr error) string {
 // would fire on a condition the reader cannot act on and would put a
 // non-silent-when-healthy line on the payload the moment git is slow; a vp fault
 // that matters is already carried by the health alert.
-func computeVaultDirt(vaultRoot string) *VaultDirt {
+//
+// ALSO RETURNS the orphaned transcript archives from the SAME scan (one `git
+// status`, not two). Orphans are NOT dirt: they never block a sync or a push, so
+// they ride beside the VaultDirt and are never folded into it.
+func computeVaultDirt(vaultRoot string) (*VaultDirt, []string) {
 	scan, err := storage.TidyScanWithTimeout(vaultRoot, vaultDirtScanBudget)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	dirt := scan.GenuineDirt()
 	if len(dirt) == 0 {
-		return nil
+		return nil, scan.Orphaned
 	}
 	sample := dirt
 	if len(sample) > vaultDirtSampleN {
@@ -177,5 +181,16 @@ func computeVaultDirt(vaultRoot string) *VaultDirt {
 		Count:       len(dirt),
 		SamplePaths: append([]string(nil), sample...),
 		Message:     vaultDirtMessageFor(len(dirt), enabled, readErr),
-	}
+	}, scan.Orphaned
+}
+
+// vaultOrphanMessage is the bootstrap alert for orphaned transcript archives: a
+// capture that died between its two writes. It is a REPAIR notice, not a stop —
+// nothing is blocked — and it is silent when there are none. One bounded line,
+// no paths (vp_vault_tidy dry_run lists them), so the bootstrap prefix is not
+// spent on a record list.
+func vaultOrphanMessage(count int) string {
+	return fmt.Sprintf(
+		"⚠ ORPHANED TRANSCRIPTS: %d archive(s) have no manifest and never will — a capture died mid-write. "+
+			"Not blocking sync or push; vp_vault_tidy dry_run lists them.", count)
 }

@@ -20,6 +20,7 @@ type SyncResult struct {
 	Reported            []string
 	ReportedUserContent []string
 	Deferred            []string
+	Orphaned            []string // TidyResult.Orphaned: stale lone archives; never block
 	// LeftDeparted are artifacts under a departed project's trees, left
 	// untouched and never committed (TidyResult.LeftDeparted).
 	LeftDeparted []string
@@ -180,6 +181,7 @@ func SyncVault(vaultPath string, remotes []string) (*SyncResult, error) {
 	result.ReportedUserContent = scan.ReportedUserContent
 	result.LeftDeparted = scan.LeftDeparted
 	result.Deferred = scan.Deferred
+	result.Orphaned = scan.Orphaned
 
 	// 2. Refuse-on-dirt BEFORE any network I/O (finding L1). Genuine dirt is
 	// reported paths that are not deliberately-pending user memory.

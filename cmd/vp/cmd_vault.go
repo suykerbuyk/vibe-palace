@@ -218,6 +218,9 @@ func cmdVaultSync() *cli.Command {
 				}
 				fmt.Printf("Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
 			}
+			if note := storage.OrphanedNotice(res.Orphaned); note != "" {
+				fmt.Println(note)
+			}
 			if res.Pull != nil {
 				printPullOutput(remotes, res.Pull)
 			}
@@ -394,6 +397,9 @@ func printTidyReported(res *storage.TidyResult) {
 			pairs = "pair"
 		}
 		fmt.Printf("Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
+	}
+	if note := storage.OrphanedNotice(res.Orphaned); note != "" {
+		fmt.Println(note)
 	}
 }
 

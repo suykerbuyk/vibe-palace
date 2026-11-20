@@ -265,7 +265,7 @@ func TestVaultDirtMessageNamesTheWholeBlastRadius(t *testing.T) {
 // actionable and is not silent when healthy.
 func TestVaultDirtScanIsBestEffort(t *testing.T) {
 	vault := newTestVault(t) // a plain temp dir; no .git
-	if vd := computeVaultDirt(vault.Root); vd != nil {
+	if vd, _ := computeVaultDirt(vault.Root); vd != nil {
 		t.Errorf("computeVaultDirt returned %#v for a non-repository vault, want nil", vd)
 	}
 	if br := bootstrapOn(t, vault); br.VaultDirt != nil {

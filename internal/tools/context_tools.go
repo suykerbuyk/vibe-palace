@@ -969,9 +969,16 @@ func assembleBootstrap(resolver *vpctx.Resolver, vault *storage.Vault, project s
 	// (task `task-writes-leave-the-vault-dirty-with-no-sweeper`, Operator
 	// decision 2026-09-06). It is bounded by vaultDirtScanBudget and degrades to
 	// silence rather than to a slow handshake.
-	if vd := computeVaultDirt(vault.Root); vd != nil {
+	vd, orphans := computeVaultDirt(vault.Root)
+	if vd != nil {
 		result.VaultDirt = vd
 		alerts = append(alerts, vd.Message)
+	}
+	// Orphaned transcript archives: a repair notice from the same scan, one line,
+	// silent when there are none, and never a stop (it does not set VaultDirt, so
+	// it does not trip the advisory gate below).
+	if len(orphans) > 0 {
+		alerts = append(alerts, vaultOrphanMessage(len(orphans)))
 	}
 
 	// ── THE ADVISORY GATE ────────────────────────────────────────────────────

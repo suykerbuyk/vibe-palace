@@ -435,6 +435,9 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				}
 				fmt.Fprintf(&output, "Deferred %d incomplete transcript %s (manifest pending) — left for the next sweep\n", n, pairs)
 			}
+			if note := storage.OrphanedNotice(res.Orphaned); note != "" {
+				fmt.Fprintln(&output, note)
+			}
 			if res.Pull != nil {
 				for _, l := range res.Pull.Derived.Lines() {
 					fmt.Fprintln(&output, l)
@@ -478,6 +481,7 @@ func vaultSyncHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"commit_sha": res.CommitSHA,
 				"swept":      res.Swept,
 				"deferred":   res.Deferred,
+				"orphaned":   res.Orphaned,
 				"output":     output.String(),
 			}, nil
 		}
@@ -616,11 +620,18 @@ func porcelainDirtyPaths(porcelain string) []string {
 		if path == "" {
 			continue
 		}
-		if idx := strings.Index(path, " -> "); idx >= 0 {
-			path = path[idx+len(" -> "):]
-		}
-		if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
-			path = path[1 : len(path)-1]
+		// A Go-quoted path (PushPlain quotes any path with a newline, quote or
+		// " -> ") is one literal path: unquote it WHOLE and never split it on
+		// " -> ".
+		if uq, err := strconv.Unquote(path); err == nil && len(path) >= 2 && path[0] == '"' {
+			path = uq
+		} else {
+			if idx := strings.Index(path, " -> "); idx >= 0 {
+				path = path[idx+len(" -> "):]
+			}
+			if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+				path = path[1 : len(path)-1]
+			}
 		}
 		if path == "" || seen[path] {
 			continue
@@ -721,6 +732,7 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				"reported":              res.Reported,
 				"reported_user_content": res.ReportedUserContent,
 				"deferred":              res.Deferred,
+				"orphaned":              res.Orphaned,
 				"committed":             false,
 			}
 			// The prediction is a refusal, not a failed dry run: say it in a
@@ -728,6 +740,9 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			if refusal != nil {
 				out["would_refuse"] = refusal.Error()
 				summary += "; a real tidy would refuse (see would_refuse)"
+			}
+			if note := storage.OrphanedNotice(res.Orphaned); note != "" {
+				summary += "; " + note
 			}
 			out["summary"] = summary
 			return out, nil
@@ -771,6 +786,10 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 				len(res.Reported), userMemorySummarySuffix(len(res.ReportedUserContent)))
 		}
 
+		if note := storage.OrphanedNotice(res.Orphaned); note != "" {
+			summary += "; " + note
+		}
+
 		// A tidy that could not reach a remote is a tidy that FAILED, even though the
 		// commit landed locally. The result body is DISCARDED on a handler error (196),
 		// so everything the caller needs to act — the commit that does exist, and what
@@ -787,6 +806,7 @@ func vaultTidyHandler(vault *storage.Vault) mcp.HandlerFunc {
 			"reported":              res.Reported,
 			"reported_user_content": res.ReportedUserContent,
 			"deferred":              res.Deferred,
+			"orphaned":              res.Orphaned,
 			"committed":             res.Committed,
 			"commit_sha":            res.CommitSHA,
 			"push_downgraded":       res.PushDowngraded,
