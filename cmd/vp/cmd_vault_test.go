@@ -285,8 +285,8 @@ func TestVaultStatusJSONInSync(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("decode JSON: %v\n%s", err, out)
 	}
-	if rep.Version != 3 {
-		t.Errorf("Version = %d, want 3", rep.Version)
+	if rep.Version != 4 {
+		t.Errorf("Version = %d, want 4", rep.Version)
 	}
 	if rep.Branch != "main" {
 		t.Errorf("Branch = %q, want main", rep.Branch)

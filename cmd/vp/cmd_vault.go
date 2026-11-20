@@ -643,8 +643,7 @@ func cmdVaultStatus() *cli.Command {
 			}
 
 			dirt := report.Dirt
-			clean := len(dirt.Swept) == 0 && len(dirt.Reported) == 0
-			if clean {
+			if dirt.Clean() {
 				fmt.Println("Working tree: clean")
 			} else {
 				fmt.Println("Working tree:")
@@ -652,6 +651,9 @@ func cmdVaultStatus() *cli.Command {
 				printTidyReported(&storage.TidyResult{
 					Reported:            dirt.Reported,
 					ReportedUserContent: dirt.ReportedUserContent,
+					Deferred:            dirt.Deferred,
+					Orphaned:            dirt.Orphaned,
+					LeftDeparted:        dirt.LeftDeparted,
 				})
 			}
 			return cli.ExitOK

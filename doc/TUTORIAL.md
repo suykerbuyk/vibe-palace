@@ -1119,8 +1119,11 @@ vp vault status --json      # the versioned report as JSON
 It is strictly read-only — it never commits, pushes, or touches the working
 tree. Per remote it reports whether you are *ahead* (local commits not yet
 pushed → `unpushed`), *behind*, *diverged*, and whether the remote is
-*reachable*, plus the working-tree dirt (the same Swept vs. Reported split that
-`vp vault tidy` uses). By default it runs a bounded `git fetch` so behind counts
+*reachable*, plus the working-tree dirt (the same classification `vp vault tidy`
+uses: Swept, Reported, Deferred and Orphaned transcript archives, and artifacts
+left untouched under a departed project). `Working tree: clean` means none of
+those exist; a tree holding only an orphaned or deferred transcript is not clean,
+and an orphan is named with the same `ORPHANED` notice tidy and sync print. By default it runs a bounded `git fetch` so behind counts
 are real; `--no-fetch` skips the network and reports behind as unknown.
 
 ### Keeping Config Current

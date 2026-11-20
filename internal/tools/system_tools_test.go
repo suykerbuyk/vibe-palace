@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/onboard"
@@ -754,8 +755,8 @@ func TestVaultStatusTool(t *testing.T) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatalf("decode StatusReport: %v\n%s", err, raw)
 	}
-	if report.Version != 3 {
-		t.Errorf("Version = %d, want 3", report.Version)
+	if report.Version != 4 {
+		t.Errorf("Version = %d, want 4", report.Version)
 	}
 	if report.Branch != "main" {
 		t.Errorf("Branch = %q, want main", report.Branch)
@@ -830,7 +831,7 @@ func TestVaultStatusSections(t *testing.T) {
 		if report.Remotes == nil {
 			t.Errorf("Remotes must be populated (non-nil) for sync selection, got nil")
 		}
-		if report.Version != 3 || report.Branch != "main" {
+		if report.Version != 4 || report.Branch != "main" {
 			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})
@@ -843,7 +844,7 @@ func TestVaultStatusSections(t *testing.T) {
 		if report.Remotes != nil {
 			t.Errorf("Remotes must be nil for dirt selection, got %+v", report.Remotes)
 		}
-		if report.Version != 3 || report.Branch != "main" {
+		if report.Version != 4 || report.Branch != "main" {
 			t.Errorf("Version/Branch must always be present, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})
@@ -1518,5 +1519,67 @@ func TestInitProject_StepsCarryCreated(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"created":true`) {
 		t.Errorf("no step row marshalled created=true:\n%s", b)
+	}
+}
+
+// A tree whose only dirt is an orphaned transcript is not clean over MCP either:
+// the report carries the archive and the shared OrphanedNotice wording, and the
+// sections selector zeroes the new fields with the rest of the dirt section.
+func TestVaultStatusToolReportsOrphan(t *testing.T) {
+	sandboxHostEnv(t)
+	root := initVaultRepo(t)
+	vault := storage.NewVault(root)
+	const orphan = "Projects/p/transcripts/orphan.jsonl.zst"
+
+	if _, report := buildVaultStatusRaw(t, vault, nil); !report.Dirt.Clean() {
+		t.Fatalf("control: a fresh repo must report a clean tree, got %+v", report.Dirt)
+	}
+
+	p := filepath.Join(root, filepath.FromSlash(orphan))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("zst\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, report := buildVaultStatusRaw(t, vault, nil)
+	var top struct {
+		Dirt map[string]json.RawMessage `json:"dirt"`
+	}
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"orphaned", "deferred", "left_departed", "orphaned_notice"} {
+		if _, ok := top.Dirt[k]; !ok {
+			t.Errorf("dirt.%s must be a present key, got %s", k, raw)
+		}
+	}
+	if len(report.Dirt.Orphaned) != 1 || report.Dirt.Orphaned[0] != orphan || report.Dirt.Clean() {
+		t.Errorf("Dirt = %+v, want orphaned=[%s] and not clean", report.Dirt, orphan)
+	}
+	if want := storage.OrphanedNotice([]string{orphan}); report.Dirt.OrphanedNotice != want {
+		t.Errorf("OrphanedNotice = %q, want the shared wording %q", report.Dirt.OrphanedNotice, want)
+	}
+
+	// sections:["sync"] zeroes the whole dirt section, the new fields included.
+	rawSync, rs := buildVaultStatusRaw(t, vault, map[string]any{"sections": []string{"sync"}})
+	var topSync struct {
+		Dirt map[string]json.RawMessage `json:"dirt"`
+	}
+	if err := json.Unmarshal(rawSync, &topSync); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"orphaned", "deferred", "left_departed", "orphaned_notice"} {
+		if _, ok := topSync.Dirt[k]; !ok {
+			t.Errorf("zeroed dirt.%s must stay a present key, got %s", k, rawSync)
+		}
+	}
+	if len(rs.Dirt.Orphaned) != 0 || rs.Dirt.OrphanedNotice != "" || !rs.Dirt.Clean() {
+		t.Errorf("sections=[sync] must zero the new dirt fields, got %+v", rs.Dirt)
 	}
 }

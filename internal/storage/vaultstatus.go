@@ -319,11 +319,39 @@ type RemoteStatusJSON struct {
 	LastFetched *time.Time `json:"last_fetched,omitempty"` // nil (omitted) when unknown
 }
 
-// DirtJSON mirrors the tidy sweep/report split for working-tree dirt.
+// DirtJSON mirrors the tidy scan's classification of working-tree dirt. Every
+// field is copied from the ONE TidyScan BuildStatusReport runs; nothing here is
+// classified a second time.
+//
+// No field is omitempty: the MCP handler zeroes an unselected section by
+// assigning DirtJSON{}, and "present-but-empty" is that contract.
 type DirtJSON struct {
-	Swept               []string `json:"swept"`
-	Reported            []string `json:"reported"`
+	Swept    []string `json:"swept"`
+	Reported []string `json:"reported"`
+	// ReportedUserContent is a SUBSET of Reported (user memory, expected pending
+	// content). Clean() therefore needs no term for it.
 	ReportedUserContent []string `json:"reported_user_content"`
+	// Deferred are transcript archives whose manifest is not yet on disk and
+	// that are younger than the pair grace: in flight, not an error.
+	Deferred []string `json:"deferred"`
+	// Orphaned are the same shape older than the grace: a capture that died
+	// between the two writes and will not complete by itself.
+	Orphaned []string `json:"orphaned"`
+	// LeftDeparted are artifacts under a departed project's trees: never swept,
+	// never committed.
+	LeftDeparted []string `json:"left_departed"`
+	// OrphanedNotice is OrphanedNotice(Orphaned), the one wording every
+	// front-end shares; empty when there are none.
+	OrphanedNotice string `json:"orphaned_notice"`
+}
+
+// Clean reports whether the working tree holds nothing the scan classified. It
+// is the single definition of "clean" for the status report: a tree holding only
+// an Orphaned, Deferred or LeftDeparted entry is NOT clean, even though none of
+// them is swept or reported as dirt.
+func (d DirtJSON) Clean() bool {
+	return len(d.Swept) == 0 && len(d.Reported) == 0 &&
+		len(d.Deferred) == 0 && len(d.Orphaned) == 0 && len(d.LeftDeparted) == 0
 }
 
 // BuildStatusReport assembles the full read-only status report: branch detection,
@@ -376,7 +404,7 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 	}
 
 	return StatusReport{
-		Version:   3,
+		Version:   4,
 		Branch:    branch,
 		VaultPath: vaultPath,
 		Remotes:   rems,
@@ -384,6 +412,10 @@ func BuildStatusReport(vaultPath string, fetch bool) (StatusReport, error) {
 			Swept:               tidy.Swept,
 			Reported:            tidy.Reported,
 			ReportedUserContent: tidy.ReportedUserContent,
+			Deferred:            tidy.Deferred,
+			Orphaned:            tidy.Orphaned,
+			LeftDeparted:        tidy.LeftDeparted,
+			OrphanedNotice:      OrphanedNotice(tidy.Orphaned),
 		},
 	}, nil
 }

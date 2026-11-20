@@ -146,8 +146,8 @@ func TestIntegrationVaultStatus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildStatusReport: %v", err)
 		}
-		if report.Version != 3 {
-			t.Errorf("Version = %d, want 3", report.Version)
+		if report.Version != 4 {
+			t.Errorf("Version = %d, want 4", report.Version)
 		}
 		if report.Branch != "main" {
 			t.Errorf("Branch = %q, want main", report.Branch)
@@ -345,7 +345,7 @@ func TestIntegrationVaultStatusSections(t *testing.T) {
 		if len(report.Remotes) == 0 {
 			t.Errorf("Remotes must be populated for sync-only, got %+v", report.Remotes)
 		}
-		if report.Version != 3 || report.Branch != "main" {
+		if report.Version != 4 || report.Branch != "main" {
 			t.Errorf("Version/Branch must persist, got version=%d branch=%q", report.Version, report.Branch)
 		}
 	})
