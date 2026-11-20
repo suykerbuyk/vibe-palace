@@ -7,13 +7,36 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/surface"
 )
+
+// mustSymlink creates a symlink or fails the test.
+//
+// It skips ONLY on Windows, and only when the OS refuses for want of the symlink
+// privilege: ERROR_PRIVILEGE_NOT_HELD (1314), which is what an unprivileged
+// Windows process gets and which Go's errors.Is(err, os.ErrPermission) does NOT
+// match (the Windows Errno only maps access-denied to it), or access denied.
+// Every other error, and ANY error on another OS, is a real failure: a skip there
+// would hide a broken fixture as a pass.
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	err := os.Symlink(target, link)
+	if err == nil {
+		return
+	}
+	const errPrivilegeNotHeld = syscall.Errno(1314)
+	if runtime.GOOS == "windows" && (errors.Is(err, errPrivilegeNotHeld) || errors.Is(err, os.ErrPermission)) {
+		t.Skipf("symlinks need a privilege this Windows process lacks: %v", err)
+	}
+	t.Fatalf("symlink %s -> %s: %v", link, target, err)
+}
 
 // ambientViaAlias returns an ALIAS of root whose lock directory has been
 // redirected outside root, for use as the vault path of an operation that takes
@@ -38,13 +61,9 @@ func ambientViaAlias(t *testing.T, root string) string {
 	if err := os.RemoveAll(link); err != nil { // lock litter from fixture setup, never content
 		t.Fatalf("clear %s: %v", link, err)
 	}
-	if err := os.Symlink(t.TempDir(), link); err != nil {
-		t.Fatalf("redirect %s: %v", link, err)
-	}
+	mustSymlink(t, t.TempDir(), link)
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(root, alias); err != nil {
-		t.Fatalf("alias %s: %v", alias, err)
-	}
+	mustSymlink(t, root, alias)
 	return alias
 }
 

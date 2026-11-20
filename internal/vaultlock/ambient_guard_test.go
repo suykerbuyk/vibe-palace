@@ -214,9 +214,10 @@ func TestAmbientGuard_RefusalLeavesTheSameRootsGCLockFree(t *testing.T) {
 	}
 }
 
-// T-pair: a refusal on AcquirePair's SECOND leg (the filesystem changed between
-// the legs, so the live-state verdict differs) releases the lower lock. Real
-// guard, real filesystem; the hook only fixes the timing.
+// T-pair: a refusal on AcquirePair's SECOND leg (the guard's verdict differs
+// between the legs) releases the lower lock. The real guard and real lock files;
+// the hook only fixes the timing and flips the ambient root, so nothing on disk
+// is renamed while a lock is held (which Windows forbids).
 func TestAcquirePair_SecondLegRefusalReleasesTheLowerLock(t *testing.T) {
 	setup := func(t *testing.T) (root, a, b, loKey string) {
 		t.Helper()
@@ -240,26 +241,27 @@ func TestAcquirePair_SecondLegRefusalReleasesTheLowerLock(t *testing.T) {
 
 	t.Run("second leg refuses", func(t *testing.T) {
 		root, a, b, loKey := setup(t)
-		amb := setAmbient(t)
-		target := filepath.Join(amb, "locks-sub")
-		if err := os.MkdirAll(target, 0o755); err != nil { // the symlink target exists BEFORE the swap
-			t.Fatal(err)
-		}
-		moved := filepath.Join(root, ".vp-locks.moved")
-		t.Cleanup(setPairLegHook(func() {
-			if err := os.Rename(filepath.Join(root, ".vp-locks"), moved); err != nil {
-				t.Errorf("hook: %v", err)
-				return
+		// 🔴 NO FILESYSTEM CHANGE BETWEEN THE LEGS, ON PURPOSE. An earlier version
+		// swapped <root>/.vp-locks for a symlink while the lower lock was held;
+		// Windows cannot rename a directory that holds an open file (the lock), so
+		// the swap never happened, no refusal came, and the test failed there.
+		// The guard's verdict is a function of (path, ambient root, symlink state),
+		// so flipping the AMBIENT ROOT between the legs changes the verdict for the
+		// second leg exactly as the symlink swap did, with the lock directory
+		// untouched. Leg 1 and AcquirePair's pre-guards run against an ambient root
+		// that is NOT root; the hook then makes root the ambient root, so leg 2's
+		// seat judges <root>/.vp-locks ambient and refuses.
+		t.Cleanup(surface.SetAmbientVaultRoot(t.TempDir()))
+		t.Cleanup(setPairLegHook(func() { surface.SetAmbientVaultRoot(root) }))
+		msg := refused(func() {
+			if rl, err := AcquirePair(root, a, b); err == nil {
+				_ = rl() // not refused: release so the failure below is not buried under a cleanup error
 			}
-			if err := os.Symlink(target, filepath.Join(root, ".vp-locks")); err != nil {
-				t.Errorf("hook: %v", err)
-			}
-		}))
-		msg := refused(func() { _, _ = AcquirePair(root, a, b) })
+		})
 		if !strings.Contains(msg, "CONFIGURED vault") {
 			t.Fatalf("no tripwire refusal on the second leg, got %q", msg)
 		}
-		lower := filepath.Join(moved, filepath.Base(lockFilePath(root, loKey)))
+		lower := lockFilePath(root, loKey)
 		// Precondition: leg 1 really ran and made its sidecar. Without it a refusal
 		// on leg 1 (nothing held) would pass this test for the wrong reason.
 		if !exists(lower) {
