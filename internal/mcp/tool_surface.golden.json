@@ -1,5 +1,5 @@
 {
-  "surface_version": 10,
+  "surface_version": 11,
   "tools": [
     {
       "name": "vp_append_iteration",
@@ -15,6 +15,11 @@
       "name": "vp_archive_link",
       "mutating": true,
       "schema_sha256": "22c8569c3fb0fec4308255b42965eb2f5a8ddf73de0043ec82f30cb08e8c8387"
+    },
+    {
+      "name": "vp_archive_repair_manifest",
+      "mutating": true,
+      "schema_sha256": "c60d601f210aba383bd7ddd96f4c7f9bc8f28293855d9cb1ed612981a4ad7f90"
     },
     {
       "name": "vp_audit_vault",

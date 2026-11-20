@@ -52,6 +52,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/capture"
@@ -788,6 +789,65 @@ var toolCoverageFixtures = map[string]toolFixture{
 			covUnmarshal(t, payload, &out)
 			if len(out.Dimensions) == 0 {
 				t.Fatal("audit reported zero dimensions")
+			}
+		},
+	},
+
+	"vp_archive_repair_manifest": {
+		build: func(t *testing.T, h *testHarness) any {
+			const project = "cov-archiverepair"
+			testutil.InitProject(t, h.Vault.Root, project)
+			now := time.Now().UTC().Add(-time.Hour)
+			res, err := archive.Create(archive.CreateOptions{
+				Adapter:       archive.InlineAdapterName,
+				SessionID:     "sess-cov-repair",
+				SourceContent: []byte(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}` + "\n"),
+				VaultRoot:     h.Vault.Root,
+				ProjectSlug:   project,
+				Now:           now,
+			})
+			if err != nil {
+				t.Fatalf("seed archive: %v", err)
+			}
+			// Orphan it: the capture "died" before its manifest was written, long ago.
+			if err := os.Remove(res.ManifestPath); err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(res.ArchivePath, old, old); err != nil {
+				t.Fatal(err)
+			}
+			return map[string]any{
+				"project":     project,
+				"archive":     filepath.Base(res.ArchivePath),
+				"adapter":     archive.InlineAdapterName,
+				"captured_at": now.Format(time.RFC3339),
+			}
+		},
+		assert: func(t *testing.T, h *testHarness, payload string) {
+			var out struct {
+				ManifestPath string `json:"manifest_path"`
+				NothingToDo  string `json:"nothing_to_do"`
+				Manifest     struct {
+					Adapter     string `json:"adapter"`
+					SessionID   string `json:"session_id"`
+					Regenerated *struct {
+						Unrecoverable []string `json:"unrecoverable"`
+					} `json:"regenerated"`
+				} `json:"manifest"`
+			}
+			covUnmarshal(t, payload, &out)
+			if out.NothingToDo != "" || out.ManifestPath == "" {
+				t.Fatalf("repair did nothing: %s", payload)
+			}
+			if _, err := os.Stat(out.ManifestPath); err != nil {
+				t.Fatalf("the repaired manifest was not written: %v", err)
+			}
+			if out.Manifest.Adapter != archive.InlineAdapterName || out.Manifest.SessionID != "sess-cov-repair" {
+				t.Errorf("manifest = %+v", out.Manifest)
+			}
+			if out.Manifest.Regenerated == nil || len(out.Manifest.Regenerated.Unrecoverable) == 0 {
+				t.Errorf("the regenerated marker is missing: %s", payload)
 			}
 		},
 	},

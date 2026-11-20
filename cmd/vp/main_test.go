@@ -239,13 +239,14 @@ func TestAllCommandsRegisterValidly(t *testing.T) {
 // rather than answer it. The reasoning lives at the registration site.
 func TestMutatingCommandsAreGated(t *testing.T) {
 	wantMutating := map[string]bool{
-		"absorb":         true,
-		"archive create": true,
-		"archive link":   true,
-		"audit rooms":    true,
-		"audit vault":    true,
-		"discover rooms": true,
-		"tune rooms":     true,
+		"absorb":                  true,
+		"archive create":          true,
+		"archive link":            true,
+		"archive repair-manifest": true,
+		"audit rooms":             true,
+		"audit vault":             true,
+		"discover rooms":          true,
+		"tune rooms":              true,
 		// vault copy writes project content into the served vault and commits it.
 		"vault copy":   true,
 		"vault rename": true,

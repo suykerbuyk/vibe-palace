@@ -531,6 +531,15 @@ parameters) in `doc/PRD-vibe-palace.md` §6.8–6.11; the families are:
   the `anchor_sha` the stamp records (see
   `doc/adr/002-wrap-state-anchors.md` and its 2026-08-29 amendment).
 
+- **Orphaned transcript archive repair**: `vp archive repair-manifest` /
+  `vp_archive_repair_manifest`. With no ARCHIVE argument (CLI) or
+  `dry_run:true` (MCP) it lists orphans read-only, with file mtime and filename
+  day as hints and the exact apply command. To apply, give the archive plus
+  `--adapter` and `--captured-at` (both required operator claims; the latter is
+  stored in UTC). An orphan with a stray `.sig` is refused. The manifest carries a `regenerated` marker; the zst is never
+  touched; a young archive is refused. **Do not use until every host, hooks
+  included, runs v11 or later** (ADR-001, 2026-11-20 amendment).
+
 The CLI mirrors the vault-CRUD family: `vp vault read|write|edit|delete|move|exists|sha256`,
 plus `vp vault commit --paths <p1,p2,...> --message <msg> [--push]` for the
 explicit-path commit-then-push that `vp_vault_sync`'s `paths` argument exposes.

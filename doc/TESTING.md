@@ -665,6 +665,18 @@ deleted survives the filter, removal staged), `TestCommitAndPushPaths_MixedExist
 and `TestCommitAndPushPaths_NeverWrittenMemoryDir` (the iter-134 memory-dir
 regression at the unit boundary).
 
+### `internal/archive/`, `cmd/vp/`, `internal/tools/` — Orphan Manifest Repair
+
+`internal/archive/repair_manifest_test.go` pins `RepairManifest`: every field and
+the untouched zst, UTC canonicalisation, idempotency, the tidy-sweeps-both-halves
+round trip, the ambient-vault refusal (vaultlock seat plus the `WriteManifest`
+funnel), the grace boundary, the under-lock re-check, lock-key identity with
+`Create`, the operator-claim refusals, signing rollback, and that
+`LinkSessionNote` preserves `regenerated`. `cmd/vp/cmd_archive_repair_test.go` and
+`internal/tools/archive_repair_tool_test.go` pin CLI and MCP parity, including that
+an apply with no `captured_at` is rejected and that only an explicit
+`dry_run:true` is read-only.
+
 ### `internal/storage/` — Vault Sync Stranded-Commit Hardening
 
 Hardens `CommitAndPushPaths`'s push recovery so a dirty working tree can

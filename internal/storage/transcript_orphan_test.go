@@ -209,8 +209,8 @@ func TestOrphan_GraceBoundaryAndStatError(t *testing.T) {
 		now        time.Time
 		wantOrphan bool
 	}{
-		"just under grace": {mtime.Add(transcriptPairGrace - time.Minute), false},
-		"just over grace":  {mtime.Add(transcriptPairGrace + time.Minute), true},
+		"just under grace": {mtime.Add(TranscriptPairGrace - time.Minute), false},
+		"just over grace":  {mtime.Add(TranscriptPairGrace + time.Minute), true},
 		"mtime in future":  {mtime.Add(-time.Hour), false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -284,5 +284,19 @@ func TestOrphanedNotice_OnePathPerLine(t *testing.T) {
 	}
 	if OrphanedNotice(nil) != "" {
 		t.Error("no orphans must give no notice")
+	}
+}
+
+// F3: the notice names the repair verb (not the re-dating create route), and
+// still lists one path per line.
+func TestOrphanedNotice_NamesTheRepairVerb(t *testing.T) {
+	note := OrphanedNotice([]string{"Projects/p/transcripts/a.jsonl.zst"})
+	for _, want := range []string{"vp archive repair-manifest", "--adapter", "--captured-at", "  Projects/p/transcripts/a.jsonl.zst"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the notice does not contain %q:\n%s", want, note)
+		}
+	}
+	if strings.Contains(note, "archive create") {
+		t.Errorf("the notice still names the re-dating create route:\n%s", note)
 	}
 }

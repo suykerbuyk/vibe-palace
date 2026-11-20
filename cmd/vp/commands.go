@@ -29,6 +29,9 @@ func registerAll(reg *cli.Registry, info cli.BuildInfo) {
 	// WRAPPED deliberately — the audit-rooms-apply bypass (below) is the mistake this
 	// comment exists to keep from being copied.
 	reg.Register(mutates(cmdArchiveLink()))
+	// mutates(): `vp archive repair-manifest` writes a transcript manifest (and, when signing
+	// is configured, its signature) and must FAIL-STOP against a vault written by a newer binary.
+	reg.Register(mutates(cmdArchiveRepairManifest(info)))
 	reg.Register(cmdAudit())
 	// mutates(): `vp audit rooms --apply` relabels room metadata in the host-local
 	// chunk store (palace.Relabel -> indexstore.Tx.Rewrite; it no longer moves a

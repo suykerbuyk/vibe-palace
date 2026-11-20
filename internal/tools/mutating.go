@@ -41,6 +41,9 @@ var MutatingToolNames = []string{
 	// vp_archive_link rewrites session notes and a transcript manifest (the Phase-4
 	// backfill applier). One call = one human-approved pair.
 	"vp_archive_link",
+	// vp_archive_repair_manifest writes the missing manifest for an orphaned transcript
+	// archive (and its signature when configured). dry_run:true lists and is read-only.
+	"vp_archive_repair_manifest",
 	"vp_manage_task",
 	"vp_update_resume",
 	"vp_append_iteration",

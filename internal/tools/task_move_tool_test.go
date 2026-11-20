@@ -573,11 +573,13 @@ const manageTaskGoldenPath = "../mcp/tool_surface.golden.json"
 // in the MCP roster, and 9 -> 10 by U12
 // (rename-docs-harness-deletion-and-registration) for the roster SHRINK that
 // retires the one-shot `vp migrate project-slug` and the vp_vault_split /
-// vp_vault_merge tools — none of which touch `move`. The ruling this test pins
-// still holds: `move` itself does not bump the surface.
+// vp_vault_merge tools — and 10 -> 11 by regenerate-manifest-for-an-orphaned-
+// transcript-archive, for the new optional `regenerated` manifest key written by
+// vp_archive_repair_manifest — none of which touch `move`. The ruling this test
+// pins still holds: `move` itself does not bump the surface.
 const (
 	manageTaskSchemaSHAAtHEAD = "4fb44b92cffff09f17e7b4561eb3344e38aaeb734cf9c0748eebea37cef65832"
-	surfaceVersionAtHEAD      = 10
+	surfaceVersionAtHEAD      = 11
 )
 
 // goldenToolSurface is the subset of the manifest these assertions read.

@@ -39,6 +39,9 @@ import "encoding/json"
 // is not gated in the first place refines nothing, and reads as though it does.
 var ParamAwareToolNames = []string{
 	"vp_audit_vault",
+	// vp_archive_repair_manifest admits an explicit dry_run:true, the read-only
+	// listing of orphaned archives (archiveRepairReadOnly, archive_repair_tool.go).
+	"vp_archive_repair_manifest",
 	// vp_vault_project_delete admits its plan action, the dry run, which reads
 	// the vault and the destination's remote and writes nothing
 	// (vaultProjectDeleteReadOnly, vault_project_delete_tool.go).

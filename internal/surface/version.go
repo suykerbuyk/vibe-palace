@@ -352,7 +352,20 @@ import (
 // tool set. The data format does NOT move on either bump — no on-disk shape
 // changes, record fields stay optional — so RequiredDataFormat is unchanged and
 // the tag convention keeps its `.2` middle component.
-const MCPSurfaceVersion int = 10
+//
+// Bumped 10->11 (2026-11-20) for `vp archive repair-manifest` /
+// vp_archive_repair_manifest: a repaired transcript manifest carries a NEW optional
+// key, `regenerated`, which records that the manifest is not an original. The
+// hazard is the one the 2->3 entry names ("silent in the WRITE direction"): an
+// older binary reads a manifest into a Manifest type without the key, and
+// LinkSessionNote writes it back WITHOUT it, with no error. The gate stops the
+// surface-gated writers; it does NOT stop an older HOOK (hooks warn only on a newer
+// stamp and continue), so the rule that goes with this bump is operational: do not
+// run repair until every host, hooks included, runs surface 11 or later. The data
+// format does NOT move (the field is optional and additive, ManifestSchemaVersion
+// stays 1), so RequiredDataFormat is unchanged and the next release tag is
+// v11.<RequiredDataFormat>.0.
+const MCPSurfaceVersion int = 11
 
 // Stamp models the on-disk .surface TOML file recording the latest writer.
 type Stamp struct {

@@ -31,8 +31,8 @@ type TidyResult struct {
 	Swept               []string         // vault-relative paths staged+committed
 	Reported            []string         // dirt that needs human eyes; never staged (full catch-all)
 	ReportedUserContent []string         // subset of Reported that is user memory (Projects/<slug>/memory/...); expected, not dirt
-	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk and is younger than transcriptPairGrace; left untracked, not committed, not blocking
-	Orphaned            []string         // the same shape OLDER than transcriptPairGrace: a capture that died between the two writes. Never swept, never committed, never blocking — but reported loudly (OrphanedNotice), because it will not complete by itself
+	Deferred            []string         // transcript .jsonl.zst whose sibling .manifest.json is not yet on disk and is younger than TranscriptPairGrace; left untracked, not committed, not blocking
+	Orphaned            []string         // the same shape OLDER than TranscriptPairGrace: a capture that died between the two writes. Never swept, never committed, never blocking — but reported loudly (OrphanedNotice), because it will not complete by itself
 	LeftDeparted        []string         // "<path>: left untouched: departed project <p>" — artifacts under a departed project's trees, never committed, never blocking the rest
 	Committed           bool             // true if a commit was created
 	CommitSHA           string           // short SHA of the tidy commit (empty if no-op)
@@ -517,11 +517,11 @@ func TidyScanWithTimeout(vaultPath string, timeout time.Duration) (*TidyResult, 
 	return tidyResultFromRaw(vaultPath, raw, migrated, os.Stat), nil
 }
 
-// transcriptPairGrace is how long a lone .jsonl.zst may wait for its manifest
+// TranscriptPairGrace is how long a lone .jsonl.zst may wait for its manifest
 // before it stops being "mid-write" and becomes an orphan. The real gap between
 // the two writes is milliseconds; the cost of choosing too short is a false
 // orphan REPORT, never data loss, because nothing here commits or deletes it.
-const transcriptPairGrace = 10 * time.Minute
+const TranscriptPairGrace = 10 * time.Minute
 
 // tidyResultFromRaw is the one classification path over a raw `-z -uall`
 // porcelain scan, shared by TidyScanWithTimeout and PushPlain so the push guard
@@ -543,14 +543,14 @@ func tidyResultFromRaw(vaultPath, raw string, migrated bool, stat func(string) (
 }
 
 // splitOrphanedDeferred moves out of the deferred set every archive whose mtime
-// is at least transcriptPairGrace old. It is a post-step on classifyDirty's
+// is at least TranscriptPairGrace old. It is a post-step on classifyDirty's
 // output, the same shape as splitDepartedSweep, so classifyDirty is untouched.
 // Uncertainty never escalates: a stat failure, or an mtime in the future, leaves
 // the path deferred.
 func splitOrphanedDeferred(vaultPath string, deferred []string, stat func(string) (os.FileInfo, error), now time.Time) (young, orphaned []string) {
 	for _, rel := range deferred {
 		info, err := stat(filepath.Join(vaultPath, filepath.FromSlash(rel)))
-		if err == nil && now.Sub(info.ModTime()) >= transcriptPairGrace {
+		if err == nil && now.Sub(info.ModTime()) >= TranscriptPairGrace {
 			orphaned = append(orphaned, rel)
 			continue
 		}
@@ -568,8 +568,9 @@ func OrphanedNotice(orphaned []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "ORPHANED %d transcript archive(s): the .jsonl.zst was written but its manifest never arrived "+
 		"(older than %s) — the capture died mid-write and will not complete by itself. Not committed, not blocking. "+
-		"Repair: re-archive it with `vp archive create` (this re-dates the archive) or delete the failed capture:",
-		len(orphaned), transcriptPairGrace)
+		"Repair: `vp archive repair-manifest` writes the missing manifest beside the existing archive without re-dating it "+
+		"(list orphans with `vp archive repair-manifest`; it needs --adapter and --captured-at), or delete the failed capture:",
+		len(orphaned), TranscriptPairGrace)
 	// One path per line, never joined: a comma is legal in a filename, so a
 	// joined list cannot be split back into paths. A path with a line break would
 	// still forge a line, so that one is Go-quoted.

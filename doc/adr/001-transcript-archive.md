@@ -118,6 +118,42 @@ ongoing session), the archive is regenerated; the previous manifest
 is written beside the new one as `<...>.manifest.json.<prev-hash>.bak`
 so no prior ledger entry is destroyed.
 
+### Amendment 2026-11-20: `regenerated`, and repairing an orphaned archive
+
+An archive is written in two steps: the `.jsonl.zst`, then the manifest. A
+process killed between them leaves an orphan (a valid zst, no manifest). The
+manifest field set above stays frozen; this amendment adds ONE optional field,
+`regenerated`, and one operator command, `vp archive repair-manifest` (MCP:
+`vp_archive_repair_manifest`).
+
+- `regenerated` is absent from every ordinary manifest (`omitempty`), so
+  `ManifestSchemaVersion` stays 1. It is present only on a manifest written by
+  repair and records `at`, `by_hostname`, `by_vp_version`, a `bases` map naming
+  where each non-byte-derived claim came from (`session_id` and `project_slug`:
+  filename/path; `adapter`: operator-supplied; `adapter_version`: the inspecting
+  version at repair time; `captured_at`: operator-supplied) and `unrecoverable`
+  (`git_head`, `captured_by_hostname`, `vp_version`, `vault_rel_session_note`
+  are left empty because only the capture hook knew them).
+- Byte-derived fields (`source_sha256` of the decompressed bytes, `source_bytes`,
+  `compressed_bytes`, the inspected turn data) are recomputed from the existing
+  zst. The zst is never opened for writing; its bytes and mtime are untouched.
+- `--adapter` and `--captured-at` are required operator claims: the adapter
+  cannot be derived from bytes (claude-code, inline and zed share one shape) and
+  file mtime is never used as `captured_at`. An offset `--captured-at` is stored in UTC.
+- Repair takes the same per-manifest lock key as `Create`, refuses an archive
+  younger than `storage.TranscriptPairGrace`, re-checks under the lock and never
+  overwrites an existing manifest (no `.bak` arm), and refuses an orphan that has a
+  `.sig` beside it but no manifest (an anomaly; listed as not repairable), so its
+  rollback can only remove what it wrote. On a signing failure it removes the
+  manifest it wrote so a retry is possible, and reports any removal that failed.
+- **Rollout rule: do not repair until every host, hooks included, runs v11 or
+  later.** A pre-v11 binary's link path rewrites the manifest through a struct
+  that lacks `regenerated` and would silently drop it (a hook warns on a newer
+  surface stamp but continues). `MCPSurfaceVersion` moved 10 to 11 for this reason.
+  This is documented, not gated.
+- Known gap, filed separately: `LinkSessionNote` rewrites a signed manifest
+  without re-signing (`link-session-note-rewrites-a-signed-manifest-without-re-signing`).
+
 ### Compression
 
 zstd, default level. Rationale: ~10:1 ratio on JSONL (observed in

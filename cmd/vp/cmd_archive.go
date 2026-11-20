@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	zedreader "github.com/suykerbuyk/vibe-palace/internal/archive/zed"
@@ -577,6 +578,125 @@ func cmdArchiveLink() *cli.Command {
 	}
 }
 
+var archiveRepairFlags = []cli.FlagDef{
+	{Name: "--project", Short: "-p", Arg: "PROJECT", Help: "Project slug (default: auto-detect)"},
+	{Name: "--adapter", Arg: "NAME", Help: "REQUIRED to repair: the adapter that captured the archive (" + "claude-code, codex-raw, zed, inline" + "); never guessed, because claude-code and inline archives are the same shape and differ in authenticity"},
+	{Name: "--captured-at", Arg: "RFC3339", Help: "REQUIRED to repair: the capture time you vouch for (the listing shows the file mtime and filename day as hints only); stored in UTC"},
+	{Name: "--json", Help: "Output JSON"},
+}
+
+func cmdArchiveRepairManifest(info cli.BuildInfo) *cli.Command {
+	return &cli.Command{
+		Name:     "archive repair-manifest",
+		Synopsis: "vp archive repair-manifest [ARCHIVE --adapter NAME --captured-at RFC3339] [--project P] [--json]",
+		Description: "Write the missing manifest for ONE orphaned transcript archive (a .jsonl.zst whose capture died before its " +
+			".manifest.json was written), beside the EXISTING archive: the archive is never rewritten and keeps its name and date, " +
+			"so the next `vp vault tidy` sweeps both halves. With no ARCHIVE it lists the orphans (read-only), with each archive's " +
+			"age, file mtime and filename day as hints, and the exact command to run. " +
+			"DO NOT RUN until every host, hooks included, is on v11 or later: an older hook drops the manifest's `regenerated` " +
+			"marker when it next links the manifest, and the marker is the only record that the manifest is not an original. " +
+			"The manifest records what was derived from the archive's bytes (hash, sizes, model, turn count), what was read from " +
+			"the filename and path (session id, project), what YOU supplied (adapter, captured_at), and what nothing can recover " +
+			"(git_head, captured_by_hostname, vp_version, the session-note link; `vp archive backfill` can link the note later). " +
+			"It refuses an archive younger than the pair grace, never overwrites an existing manifest, refuses an archive that has a stray .sig beside it but no manifest (an anomaly to investigate, listed as not repairable), and takes the same " +
+			"per-manifest lock as the capture writer. Running it IS the human approval for that archive; there is no bulk mode.",
+		Flags: archiveRepairFlags,
+		Examples: []cli.Example{
+			{Cmd: "vp archive repair-manifest", Comment: "List orphaned archives and the command that repairs each"},
+			{Cmd: "vp archive repair-manifest 2026-11-01-25cb1a36 -p pveforge --adapter claude-code --captured-at 2026-11-01T12:31:54Z", Comment: "Repair one"},
+		},
+		Run: func(args []string) int {
+			fv, err := cli.ParseFlags(archiveRepairFlags, args)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive repair-manifest: %v\n", err)
+				return cli.ExitUser
+			}
+			pos := fv.Args()
+			if len(pos) == 0 { // listing: read-only
+				vault, err := openProjectVault()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp archive repair-manifest: %v\n", err)
+					return cli.ExitUser
+				}
+				orphans, err := archive.ListOrphans(vault.Root, fv.Get("--project"), time.Now())
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "vp archive repair-manifest: %v\n", err)
+					return cli.ExitSystem
+				}
+				if fv.Bool("--json") {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					_ = enc.Encode(orphans)
+					return cli.ExitOK
+				}
+				printOrphans(os.Stdout, orphans)
+				return cli.ExitOK
+			}
+			proj, vaultRoot, code := resolveProjectForWrite(fv.Get("--project"), "archive repair-manifest")
+			if code != cli.ExitOK {
+				return code
+			}
+			signOpts, signErr := archive.SignOptionsForProject(vaultRoot, proj)
+			if signErr != nil {
+				fmt.Fprintf(os.Stderr, "vp archive repair-manifest: %v\n", signErr)
+				return cli.ExitUser
+			}
+			res, err := archive.RepairManifest(archive.RepairOptions{
+				VaultRoot:  vaultRoot,
+				Project:    proj,
+				Archive:    pos[0],
+				Adapter:    fv.Get("--adapter"),
+				CapturedAt: fv.Get("--captured-at"),
+				VPVersion:  info.Version,
+				Sign:       signOpts,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vp archive repair-manifest: %v\n", err)
+				return cli.ExitUser
+			}
+			for _, w := range res.Warnings {
+				fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+			}
+			if fv.Bool("--json") {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				_ = enc.Encode(res)
+				return cli.ExitOK
+			}
+			if res.NothingToDo != "" {
+				fmt.Fprintf(os.Stdout, "nothing to do: %s\n  manifest: %s\n", res.NothingToDo, res.ManifestPath)
+				return cli.ExitOK
+			}
+			fmt.Fprintf(os.Stdout, "manifest written: %s\n  archive (unchanged): %s\n  source_sha256: %s\n  turns: %d  bytes: %d -> %d\n  captured_at: %s (operator-supplied)\n",
+				res.ManifestPath, res.ArchivePath, res.Manifest.SourceSHA256, res.Manifest.TurnCount,
+				res.Manifest.SourceBytes, res.Manifest.CompressedBytes, res.Manifest.CapturedAt)
+			fmt.Fprintln(os.Stdout, "next: `vp vault tidy` sweeps both halves; `vp archive backfill` can link the session note.")
+			return cli.ExitOK
+		},
+	}
+}
+
+// printOrphans renders ListOrphans for a human: one block per orphan with the
+// hints an operator needs to choose --captured-at, and the exact apply command.
+func printOrphans(w io.Writer, orphans []archive.Orphan) {
+	if len(orphans) == 0 {
+		fmt.Fprintln(w, "No orphaned transcript archives.")
+		return
+	}
+	for _, o := range orphans {
+		fmt.Fprintf(w, "%s  (project %s)\n", o.Name, o.Project)
+		fmt.Fprintf(w, "  archive:   %s\n", o.ArchivePath)
+		fmt.Fprintf(w, "  age:       %s   file mtime: %s   filename day: %s   (hints only; --captured-at is yours to vouch for)\n",
+			(time.Duration(o.AgeSeconds) * time.Second).Round(time.Second), o.ModTime.UTC().Format(time.RFC3339), o.FilenameDay)
+		if o.Repairable {
+			fmt.Fprintf(w, "  apply:     vp archive repair-manifest %s -p %s --adapter <claude-code|codex-raw|zed|inline> --captured-at <RFC3339>\n", o.Name, o.Project)
+		} else {
+			fmt.Fprintf(w, "  not yet:   %s\n", o.Reason)
+		}
+	}
+	fmt.Fprintf(w, "%d orphaned archive(s).\n", len(orphans))
+}
+
 // resolveProjectAndVault is shared by every archive subcommand. Returns
 // the project slug, vault root, and cli.ExitOK or an error exit code.
 func resolveProjectAndVault(projArg, cmdName string) (string, string, int) {
@@ -619,16 +739,7 @@ func resolveProjectForWrite(projArg, cmdName string) (string, string, int) {
 // project's effective vibe-palace config and returns the signing
 // options that Create should use. An unset sign_mode disables signing.
 func archiveSignOptsFromVault(vaultRoot, proj string) (archive.SignOptions, error) {
-	v := storage.NewVault(vaultRoot)
-	cfg, err := v.LoadConfig(proj)
-	if err != nil {
-		return archive.SignOptions{}, fmt.Errorf("load archive config: %w", err)
-	}
-	return archive.SignOptions{
-		Mode:      cfg.Archive.SignMode,
-		Key:       cfg.Archive.SignKey,
-		Namespace: cfg.Archive.SignNamespace,
-	}, nil
+	return archive.SignOptionsForProject(vaultRoot, proj)
 }
 
 // archiveVerifyOptsFromVault mirrors the above for the verify path.

@@ -42,6 +42,30 @@ type Manifest struct {
 	CapturedAt          string `json:"captured_at"` // RFC3339 UTC
 	CapturedByHostname  string `json:"captured_by_hostname,omitempty"`
 	VPVersion           string `json:"vp_version,omitempty"`
+
+	// Regenerated is present ONLY on a manifest written by RepairManifest for an
+	// archive whose capture died before its manifest was written. It is the
+	// record that the manifest is not an original: which claims are the
+	// operator's or were inferred from the filename, and which fields nothing
+	// could recover. See Regenerated and doc/adr/001-transcript-archive.md
+	// (amended 2026-11-20). Optional and additive, so ManifestSchemaVersion is
+	// unchanged; a binary older than MCP surface 11 does not know the key and
+	// drops it when it next rewrites the manifest (LinkSessionNote), which is why
+	// repair is not to be used until every host, hooks included, runs surface 11.
+	Regenerated *Regenerated `json:"regenerated,omitempty"`
+}
+
+// Regenerated is the provenance of a repaired manifest: when and by whom it was
+// regenerated, the BASIS of every claim that is not derived from the archive's
+// bytes, and the fields no source could supply. Fields derived from the bytes
+// (source_sha256, source_bytes, compressed_bytes, and model/turn_count from the
+// adapter's Inspect) carry no entry: `vp archive verify` re-derives them.
+type Regenerated struct {
+	At            string            `json:"at"` // RFC3339 UTC, when the repair ran
+	ByHostname    string            `json:"by_hostname,omitempty"`
+	ByVPVersion   string            `json:"by_vp_version,omitempty"`
+	Bases         map[string]string `json:"bases"`
+	Unrecoverable []string          `json:"unrecoverable"`
 }
 
 // ReadManifest loads and validates a manifest file.
