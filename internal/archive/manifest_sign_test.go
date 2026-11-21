@@ -7,9 +7,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -539,79 +536,11 @@ func TestCreateChangedSource_SecondRenameAndUndoBothFail(t *testing.T) {
 	}
 }
 
-// L10: the INVARIANT THIS TEST PINS IS NARROW AND NAMED: direct calls to
-// WriteManifest in the non-test .go files of internal/archive are confined to
-// writeManifestSigned. It is an AST walk keyed on the call, so renaming a
-// variable cannot defeat it, and it fails closed on a parse error.
-//
-// It does NOT establish that no other package writes a manifest: it cannot see a
-// raw writer in another package, or one behind interface dispatch. The one such
-// writer that exists, the project rename's manifest rewrite, is pinned below as a
-// NAMED EXCEPTION so that moving or removing it forces this test to be revisited.
-// A repository-level writer audit is the funnel rule's job, tracked in task
-// funnel-rule-misses-multi-value-path-producers; no second mechanism is built here.
-func TestArchivePackageWritesManifestsOnlyThroughTheSigningHelper(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fset := token.NewFileSet()
-	var offenders []string
-	sawHelperCall := false
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, perr := parser.ParseFile(fset, name, nil, 0)
-		if perr != nil {
-			t.Fatalf("parse %s: %v (this census fails closed)", name, perr)
-		}
-		for _, d := range file.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
-			}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				id, ok := call.Fun.(*ast.Ident)
-				if !ok || id.Name != "WriteManifest" {
-					return true
-				}
-				if fd.Name.Name == "writeManifestSigned" {
-					sawHelperCall = true
-					return true
-				}
-				offenders = append(offenders, fmt.Sprintf("%s (in %s)", fset.Position(call.Pos()), fd.Name.Name))
-				return true
-			})
-		}
-	}
-	if !sawHelperCall {
-		t.Error("the census found no WriteManifest call in writeManifestSigned: the helper or this test has drifted")
-	}
-	if len(offenders) > 0 {
-		t.Errorf("WriteManifest is called directly outside writeManifestSigned, so a manifest could be rewritten without re-signing:\n  %s",
-			strings.Join(offenders, "\n  "))
-	}
-
-	// The named exception, pinned: the project rename rewrites manifest bytes
-	// itself (no helper, no lock, no re-sign; it refuses a signed project in its
-	// pre-flight instead).
-	src, rerr := os.ReadFile(filepath.Join("..", "storage", "project_rename_rewrite.go"))
-	if rerr != nil {
-		t.Fatalf("the named exception (the project rename writer) is gone or moved: %v; update this test and the rename pre-flight", rerr)
-	}
-	for _, want := range []string{"isManifest", `.manifest.json"`, "atomicfile.Write("} {
-		if !strings.Contains(string(src), want) {
-			t.Errorf("project_rename_rewrite.go no longer contains %q: the named manifest-writing exception moved; "+
-				"revisit this test and storage.renameSignedManifestRefusals", want)
-		}
-	}
-}
+// L10 (superseded): the manifest-write census now lives in rename_signed_test.go,
+// TestManifestWriteCensus_OnlyTheBytesCore. It classifies by ENCLOSING FUNCTION
+// (the only atomicfile.Write is in writeManifestBytes) instead of by call spelling,
+// and the project rename's former named exception is gone: the rename writes every
+// manifest through RenameSigner.RewriteManifest -> writeManifestBytes.
 
 // bakGlob lists the preserved manifests (<manifest>.<tag>.bak) beside a manifest.
 func bakGlob(t *testing.T, manifestPath string) []string {

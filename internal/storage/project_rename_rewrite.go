@@ -103,6 +103,20 @@ func slugExists(root, rel string) bool {
 type slugRewrite struct {
 	rel  string
 	data []byte
+	// manifest marks a transcript manifest. It is NEVER written by the raw loop:
+	// it is dispatched to the ManifestSigner seam so its signature stays honest.
+	manifest bool
+}
+
+// errRawManifestWrite is returned if the raw write loop is ever handed a
+// manifest. It is the production guard behind the "no raw manifest write" pin.
+var errRawManifestWrite = errors.New("vault rename: a transcript manifest must be written through the ManifestSigner, never the raw write loop")
+
+// renameSigning is the signing half of a rename's rewrite: the seam and the
+// options snapshot Preflight resolved from the source slug before the move.
+type renameSigning struct {
+	signer ManifestSigner
+	snap   any
 }
 
 func slugFrontmatter(lines []string) (end int) {
@@ -120,7 +134,7 @@ func slugFrontmatter(lines []string) (end int) {
 // slugScanClasses counts (and with apply=true performs) every rewrite class.
 // It returns the counts and, in apply mode, the vault-relative paths it wrote:
 // the rename's expected commit state is built from THOSE, never from dirt.
-func slugScanClasses(root, from, to string, p *SlugPlan, apply bool) (map[string]int, []string, error) {
+func slugScanClasses(root, from, to string, p *SlugPlan, apply bool, sg renameSigning) (map[string]int, []string, error) {
 	c := map[string]int{"W1": 0, "W1b": 0, "W2": 0, "W2b": 0, "W3": 0, "W4": 0, "W5": 0, "W6": 0, "W7": 0,
 		"W8": 0, "W10": 0, "W10b": 0}
 	var writes []slugRewrite
@@ -269,7 +283,7 @@ func slugScanClasses(root, from, to string, p *SlugPlan, apply bool) (map[string
 			changed = n > 0
 		}
 		if apply && changed {
-			writes = append(writes, slugRewrite{rel: rel, data: out})
+			writes = append(writes, slugRewrite{rel: rel, data: out, manifest: isManifest})
 		}
 	}
 
@@ -291,6 +305,13 @@ func slugScanClasses(root, from, to string, p *SlugPlan, apply bool) (map[string
 	if apply {
 		for _, w := range writes {
 			abs := filepath.Join(root, filepath.FromSlash(w.rel))
+			if w.manifest {
+				if err := sg.rewriteManifest(root, from, to, w.rel, abs, w.data); err != nil {
+					return nil, nil, err
+				}
+				written = append(written, w.rel)
+				continue
+			}
 			if err := atomicfile.Write(root, abs, w.data, atomicfile.WithInheritPerm(), atomicfile.WithFsync()); err != nil {
 				return nil, nil, fmt.Errorf("rewrite %s: %w", w.rel, err)
 			}
@@ -298,6 +319,18 @@ func slugScanClasses(root, from, to string, p *SlugPlan, apply bool) (map[string
 		}
 	}
 	return c, written, nil
+}
+
+// rewriteManifest hands one moved manifest to the ManifestSigner. It is the ONLY
+// way the rename writes a *.manifest.json.
+func (sg renameSigning) rewriteManifest(root, from, to, rel, abs string, data []byte) error {
+	if sg.signer == nil {
+		return fmt.Errorf("vault rename %s -> %s: %s: %w", from, to, rel, errRawManifestWrite)
+	}
+	if err := sg.signer.RewriteManifest(root, abs, data, sg.snap); err != nil {
+		return fmt.Errorf("vault rename %s -> %s: rewrite %s: %w", from, to, rel, err)
+	}
+	return nil
 }
 
 // slugAssertClasses refuses when the rewrite pass did not do exactly what the

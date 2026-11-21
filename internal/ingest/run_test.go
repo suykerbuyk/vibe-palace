@@ -483,7 +483,7 @@ func TestRunSkipsAnArchiveWithNoHash(t *testing.T) {
 	e := f.archiveOf("alpha", "S", transcript(t0, "s", 2), day(1))
 	m := *e.Manifest
 	m.SourceSHA256 = ""
-	if err := archive.WriteManifest(f.v.Root, e.ManifestPath, &m); err != nil {
+	if err := writeTestManifest(f.v.Root, e.ManifestPath, &m); err != nil {
 		t.Fatal(err)
 	}
 	logs := captureLogs(t)

@@ -81,6 +81,11 @@ type RenameRequest struct {
 	Expect string
 	// DryRun stops after the plan.
 	DryRun bool
+	// Signer writes (and, for a signed project, re-signs) every transcript
+	// manifest the rename rewrites. A project holding any manifest refuses
+	// without one: storage has no other way to write a manifest. Production
+	// callers pass archive.RenameSigner{}.
+	Signer ManifestSigner
 }
 
 // RenamePlan is what the dry run shows and the real run binds.
@@ -223,10 +228,11 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 	// Fresh-target refusals (SF2): the new slug must not already exist.
 	refusals = append(refusals, renameFreshTargetRefusals(req.Vault, to)...)
 
-	// A signed transcript manifest cannot be renamed: the rewrite below changes
-	// its project_slug (and its note link), which would leave the signature
-	// covering bytes that no longer exist.
-	refusals = append(refusals, renameSignedManifestRefusals(req.Vault, from)...)
+	// Transcript manifests are rewritten through the signer seam. A signed one is
+	// re-signed, so the signing is PROVEN usable here, before any write, and the
+	// options snapshot resolved from the source slug rides to the rewrite.
+	signSnap, signRefusals := renameManifestPreflight(req.Vault, from, req.Signer)
+	refusals = append(refusals, signRefusals...)
 
 	// Build the move plan and the rewrite counts (structural; a collision or a
 	// dangling rewrite target is a refusal, not a fault).
@@ -350,6 +356,9 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 		if rerr := rollBackRun(held, m, rollback); rerr != nil {
 			return res, fmt.Errorf("%w; rolling back also failed: %v", cause, rerr)
 		}
+		if renameSigningFailure(cause) {
+			return res, fmt.Errorf("%w; the rename was rolled back (Projects/%s restored from HEAD, Projects/%s removed)", cause, from, to)
+		}
 		return res, cause
 	}
 
@@ -370,7 +379,7 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 			return fail(err)
 		}
 	}
-	applied, _, err := slugScanClasses(req.Vault, from, to, p, true)
+	applied, _, err := slugScanClasses(req.Vault, from, to, p, true, renameSigning{signer: req.Signer, snap: signSnap})
 	if err != nil {
 		return fail(fmt.Errorf("rewrite identifiers: %w", err))
 	}
@@ -400,6 +409,11 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 		return fail(fmt.Errorf("commit: %w", err))
 	}
 	sha := cres.CommitSHA
+	// Record the commit on the in-memory marker BEFORE anything after the commit
+	// can fail: resetToParent expects HEAD == m.Commit (or the parent when
+	// empty), so a failure in this window with m.Commit still empty would refuse
+	// to reset and leave the renamed tree committed.
+	m.Commit = sha
 	if renameTestHook != nil {
 		if err := renameTestHook("committed"); err != nil {
 			return fail(err)
@@ -408,7 +422,6 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 	if err := setLifecycleMarkerCommit(held, runID, sha); err != nil {
 		return fail(err)
 	}
-	m.Commit = sha
 
 	// Postcheck, before anything is published.
 	if err := renamePostcheck(req.Vault, sha, from, to, p); err != nil {
@@ -508,7 +521,7 @@ func buildRenameMovePlan(root, from, to string, src []string) (*SlugPlan, map[st
 		}
 	}
 	sort.Slice(p.bakMoves, func(i, j int) bool { return p.bakMoves[i].Src < p.bakMoves[j].Src })
-	classes, _, err := slugScanClasses(root, from, to, p, false)
+	classes, _, err := slugScanClasses(root, from, to, p, false, renameSigning{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -770,37 +783,4 @@ func renameUndoLines(vaultPath, sha string, remotes []string, branch string) []s
 		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", shellQuote(vaultPath), shellQuote(r), branch))
 	}
 	return lines
-}
-
-// renameSignedManifestRefusals refuses a rename of a project that holds a signed
-// transcript manifest (a <name>.manifest.json.sig beside it). The rename rewrites
-// the manifest's project_slug and vault_rel_session_note and moves the .sig
-// unchanged, so the signature would be left covering bytes that no longer exist.
-//
-// 🔴 THIS CHECK IS BEST-EFFORT, AND SAYS SO. It scans once, during planning. It
-// does not serialize with the per-manifest locks archive.Create and the link
-// functions take (ApplyRename holds the vault-root commit lock; they do not take
-// it), so a Create that adds a signature after the scan can race it, and the
-// rename's own writer takes no per-manifest lock. The real answer is a signing
-// policy for the capture paths and for a signed rename, tracked in the task
-// signing-policy-for-capture-paths-and-signed-project-rename; no coordination
-// protocol is built here.
-func renameSignedManifestRefusals(vaultPath, from string) []string {
-	dir := filepath.Join(vaultPath, "Projects", from, "transcripts")
-	matches, err := filepath.Glob(filepath.Join(dir, "*.manifest.json.sig"))
-	if err != nil || len(matches) == 0 {
-		return nil
-	}
-	sort.Strings(matches)
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		rel, rerr := filepath.Rel(vaultPath, m)
-		if rerr != nil {
-			rel = m
-		}
-		out = append(out, fmt.Sprintf("%s is a manifest signature: renaming %q rewrites the manifest it signs (its project_slug and note link), "+
-			"which would leave this signature covering bytes that no longer exist; rename of a signed project is refused "+
-			"(best-effort check, see task signing-policy-for-capture-paths-and-signed-project-rename)", filepath.ToSlash(rel), from))
-	}
-	return out
 }

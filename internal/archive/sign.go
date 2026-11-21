@@ -4,10 +4,13 @@
 package archive
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
 // Signing modes. Phase 6 supports these two; others can be added by
@@ -35,6 +38,18 @@ type SignOptions struct {
 
 	// SSH only: signing namespace. Defaults to DefaultSSHNamespace.
 	Namespace string
+
+	// NonInteractive makes the signer unable to prompt: no stdin, no controlling
+	// terminal (ssh-keygen reads a passphrase from /dev/tty, not stdin), no
+	// askpass program and, for gpg, no pinentry. A key that needs a passphrase
+	// then fails at once instead of prompting or hanging. Only the signed project
+	// rename sets it; the zero value keeps every other caller (vp archive create
+	// --sign, the link re-sign) byte for byte as it was.
+	NonInteractive bool
+
+	// Timeout, when positive, kills the signer subprocess after that long. Zero
+	// means no bound (the historical behavior).
+	Timeout time.Duration
 }
 
 // Enabled reports whether these options will produce a signature.
@@ -98,7 +113,9 @@ func signSSH(manifestPath string, opts SignOptions) error {
 	// signature is cleared first so a stale sig cannot linger after
 	// a failed sign attempt.
 	_ = os.Remove(sigPath)
-	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", ns, "-f", opts.Key, manifestPath)
+	ctx, cancel := signContext(opts)
+	defer cancel()
+	cmd := signCommand(ctx, opts, "ssh-keygen", []string{"-Y", "sign", "-n", ns, "-f", opts.Key, manifestPath})
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ssh-keygen sign: %w: %s", err, string(out))
@@ -112,17 +129,62 @@ func signSSH(manifestPath string, opts SignOptions) error {
 func signGPG(manifestPath string, opts SignOptions) error {
 	sigPath := SignaturePath(manifestPath)
 	_ = os.Remove(sigPath)
-	args := []string{"--batch", "--yes", "--armor", "--output", sigPath, "--detach-sign"}
+	args := []string{"--batch", "--yes"}
+	if opts.NonInteractive {
+		// Never open a pinentry window: a key that needs a passphrase and has no
+		// agent-cached one fails here.
+		args = append(args, "--pinentry-mode", "error")
+	}
+	args = append(args, "--armor", "--output", sigPath, "--detach-sign")
 	if opts.Key != "" {
 		args = append(args, "-u", opts.Key)
 	}
 	args = append(args, manifestPath)
-	cmd := exec.Command("gpg", args...)
+	ctx, cancel := signContext(opts)
+	defer cancel()
+	cmd := signCommand(ctx, opts, "gpg", args)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("gpg detach-sign: %w: %s", err, string(out))
 	}
 	return nil
+}
+
+// signContext is the context a signer subprocess runs under: bounded by
+// opts.Timeout when set, unbounded otherwise.
+func signContext(opts SignOptions) (context.Context, context.CancelFunc) {
+	if opts.Timeout > 0 {
+		return context.WithTimeout(context.Background(), opts.Timeout)
+	}
+	return context.WithCancel(context.Background())
+}
+
+// signCommand is THE one builder of a signer subprocess. The signed rename's
+// preflight probe and its real re-signing both build their command here, so the
+// probe proves exactly the command and environment the rewrite will run.
+//
+// With opts.NonInteractive the child gets: a null stdin (the zero Cmd.Stdin);
+// no SSH_ASKPASS and SSH_ASKPASS_REQUIRE=never, so no askpass program runs; and
+// no controlling terminal (detachFromTerminal: setsid on unix, a detached
+// console-less process on Windows), because ssh-keygen opens the terminal
+// device itself for a passphrase and a null stdin does not stop that. A hung
+// child is killed by the context (WaitDelay bounds the wait on its pipes).
+func signCommand(ctx context.Context, opts SignOptions, name string, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if !opts.NonInteractive {
+		return cmd
+	}
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "SSH_ASKPASS=") || strings.HasPrefix(kv, "SSH_ASKPASS_REQUIRE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "SSH_ASKPASS_REQUIRE=never")
+	cmd.WaitDelay = 2 * time.Second
+	detachFromTerminal(cmd)
+	return cmd
 }
 
 // VerifySignature validates the signature next to the manifest. It

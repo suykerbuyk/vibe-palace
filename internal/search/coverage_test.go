@@ -44,7 +44,7 @@ func writeArchive(t *testing.T, v *storage.Vault, project, file, session, sha, c
 		ProjectSlug:   project,
 		CapturedAt:    capturedAt,
 	}
-	if err := archive.WriteManifest(v.Root, mp, m); err != nil {
+	if err := writeTestManifest(v.Root, mp, m); err != nil {
 		t.Fatal(err)
 	}
 }

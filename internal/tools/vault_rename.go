@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/suykerbuyk/vibe-palace/internal/apperr"
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/mcp"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -62,7 +63,10 @@ func VaultRenameTool(vault *storage.Vault) mcp.Tool {
 			"that nothing still names the old slug, and publishes exactly that commit to every remote " +
 			"with no rebase and no force; if the first remote moved it resets and rolls back. It refuses " +
 			"a new slug the vault already holds or records a departure for, a vault not at every remote's " +
-			"tip, a dirty footprint and a format mismatch. There is no --no-push.",
+			"tip, a dirty footprint and a format mismatch. A project that holds signed transcript manifests " +
+			"is re-signed as part of the rename; its signing key is proven usable by a throwaway sign and " +
+			"verify before anything is written, and a key that cannot sign refuses at plan time. " +
+			"Passphrase-protected keys are not supported for rename. There is no --no-push.",
 		Schema:  vaultRenameSchema,
 		Handler: vaultRenameHandler(vault),
 	}
@@ -90,7 +94,7 @@ func vaultRenameHandler(vault *storage.Vault) mcp.HandlerFunc {
 		if vault == nil || vault.Root == "" {
 			return nil, apperr.Caller(fmt.Errorf("no vault is bound: vp_vault_rename acts only on the vault this server serves"))
 		}
-		req := storage.RenameRequest{Vault: vault.Root, From: p.From, To: p.To, Expect: p.Expect}
+		req := storage.RenameRequest{Vault: vault.Root, From: p.From, To: p.To, Expect: p.Expect, Signer: archive.RenameSigner{}}
 		switch p.Action {
 		case "plan":
 			plan, err := storage.PlanRename(req)

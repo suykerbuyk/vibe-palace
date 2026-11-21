@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/cli"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
@@ -38,8 +39,10 @@ func cmdVaultRename() *cli.Command {
 			"remote of this vault, or refuse and roll back. Run --dry-run first and paste the command line it " +
 			"prints. There is no --no-push. Undo: git revert the rename commit and push it. The checkout's " +
 			"[project].name and any host binding are not touched; the departed-slug alert names those fixes. A project that " +
-			"holds a signed transcript manifest (a .manifest.json.sig) is refused, because the rewrite would leave the " +
-			"signature stale; that check is best-effort and does not serialize with concurrent captures.",
+			"holds signed transcript manifests (a .manifest.json.sig) is re-signed as part of the rename; its signing " +
+			"key is proven usable by a throwaway sign and verify before anything is written, and a key that cannot " +
+			"sign refuses at plan time (also under --dry-run). The rename signs non-interactively, so " +
+			"passphrase-protected keys are not supported.",
 		Flags: vaultRenameFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault rename old-name new-name --dry-run", Comment: "Plan the rename, then run the line it prints"},
@@ -85,7 +88,7 @@ func runVaultRename(c *cli.Command, args []string, out, errOut io.Writer) int {
 	}
 	req := storage.RenameRequest{
 		Vault: root, From: fv.Args()[0], To: fv.Args()[1],
-		Expect: fv.Get("--expect"), DryRun: fv.Bool("--dry-run"),
+		Expect: fv.Get("--expect"), DryRun: fv.Bool("--dry-run"), Signer: archive.RenameSigner{},
 	}
 	res, err := storage.ApplyRename(req)
 	// After the tracked rename publishes, run the host-local index step (storage

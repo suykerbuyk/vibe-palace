@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/slug"
@@ -164,7 +165,7 @@ func CopyProjectAs(ctx context.Context, vault *storage.Vault, req storage.CopyRe
 // A dry run returns the rename plan and runs no host-local step. On a pending
 // rename marker, ApplyRename's own redo finishes or rolls back.
 func finishRenameHalf(ctx context.Context, vault *storage.Vault, project, newName string, dryRun bool, res *CopyAsResult) error {
-	rr, rerr := storage.ApplyRename(storage.RenameRequest{Vault: vault.Root, From: project, To: newName, DryRun: dryRun})
+	rr, rerr := storage.ApplyRename(storage.RenameRequest{Vault: vault.Root, From: project, To: newName, DryRun: dryRun, Signer: archive.RenameSigner{}})
 	res.Rename = rr
 	if rerr != nil {
 		return rerr

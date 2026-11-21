@@ -7,10 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/departure"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
 )
@@ -337,4 +339,74 @@ func TestCopyProjectAs_MarkerPendingResume(t *testing.T) {
 		t.Errorf("a marker still stands after the resume: %q", cmd)
 	}
 	_ = res
+}
+
+// T6: copy --as a project that holds a signed manifest. The rename half is given
+// the production signer, so the moved manifest is re-signed and its signature
+// verifies at the new slug (the old best-effort refusal would have refused).
+func TestCopyProjectAs_SignedManifestIsReSigned(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("ssh-keygen is required under CI: %v", err)
+		}
+		t.Skip("ssh-keygen not available")
+	}
+	caHome(t)
+	keyDir := t.TempDir()
+	key := filepath.Join(keyDir, "id")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "t@example.com", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v %s", err, out)
+	}
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(keyDir, "allowed")
+	if err := os.WriteFile(allowed, []byte("t@example.com "+strings.TrimSpace(string(pub))+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "vibe-palace")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[archive]\nsign_mode = \"ssh\"\nsign_key = \"" + key + "\"\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := "{\n  \"project_slug\": \"p\",\n  \"vault_rel_session_note\": \"Projects/p/sessions/2026-10-05-ab-01.md\"\n}\n"
+	stage := filepath.Join(keyDir, "m.manifest.json")
+	if err := os.WriteFile(stage, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Sign(stage, archive.SignOptions{Mode: archive.SignModeSSH, Key: key}); err != nil {
+		t.Fatalf("sign the fixture manifest: %v", err)
+	}
+	sig, err := os.ReadFile(archive.SignaturePath(stage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, srcBare := vcRepo(t, map[string]string{
+		"Projects/p/resume.md":                       "---\nproject: p\n---\n# p — Working Context\nstuff\n",
+		"Projects/p/sessions/2026-10-05-ab-01.md":    "---\nproject: p\n---\nbody\n",
+		"Projects/p/transcripts/m.manifest.json":     manifest,
+		"Projects/p/transcripts/m.manifest.json.sig": string(sig),
+		"palace/p/kg/entities.jsonl":                 "{}\n",
+	})
+	dest, _ := vcRepo(t, map[string]string{"Projects/resident/resume.md": "r\n"})
+
+	res, cerr := CopyProjectAs(context.Background(), storage.NewVault(dest), caReq(dest, "file://"+srcBare, "p"), "newp")
+	if cerr != nil {
+		t.Fatalf("CopyProjectAs of a signed project: %v", cerr)
+	}
+	if res.Outcome != CopyAsCopiedAndRenamed {
+		t.Fatalf("outcome = %q", res.Outcome)
+	}
+	moved := filepath.Join(dest, "Projects/newp/transcripts/m.manifest.json")
+	if got, _ := os.ReadFile(moved); !strings.Contains(string(got), `"project_slug": "newp"`) {
+		t.Fatalf("the manifest was not rewritten:\n%s", got)
+	}
+	if err := archive.VerifySignature(moved, archive.VerifyOptions{AllowedSigners: allowed, Identity: "t@example.com"}); err != nil {
+		t.Errorf("the signature does not verify at the new slug: %v", err)
+	}
 }

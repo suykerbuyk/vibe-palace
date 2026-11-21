@@ -165,9 +165,15 @@ manifest field set above stays frozen; this amendment adds ONE optional field,
   `.sig` sits beside the manifest it re-signs under the same lock, using the
   manifest's own project's `[archive]` configuration; if that configuration or key
   is unusable it refuses and writes nothing; if re-signing fails it restores the
-  previous manifest and signature byte for byte. A project that holds a signed
-  manifest is refused by `vp vault rename` (a best-effort check). The capture
-  paths (hook, MCP, Codex) still never sign; that is a separate task,
+  previous manifest and signature byte for byte. `vp vault rename` supports a project
+  that holds signed manifests: it proves the signing key usable with a throwaway
+  sign and verify before anything is written, then re-signs every moved manifest
+  through the same write core (`writeManifestBytes`), one bounded per-manifest lock
+  on the destination path at a time, inside the vault commit lock (a strictly leaf
+  key, ADR-003). Limits: the rename signs non-interactively, so a
+  passphrase-protected key refuses at plan time, and a capture writing into the
+  moving tree mid-rename races as it always did. The capture paths (hook, MCP,
+  Codex) still never sign; that is a separate task,
   `signing-policy-for-capture-paths-and-signed-project-rename`.
 
 ### Compression

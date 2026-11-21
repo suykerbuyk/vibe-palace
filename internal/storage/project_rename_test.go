@@ -64,7 +64,13 @@ func newRenFix(t *testing.T, opts ...func(*renOpts)) *renFix {
 
 type renOpts struct{ palace, resume, workflow, remote, bak bool }
 
-func (f *renFix) req() RenameRequest { return RenameRequest{Vault: f.V, From: "old", To: "new"} }
+// req defaults Signer to a plain-writing test signer: the fixture's manifest needs a
+// manifest writer (storage has none of its own), and these tests are about the
+// rename, not signing. Signing is tested in internal/archive and the tests that set
+// Signer explicitly.
+func (f *renFix) req() RenameRequest {
+	return RenameRequest{Vault: f.V, From: "old", To: "new", Signer: &recordingSigner{}}
+}
 
 func renPresent(dir, rel string) bool {
 	_, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(rel)))

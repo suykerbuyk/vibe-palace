@@ -128,8 +128,37 @@ func removeSignature(manifestPath string) (confirmed bool, err error) {
 //
 // prior is only read by failRestore and may be nil for the other policies.
 func writeManifestSigned(vaultRoot, manifestPath string, m *Manifest, sign SignOptions, policy failurePolicy, prior *manifestState) error {
-	if err := WriteManifest(vaultRoot, manifestPath, m); err != nil {
+	b, err := MarshalManifest(m)
+	if err != nil {
 		return err
+	}
+	return writeManifestBytes(vaultRoot, manifestPath, b, sign, policy, prior, restoreRemedyLink)
+}
+
+// Remedies appended by failRestoreManifest when the restore itself failed: what
+// the operator can do depends on which operation was running.
+const (
+	restoreRemedyLink = "re-run the link once signing works, or restore the previous manifest by hand"
+	// restoreRemedyRename: the signed project rename rolls the destination pair
+	// back with the rest of the move, so there is nothing to re-run here.
+	restoreRemedyRename = "the rename rolls this destination pair back with the rest of the move; nothing to re-run here, " +
+		"and if the rollback itself reports a failure, restore Projects/<old> from git HEAD by hand"
+)
+
+// writeManifestBytes is THE core every manifest write goes through: it writes
+// RAW bytes through the write funnel, then clears any old signature and re-signs
+// per policy. Working on raw bytes (not a *Manifest round trip) is what lets the
+// project rename keep a manifest key this binary does not know. This function
+// holds the only atomicfile.Write of a manifest path in the package; the census
+// test pins that by enclosing function.
+//
+// wopts are passed to the write: the rename supplies inherit-perm and fsync so
+// the unsigned path keeps its historical durability and mode. remedy is the
+// sentence failRestoreManifest ends with when the restore fails.
+func writeManifestBytes(vaultRoot, manifestPath string, data []byte, sign SignOptions, policy failurePolicy,
+	prior *manifestState, remedy string, wopts ...atomicfile.Option) error {
+	if err := atomicfile.Write(vaultRoot, manifestPath, data, wopts...); err != nil {
+		return fmt.Errorf("write manifest %s: %w", manifestPath, err)
 	}
 	if !sign.Enabled() {
 		return nil
@@ -150,7 +179,7 @@ func writeManifestSigned(vaultRoot, manifestPath string, m *Manifest, sign SignO
 	case failRemove:
 		return failRemoveManifest(manifestPath, serr)
 	case failRestore:
-		return failRestoreManifest(vaultRoot, manifestPath, prior, serr)
+		return failRestoreManifest(vaultRoot, manifestPath, prior, serr, remedy)
 	default:
 		return failLeaveManifestUnsigned(manifestPath, serr)
 	}
@@ -189,7 +218,7 @@ func failLeaveManifestUnsigned(manifestPath string, serr error) error {
 // failRestoreManifest puts the previous manifest and signature back byte for
 // byte, or, when it cannot, removes the signature so nothing is left stale, and
 // says only what it established.
-func failRestoreManifest(vaultRoot, manifestPath string, prior *manifestState, serr error) error {
+func failRestoreManifest(vaultRoot, manifestPath string, prior *manifestState, serr error, remedy string) error {
 	base := fmt.Errorf("%w: %w", ErrManifestSigning, serr)
 	if prior == nil {
 		// A caller bug: failRestore without the prior state. Fall back to the
@@ -223,9 +252,8 @@ func failRestoreManifest(vaultRoot, manifestPath string, prior *manifestState, s
 			"so it is POSSIBLY STALE against whatever manifest is on disk now; inspect and repair by hand",
 			base, joined, SignaturePath(manifestPath), rerr)
 	}
-	return fmt.Errorf("%w; AND restoring the previous state failed (%w); the signature was removed, so the manifest as it stands is UNSIGNED; "+
-		"re-run the link once signing works, or restore the previous manifest by hand",
-		base, joined)
+	return fmt.Errorf("%w; AND restoring the previous state failed (%w); the signature was removed, so the manifest as it stands is UNSIGNED; %s",
+		base, joined, remedy)
 }
 
 // postBackupState describes the exact on-disk state after a Create failure that

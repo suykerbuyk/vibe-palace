@@ -157,6 +157,10 @@ var funnelAllowedEdges = map[string]allowedEdge{
 // listed and absent is reported STALE, so replacing one expected error with a
 // different unexpected one at the same count is never silent.
 var typecheckAccounted = map[string]accountedIssues{
+	modulePath + "/internal/archive": {reason: "build-tag twins (_unix/_windows or _go/_ort files) type-checked together in one package", fingerprints: []string{
+		"declaration-conflict|sign_detach_unix.go|detachFromTerminal",
+		"declaration-conflict|sign_detach_windows.go|detachFromTerminal",
+	}},
 	modulePath + "/internal/atomicfile": {reason: "build-tag twins (_unix/_windows or _go/_ort files) type-checked together in one package", fingerprints: []string{
 		"declaration-conflict|rename_other.go|retryableRenameErr",
 		"declaration-conflict|rename_windows.go|retryableRenameErr",

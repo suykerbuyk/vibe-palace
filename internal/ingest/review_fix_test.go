@@ -71,7 +71,7 @@ func TestRunAttemptsAFailingHashlessArchiveOnce(t *testing.T) {
 	f.archiveOf("alpha", "T", transcript(t0, "t", 2), day(2))
 	m := *e.Manifest
 	m.SourceSHA256 = ""
-	if err := archive.WriteManifest(f.v.Root, e.ManifestPath, &m); err != nil {
+	if err := writeTestManifest(f.v.Root, e.ManifestPath, &m); err != nil {
 		t.Fatal(err)
 	}
 	corrupt(t, e)
@@ -201,7 +201,7 @@ func TestRunWarnsOncePerArchivePerRun(t *testing.T) {
 	f.archiveOf("beta", "U", transcript(t0, "u", 2), day(4))
 	m := *e.Manifest
 	m.SourceSHA256 = ""
-	archive.WriteManifest(f.v.Root, e.ManifestPath, &m)
+	writeTestManifest(f.v.Root, e.ManifestPath, &m)
 	logs := captureLogs(t)
 	res := f.run(RunOptions{Budget: RunBudget{Archives: 10}, MaxSourceBytes: big.Manifest.SourceBytes - 1})
 	if res.Committed < 2 {

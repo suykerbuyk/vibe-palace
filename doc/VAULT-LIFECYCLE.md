@@ -228,17 +228,27 @@ and re-labels it. The embed cache is rebuilt, not carried (`<new>` re-embeds
 lazily); chunks, ledger and baseline survive. A crash in this window leaves a
 rename-pending marker that the next run clears.
 
-**A signed project is refused.** A transcript manifest with a detached signature
-(`<name>.manifest.json.sig` beside it) is rewritten by a rename (its
-`project_slug` and note link change), which would leave the signature covering
-bytes that no longer exist, so a rename of a project that holds one is refused
-at planning time and names the files. This check is **best-effort**: it scans
-once while planning and does not serialize with the per-manifest locks that
-`vp archive create` and the note-link writers take, so a signature added by a
-concurrent capture after the scan is not caught, and the rename itself takes no
-per-manifest lock. A real signing policy for signed renames and for the capture
-paths is tracked in the task
-`signing-policy-for-capture-paths-and-signed-project-rename`.
+**A signed project is re-signed.** A transcript manifest with a detached
+signature (`<name>.manifest.json.sig` beside it) has its `project_slug` and note
+link rewritten by a rename, so the rename re-signs it. Before anything is written
+(so under `--dry-run` and the MCP `plan` too) the rename **proves** the project's
+signing works: it signs and verifies a throwaway file in the system temp directory
+(never inside the vault; a temp directory that resolves inside the vault is
+refused) with the same command and environment the real re-signing will use,
+bounded to about 10 s. A key that cannot sign is a plan refusal and nothing is
+written. The signing options are resolved from the *old* slug before the move and
+reused for every manifest.
+
+The rename signs **non-interactively**: no stdin, no controlling terminal, no
+askpass program and, for gpg, no pinentry. A **passphrase-protected key is
+therefore not supported for rename** and refuses at plan time (a key held by a
+running agent that needs no prompt is fine). Each manifest is rewritten under one
+bounded (30 s) per-manifest lock on its destination path, one at a time, inside
+the vault commit lock; on any failure the whole rename is rolled back (the old
+project is restored from `HEAD`, the new one removed). A capture writing into the
+moving tree while a rename runs still races exactly as it does without signing.
+On Windows the no-console launch is compile-checked only; Windows CI does not run
+the signing tests.
 
 What `rename` deliberately does **not** touch:
 - the project checkout's `[project].name` and any host binding — the
