@@ -73,6 +73,21 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+      # The archive signing tests drive the real ssh-keygen (and gpg). Under CI a
+      # missing tool FAILS them (requireCmd in internal/archive, requireSigningTool
+      # in internal/hook) instead of skipping, so make
+      # the tools an explicit prerequisite rather than trusting the runner image:
+      # install them only if absent, then prove they are on PATH. `command -v` is
+      # the presence check; neither tool has a harmless version flag (ssh-keygen -h
+      # starts key generation and exits 1).
+      - name: Signing tools for the archive signing tests
+        shell: bash
+        run: |
+          command -v ssh-keygen >/dev/null && command -v gpg >/dev/null || {
+            sudo apt-get update && sudo apt-get install -y openssh-client gnupg
+          }
+          command -v ssh-keygen
+          command -v gpg
       - run: go test -short -race -cover ./...
 
   # Deliberate real-model coverage: `make model-test` runs every test that

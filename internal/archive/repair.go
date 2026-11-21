@@ -406,28 +406,11 @@ func RepairManifest(opts RepairOptions) (*RepairResult, error) {
 			Unrecoverable: append([]string(nil), unrecoverableFields...),
 		},
 	}
-	if err := WriteManifest(opts.VaultRoot, manifestPath, m); err != nil {
+	// The shared helper writes and signs; a signing failure rolls back under the
+	// same lock (the check above guarantees no .sig existed before this call, so
+	// everything it removes was written by it).
+	if err := writeManifestSigned(opts.VaultRoot, manifestPath, m, opts.Sign, failRemove, nil); err != nil {
 		return nil, err
-	}
-	if opts.Sign.Enabled() {
-		if serr := signManifest(manifestPath, opts.Sign); serr != nil {
-			// Roll back under the same lock so the orphan stays an orphan and a
-			// retry is possible. The check above guarantees no .sig existed
-			// before this call, so everything removed here was written by it.
-			// Each removal failure is reported; "removed" is claimed only when true.
-			var rerrs []error
-			if rerr := removeForRollback(manifestPath); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-				rerrs = append(rerrs, fmt.Errorf("remove manifest %s: %w", manifestPath, rerr))
-			}
-			if rerr := removeForRollback(SignaturePath(manifestPath)); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-				rerrs = append(rerrs, fmt.Errorf("remove signature %s: %w", SignaturePath(manifestPath), rerr))
-			}
-			if len(rerrs) > 0 {
-				return nil, fmt.Errorf("sign manifest: %w; AND the rollback failed, so the repaired manifest may still be present (%w); remove it by hand before retrying",
-					serr, errors.Join(rerrs...))
-			}
-			return nil, fmt.Errorf("sign manifest: %w (the repaired manifest was removed; retry once signing works)", serr)
-		}
 	}
 	res.Manifest = m
 	return res, nil

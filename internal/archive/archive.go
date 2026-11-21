@@ -313,10 +313,68 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 	//
 	// The SINK still takes no lock, and that is unchanged and load-bearing
 	// (see internal/vaultfs/raw.go). The exclusion lives in this caller.
-	if priorManifest != nil {
-		bakPath := fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(priorManifest.SourceSHA256))
-		if err := vaultfs.RenameNoLock(manifestPath, bakPath); err != nil {
-			return nil, fmt.Errorf("preserve prior manifest: %w", err)
+	//
+	// A signature beside the prior manifest covers THAT manifest, so it moves with
+	// it to <bak-base>.sig.bak (see sigBackupPath): left at the live name it would sit beside the NEW manifest
+	// and cover bytes that no longer exist. This is two raw renames, so a failure
+	// of the second undoes the first and reports exactly the on-disk state.
+	//
+	// THE RULE IS ABOUT THE SIGNATURE, NOT ABOUT WHETHER THE PRIOR MANIFEST PARSED.
+	// Whenever Create is about to write the live manifest and a live .sig exists,
+	// that .sig is moved aside: a malformed or unreadable prior manifest (which
+	// ReadManifest above turns into priorManifest == nil) must not leave its
+	// signature beside the replacement. The unreadable manifest, if there is one,
+	// is preserved to a .bak too, and a signature with no manifest at all is moved
+	// to a name that records it, so nothing is lost and the capture is never
+	// dropped. A live .sig is never left beside a manifest it does not sign.
+	var bakPath, sigBakPath string
+	var manifestBackedUp bool
+	sigLive, sigErr := signatureExists(manifestPath)
+	if sigErr != nil {
+		return nil, fmt.Errorf("preserve prior signature: %w", sigErr)
+	}
+	if priorManifest != nil || sigLive {
+		// The raw rename stays HERE, in Create, where the source-audit baseline
+		// attributes it; renameForBackupHook is nil outside tests.
+		renameBackup := func(src, dst string) error {
+			if renameForBackupHook != nil {
+				return renameForBackupHook(src, dst)
+			}
+			return vaultfs.RenameNoLock(src, dst)
+		}
+		manifestPresent := priorManifest != nil
+		if !manifestPresent {
+			_, lerr := os.Lstat(manifestPath)
+			manifestPresent = lerr == nil
+		}
+		switch {
+		case priorManifest != nil:
+			bakPath = fmt.Sprintf("%s.%s.bak", manifestPath, shortHash(priorManifest.SourceSHA256))
+		case manifestPresent: // present but unreadable or malformed
+			bakPath = fmt.Sprintf("%s.%s.bak", manifestPath, rawFileTag(manifestPath, fmt.Sprintf("unreadable-%d", opts.Now.Unix())))
+		default: // a signature with no manifest at all
+			bakPath = fmt.Sprintf("%s.%s.bak", manifestPath, rawFileTag(SignaturePath(manifestPath), fmt.Sprintf("sig-%d", opts.Now.Unix())))
+		}
+		if manifestPresent {
+			if err := renameBackup(manifestPath, bakPath); err != nil {
+				return nil, fmt.Errorf("preserve prior manifest: %w", err)
+			}
+			manifestBackedUp = true
+		}
+		if err := moveSignatureToBackup(manifestPath, bakPath, renameBackup, &sigBakPath); err != nil {
+			if !manifestBackedUp {
+				return nil, fmt.Errorf("preserve prior signature: %w; the signature was left in place at %s and no manifest was moved "+
+					"(the new archive %s is already on disk and nothing was written or signed); retry the capture",
+					err, SignaturePath(manifestPath), archivePath)
+			}
+			if uerr := renameBackup(bakPath, manifestPath); uerr != nil {
+				return nil, fmt.Errorf("preserve prior manifest: %w; AND undoing the manifest rename failed (%w), so: the new archive %s is written; "+
+					"the previous manifest is at %s and NO manifest exists at %s; the previous signature is still at %s and covers the preserved "+
+					"manifest, not any new one; nothing was written or signed afterwards; move %s back to %s (or remove the signature) and re-run",
+					err, uerr, archivePath, bakPath, manifestPath, SignaturePath(manifestPath), bakPath, manifestPath)
+			}
+			return nil, fmt.Errorf("preserve prior manifest: %w; the previous manifest and signature were left in place at %s "+
+				"(the new archive %s is already on disk and nothing was re-signed); retry the capture", err, manifestPath, archivePath)
 		}
 	}
 
@@ -351,14 +409,17 @@ func Create(opts CreateOptions) (*CreateResult, error) {
 		CapturedByHostname:  hostname,
 		VPVersion:           opts.VPVersion,
 	}
-	if err := WriteManifest(opts.VaultRoot, manifestPath, m); err != nil {
-		return nil, err
-	}
-
-	if opts.Sign.Enabled() {
-		if err := Sign(manifestPath, opts.Sign); err != nil {
-			return nil, fmt.Errorf("sign manifest: %w", err)
+	// ONE helper writes the manifest and keeps its signature honest. Create
+	// never restores the old pair: the new archive is already in place, so the
+	// old manifest no longer describes it. On a signing failure the NEW pair stays,
+	// unsigned, and the error says so.
+	if err := writeManifestSigned(opts.VaultRoot, manifestPath, m, opts.Sign, failLeaveUnsigned, nil); err != nil {
+		// A failure here, write or sign, comes AFTER the prior pair moved aside, so
+		// the error must say exactly where everything is.
+		if manifestBackedUp || sigBakPath != "" {
+			err = fmt.Errorf("%w; %s", err, postBackupState(archivePath, manifestPath, bakPath, sigBakPath, manifestBackedUp))
 		}
+		return nil, err
 	}
 
 	// No stamp call here any more. Both writes above — the .jsonl.zst through
@@ -604,4 +665,51 @@ func shortHash(s string) string {
 		return s[:12]
 	}
 	return s
+}
+
+// sigBackupPath is where a preserved signature goes: the backup manifest's name
+// with ".sig" inserted before its ".bak", so
+//
+//	<manifest>.<tag>.bak       the preserved manifest
+//	<manifest>.<tag>.sig.bak   its signature
+//
+// pair up obviously AND both end in ".bak", which the vault's canonical
+// .gitignore already covers (storage.CanonicalGitignorePatterns has "*.bak" and
+// nothing for ".sig"). A name ending in ".bak.sig" would be untracked dirt after
+// every successful capture, and dirt blocks `vp vault sync`.
+//
+// To VERIFY a preserved pair, put them back under live names (<name>.manifest.json
+// and <name>.manifest.json.sig): VerifySignature looks for <manifest>.sig.
+func sigBackupPath(bakPath string) string {
+	return strings.TrimSuffix(bakPath, ".bak") + ".sig.bak"
+}
+
+// moveSignatureToBackup moves a signature that sits beside manifestPath to
+// sigBackupPath(bakPath) and records the destination in *dst. No signature is a
+// no-op.
+func moveSignatureToBackup(manifestPath, bakPath string, rename func(src, dst string) error, dst *string) error {
+	ok, err := signatureExists(manifestPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	target := sigBackupPath(bakPath)
+	if err := rename(SignaturePath(manifestPath), target); err != nil {
+		return fmt.Errorf("move signature to %s: %w", target, err)
+	}
+	*dst = target
+	return nil
+}
+
+// rawFileTag names a backup after the first 12 hex characters of the SHA-256 of
+// the file's bytes, or fallback when the file cannot be read.
+func rawFileTag(path, fallback string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:12]
 }

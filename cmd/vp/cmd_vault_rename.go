@@ -37,7 +37,9 @@ func cmdVaultRename() *cli.Command {
 			"trailers, check that nothing still names the old slug, and publish exactly that commit to every " +
 			"remote of this vault, or refuse and roll back. Run --dry-run first and paste the command line it " +
 			"prints. There is no --no-push. Undo: git revert the rename commit and push it. The checkout's " +
-			"[project].name and any host binding are not touched; the departed-slug alert names those fixes.",
+			"[project].name and any host binding are not touched; the departed-slug alert names those fixes. A project that " +
+			"holds a signed transcript manifest (a .manifest.json.sig) is refused, because the rewrite would leave the " +
+			"signature stale; that check is best-effort and does not serialize with concurrent captures.",
 		Flags: vaultRenameFlags,
 		Examples: []cli.Example{
 			{Cmd: "vp vault rename old-name new-name --dry-run", Comment: "Plan the rename, then run the line it prints"},

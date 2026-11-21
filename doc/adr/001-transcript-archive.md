@@ -54,6 +54,15 @@ produced by **per-IDE adapters** invoked from host-level hooks
 
 - One pair of files per `(session_id, adapter)` tuple. Re-runs are
   idempotent no-ops.
+- A re-create whose source changed preserves the prior manifest as
+  `<...>.manifest.json.<hash12>.bak` and, when it was signed, its signature as
+  `<...>.manifest.json.<hash12>.sig.bak` (a signature whose manifest is gone is
+  kept as `<...>.manifest.json.<12 hex of the signature>.sig.bak`; a manifest
+  that does not parse is kept as a `.bak` named by the hash of its bytes). Both
+  names end in `.bak` on purpose: the vault's canonical `.gitignore` covers
+  `*.bak` and nothing for `.sig`. A signature never stays beside a manifest it
+  does not sign. To verify a preserved pair, put them back under live names
+  (`<name>.manifest.json` and `<name>.manifest.json.sig`).
 - Date prefix is capture-time UTC for filesystem ordering; the
   authoritative timestamp is inside the manifest.
 
@@ -151,8 +160,15 @@ manifest field set above stays frozen; this amendment adds ONE optional field,
   that lacks `regenerated` and would silently drop it (a hook warns on a newer
   surface stamp but continues). `MCPSurfaceVersion` moved 10 to 11 for this reason.
   This is documented, not gated.
-- Known gap, filed separately: `LinkSessionNote` rewrites a signed manifest
-  without re-signing (`link-session-note-rewrites-a-signed-manifest-without-re-signing`).
+- `LinkSessionNote` keeps a signed manifest signed (task
+  `link-session-note-rewrites-a-signed-manifest-without-re-signing`): when a
+  `.sig` sits beside the manifest it re-signs under the same lock, using the
+  manifest's own project's `[archive]` configuration; if that configuration or key
+  is unusable it refuses and writes nothing; if re-signing fails it restores the
+  previous manifest and signature byte for byte. A project that holds a signed
+  manifest is refused by `vp vault rename` (a best-effort check). The capture
+  paths (hook, MCP, Codex) still never sign; that is a separate task,
+  `signing-policy-for-capture-paths-and-signed-project-rename`.
 
 ### Compression
 

@@ -4,6 +4,9 @@
 package archive
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -85,11 +88,116 @@ func linkSessionNote(vaultRoot, manifestPath, vaultRelSessionNote string, postur
 		return nil // idempotent no-op
 	}
 	m.VaultRelSessionNote = vaultRelSessionNote
-	// Was atomicWriteManifest: a hand-rolled WriteManifest-to-".tmp" plus
-	// os.Rename. WriteManifest now owns the temp file and the rename, so the
-	// wrapper had nothing left to do, and it stamps, so the stampVault call
-	// that used to follow this line is gone with it.
-	return WriteManifest(vaultRoot, manifestPath, m)
+
+	// A rewrite keeps a SIGNED manifest signed, or refuses, or says it could not.
+	// "Signed" means a .sig already sits beside the manifest: the callers here
+	// have no sign options and config can change after a manifest was signed, so
+	// the sidecar is the signal. An unsigned manifest stays unsigned and costs
+	// one stat, no config read (the hook's hot path).
+	signed, err := signatureExists(manifestPath)
+	if err != nil {
+		return err
+	}
+	if !signed {
+		// Was atomicWriteManifest: a hand-rolled WriteManifest-to-".tmp" plus
+		// os.Rename. WriteManifest now owns the temp file and the rename, so the
+		// wrapper had nothing left to do, and it stamps, so the stampVault call
+		// that used to follow this line is gone with it.
+		return writeManifestSigned(vaultRoot, manifestPath, m, SignOptions{}, failLeaveUnsigned, nil)
+	}
+	signOpts, reason := resignOptions(vaultRoot, m.ProjectSlug)
+	if reason != "" {
+		// Nothing has been written: the manifest and its signature are as they
+		// were and still verify. The operator either restores the signing
+		// configuration or removes the .sig deliberately.
+		return fmt.Errorf("%w: %s (%s); the manifest and its signature were left untouched; restore the project's [archive] signing "+
+			"configuration, or remove %s deliberately so the link can proceed unsigned",
+			ErrSignedManifestCannotResign, manifestPath, reason, SignaturePath(manifestPath))
+	}
+	prior, err := captureManifestState(manifestPath)
+	if err != nil {
+		return err
+	}
+	return writeManifestSigned(vaultRoot, manifestPath, m, signOpts, failRestore, prior)
+}
+
+// resignOptions resolves the signing options for a manifest that already has a
+// signature, from the manifest's OWN project (so a bound vault resolves its own
+// configuration). A non-empty reason means they cannot produce a signature.
+func resignOptions(vaultRoot, projectSlug string) (SignOptions, string) {
+	if vaultRoot == "" {
+		return SignOptions{}, "no vault root, so there is no project configuration to sign with"
+	}
+	opts, err := SignOptionsForProject(vaultRoot, projectSlug)
+	if err != nil {
+		return SignOptions{}, err.Error()
+	}
+	if !opts.Enabled() {
+		return SignOptions{}, "the project's [archive] sign_mode is not set"
+	}
+	if reason := signingKeyUnusable(opts); reason != "" {
+		return SignOptions{}, reason
+	}
+	return opts, ""
+}
+
+// listSecretKeys is `gpg --batch --list-secret-keys --with-colons [key]`; a test
+// replaces it. It signs nothing.
+var listSecretKeys = func(key string) ([]byte, error) {
+	args := []string{"--batch", "--list-secret-keys", "--with-colons"}
+	if key != "" {
+		args = append(args, key)
+	}
+	return exec.Command("gpg", args...).Output()
+}
+
+// signingKeyUnusable is the pre-flight for a re-sign: it returns a non-empty
+// reason when the configured key cannot produce a signature, so the link refuses
+// BEFORE writing anything (D2) instead of discovering the problem at the signer
+// after the manifest was already rewritten. It is the cheapest reliable check and
+// it never signs:
+//
+//   - ssh: ssh-keygen is on PATH, and the key file exists, is a regular file and
+//     is readable (the same stat signSSH does first, plus a read-open);
+//   - gpg: gpg is on PATH and `gpg --list-secret-keys [key]` succeeds and lists a
+//     secret key (a named key must resolve; with no key named, some secret key
+//     must exist).
+func signingKeyUnusable(opts SignOptions) string {
+	switch opts.Mode {
+	case SignModeSSH:
+		if _, err := exec.LookPath("ssh-keygen"); err != nil {
+			return "ssh-keygen is not on PATH"
+		}
+		if opts.Key == "" {
+			return "ssh signing requires a key path and [archive] sign_key is not set"
+		}
+		fi, err := os.Stat(opts.Key)
+		if err != nil {
+			return fmt.Sprintf("the ssh signing key is not usable: %v", err)
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Sprintf("the ssh signing key %s is not a regular file", opts.Key)
+		}
+		f, err := os.Open(opts.Key)
+		if err != nil {
+			return fmt.Sprintf("the ssh signing key is not readable: %v", err)
+		}
+		_ = f.Close()
+	case SignModeGPG:
+		if _, err := exec.LookPath("gpg"); err != nil {
+			return "gpg is not on PATH"
+		}
+		out, err := listSecretKeys(opts.Key)
+		if err != nil {
+			return fmt.Sprintf("the gpg signing key does not resolve (gpg --list-secret-keys %q): %v", opts.Key, err)
+		}
+		if !strings.Contains(string(out), "sec:") {
+			return fmt.Sprintf("gpg lists no secret key for %q", opts.Key)
+		}
+	default:
+		return fmt.Sprintf("unknown signing mode %q", opts.Mode)
+	}
+	return ""
 }
 
 // VaultRelPath returns the vault-relative form of an absolute path,

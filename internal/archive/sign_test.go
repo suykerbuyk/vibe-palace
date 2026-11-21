@@ -16,9 +16,18 @@ import (
 )
 
 // requireCmd skips the test if the named binary is not on PATH.
-func requireCmd(t *testing.T, name string) {
+//
+// Locally a missing program SKIPS the test. Under CI (GitHub Actions sets
+// CI=true) it FAILS it: a clean skip on a runner without the tool would let the
+// whole signed path run nowhere while the job stays green. The ci.yml `test` job
+// also checks for the tools explicitly and installs them if the image lacks them.
+func requireCmd(t testing.TB, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("%s is required under CI and was not found: %v (install it in the CI job; see .github/workflows/ci.yml)", name, err)
+			return // unreachable with a real *testing.T; keeps a recording stub honest
+		}
 		t.Skipf("%s not available; skipping", name)
 	}
 }

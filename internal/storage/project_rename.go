@@ -223,6 +223,11 @@ func ApplyRename(req RenameRequest) (*RenameResult, error) {
 	// Fresh-target refusals (SF2): the new slug must not already exist.
 	refusals = append(refusals, renameFreshTargetRefusals(req.Vault, to)...)
 
+	// A signed transcript manifest cannot be renamed: the rewrite below changes
+	// its project_slug (and its note link), which would leave the signature
+	// covering bytes that no longer exist.
+	refusals = append(refusals, renameSignedManifestRefusals(req.Vault, from)...)
+
 	// Build the move plan and the rewrite counts (structural; a collision or a
 	// dangling rewrite target is a refusal, not a fault).
 	var p *SlugPlan
@@ -765,4 +770,37 @@ func renameUndoLines(vaultPath, sha string, remotes []string, branch string) []s
 		lines = append(lines, fmt.Sprintf("git -C %s push %s HEAD:refs/heads/%s", shellQuote(vaultPath), shellQuote(r), branch))
 	}
 	return lines
+}
+
+// renameSignedManifestRefusals refuses a rename of a project that holds a signed
+// transcript manifest (a <name>.manifest.json.sig beside it). The rename rewrites
+// the manifest's project_slug and vault_rel_session_note and moves the .sig
+// unchanged, so the signature would be left covering bytes that no longer exist.
+//
+// 🔴 THIS CHECK IS BEST-EFFORT, AND SAYS SO. It scans once, during planning. It
+// does not serialize with the per-manifest locks archive.Create and the link
+// functions take (ApplyRename holds the vault-root commit lock; they do not take
+// it), so a Create that adds a signature after the scan can race it, and the
+// rename's own writer takes no per-manifest lock. The real answer is a signing
+// policy for the capture paths and for a signed rename, tracked in the task
+// signing-policy-for-capture-paths-and-signed-project-rename; no coordination
+// protocol is built here.
+func renameSignedManifestRefusals(vaultPath, from string) []string {
+	dir := filepath.Join(vaultPath, "Projects", from, "transcripts")
+	matches, err := filepath.Glob(filepath.Join(dir, "*.manifest.json.sig"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		rel, rerr := filepath.Rel(vaultPath, m)
+		if rerr != nil {
+			rel = m
+		}
+		out = append(out, fmt.Sprintf("%s is a manifest signature: renaming %q rewrites the manifest it signs (its project_slug and note link), "+
+			"which would leave this signature covering bytes that no longer exist; rename of a signed project is refused "+
+			"(best-effort check, see task signing-policy-for-capture-paths-and-signed-project-rename)", filepath.ToSlash(rel), from))
+	}
+	return out
 }

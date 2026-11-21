@@ -228,6 +228,18 @@ and re-labels it. The embed cache is rebuilt, not carried (`<new>` re-embeds
 lazily); chunks, ledger and baseline survive. A crash in this window leaves a
 rename-pending marker that the next run clears.
 
+**A signed project is refused.** A transcript manifest with a detached signature
+(`<name>.manifest.json.sig` beside it) is rewritten by a rename (its
+`project_slug` and note link change), which would leave the signature covering
+bytes that no longer exist, so a rename of a project that holds one is refused
+at planning time and names the files. This check is **best-effort**: it scans
+once while planning and does not serialize with the per-manifest locks that
+`vp archive create` and the note-link writers take, so a signature added by a
+concurrent capture after the scan is not caught, and the rename itself takes no
+per-manifest lock. A real signing policy for signed renames and for the capture
+paths is tracked in the task
+`signing-policy-for-capture-paths-and-signed-project-rename`.
+
 What `rename` deliberately does **not** touch:
 - the project checkout's `[project].name` and any host binding — the
   departed-slug alert names those fixes;
