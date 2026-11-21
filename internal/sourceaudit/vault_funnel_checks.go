@@ -197,8 +197,11 @@ func shapeFloors(e *taintEngine) []Finding {
 					"shape, and its disappearance means multi-value assignment pairing regressed even though no fixture changed"))
 		}
 	}
+	// migrate.moveLegacyMarker was a third required wrapper until the imports ledger
+	// moved into the funnel (task migrate-marker-writes-the-vault-outside-the-funnel):
+	// it no longer reaches a raw write, so its disappearance is the fix, not a lost shape.
 	add("wrapper summaries", st.wrappers, 25, "the wrapper (param -> raw sink) pass stopped computing")
-	for _, name := range []string{"migrate.moveLegacyMarker", "vaultlock.TryAcquireFile", "vplog.Init"} {
+	for _, name := range []string{"vaultlock.TryAcquireFile", "vplog.Init"} {
 		if !st.wrapperNames[name] {
 			out = append(out, metaFinding("sourceaudit.vaultWriteFunnel/VACUOUS wrapper "+name,
 				name+" must be summarised as a wrapper (a parameter reaches a raw os.* write): it is the shape behind a live finding"))

@@ -46,6 +46,17 @@ func RawWriteBackup(vaultRoot string) error {
 	return os.WriteFile(dst+".bak", nil, 0o644)
 }
 
+// BYPASS: a raw append to a host-local ledger under palace/.local, reached
+// through a helper producer (the migrate.appendMarker shape).
+func ledgerPath(vaultRoot, project string) string {
+	return filepath.Join(vaultRoot, "palace", ".local", "imports", project, "l.jsonl")
+}
+
+func RawLedgerAppend(vaultRoot string) error {
+	_, err := os.OpenFile(ledgerPath(vaultRoot, "p"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	return err
+}
+
 // BYPASS: an append-mode open on a vault path.
 func RawAppend(vaultRoot string) error {
 	p := filepath.Join(vaultRoot, "Projects", "p", "iterations.md")
@@ -144,6 +155,7 @@ func TestFunnelFlagsBypasses(t *testing.T) {
 		"storage.RawWriteFromParam",
 		"storage.RawWriteBackup",
 		"storage.RawAppend",
+		"storage.RawLedgerAppend",
 		"storage.DefeatedRoot",
 		"storage.VarRawWrite",
 	} {

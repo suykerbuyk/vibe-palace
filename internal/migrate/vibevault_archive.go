@@ -21,6 +21,7 @@ import (
 	"github.com/suykerbuyk/vibe-palace/internal/archive"
 	"github.com/suykerbuyk/vibe-palace/internal/indexstore"
 	"github.com/suykerbuyk/vibe-palace/internal/storage"
+	"github.com/suykerbuyk/vibe-palace/internal/vaultfs"
 )
 
 // The vibevault importer writes transcript archives, never tracked derived
@@ -75,12 +76,18 @@ func legacyMarkerFile(destination *storage.Vault, project string) (string, error
 	return filepath.Join(dir, "imported-sessions.jsonl"), nil
 }
 
+// afterLegacyRead is a test seam: it runs once loadMarkers has seen a legacy
+// marker file, before the move. A test holds two callers here so both have
+// observed the legacy file before either moves it. It must never be called with
+// a ledger lock held.
+var afterLegacyRead = func() {}
+
 // markers is the project's marker file, read once per run: every reason
 // recorded for each session id.
 type markers map[string][]string
 
 // loadMarkers reads the project's markers. A legacy marker file is read once:
-// its lines are appended to the new file, it is deleted, and its emptied
+// its lines are appended to the new file under the ledger's lock, it is deleted, and its emptied
 // palace/<p>/.local/ directory is removed. palace/<p>/.local/ is not ignored,
 // so a vault may have committed the legacy file: when git tracks anything
 // under palace/<p>/.local/ (or cannot say), the legacy file is left in place
@@ -95,12 +102,13 @@ func loadMarkers(destination *storage.Vault, project string) (markers, error) {
 	if err != nil {
 		return nil, err
 	}
-	if data, err := os.ReadFile(legacy); err == nil {
-		if err := moveLegacyMarker(destination, project, legacy, path, data); err != nil {
+	if _, err := os.Stat(legacy); err == nil {
+		afterLegacyRead()
+		if err := moveLegacyMarker(destination, project, legacy, path); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("read legacy import marker: %w", err)
+		return nil, fmt.Errorf("stat legacy import marker: %w", err)
 	}
 
 	m := markers{}
@@ -127,39 +135,42 @@ func loadMarkers(destination *storage.Vault, project string) (markers, error) {
 
 // moveLegacyMarker appends the legacy marker's lines the new file does not
 // already hold, then deletes the legacy file and its emptied directory unless
-// git tracks something under palace/<p>/.local/.
-func moveLegacyMarker(destination *storage.Vault, project, legacy, path string, data []byte) error {
-	if err := storage.EnsureDir(filepath.Dir(path)); err != nil {
-		return err
-	}
-	have := map[string]bool{}
-	if cur, err := os.ReadFile(path); err == nil {
-		for line := range strings.SplitSeq(string(cur), "\n") {
+// git tracks something under palace/<p>/.local/. The legacy file is read again
+// under the ledger's lock, so a run that lost the race sees what the winner left
+// (nothing to move) rather than acting on a stale view.
+func moveLegacyMarker(destination *storage.Vault, project, legacy, path string) error {
+	moved := false
+	err := destination.UpdateHostLocalLedger(path, func(current []byte) ([]byte, error) {
+		data, err := os.ReadFile(legacy)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil // another run already moved it
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read legacy import marker: %w", err)
+		}
+		moved = true
+		have := map[string]bool{}
+		for line := range strings.SplitSeq(string(current), "\n") {
 			have[strings.TrimSpace(line)] = true
 		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read import marker: %w", err)
+		var add strings.Builder
+		for line := range strings.SplitSeq(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !have[line] {
+				have[line] = true
+				add.WriteString(line + "\n")
+			}
+		}
+		if add.Len() == 0 {
+			return nil, nil
+		}
+		return []byte(add.String()), nil
+	})
+	if err != nil {
+		return fmt.Errorf("copy legacy import marker: %w", err)
 	}
-	var add strings.Builder
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !have[line] {
-			have[line] = true
-			add.WriteString(line + "\n")
-		}
-	}
-	if add.Len() > 0 {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		_, werr := f.WriteString(add.String())
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			return fmt.Errorf("copy legacy import marker: %w", werr)
-		}
+	if !moved {
+		return nil
 	}
 	tracked, err := destination.TrackedPalaceLocalFiles()
 	if err != nil || tracked[project] > 0 {
@@ -167,10 +178,10 @@ func moveLegacyMarker(destination *storage.Vault, project, legacy, path string, 
 		// in the vault. The copy is done; the legacy file stays.
 		return nil
 	}
-	if err := os.Remove(legacy); err != nil {
+	if err := vaultfs.RemoveNoLock(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove legacy import marker: %w", err)
 	}
-	_ = os.Remove(filepath.Dir(legacy)) // only when empty
+	_ = vaultfs.RemoveNoLock(filepath.Dir(legacy)) // only when empty
 	return nil
 }
 
@@ -199,9 +210,6 @@ func appendMarker(destination *storage.Vault, project, sessionID, source, reason
 	if err != nil {
 		return err
 	}
-	if err := storage.EnsureDir(filepath.Dir(path)); err != nil {
-		return err
-	}
 	data, err := json.Marshal(importMarker{
 		SessionID:  sessionID,
 		ImportedAt: time.Now().UTC().Format(time.RFC3339),
@@ -211,13 +219,7 @@ func appendMarker(destination *storage.Vault, project, sessionID, source, reason
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s\n", data)
-	return err
+	return destination.AppendHostLocalLine(path, append(data, '\n'))
 }
 
 // archivedSessions maps each session id archived for project in the vault to

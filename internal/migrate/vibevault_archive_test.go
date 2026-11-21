@@ -360,13 +360,15 @@ func TestVibevaultCrossHostIdempotence(t *testing.T) {
 	}
 }
 
-// treeListing lists every file outside palace/.local/ with its size.
+// treeListing lists every file outside palace/.local/ and .vp-locks/ with its
+// size: the tracked tree. Both are git-ignored host-local state (the canonical
+// gitignore), and the ledger append now takes a per-path lock sidecar.
 func treeListing(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		rel, _ := filepath.Rel(root, p)
-		if d.IsDir() && rel == filepath.Join("palace", ".local") {
+		if d.IsDir() && (rel == filepath.Join("palace", ".local") || rel == ".vp-locks") {
 			return filepath.SkipDir
 		}
 		if d.Type().IsRegular() {

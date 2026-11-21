@@ -461,14 +461,6 @@
       "reason": "host-local derived index under palace/.local — ignored by git, not vault content (ADR-014). writeFileFn (the body of writeFile, a seam a test replaces to fail a write) passes \"\" as atomicfile.Write's vault root on purpose: its only destinations are the host-local index files under palace/.local/ (index/<p>/, index/.generation/, locks/index-run.holder), which the canonical ignore line palace/.local/ (internal/storage/git.go:30) keeps out of git, so a .surface stamp would be wrong. Task host-local-index-store-ledger-and-fingerprint."
     },
     {
-      "id": "vault-write-outside-funnel migrate.appendMarker",
-      "reason": "RAW AND UNLOCKED, ruled in scope here: git-ignored host-local ledger palace/.local/imports, written raw without a lock — see task migrate-marker-writes-the-vault-outside-the-funnel. appends one import-marker line (O_APPEND) to the ledger markerFile(destination, project) resolves."
-    },
-    {
-      "id": "vault-write-outside-funnel migrate.loadMarkers",
-      "reason": "RAW AND UNLOCKED, ruled in scope here: git-ignored host-local ledger palace/.local/imports, written raw without a lock — see task migrate-marker-writes-the-vault-outside-the-funnel. reached through the wrapper migrate.moveLegacyMarker (loadMarkers calls it), which appends the legacy ledger's lines to the new one and removes the legacy file."
-    },
-    {
       "id": "vault-write-outside-funnel search.EmbedCache.deleteLocked",
       "reason": "HOST-LOCAL DERIVED DATA: removes one embed-cache file under the git-ignored palace/.local, inside a held index transaction; surface.GuardTestPathWrite(path) is the statement just before it. Sibling of vault-write-outside-funnel search.cacheWriteFn."
     },
