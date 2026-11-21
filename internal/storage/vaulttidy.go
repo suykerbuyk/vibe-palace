@@ -61,6 +61,9 @@ type SweepRule struct {
 // applies the H2 status gate (sweep " M", report "??") only to this rule.
 const surfaceCategory = "Surface stamps (tracked, modified)"
 
+// manifestSigSuffix ends a transcript manifest's detached signature.
+const manifestSigSuffix = ".manifest.json.sig"
+
 // suffix reports whether the final path segment ends with s.
 func suffix(parts []string, s string) bool { return strings.HasSuffix(parts[len(parts)-1], s) }
 
@@ -73,10 +76,14 @@ var sweepRules = []SweepRule{
 		Match: func(p []string) bool {
 			return len(p) == 4 && p[0] == "Projects" && p[2] == "sessions" && suffix(p, ".md")
 		}},
-	{Category: "Transcript archives", Pattern: "Projects/*/transcripts/*.{manifest.json,jsonl.zst}",
+	//
+	// A manifest's detached signature (<name>.manifest.json.sig) travels with its
+	// manifest. See "Manifest signature" on classifyDirty for the sibling guard
+	// and the accepted manifest-then-signature window.
+	{Category: "Transcript archives", Pattern: "Projects/*/transcripts/*.{manifest.json,manifest.json.sig,jsonl.zst}",
 		Match: func(p []string) bool {
 			return len(p) == 4 && p[0] == "Projects" && p[2] == "transcripts" &&
-				(suffix(p, ".manifest.json") || suffix(p, ".jsonl.zst"))
+				(suffix(p, ".manifest.json") || suffix(p, manifestSigSuffix) || suffix(p, ".jsonl.zst"))
 		}},
 
 	// Palace knowledge/capture store. On a vault WITHOUT the migration marker
@@ -207,6 +214,25 @@ func parsePorcelainZ(out string) []PorcelainEntry {
 // probe stats the sibling on disk (NOT the dirty entry set) — gating on the
 // dirty set would defer the follow-up manifest forever.
 //
+// Manifest signature: <name>.manifest.json.sig is swept WITH its manifest, so a
+// new signature never becomes Reported dirt (which would make SyncFlow refuse).
+// A worktree-present .sig (status "??", " M", "A ", "MM", ...) is swept only when
+// its sibling .manifest.json exists on disk; an on-disk orphan .sig stays
+// REPORTED (Create moves orphan signatures aside, so a live one needs human
+// eyes). A DELETION status (carrying a "D" and no "U": " D", "D ", "MD", "AD", "DD")
+// is swept by the rule with NO stat. An unmerged status ("DU", "UD") is a merge
+// conflict, not a plain deletion, and still runs the sibling guard below. The no-stat rule exists because the
+// pair-deletion of a tracked manifest and its .sig leaves both files off disk, and a sibling check there would Report a
+// deletion the rule must sweep. <manifest>.<tag>.sig.bak and .bak are covered by
+// the canonical "*.bak" gitignore and never reach porcelain.
+//
+// Accepted window (task signing-policy-for-capture-paths-and-signed-project-
+// rename, Stage 1, operator-scoped 2026-11-21): the manifest is written first,
+// then the old .sig is removed, then the new one is produced. A sweep landing
+// between the manifest write and the new .sig can commit a manifest whose
+// signature is absent or stale; the next sweep commits the .sig and heals
+// history. A defer-guard for this was deliberately refused. Do not add one here.
+//
 // All other rules sweep regardless of status, including "??" for newly created
 // sessions/transcripts/drawers/triples and "D " deletes (git add stages
 // deletions). Rename/copy (R/C in either column) never matches a sweep rule's
@@ -278,6 +304,16 @@ func classifyDirty(vaultPath string, entries []PorcelainEntry, migrated bool) (s
 		if migrated && !sweepableWhenMigrated(vaultPath, rule, e.Path) {
 			reported = append(reported, e.Path)
 			continue
+		}
+
+		// Manifest signature guard (A-1): only a worktree-present .sig needs its
+		// manifest on disk; a plain deletion (a "D" and no "U") is swept with no stat.
+		if strings.HasSuffix(e.Path, manifestSigSuffix) && !(strings.Contains(e.Status, "D") && !strings.Contains(e.Status, "U")) {
+			manifest := strings.TrimSuffix(e.Path, ".sig")
+			if _, err := os.Stat(filepath.Join(vaultPath, manifest)); os.IsNotExist(err) {
+				reported = append(reported, e.Path)
+				continue
+			}
 		}
 
 		// Transcript pair-split guard: a lone .jsonl.zst whose sibling manifest is
