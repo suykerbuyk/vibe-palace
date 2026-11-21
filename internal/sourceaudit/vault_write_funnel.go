@@ -98,21 +98,27 @@ import (
 //
 // # Honest limits — read the CENSUS, not this rule, for the authoritative list
 //
-// Syntactic, standard library only, biased to FALSE NEGATIVES like every rule in
-// this package. A destination laundered through a struct field is NOT tracked,
-// and that is not a hypothetical gap: internal/reconcile writes to `a.Target`
-// off a Plan action, so the template prune — one of the two coverage regressions
-// the census exists to name — is invisible HERE while being fully recorded
-// THERE. Likewise a bare `path string` parameter with no vault signal in its
-// function (vaultaudit.Baseline.Save, vplog.Init) cannot be resolved without
-// type information.
+// Rule (b), the atomicfile root check, is still syntactic. Rule (a), the raw os.*
+// write to a vault path, is a TYPED TAINT (vault_taint.go): go/types objects from
+// the type-check shared with vault-dir-creation (typecheck.go), seeded only by
+// DESIGNATED parameters and the allowlisted vaultSources members, flowing through
+// assignment, multi-value calls, named results, producer summaries and wrapper
+// summaries. Before it, a path that arrived through a multi-value call
+// (`ap, mp := manifestPathFor(...)`), a helper, a named result, an os alias or a
+// wrapper escaped the rule entirely (task
+// funnel-rule-misses-multi-value-path-producers: a raw os.WriteFile of a vault
+// manifest passed it). What still escapes is listed in vault_taint.go: struct
+// fields, maps, interface results, laundered runtime paths, locals of an
+// unmodelled import's type. Findings are still keyed by FUNCTION, so a second raw
+// write inside an already-baselined function stays hidden behind its entry
+// (per-call-site keying is a follow-up).
 //
 // So: this rule is a RATCHET AGAINST NEW BYPASSES OF THE KNOWN SHAPE. The
 // census in the task
 // `move-the-surface-gate-to-the-write-chokepoint` is the census. Do not treat a
 // green verdict here as "the funnel is complete" — it is not, and Phase 2 is
 // what completes it.
-func vaultWriteFunnel(files []file) []Finding {
+func vaultWriteFunnel(files []file, tree *typedTree) []Finding {
 	byFunc := map[string]*funnelBreach{}
 	var order []string
 
@@ -144,7 +150,6 @@ func vaultWriteFunnel(files []file) []Finding {
 		// `var x = func(...){}` test seam (internal/wrapstate.gitCmdRunner,
 		// internal/worktree.runGit and siblings) was previously invisible here.
 		for _, s := range bindingScopes(f) {
-			known := vaultPathIdents(s.params, s.body, &stats)
 			key := pkg + "." + s.name
 
 			ast.Inspect(s.body, func(n ast.Node) bool {
@@ -171,21 +176,32 @@ func vaultWriteFunnel(files []file) []Finding {
 							sel.Sel.Name, exprSketch(call.Args[0]), funnelRootHazard))
 					}
 
-				// (a) raw os.* content mutation to a vault-derived destination.
-				case recv.Name == "os" && rawContentVerbs[sel.Sel.Name]:
-					if sel.Sel.Name == "OpenFile" && !opensForWrite(call) {
-						return true
-					}
-					stats.rawVerbs++
-					if isVaultPathExpr(call.Args[0], known) {
-						breachAdd(byFunc, &order, key, f, call, fmt.Sprintf(
-							"os.%s writes a VAULT path (%s) with a raw primitive — %s",
-							sel.Sel.Name, exprSketch(call.Args[0]), funnelBypassHazard))
-					}
 				}
 				return true
 			})
 		}
+	}
+
+	// (a) raw os.* content mutation to a vault-derived destination: the typed taint
+	// (vault_taint.go), over the shared type-check.
+	eng, hits := runTaint(tree)
+	stats.rawVerbs = eng.stats.rawSinks
+	edgeUsed := map[string]int{}
+	for _, h := range hits {
+		if h.wrapper {
+			ek := h.key + "|" + h.callee
+			if a, ok := funnelAllowedEdges[ek]; ok && edgeUsed[ek] < a.count {
+				edgeUsed[ek]++
+				continue
+			}
+		}
+		b, ok := byFunc[h.key]
+		if !ok {
+			b = &funnelBreach{pos: h.pos}
+			byFunc[h.key] = b
+			order = append(order, h.key)
+		}
+		b.details = append(b.details, h.detail)
 	}
 
 	var out []Finding
@@ -225,7 +241,6 @@ func vaultWriteFunnel(files []file) []Finding {
 	const (
 		atomicfileWriteFloor = 20
 		rawVerbFloor         = 40
-		vaultIdentFloor      = 10
 	)
 	switch {
 	case stats.atomicfileWrites < atomicfileWriteFloor:
@@ -238,12 +253,8 @@ func vaultWriteFunnel(files []file) []Finding {
 			"inspected only %d raw os.* content-verb call site(s), expected at least %d — the raw-write "+
 				"matcher is not firing, so a passing verdict is vacuous",
 			stats.rawVerbs, rawVerbFloor)))
-	case stats.vaultIdents < vaultIdentFloor:
-		out = append(out, vacuous(fmt.Sprintf(
-			"resolved only %d vault-derived identifier(s), expected at least %d — the derivation tracker "+
-				"is no longer recognising vault paths, so a passing verdict is vacuous",
-			stats.vaultIdents, vaultIdentFloor)))
 	}
+	out = append(out, funnelMetaFindings(tree, eng, edgeUsed)...)
 
 	return out
 }
@@ -255,7 +266,6 @@ func vaultWriteFunnel(files []file) []Finding {
 type funnelStats struct {
 	atomicfileWrites int
 	rawVerbs         int
-	vaultIdents      int
 }
 
 // funnelBreach accumulates every breach in one function so the finding is keyed
@@ -404,123 +414,6 @@ var vaultRootIdentNames = map[string]bool{
 	"vaultDir":  true,
 	"root":      true,
 	"destRoot":  true,
-}
-
-// isVaultPathExpr reports whether an expression yields a path inside the vault.
-//
-// Recognised forms, in the order they actually appear in this tree:
-//
-//   - an identifier already resolved as vault-derived;
-//   - a Vault path accessor — v.MemoryFile(p, rel), vault.TasksDir(name). Keyed
-//     on the accessor NAME suffix, not merely the receiver: a Vault has many
-//     methods returning tasks, stats and triples, and counting those as paths
-//     would inflate the anti-vacuity counter with values that could never be a
-//     write destination — an instrument lying about its own coverage;
-//   - filepath.Join(<vault-rooted>, …), including nested joins;
-//   - a suffix concatenation of a vault path — `dst+".bak"`, `logPath+".1"`,
-//     `configPath+".tmp"`. This one matters more than it looks: the backup and
-//     temp siblings are how the census's bypasses actually wrote
-//     (internal/reconcile/upgrade.go:80,84, internal/vplog/vplog.go:52; a third,
-//     templates.Executor's rename to dst+".bak", was deleted with the upgrade
-//     reset), and a rule blind to it would call them clean.
-func isVaultPathExpr(e ast.Expr, known map[string]bool) bool {
-	switch v := e.(type) {
-	case *ast.Ident:
-		return known[v.Name]
-
-	case *ast.BinaryExpr:
-		// path + ".bak" / ".tmp" / ".1"
-		return isVaultPathExpr(v.X, known) || isVaultPathExpr(v.Y, known)
-
-	case *ast.CallExpr:
-		sel, ok := v.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return false
-		}
-		recv, ok := sel.X.(*ast.Ident)
-		if !ok {
-			return false
-		}
-		if recv.Name == "vault" || recv.Name == "v" {
-			n := sel.Sel.Name
-			return strings.HasSuffix(n, "File") || strings.HasSuffix(n, "Dir") || strings.HasSuffix(n, "Path")
-		}
-		if recv.Name == "filepath" && (sel.Sel.Name == "Join" || sel.Sel.Name == "Clean") && len(v.Args) > 0 {
-			return isVaultPathExpr(v.Args[0], known)
-		}
-		return false
-
-	case *ast.SelectorExpr:
-		return v.Sel.Name == "Root" || v.Sel.Name == "VaultRoot"
-	}
-	return false
-}
-
-// vaultPathIdents resolves, within ONE function body, which identifiers hold a
-// vault-derived path.
-//
-// Scoped to a function rather than to a file because this rule is cross-package:
-// a file-wide identifier set merges names across unrelated functions, and in a
-// 1,200-line cmd/vp file that manufactures false positives — the one thing this
-// package refuses to do.
-//
-// Iterated to a FIXED POINT rather than in one sweep, because a path is built in
-// stages (dir := vault.TasksDir(p); sub := filepath.Join(dir, "done")) and a
-// single source-order sweep would resolve those only when they happen to appear
-// in dependency order. Order-dependent coverage is coverage that changes when
-// someone moves a line.
-//
-// Seeded from the function's own parameters, which is what makes the
-// cross-package idiom reachable: `func Create(opts CreateOptions)` gives nothing,
-// but `func stampVaultWrite(vaultRoot, path string)` names its root in the
-// signature, and most of this tree does the latter.
-//
-// Takes params and body separately rather than an *ast.FuncDecl so the same
-// resolver covers a package-level `var x = func(vaultRoot string) {...}`
-// binding scope — a FuncLit has no *ast.FuncDecl and never will, the same
-// reason bindingScope itself carries params+body instead of one.
-func vaultPathIdents(params *ast.FieldList, body *ast.BlockStmt, stats *funnelStats) map[string]bool {
-	known := map[string]bool{}
-
-	if params != nil {
-		for _, p := range params.List {
-			for _, n := range p.Names {
-				if vaultRootIdentNames[n.Name] {
-					known[n.Name] = true
-					stats.vaultIdents++
-				}
-			}
-		}
-	}
-
-	for {
-		added := 0
-		ast.Inspect(body, func(n ast.Node) bool {
-			as, ok := n.(*ast.AssignStmt)
-			if !ok {
-				return true
-			}
-			for i, rhs := range as.Rhs {
-				if i >= len(as.Lhs) {
-					break
-				}
-				lhs, ok := as.Lhs[i].(*ast.Ident)
-				if !ok || lhs.Name == "_" || known[lhs.Name] {
-					continue
-				}
-				if isVaultPathExpr(rhs, known) {
-					known[lhs.Name] = true
-					added++
-					stats.vaultIdents++
-				}
-			}
-			return true
-		})
-		if added == 0 {
-			break
-		}
-	}
-	return known
 }
 
 // funcName renders a FuncDecl's name, qualified by receiver type for methods so

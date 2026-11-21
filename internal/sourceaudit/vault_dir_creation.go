@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/printer"
 	"go/token"
 	"go/types"
@@ -119,90 +118,6 @@ func (c *pureCtx) pureCall(fset *token.FileSet, call *ast.CallExpr) bool {
 			fo.Parent() == fo.Pkg().Scope()
 	}
 	return false
-}
-
-// identResolver maps an identifier use, keyed by file path and byte offset, to
-// the object it refers to.
-type identResolver map[string]types.Object
-
-func resolverKey(f file, id *ast.Ident) string {
-	return f.path + ":" + strconv.Itoa(f.fset.Position(id.Pos()).Offset)
-}
-
-func (r identResolver) lookup(f file, id *ast.Ident) types.Object { return r[resolverKey(f, id)] }
-
-// fakeImporter returns an empty, complete package for every import path, named by
-// the last path element. It exists so go/types can resolve local and
-// package-level identifiers (and which package an import name denotes) without
-// the imported packages' sources.
-type fakeImporter struct{ seen map[string]*types.Package }
-
-func (fi fakeImporter) Import(path string) (*types.Package, error) {
-	if p, ok := fi.seen[path]; ok {
-		return p, nil
-	}
-	name := path
-	if k := strings.LastIndex(path, "/"); k >= 0 {
-		name = path[k+1:]
-	}
-	p := types.NewPackage(path, strings.ReplaceAll(name, "-", "_"))
-	p.MarkComplete()
-	fi.seen[path] = p
-	return p, nil
-}
-
-// buildResolver type-checks every scanned file, one package (directory plus
-// package name) at a time. The audit's loader gives each file its own FileSet,
-// and go/types needs one shared FileSet per package (it orders scopes by
-// position), so each file is parsed again into a shared one and its identifier
-// uses are mapped back to the original files by byte offset. Test files are not
-// loaded, matching the rule.
-func buildResolver(files []file) identResolver {
-	res := identResolver{}
-	type pkgKey struct{ dir, name string }
-	groups := map[pkgKey][]file{}
-	var order []pkgKey
-	for _, f := range files {
-		if f.isTest || !inVaultDirScan(f) {
-			continue
-		}
-		k := pkgKey{filepath.Dir(f.path), f.ast.Name.Name}
-		if _, ok := groups[k]; !ok {
-			order = append(order, k)
-		}
-		groups[k] = append(groups[k], f)
-	}
-	for _, k := range order {
-		nfset := token.NewFileSet()
-		var asts []*ast.File
-		var origin []file
-		for _, f := range groups[k] {
-			a, err := parser.ParseFile(nfset, f.path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				continue // the loader already parsed it; an unreadable file just stays unresolved
-			}
-			asts = append(asts, a)
-			origin = append(origin, f)
-		}
-		info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
-		conf := types.Config{
-			Importer:                 fakeImporter{seen: map[string]*types.Package{}},
-			Error:                    func(error) {}, // unresolved members of fake imports are expected
-			DisableUnusedImportCheck: true,
-		}
-		_, _ = conf.Check(k.name, nfset, asts, info)
-		byPath := map[string]file{}
-		for _, f := range origin {
-			byPath[f.path] = f
-		}
-		for id, obj := range info.Uses {
-			pos := nfset.Position(id.Pos())
-			if of, ok := byPath[pos.Filename]; ok {
-				res[of.path+":"+strconv.Itoa(pos.Offset)] = obj
-			}
-		}
-	}
-	return res
 }
 
 var dirCreators = map[string]bool{"Mkdir": true, "MkdirAll": true, "MkdirTemp": true}
@@ -366,13 +281,13 @@ type dirSite struct {
 	key, pos string
 }
 
-func vaultDirCreation(files []file) []Finding {
+func vaultDirCreation(files []file, tree *typedTree) []Finding {
 	unbound := map[string][]dirSite{}
 	var order []string
 	total, bound := 0, 0
 	seenScopes := map[string]bool{}
 
-	res := buildResolver(files)
+	res := tree.uses
 
 	for _, f := range files {
 		if f.isTest || !inVaultDirScan(f) {

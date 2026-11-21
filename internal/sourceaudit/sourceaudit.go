@@ -349,15 +349,19 @@ func Run(roots ...string) ([]Finding, error) {
 		return nil, err
 	}
 
+	// The type-check is built ONCE and shared by every rule that resolves
+	// identifiers to objects (vault-dir-creation, vault-write-outside-funnel).
+	tree := typeCheckTree(files)
+
 	var findings []Finding
 	findings = append(findings, writeOnlyFields(files)...)
 	findings = append(findings, uninvokedFuncs(files)...)
 	findings = append(findings, ungatedVaultWriters(files)...)
-	findings = append(findings, vaultWriteFunnel(files)...)
+	findings = append(findings, vaultWriteFunnel(files, tree)...)
 	findings = append(findings, surfaceRemediation(files)...)
 	findings = append(findings, gitExecEnvFunnel(files)...)
 	findings = append(findings, unguardedVaultCommit(files)...)
-	findings = append(findings, vaultDirCreation(files)...)
+	findings = append(findings, vaultDirCreation(files, tree)...)
 	findings = append(findings, envIsolationBypass(files)...)
 	findings = append(findings, plannerNoWrite(files)...)
 	findings = append(findings, evidenceWalkIndependence(files)...)

@@ -449,12 +449,28 @@
       "reason": "DELIBERATELY EXEMPT — a diagnostic must run when the funnel is what is being diagnosed. internal/check/vaultfs.go:141 creates a transient, self-deleting .vp-fs-probe-* at the VAULT ROOT with O_CREATE|O_WRONLY|O_EXCL to test whether the filesystem accepts ':' in a filename (the NTFS/exFAT case). Routing a filesystem-capability probe through the primitive whose correctness it is probing is circular. The same reasoning already keeps the MCP-side vp_check Mutating:false — see the sibling ungated-vault-writer main.cmdCheck entry. Census row 23."
     },
     {
+      "id": "vault-write-outside-funnel check.Producers",
+      "reason": "CALLS THE RULED DIAGNOSTIC PROBE with the vault path by design: check.CheckVaultFilesystem is baselined as DELIBERATELY EXEMPT (a transient, self-deleting .vp-fs-probe-* at the vault root, because a diagnostic must run when the funnel is what is being diagnosed). This caller inherits that ruling; it writes nothing itself. Newly visible when wrapper summaries began following derived locals (g2 fix 1)."
+    },
+    {
       "id": "vault-write-outside-funnel check.sweepStaleProbes",
       "reason": "DELIBERATELY EXEMPT — the other half of the probe in CheckVaultFilesystem above. internal/check/vaultfs.go:94 removes vault-root entries matching the .vp-fs-probe- prefix that are older than 5 minutes, i.e. residue from a probe whose process died before its own cleanup at :172. It removes only files this package created. Same circularity rationale. Census row 23."
     },
     {
       "id": "vault-write-outside-funnel indexstore.writeFileFn",
       "reason": "host-local derived index under palace/.local — ignored by git, not vault content (ADR-014). writeFileFn (the body of writeFile, a seam a test replaces to fail a write) passes \"\" as atomicfile.Write's vault root on purpose: its only destinations are the host-local index files under palace/.local/ (index/<p>/, index/.generation/, locks/index-run.holder), which the canonical ignore line palace/.local/ (internal/storage/git.go:30) keeps out of git, so a .surface stamp would be wrong. Task host-local-index-store-ledger-and-fingerprint."
+    },
+    {
+      "id": "vault-write-outside-funnel migrate.appendMarker",
+      "reason": "RAW AND UNLOCKED, ruled in scope here: git-ignored host-local ledger palace/.local/imports, written raw without a lock — see task migrate-marker-writes-the-vault-outside-the-funnel. appends one import-marker line (O_APPEND) to the ledger markerFile(destination, project) resolves."
+    },
+    {
+      "id": "vault-write-outside-funnel migrate.loadMarkers",
+      "reason": "RAW AND UNLOCKED, ruled in scope here: git-ignored host-local ledger palace/.local/imports, written raw without a lock — see task migrate-marker-writes-the-vault-outside-the-funnel. reached through the wrapper migrate.moveLegacyMarker (loadMarkers calls it), which appends the legacy ledger's lines to the new one and removes the legacy file."
+    },
+    {
+      "id": "vault-write-outside-funnel search.EmbedCache.deleteLocked",
+      "reason": "HOST-LOCAL DERIVED DATA: removes one embed-cache file under the git-ignored palace/.local, inside a held index transaction; surface.GuardTestPathWrite(path) is the statement just before it. Sibling of vault-write-outside-funnel search.cacheWriteFn."
     },
     {
       "id": "vault-write-outside-funnel search.cacheWriteFn",
@@ -469,16 +485,60 @@
       "reason": "HOST-LOCAL IGNORED MARKER, not tracked vault content: it removes palace/.local/index/.rename-pending/<slug>, a git-ignored per-host hint written by WriteRenamePending. It must NOT stamp the surface or take the vault root lock (the host-local rename step holds the index run and commit locks, never the root lock), so routing it through vaultfs.Delete would be wrong. Mirrors internal/indexstore's own palace/.local removals, which this audit exempts. Pinned by task rename-core-fresh-target-with-digest-bind (U9 increment 2)."
     },
     {
+      "id": "vault-write-outside-funnel storage.Vault.SweepEmbedCaches",
+      "reason": "HOST-LOCAL DERIVED DATA, deliberately unseated (operator decision D5, see the vault-dir-creation allowlist for storage.migrateLegacyEmbedCache): reaches removeStaleCopyTemps and sweepLegacyEmbedCache, which migrate and delete embed-cache directories and copy temporaries under the git-ignored palace/<slug>/.local and the host embed-cache root. Not vault content. Newly visible when wrapper summaries began following derived locals (g2 fix 1)."
+    },
+    {
       "id": "vault-write-outside-funnel storage.Vault.WriteRenamePending",
       "reason": "HOST-LOCAL IGNORED MARKER, not tracked vault content: it writes palace/.local/index/.rename-pending/<slug> (content = the target slug), a git-ignored per-host hint read by the index sweep. It deliberately passes atomicfile.Write's vaultRoot=\"\" to SKIP the MCP-surface stamp, exactly as the audit text permits for a genuinely non-vault destination (cf. internal/wrapstate's project-root anchors). Stamping a host-local ignored file would be wrong. Pinned by task rename-core-fresh-target-with-digest-bind (U9 increment 2)."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.clearLifecycleMarker",
+      "reason": "Git metadata under .git, not tracked vault content: removes the lifecycle marker from .git when the operation completes; same path as storage.writeLifecycleMarker."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.finishClone",
+      "reason": "Git metadata under .git (clone marker): removes the clone marker (cloneMarkerPath, under the finished clone's .git) once the clone is complete, so a re-run refuses from then on. The vault root arrives as the designated parameter `path` (designatedParams). storage.writeCloneMarker is deliberately not seen: its destination is the SCRATCH clone's .git, written before the clone is a vault."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.initPublish",
+      "reason": "REMOVES ONLY THE BRAND-NEW, UNPUBLISHED VAULT this `vp vault init` just created: when no remote holds the commit, it releases the lock and os.RemoveAlls the new vault root so the command can be re-run. The precedent is ungated-vault-writer main.cmdVaultInit (a Chair ruling): vault init writes only a vault that does not exist yet and resumes only its own unfinished init. Newly visible because the root arrives through the typed source vaultlock.Held.Root()."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.setLifecycleMarkerCommit",
+      "reason": "Git metadata under .git, not tracked vault content: rewrites the lifecycle marker in .git (temp file then rename) once the commit is known; same path as storage.writeLifecycleMarker."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.snapshotFormat",
+      "reason": "NOT A VAULT: writes the format manifest into a SCRATCH snapshot checkout under the host snapshot cache (os.UserCacheDir()/vibe-palace/snap), via surface.VaultManifestPath(dir). The vault-dir-creation allowlist records the same function's MkdirTemp for the same reason."
+    },
+    {
+      "id": "vault-write-outside-funnel storage.writeLifecycleMarker",
+      "reason": "Git metadata under .git, not tracked vault content: the lifecycle marker is created/removed at the path `git rev-parse --git-path` names (lifecycleMarkerPath), inside the vault repo's .git directory. Reached through a multi-value producer, which is why this rule could not see it before."
     },
     {
       "id": "vault-write-outside-funnel storage.writeScoringConfigAt",
       "reason": "INTENDED, and it is the point of the function. writeScoringConfigAt is the one splice core behind BOTH scoring destinations, and its stampRoot argument names which one it is writing to. The production caller, WriteHostScoringConfig, writes the HOST-LOCAL per-project file at <UserConfigDir>/vibe-palace/projects/<slug>.toml and passes \"\": that destination is outside every vault, so there is no vault whose surface version floor the write should raise — the same disposition internal/wrapstate has for project-root anchors, which the rule's own text sanctions (\"A genuinely non-vault destination may pass \\\"\\\"\"). The vault-path caller passes a real v.Root and is stamped exactly as before; after R2 of task move-per-project-config-out-of-the-shared-vault that caller is a test-only shim (internal/storage/write_scoring_vault_shim_test.go), and R4 deletes the vault destination outright. What keeps this honest is not this entry: TestWriteHostScoringConfigWritesNothingIntoTheVault asserts the vault tree gains no file, no lock sidecar and no .surface stamp from a host-local write."
     },
     {
+      "id": "vault-write-outside-funnel testinfra.TestHarness.SeedProject",
+      "reason": "TEST-ONLY BY DESIGN: calls testutil.InitProject (baselined: a fixture writes the two scaffold markers with os.WriteFile, deliberately not through atomicfile) with the harness's test-owned vault root. Inherits that ruling; writes nothing itself. Newly visible when wrapper summaries began following derived locals (g2 fix 1)."
+    },
+    {
+      "id": "vault-write-outside-funnel testinfra.WithMemory",
+      "reason": "TEST-ONLY BY DESIGN: a fixture seeds memory files under a test-owned root with os.WriteFile, deliberately not through atomicfile. Sibling of vault-write-outside-funnel testutil.InitProject."
+    },
+    {
       "id": "vault-write-outside-funnel testutil.InitProject",
       "reason": "TEST-ONLY BY DESIGN: a fixture writes the two scaffold markers with os.WriteFile, deliberately not through atomicfile: a fixture is not a project-creating writer and must not hold the creating-project option (task untracked-project-stamps-from-writers-that-never-commit)."
+    },
+    {
+      "id": "vault-write-outside-funnel vaultlock.acquireGCExclusiveBounded",
+      "reason": "STRUCTURALLY EXEMPT, the lock primitive: the bounded exclusive twin of vaultlock.acquireGCShared; same .gc flock file, same first-statement seat (surface.GuardTestPathWrite(lockDirPath(vaultRoot)))."
+    },
+    {
+      "id": "vault-write-outside-funnel vaultlock.acquireGCShared",
+      "reason": "STRUCTURALLY EXEMPT, the lock primitive: creates the .gc flock file under <vault>/.vp-locks after the function's first-statement seat judged the same path; it cannot take the lock it is creating. Sibling of vault-write-outside-funnel vaultlock.openLockFileNoGC."
     },
     {
       "id": "vault-write-outside-funnel vaultlock.openLockFileNoGC",

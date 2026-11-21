@@ -13,7 +13,7 @@ import (
 // separate. Every function here is a claim about the rule, and each is asserted
 // below in BOTH directions — a rule that only ever proves it can fire is half a
 // rule, and the half it is missing is the one that keeps it enabled.
-const funnelFixture = `package fixture
+const funnelFixture = `package storage
 
 import (
 	"os"
@@ -105,19 +105,30 @@ var VarSanctioned = func(vaultRoot, abs string) error {
 }
 `
 
-func funnelIDs(t *testing.T) []string {
+// funnelTreeIDs runs the audit over a synthetic tree (one source file per
+// directory; the directory layout decides the package's FULL import path, so
+// internal/storage here IS the real internal/storage to the typed taint) and
+// returns the funnel rule's per-function symbols, without the rule's own
+// meta-findings (floors, accounting, STALE rows), which a fixture tree cannot meet.
+func funnelTreeIDs(t *testing.T, pkgs map[string]string) []string {
 	t.Helper()
-	findings, err := Run(writeFixture(t, funnelFixture))
+	findings, err := Run(writeFixtureTree(t, pkgs))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	var out []string
 	for _, f := range findings {
-		if f.Kind == KindVaultWriteOutsideFunnel {
+		if f.Kind == KindVaultWriteOutsideFunnel && !strings.HasPrefix(f.Symbol, "sourceaudit.") {
 			out = append(out, f.Symbol)
 		}
 	}
+	slices.Sort(out)
 	return out
+}
+
+func funnelIDs(t *testing.T) []string {
+	t.Helper()
+	return funnelTreeIDs(t, map[string]string{"internal/storage": funnelFixture})
 }
 
 // TestFunnelFlagsBypasses is the rule's mutation proof. Each shape below is a
@@ -129,12 +140,12 @@ func funnelIDs(t *testing.T) []string {
 func TestFunnelFlagsBypasses(t *testing.T) {
 	got := funnelIDs(t)
 	for _, want := range []string{
-		"fixture.RawRemove",
-		"fixture.RawWriteFromParam",
-		"fixture.RawWriteBackup",
-		"fixture.RawAppend",
-		"fixture.DefeatedRoot",
-		"fixture.VarRawWrite",
+		"storage.RawRemove",
+		"storage.RawWriteFromParam",
+		"storage.RawWriteBackup",
+		"storage.RawAppend",
+		"storage.DefeatedRoot",
+		"storage.VarRawWrite",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("%s is a vault mutation outside the funnel and the rule did not flag it. "+
@@ -156,12 +167,12 @@ func TestFunnelFlagsBypasses(t *testing.T) {
 func TestFunnelDoesNotFlagCleanCode(t *testing.T) {
 	got := funnelIDs(t)
 	for _, unwanted := range []string{
-		"fixture.Sanctioned",
-		"fixture.SanctionedFromParam",
-		"fixture.RawWriteHostPath",
-		"fixture.ReadHandle",
-		"fixture.MakeDir",
-		"fixture.VarSanctioned",
+		"storage.Sanctioned",
+		"storage.SanctionedFromParam",
+		"storage.RawWriteHostPath",
+		"storage.ReadHandle",
+		"storage.MakeDir",
+		"storage.VarSanctioned",
 	} {
 		if slices.Contains(got, unwanted) {
 			t.Errorf("%s is correct code and the rule flagged it — a noisy gate is a disabled gate.\n  got: %v",
